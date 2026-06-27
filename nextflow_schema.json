@@ -1,0 +1,132 @@
+{
+    "$schema": "http://json-schema.org/draft-07/schema",
+    "$id": "https://raw.githubusercontent.com/cvv/gaph_v2/master/nextflow_schema.json",
+    "title": "gaph_v2 pipeline parameters",
+    "description": "GAPH v2 gene fetch and ortholog-to-target alignment workflow",
+    "type": "object",
+    "definitions": {
+        "input_output_options": {
+            "title": "Input/output options",
+            "type": "object",
+            "description": "Define where the pipeline should find input data and save output data.",
+            "properties": {
+                "help": {
+                    "type": "boolean",
+                    "description": "Display help text."
+                },
+                "stage": {
+                    "type": "string",
+                    "default": "all",
+                    "enum": ["all", "fetch", "align", "annotate"],
+                    "description": "Pipeline stage to run"
+                },
+                "ids_file": {
+                    "type": "string",
+                    "description": "Path to the input file containing gene IDs"
+                },
+                "fetch_dir": {
+                    "type": "string",
+                    "description": "Directory containing fetched sequences (required if stage is 'align')"
+                },
+                "events_tsv": {
+                    "type": "string",
+                    "description": "Path to events TSV for annotation stage"
+                },
+                "outdir": {
+                    "type": "string",
+                    "default": "results/run",
+                    "description": "The output directory where the results will be saved."
+                },
+                "fetch_outdir": {
+                    "type": "string",
+                    "description": "Output directory specifically for fetch stage results"
+                },
+                "align_outdir": {
+                    "type": "string",
+                    "description": "Output directory specifically for alignment stage results"
+                },
+                "clinvar_vcf": {
+                    "type": "string",
+                    "default": "/Users/cvv/code/Bioinformatics/course-work/course-work-code/data/clinvar.vcf.gz",
+                    "description": "Path to ClinVar VCF file for annotation (or NO_CLINVAR to skip)"
+                }
+            }
+        },
+        "fetch_options": {
+            "title": "Fetch options",
+            "type": "object",
+            "properties": {
+                "chunk_size": {
+                    "type": "integer",
+                    "default": 10,
+                    "description": "Number of genes to process per chunk"
+                },
+                "target_assembly_accession": {
+                    "type": "string",
+                    "default": "GCF_000001405.40"
+                },
+                "target_assembly_name": {
+                    "type": "string",
+                    "default": "GRCh38.p14"
+                },
+                "target_tax_id": {
+                    "type": "string",
+                    "default": "9606"
+                },
+                "taxonomy_batch_size": {
+                    "type": "integer",
+                    "default": 200
+                },
+                "taxonomy_file": {
+                    "type": "string"
+                }
+            }
+        },
+        "execution_options": {
+            "title": "Execution Options",
+            "type": "object",
+            "properties": {
+                "fetch_max_forks": {
+                    "type": "integer",
+                    "default": 1
+                },
+                "alignment_max_forks": {
+                    "type": "integer",
+                    "default": 2
+                },
+                "keep_native_alignments": {
+                    "type": "boolean",
+                    "default": false
+                }
+            }
+        },
+        "binary_paths": {
+            "title": "Binary Paths",
+            "type": "object",
+            "properties": {
+                "datasets_bin": { "type": "string" },
+                "minimap2_bin": { "type": "string" },
+                "nucmer_bin": { "type": "string" },
+                "show_coords_bin": { "type": "string" },
+                "show_snps_bin": { "type": "string" },
+                "bwa_bin": { "type": "string" },
+                "samtools_bin": { "type": "string" },
+                "varscan_jar": { "type": "string" }
+            }
+        }
+    },
+    "allOf": [
+        {
+            "$ref": "#/definitions/input_output_options"
+        },
+        {
+            "$ref": "#/definitions/fetch_options"
+        },
+        {
+            "$ref": "#/definitions/execution_options"
+        },
+        {
+            "$ref": "#/definitions/binary_paths"
+        }
+    ]
+}

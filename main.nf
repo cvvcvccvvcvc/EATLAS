@@ -1,9 +1,15 @@
 nextflow.enable.dsl = 2
 
-allowed_stages = ['all', 'fetch', 'align']
-if (!allowed_stages.contains(params.stage)) {
-    error "Invalid --stage '${params.stage}'. Expected one of: ${allowed_stages.join(', ')}"
+include { validateParameters; paramsHelp } from 'plugin/nf-validation'
+
+// Print help message
+if (params.help) {
+    log.info paramsHelp("gaph_v2")
+    exit 0
 }
+
+// Validate parameters against nextflow_schema.json
+validateParameters()
 
 if (['all', 'fetch'].contains(params.stage) && !params.ids_file) {
     error "Missing required parameter: --ids_file"
@@ -11,6 +17,10 @@ if (['all', 'fetch'].contains(params.stage) && !params.ids_file) {
 
 if (params.stage == 'align' && !params.fetch_dir) {
     error "Missing required parameter for --stage align: --fetch_dir"
+}
+
+if (params.stage == 'annotate' && !params.events_tsv) {
+    error "Missing required parameter for --stage annotate: --events_tsv"
 }
 
 process VALIDATE_IDS {
