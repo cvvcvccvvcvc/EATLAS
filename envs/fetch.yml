@@ -1,0 +1,7 @@
+name: gaph-v2-fetch
+channels:
+  - conda-forge
+  - bioconda
+dependencies:
+  - python=3.11
+  - ncbi-datasets-cli

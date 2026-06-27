@@ -1,0 +1,13 @@
+name: gaph-v2-alignment
+channels:
+  - conda-forge
+  - bioconda
+dependencies:
+  - python=3.11
+  - pysam
+  - ncbi-datasets-cli
+  - minimap2
+  - mummer4
+  - bwa
+  - samtools
+  - varscan

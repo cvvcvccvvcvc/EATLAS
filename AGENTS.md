@@ -1,0 +1,75 @@
+# AGENTS.md
+
+Minimal always-loaded onboarding for AI agents working in this repository.
+
+## WHY
+
+GAPH v2 is a structured rewrite of a gene-level variant discovery pipeline.
+The current implemented scope is:
+- stage 1: fetch normalized input data for Entrez Gene IDs
+- stage 2: align selected ortholog gene sequences to fixed human target loci
+
+Stage 1 produces:
+- human target gene sequences on GRCh38.p14 (`GCF_000001405.40`)
+- selected non-human ortholog gene sequences from NCBI Datasets
+- compact metadata tables describing target genes, selected orthologs,
+  rejected ortholog candidates, failures, and run constants
+
+Stage 2 produces:
+- taxonomy-driven minimap2 preset metadata
+- normalized alignment segments
+- normalized raw alignment events
+- per-ortholog alignment summaries for downstream variant-support logic
+
+## WHAT
+
+Core files:
+- `main.nf` - Nextflow DSL2 workflow wiring.
+- `nextflow.config` - local/slurm profiles and process resource policy.
+- `bin/normalize_ids.py` - input ID normalization and chunking.
+- `bin/fetch_parse_chunk.py` - NCBI Datasets fetch + package parsing.
+- `bin/merge_fetch_results.py` - final table/FASTA merge.
+- `bin/fetch_taxonomy_presets.py` - compact taxonomy-to-preset table.
+- `bin/prepare_alignment_tasks.py` - per-gene alignment task preparation.
+- `bin/run_minimap2_alignment.py` - minimap2 execution and PAF parsing.
+- `bin/run_nucmer_alignment.py` - nucmer execution and comparator parsing.
+- `bin/merge_alignment_results.py` - final alignment evidence merge.
+- `envs/fetch.yml` - minimal conda environment for stage 1.
+- `envs/alignment.yml` - CLI dependencies for stage 2.
+
+## HOW
+
+Default local run:
+
+```bash
+nextflow run . -profile local --ids_file gene_ids.txt --outdir results/run_001 -resume
+```
+
+Cluster run:
+
+```bash
+nextflow run . -profile slurm --ids_file /path/gene_ids.txt \
+  --outdir /scratch/$USER/gaph_v2/results/run_001 \
+  -work-dir /scratch/$USER/gaph_v2/work/run_001 -resume
+```
+
+Agent workflow rules:
+1. Keep this file short and universally relevant.
+2. Before changing code, read only relevant files from `docs/`.
+3. Treat `results/` as durable output and Nextflow `work/` as disposable resume cache.
+4. Do not publish raw NCBI zip files or unpacked `gene.fna` as final outputs.
+5. Preserve fixed stage-1 constants unless the user explicitly changes the design:
+   GRCh38.p14 (`GCF_000001405.40`) and NCBI `--ortholog all`.
+6. Stage 2 native aligner outputs are debug artifacts; do not publish them by
+   default.
+7. Prefer small, focused changes and validate with a small local Nextflow smoke run.
+
+## Progressive Disclosure
+
+Read these only when relevant:
+
+- `docs/project_map.md` - repository structure and ownership.
+- `docs/stage1_fetch_contract.md` - stage-1 data model, selection rules, and outputs.
+- `docs/stage2_alignment_contract.md` - stage-2 alignment model, outputs, and rationale.
+- `docs/run_validation.md` - commands for local/slurm runs and verification.
+- `docs/storage_model.md` - Nextflow cache, result layout, and disk-space policy.
