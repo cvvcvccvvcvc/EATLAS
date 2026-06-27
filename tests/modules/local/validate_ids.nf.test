@@ -1,0 +1,28 @@
+nextflow_process {
+
+    name "Test Process VALIDATE_IDS"
+    script "modules/local/validate_ids.nf"
+    process "VALIDATE_IDS"
+
+    test("Should normalize test_5_genes.txt - snapshot test") {
+
+        when {
+            process {
+                """
+                input[0] = file("${projectDir}/test_5_genes.txt")
+                input[1] = file("${projectDir}/bin/normalize_ids.py")
+                """
+            }
+            params {
+                chunk_size = 10
+            }
+        }
+
+        then {
+            assertAll(
+                { assert process.success },
+                { assert snapshot(process.out).match() }
+            )
+        }
+    }
+}
