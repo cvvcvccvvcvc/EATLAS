@@ -1,12 +1,12 @@
 process ALIGN_BWA_PSEUDOREADS {
-    tag { task_dir.baseName }
+    tag { meta.id }
 
     input:
-    path task_dir
+    tuple val(meta), path(task_dir)
     path bwa_script
 
     output:
-    path "align_bwa", emit: bwa_result_dirs
+    tuple val(meta), path("align_bwa"), emit: bwa_result_dirs
 
     script:
     """

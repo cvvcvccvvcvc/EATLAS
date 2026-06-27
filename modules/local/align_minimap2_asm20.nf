@@ -1,12 +1,12 @@
 process ALIGN_MINIMAP2_ASM20 {
-    tag { task_dir.baseName }
+    tag { meta.id }
 
     input:
-    path task_dir
+    tuple val(meta), path(task_dir)
     path minimap2_script
 
     output:
-    path "align_minimap2_asm20", emit: asm20_result_dirs
+    tuple val(meta), path("align_minimap2_asm20"), emit: asm20_result_dirs
 
     script:
     """

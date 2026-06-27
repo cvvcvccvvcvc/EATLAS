@@ -48,13 +48,13 @@ workflow FETCH_STAGE {
 
     VALIDATE_IDS(ids, normalize_script)
 
-    chunk_files = VALIDATE_IDS.out.chunk_files.flatten()
+    chunk_files = VALIDATE_IDS.out.chunk_files.flatten().map { file -> tuple([id: file.baseName], file) }
     FETCH_PARSE_CHUNK(chunk_files, fetch_script)
 
     MERGE_FETCH_RESULTS(
         VALIDATE_IDS.out.ids_tsv,
         VALIDATE_IDS.out.chunks_tsv,
-        FETCH_PARSE_CHUNK.out.chunk_dirs.collect(),
+        FETCH_PARSE_CHUNK.out.chunk_dirs.map { meta, dir -> dir }.collect(),
         merge_script
     )
 
@@ -96,7 +96,7 @@ workflow ALIGNMENT_STAGE {
         prepare_script
     )
 
-    task_dirs = BUILD_ALIGNMENT_TASKS.out.task_dirs.flatten()
+    task_dirs = BUILD_ALIGNMENT_TASKS.out.task_dirs.flatten().map { dir -> tuple([id: dir.baseName], dir) }
     ALIGN_MINIMAP2_ASM10(task_dirs, minimap2_script)
     ALIGN_MINIMAP2_ASM20(task_dirs, minimap2_script)
     ALIGN_MINIMAP2_ADAPTIVE(task_dirs, minimap2_script)
@@ -107,11 +107,11 @@ workflow ALIGNMENT_STAGE {
         BUILD_ALIGNMENT_TASKS.out.alignment_tasks,
         FETCH_TAXONOMY_PRESETS.out.taxonomy_presets,
         FETCH_TAXONOMY_PRESETS.out.taxonomy_failures,
-        ALIGN_MINIMAP2_ASM10.out.asm10_result_dirs.collect(),
-        ALIGN_MINIMAP2_ASM20.out.asm20_result_dirs.collect(),
-        ALIGN_MINIMAP2_ADAPTIVE.out.adaptive_result_dirs.collect(),
-        ALIGN_NUCMER_COMPARATOR.out.nucmer_result_dirs.collect(),
-        ALIGN_BWA_PSEUDOREADS.out.bwa_result_dirs.collect(),
+        ALIGN_MINIMAP2_ASM10.out.asm10_result_dirs.map { meta, dir -> dir }.collect(),
+        ALIGN_MINIMAP2_ASM20.out.asm20_result_dirs.map { meta, dir -> dir }.collect(),
+        ALIGN_MINIMAP2_ADAPTIVE.out.adaptive_result_dirs.map { meta, dir -> dir }.collect(),
+        ALIGN_NUCMER_COMPARATOR.out.nucmer_result_dirs.map { meta, dir -> dir }.collect(),
+        ALIGN_BWA_PSEUDOREADS.out.bwa_result_dirs.map { meta, dir -> dir }.collect(),
         merge_script
     )
 

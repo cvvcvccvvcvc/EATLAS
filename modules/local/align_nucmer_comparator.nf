@@ -1,12 +1,12 @@
 process ALIGN_NUCMER_COMPARATOR {
-    tag { task_dir.baseName }
+    tag { meta.id }
 
     input:
-    path task_dir
+    tuple val(meta), path(task_dir)
     path nucmer_script
 
     output:
-    path "align_nucmer", emit: nucmer_result_dirs
+    tuple val(meta), path("align_nucmer"), emit: nucmer_result_dirs
 
     script:
     """

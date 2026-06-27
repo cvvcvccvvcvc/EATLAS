@@ -1,12 +1,12 @@
 process FETCH_PARSE_CHUNK {
-    tag { chunk_file.baseName }
+    tag { meta.id }
 
     input:
-    path chunk_file
+    tuple val(meta), path(chunk_file)
     path fetch_script
 
     output:
-    path "fetch_*", emit: chunk_dirs
+    tuple val(meta), path("fetch_*"), emit: chunk_dirs
 
     script:
     """
