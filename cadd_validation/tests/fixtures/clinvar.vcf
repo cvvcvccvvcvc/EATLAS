@@ -1,0 +1,6 @@
+##fileformat=VCFv4.2
+#CHROM	POS	ID	REF	ALT	QUAL	FILTER	INFO
+NC_000001.11	101	101	A	G	.	.	CLNSIG=Pathogenic;CLNREVSTAT=criteria_provided,_single_submitter
+NC_000001.11	102	102	C	T	.	.	CLNSIG=Benign;CLNREVSTAT=reviewed_by_expert_panel
+NC_000001.11	103	103	G	A	.	.	CLNSIG=Uncertain_significance;CLNREVSTAT=criteria_provided,_single_submitter
+

@@ -1,0 +1,5 @@
+gene_id	ortholog_gene_id	tax_id	taxname	strategy	tool	preset	sequence_id	target_id	query_id	target_start0	target_end0	query_start0	query_end0	strand	matches	block_length	identity	mapq	is_primary	divergence	gap_compressed_divergence	native_record_id	qc_flags
+1	orth1	9443	primate	minimap2_asm20	minimap2	asm20	orth1	t	q	0	2	0	2	+	2	2	1.0	60	true	0	0	r1	
+1	orth2	10090	mouse	minimap2_asm20	minimap2	asm20	orth2	t	q	0	2	0	2	+	2	2	1.0	60	true	0	0	r2	
+1	orth3	7955	zebrafish	minimap2_asm20	minimap2	asm20	orth3	t	q	0	2	0	2	+	2	2	1.0	60	true	0	0	r3	
+

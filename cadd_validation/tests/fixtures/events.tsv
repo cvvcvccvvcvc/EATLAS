@@ -1,0 +1,4 @@
+gene_id	ortholog_gene_id	tax_id	taxname	strategy	tool	preset	event_id	event_type	target_start0	target_end0	genomic_accession	genomic_start1	genomic_end1	ref	alt	query_id	strand	native_record_id	qc_flags
+1	orth1	9443	primate	minimap2_asm20	minimap2	asm20	e1	snv	0	1	NC_000001.11	101	101	A	G	q	+	r1	
+1	orth2	10090	mouse	minimap2_asm20	minimap2	asm20	e2	snv	0	1	NC_000001.11	101	101	A	T	q	+	r2	
+
