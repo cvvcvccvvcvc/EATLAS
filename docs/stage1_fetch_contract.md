@@ -23,6 +23,8 @@ Optional operational parameters:
 - `--chunk_size`: accepted IDs per NCBI package request.
 - `--fetch_max_forks`: max concurrent NCBI fetch/parse tasks.
 - `--datasets_bin`: path/name for the NCBI Datasets CLI.
+- `--target_annotation_gff3`: optional local NCBI RefSeq GFF3 for
+  `GCF_000001405.40`; if omitted, merge fetch downloads the assembly GFF3 once.
 
 ## Processing Steps
 
@@ -62,6 +64,7 @@ Optional operational parameters:
 5. `MERGE_FETCH_RESULTS`
    - Merges chunk tables.
    - Copies final per-gene FASTA files.
+   - Builds compact target structural features from the target assembly GFF3.
    - Writes final `manifest.json`.
 
 ## Final Output Files
@@ -72,6 +75,7 @@ Optional operational parameters:
 | `input.ids.tsv` | All input rows, accepted status, duplicate mapping. |
 | `chunks.tsv` | Chunk IDs and accepted Gene IDs assigned to each chunk. |
 | `genes.tsv.gz` | Target human gene metadata and sequence checksum. |
+| `target_features.tsv.gz` | Collapsed target-local structural intervals: gene, exon, CDS, UTR, intron. |
 | `orthologs.selected.tsv.gz` | Metadata for selected ortholog sequences. |
 | `orthologs.candidates.tsv.gz` | Non-human ortholog candidate records and reject reasons. |
 | `failures.tsv.gz` | Gene-level failures. |
@@ -93,3 +97,10 @@ coordinate system while retaining gene-strand information for interpretation.
 
 Ortholog FASTA records are currently written as provided by NCBI Datasets.
 Downstream alignment is expected to handle forward/reverse mapping.
+
+## Target Features
+
+`target_features.tsv.gz` uses target-local 0-based half-open coordinates plus
+GRCh38 1-based inclusive coordinates. Exon, CDS, and UTR intervals are collapsed
+across transcripts to avoid alternative-transcript double counting. Introns are
+the gene body minus the collapsed exon union.

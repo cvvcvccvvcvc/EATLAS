@@ -26,7 +26,7 @@
                 },
                 "fetch_dir": {
                     "type": "string",
-                    "description": "Directory containing fetched sequences (required if stage is 'align')"
+                    "description": "Directory containing fetched sequences and target context (required if stage is 'align' or 'annotate')"
                 },
                 "events_tsv": {
                     "type": "string",
@@ -44,6 +44,11 @@
                 "align_outdir": {
                     "type": "string",
                     "description": "Output directory specifically for alignment stage results"
+                },
+                "alignment_strategies": {
+                    "type": "string",
+                    "default": "all",
+                    "description": "Comma-separated alignment strategies to run, or 'all' for every strategy registered in the workflow"
                 },
                 "clinvar_vcf": {
                     "type": "string",
@@ -72,6 +77,10 @@
                 "target_tax_id": {
                     "type": "string",
                     "default": "9606"
+                },
+                "target_annotation_gff3": {
+                    "type": "string",
+                    "description": "Optional local NCBI RefSeq GFF3 for the target assembly; if omitted, fetch merge downloads it with NCBI Datasets"
                 },
                 "taxonomy_batch_size": {
                     "type": "integer",

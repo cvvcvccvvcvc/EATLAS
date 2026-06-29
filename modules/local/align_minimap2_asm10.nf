@@ -6,13 +6,14 @@ process ALIGN_MINIMAP2_ASM10 {
     path minimap2_script
 
     output:
-    tuple val(meta), path("align_minimap2_asm10"), emit: asm10_result_dirs
+    tuple val(meta), path("align_minimap2_asm10_${meta.id}"), emit: asm10_result_dirs
 
     script:
+    def resultDir = "align_minimap2_asm10_${meta.id}"
     """
     python3 "${minimap2_script}" \\
         --task-dir "${task_dir}" \\
-        --outdir "align_minimap2_asm10" \\
+        --outdir "${resultDir}" \\
         --strategy minimap2_asm10 \\
         --mode fixed \\
         --fixed-preset asm10 \\

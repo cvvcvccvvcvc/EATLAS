@@ -23,6 +23,7 @@ from an already published Stage 1 result without downloading NCBI data again.
 Stage 2 consumes the normalized Stage 1 outputs:
 
 - `genes.tsv.gz`
+- `target_features.tsv.gz`
 - `orthologs.selected.tsv.gz`
 - `sequences/targets/<gene_id>.fa.gz`
 - `sequences/orthologs/<gene_id>.fa.gz`
@@ -33,15 +34,31 @@ orientation.
 
 ## Strategies
 
-Current strategies are intentionally limited to the baseline benchmark set:
+Current strategies are registered in the workflow and can be selected with
+`--alignment_strategies`. The default value is `all`, meaning every registered
+strategy, not a hard-coded command-line list.
 
 | Strategy | Tool | Policy |
 | --- | --- | --- |
 | `minimap2_asm10` | minimap2 | Fixed baseline preset for every ortholog. |
+| `minimap2_asm20` | minimap2 | More permissive fixed minimap2 preset. |
 | `minimap2_taxonomy_adaptive` | minimap2 | Preset chosen from NCBI taxonomy summary. |
 | `nucmer` | MUMmer/nucmer | Independent comparator using multi-query nucmer output. |
+| `bwa_pseudoreads` | BWA/samtools/pysam/VarScan | Pseudoread comparator that emits `bwa_pseudoreads_pysam` and, when available, `bwa_pseudoreads_varscan` evidence rows. |
 
 No LASTZ, consensus calling, or production variant filtering is part of Stage 2.
+
+Example selections:
+
+```bash
+--alignment_strategies all
+--alignment_strategies minimap2_asm20
+--alignment_strategies minimap2_asm10,nucmer
+```
+
+At least one strategy must be selected. Single-strategy runs are valid; compare
+or report layers must treat cross-strategy-only sections as not applicable or
+empty rather than failing.
 
 ## Taxonomy Presets
 
@@ -107,12 +124,13 @@ Stage 2 publishes:
 
 | Path | Meaning |
 | --- | --- |
-| `manifest.json` | Alignment run counts, strategies, and output counts. |
+| `manifest.json` | Alignment run counts, enabled output strategies, and output counts. |
 | `alignment_tasks.tsv.gz` | Per-gene task manifest and readiness checks. |
 | `taxonomy_presets.tsv.gz` | Compact tax_id-to-preset mapping. |
 | `taxonomy_failures.tsv.gz` | Taxonomy lookup warnings/failures. |
-| `ortholog_alignment_summary.tsv.gz` | One row per gene/ortholog/strategy. |
+| `ortholog_alignment_summary.tsv.gz` | One row per gene/ortholog/output strategy when that strategy emits summary evidence. |
 | `alignment_segments.tsv.gz` | Normalized alignment intervals. |
+| `feature_coverage.tsv.gz` | Per-gene, per-strategy coverage and depth over target structural intervals. |
 | `alignment_events.tsv.gz` | Raw mismatch/indel events normalized to target coordinates. |
 | `failures.tsv.gz` | Alignment-stage failures. |
 | `native/` | Optional raw PAF/delta/coords/snps files when enabled. |
@@ -135,6 +153,11 @@ bad/ambiguous alignment         -> filtered/no-call
 ```
 
 This is why Stage 2 stores both interval evidence and event evidence.
+
+`feature_coverage.tsv.gz` intersects `alignment_segments.tsv.gz` with
+`target_features.tsv.gz`. Depth is summed after merging overlapping segments
+within each ortholog, so overlapping records from the same ortholog do not
+inflate the per-base depth.
 
 ## Coordinate Convention
 

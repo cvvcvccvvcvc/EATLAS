@@ -13,6 +13,83 @@ import re
 import bam_filtering_v1
 
 
+SEGMENT_FIELDS = [
+    "gene_id",
+    "ortholog_gene_id",
+    "tax_id",
+    "taxname",
+    "strategy",
+    "tool",
+    "preset",
+    "sequence_id",
+    "target_id",
+    "query_id",
+    "target_start0",
+    "target_end0",
+    "query_start0",
+    "query_end0",
+    "strand",
+    "matches",
+    "block_length",
+    "identity",
+    "mapq",
+    "is_primary",
+    "divergence",
+    "gap_compressed_divergence",
+    "native_record_id",
+    "qc_flags",
+]
+
+EVENT_FIELDS = [
+    "gene_id",
+    "ortholog_gene_id",
+    "tax_id",
+    "taxname",
+    "strategy",
+    "tool",
+    "preset",
+    "event_id",
+    "event_type",
+    "target_start0",
+    "target_end0",
+    "genomic_accession",
+    "genomic_start1",
+    "genomic_end1",
+    "ref",
+    "alt",
+    "query_id",
+    "strand",
+    "native_record_id",
+    "qc_flags",
+]
+
+SUMMARY_FIELDS = [
+    "gene_id",
+    "ortholog_gene_id",
+    "tax_id",
+    "taxname",
+    "strategy",
+    "tool",
+    "preset",
+    "status",
+    "target_length",
+    "query_length",
+    "segment_count",
+    "primary_segment_count",
+    "secondary_segment_count",
+    "aligned_target_bp",
+    "aligned_query_bp",
+    "target_coverage",
+    "query_coverage",
+    "best_identity",
+    "mean_identity",
+    "event_count",
+    "qc_flags",
+]
+
+FAILURE_FIELDS = ["gene_id", "ortholog_gene_id", "strategy", "tool", "failure_type", "message"]
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--task-dir", required=True, type=Path)
@@ -160,7 +237,7 @@ def extract_pysam_variants(bam_path: Path, target_seq: str, target_acc: str, gen
 
 def write_tsv_gz(path: Path, headers: list[str], rows: list[dict]):
     with gzip.open(path, "wt", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=headers, delimiter="\t")
+        writer = csv.DictWriter(f, fieldnames=headers, delimiter="\t", lineterminator="\n")
         writer.writeheader()
         writer.writerows(rows)
 
@@ -186,6 +263,11 @@ def main():
     for _, seq in iter_fasta(target_fasta):
         target_seq = seq
         break
+    query_lengths = {}
+    for header, seq in iter_fasta(orthologs_fasta):
+        sequence_id = header.split()[0]
+        ortholog_id = sequence_id.replace("ortholog_", "")
+        query_lengths[ortholog_id] = len(seq)
 
     def make_event_row(ortholog_id, ref_start, ref_end, ref, alt, event_type, strategy):
         meta = ortholog_meta_by_id.get(ortholog_id, {})
@@ -328,20 +410,12 @@ def main():
                             event_rows.append(make_event_row(ortholog_id, v_pos, ref_end, v_ref, v_alt, event_type, "bwa_pseudoreads_varscan"))
 
     # Write events
-    event_fields = [
-        "gene_id", "ortholog_gene_id", "tax_id", "taxname", "strategy", "tool", "preset",
-        "event_id", "event_type", "target_start0", "target_end0", "genomic_accession",
-        "genomic_start1", "genomic_end1", "ref", "alt", "query_id", "strand", "native_record_id", "qc_flags"
-    ]
-    write_tsv_gz(task_dir / "alignment_events.tsv.gz", event_fields, event_rows)
+    write_tsv_gz(task_dir / "alignment_events.tsv.gz", EVENT_FIELDS, event_rows)
     
     # Write empty segments and summaries for now, so MERGE_ALIGNMENT doesn't crash
-    segment_fields = ["gene_id", "ortholog_gene_id", "tax_id", "taxname", "strategy", "tool", "preset", "target_start0", "target_end0", "strand", "query_id", "query_start0", "query_end0", "mapping_quality", "identity", "coverage", "cigar", "native_record_id"]
-    write_tsv_gz(task_dir / "alignment_segments.tsv.gz", segment_fields, [])
+    write_tsv_gz(task_dir / "alignment_segments.tsv.gz", SEGMENT_FIELDS, [])
     
-    write_tsv_gz(task_dir / "failures.tsv.gz", ["gene_id", "ortholog_gene_id", "strategy", "error"], [])
-    
-    summary_fields = ["gene_id", "ortholog_gene_id", "tax_id", "taxname", "strategy", "tool", "preset", "status", "segments", "aligned_target_bases", "aligned_query_bases", "events", "identity_mean", "identity_min", "identity_max", "mapping_quality_mean", "coverage_mean", "qc_flags"]
+    write_tsv_gz(task_dir / "failures.tsv.gz", FAILURE_FIELDS, [])
     
     # Dummy summary for orthologs found
     summaries = []
@@ -359,23 +433,37 @@ def main():
                 "tool": "bwa",
                 "preset": "pseudo",
                 "status": "aligned",
-                "segments": 1,
-                "aligned_target_bases": 0,
-                "aligned_query_bases": 0,
-                "events": sum(1 for e in event_rows if e["ortholog_gene_id"] == oid and e["strategy"] == strat),
-                "identity_mean": 1.0,
-                "identity_min": 1.0,
-                "identity_max": 1.0,
-                "mapping_quality_mean": 60,
-                "coverage_mean": 1.0,
-                "qc_flags": ""
+                "target_length": len(target_seq),
+                "query_length": query_lengths.get(oid, 0),
+                "segment_count": 0,
+                "primary_segment_count": 0,
+                "secondary_segment_count": 0,
+                "aligned_target_bp": 0,
+                "aligned_query_bp": 0,
+                "target_coverage": "0.000000",
+                "query_coverage": "0.000000",
+                "best_identity": "0.000000",
+                "mean_identity": "0.000000",
+                "event_count": sum(1 for e in event_rows if e["ortholog_gene_id"] == oid and e["strategy"] == strat),
+                "qc_flags": "no_segments_bwa_pseudoreads"
             })
-    write_tsv_gz(task_dir / "ortholog_alignment_summary.tsv.gz", summary_fields, summaries)
+    write_tsv_gz(task_dir / "ortholog_alignment_summary.tsv.gz", SUMMARY_FIELDS, summaries)
     
     # Overwrite task.json with updated strategy
     manifest["strategy"] = "bwa_pseudoreads"
     with open(manifest_path, "w") as f:
         json.dump(manifest, f, indent=2)
+    manifest_out = {
+        "gene_id": gene_id,
+        "strategy": "bwa_pseudoreads",
+        "strategies": ["bwa_pseudoreads_pysam"] + (["bwa_pseudoreads_varscan"] if has_varscan else []),
+        "tool": "bwa",
+        "segment_count": 0,
+        "event_count": len(event_rows),
+        "ortholog_count": len(ortholog_meta),
+        "keep_native": False,
+    }
+    (task_dir / "manifest.json").write_text(json.dumps(manifest_out, indent=2) + "\n")
 
 if __name__ == "__main__":
     main()

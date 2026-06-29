@@ -68,6 +68,21 @@ nextflow run . \
   -resume
 ```
 
+Run only one alignment strategy when debugging strategy-specific failures:
+
+```bash
+nextflow run . \
+  -profile local \
+  --ids_file /tmp/gaph_v2_ids.txt \
+  --outdir /tmp/gaph_v2_smoke_run_asm20 \
+  --alignment_strategies minimap2_asm20 \
+  --chunk_size 1 \
+  --fetch_max_forks 1 \
+  --alignment_max_forks 1 \
+  -work-dir /tmp/gaph_v2_smoke_work_asm20 \
+  -resume
+```
+
 Expected layout:
 
 ```text
@@ -82,6 +97,7 @@ Fetch expected properties:
 - `unique_gene_count` is 3.
 - `chunk_count` is 3.
 - `target_gene_count` is 3.
+- `target_feature_count` is greater than `target_gene_count`.
 - `failure_count` is 0, unless NCBI data changed or the request failed.
 - `orthologs.candidates.tsv.gz` has no rows with `tax_id=9606`.
 
@@ -91,6 +107,8 @@ Alignment expected properties:
 - `alignment/ortholog_alignment_summary.tsv.gz` has rows for each enabled strategy.
 - `alignment/alignment_segments.tsv.gz` and `alignment/alignment_events.tsv.gz`
   are gzip TSV files with stable headers.
+- `alignment/feature_coverage.tsv.gz` has rows for each aligned gene, enabled
+  strategy, and target structural feature.
 - `alignment/native/` is absent unless `--keep_native_alignments true` was used.
 
 ## Quick Checks
@@ -109,7 +127,13 @@ python3 - <<'PY'
 import csv, gzip
 from pathlib import Path
 base = Path("results/run_001/fetch")
-for name in ["genes.tsv.gz", "orthologs.selected.tsv.gz", "orthologs.candidates.tsv.gz", "failures.tsv.gz"]:
+for name in [
+    "genes.tsv.gz",
+    "target_features.tsv.gz",
+    "orthologs.selected.tsv.gz",
+    "orthologs.candidates.tsv.gz",
+    "failures.tsv.gz",
+]:
     with gzip.open(base / name, "rt", newline="") as handle:
         rows = list(csv.DictReader(handle, delimiter="\t"))
     print(name, len(rows))
@@ -127,6 +151,7 @@ for name in [
     "taxonomy_presets.tsv.gz",
     "ortholog_alignment_summary.tsv.gz",
     "alignment_segments.tsv.gz",
+    "feature_coverage.tsv.gz",
     "alignment_events.tsv.gz",
     "failures.tsv.gz",
 ]:
@@ -148,6 +173,37 @@ nextflow run . \
   --fetch_dir /path/to/fetch \
   --outdir /tmp/gaph_v2_align_debug \
   -work-dir /tmp/gaph_v2_align_debug_work \
+  -resume
+```
+
+Strategy selection works in alignment-only mode as well:
+
+```bash
+nextflow run . \
+  -profile local \
+  --stage align \
+  --fetch_dir /path/to/fetch \
+  --outdir /tmp/gaph_v2_align_debug_asm20 \
+  --alignment_strategies minimap2_asm20 \
+  -work-dir /tmp/gaph_v2_align_debug_work_asm20 \
+  -resume
+```
+
+## Annotation-Only Debug
+
+Annotation-only mode reuses an existing alignment events table and the matching
+fetch directory. The fetch directory is required because ClinVar and gnomAD
+lookup normalizes events to VCF keys using `genes.tsv.gz` and
+`sequences/targets/*.fa.gz`.
+
+```bash
+nextflow run . \
+  -profile local \
+  --stage annotate \
+  --events_tsv /path/to/alignment_events.tsv.gz \
+  --fetch_dir /path/to/fetch \
+  --outdir /tmp/gaph_v2_annotate_debug \
+  -work-dir /tmp/gaph_v2_annotate_debug_work \
   -resume
 ```
 

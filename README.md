@@ -45,6 +45,19 @@ nextflow run . \
   -resume
 ```
 
+By default, alignment runs every strategy registered in the workflow. Use a
+comma-separated list to run a subset:
+
+```bash
+nextflow run . \
+  -profile local \
+  --stage align \
+  --fetch_dir results/run_test/fetch \
+  --outdir results/align_minimap2_asm20 \
+  --alignment_strategies minimap2_asm20 \
+  -resume
+```
+
 ## Outputs
 
 Default output layout:
@@ -61,6 +74,7 @@ Fetch outputs:
 - `fetch/input.ids.tsv` - normalized input IDs.
 - `fetch/chunks.tsv` - deterministic chunk list used for NCBI requests.
 - `fetch/genes.tsv.gz` - target gene metadata.
+- `fetch/target_features.tsv.gz` - collapsed target structural intervals.
 - `fetch/orthologs.selected.tsv.gz` - selected ortholog sequence metadata.
 - `fetch/orthologs.candidates.tsv.gz` - candidate records and deterministic selection decisions.
 - `fetch/failures.tsv.gz` - gene-level failures.
@@ -75,6 +89,7 @@ Alignment outputs:
 - `alignment/taxonomy_failures.tsv.gz` - taxonomy lookup warnings/failures.
 - `alignment/ortholog_alignment_summary.tsv.gz` - one row per gene/ortholog/strategy.
 - `alignment/alignment_segments.tsv.gz` - normalized alignment intervals.
+- `alignment/feature_coverage.tsv.gz` - coverage/depth by target feature and strategy.
 - `alignment/alignment_events.tsv.gz` - raw mismatch/indel evidence.
 - `alignment/failures.tsv.gz` - alignment-stage failures.
 
@@ -99,10 +114,12 @@ directory or home quota.
 | --- | --- | --- | --- |
 | 1 | `VALIDATE_IDS` | Read Entrez IDs, remove duplicates, split accepted IDs into chunks. | `fetch/input.ids.tsv`, `fetch/chunks.tsv` |
 | 2 | `FETCH_PARSE_CHUNK` | Download one NCBI gene package with `--ortholog all --include gene`; parse `data_report.jsonl` and `gene.fna`; select GRCh38 human target and one sequence per ortholog GeneID. | Per-chunk compressed FASTA/TSV files in `work/` |
-| 3 | `MERGE_FETCH_RESULTS` | Merge chunk tables and copy selected per-gene FASTA files. | `fetch/` |
+| 3 | `MERGE_FETCH_RESULTS` | Merge chunk tables, copy selected per-gene FASTA files, and derive target structural features. | `fetch/` |
 | 4 | `FETCH_TAXONOMY_PRESETS` | Build compact tax_id to minimap2 preset metadata. | `alignment/taxonomy_presets.tsv.gz` |
 | 5 | `BUILD_ALIGNMENT_TASKS` | Validate fetch outputs and create per-gene alignment inputs with stable sequence IDs. | `alignment/alignment_tasks.tsv.gz` |
 | 6 | `ALIGN_MINIMAP2_ASM10` | Fixed minimap2 baseline. | Per-gene normalized evidence in `work/` |
-| 7 | `ALIGN_MINIMAP2_TAXONOMY_ADAPTIVE` | Taxonomy-driven minimap2 presets. | Per-gene normalized evidence in `work/` |
-| 8 | `ALIGN_NUCMER_COMPARATOR` | Multi-query nucmer comparator without global one-to-one delta filtering. | Per-gene normalized evidence in `work/` |
-| 9 | `MERGE_ALIGNMENT_EVIDENCE` | Merge normalized alignment evidence. | `alignment/` |
+| 7 | `ALIGN_MINIMAP2_ASM20` | More permissive fixed minimap2 baseline. | Per-gene normalized evidence in `work/` |
+| 8 | `ALIGN_MINIMAP2_TAXONOMY_ADAPTIVE` | Taxonomy-driven minimap2 presets. | Per-gene normalized evidence in `work/` |
+| 9 | `ALIGN_NUCMER_COMPARATOR` | Multi-query nucmer comparator without global one-to-one delta filtering. | Per-gene normalized evidence in `work/` |
+| 10 | `ALIGN_BWA_PSEUDOREADS` | Pseudoread comparator evidence. | Per-gene normalized evidence in `work/` |
+| 11 | `MERGE_ALIGNMENT_EVIDENCE` | Merge normalized alignment evidence and summarize feature coverage. | `alignment/` |

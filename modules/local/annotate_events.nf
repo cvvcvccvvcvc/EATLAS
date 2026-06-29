@@ -4,6 +4,8 @@ process ANNOTATE_EVENTS {
 
     input:
     path events_tsv
+    path genes_tsv
+    path sequences_dir
     path annotate_script
     path clinvar_vcf
     path clinvar_vcf_tbi
@@ -16,6 +18,8 @@ process ANNOTATE_EVENTS {
     """
     python3 "${annotate_script}" \\
         --events-tsv "${events_tsv}" \\
+        --genes-tsv "${genes_tsv}" \\
+        --target-sequences-dir "${sequences_dir}/targets" \\
         --outdir . \\
         ${clinvarArg}
     """

@@ -40,6 +40,7 @@ runs.
 - `bin/merge_fetch_results.py`
   - merges per-chunk TSV files
   - copies target and ortholog FASTA files into the final layout
+  - derives collapsed target structural features from the target assembly GFF3
   - writes final `manifest.json`
 
 - `bin/fetch_taxonomy_presets.py`
@@ -64,6 +65,7 @@ runs.
 
 - `bin/merge_alignment_results.py`
   - merges per-gene/per-strategy alignment evidence tables
+  - intersects target features with alignment segments for coverage/depth summaries
   - copies optional native outputs only when enabled
 
 ## Output Boundary

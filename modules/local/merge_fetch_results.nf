@@ -12,6 +12,7 @@ process MERGE_FETCH_RESULTS {
     path "input.ids.tsv", emit: input_ids
     path "chunks.tsv", emit: chunks
     path "genes.tsv.gz", emit: genes
+    path "target_features.tsv.gz", emit: target_features
     path "orthologs.selected.tsv.gz", emit: orthologs_selected
     path "orthologs.candidates.tsv.gz", emit: orthologs_candidates
     path "failures.tsv.gz", emit: failures
@@ -27,6 +28,8 @@ process MERGE_FETCH_RESULTS {
         --target-assembly-accession "${params.target_assembly_accession}" \\
         --target-assembly-name "${params.target_assembly_name}" \\
         --target-tax-id "${params.target_tax_id}" \\
+        --datasets-bin "${params.datasets_bin}" \\
+        ${params.target_annotation_gff3 ? "--target-annotation-gff3 \"${params.target_annotation_gff3}\"" : ""} \\
         ${chunkArgs}
     """
 }
