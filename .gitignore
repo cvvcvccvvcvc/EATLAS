@@ -1,6 +1,13 @@
 .nextflow*
+.nf-test/
 work/
 results/
 tmp/
 *.log
 __pycache__/
+.venv/
+.DS_Store
+/datasets
+/scratch*.py
+/bin/nf-test
+/bin/nf-test.jar
