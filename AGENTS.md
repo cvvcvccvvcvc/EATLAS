@@ -63,6 +63,20 @@ Agent workflow rules:
 6. Stage 2 native aligner outputs are debug artifacts; do not publish them by
    default.
 7. Prefer small, focused changes and validate with a small local Nextflow smoke run.
+8. Keep the repository root clean: no ad hoc scripts, reports, downloaded tools,
+   or smoke outputs in production paths. Use `/tmp`, `/private/tmp`, `work/`,
+   or documented test fixtures.
+9. Preserve modular boundaries: Nextflow owns orchestration and process wiring;
+   Python owns deterministic parsing/merging/report generation.
+10. Prefer registry/config-driven feature selection over scattered booleans.
+    Defaults such as alignment strategy selection should mean "all registered"
+    rather than a duplicated literal list.
+11. Make contracts explicit in schema/docs/tests when changing user-facing
+    parameters or output table shapes.
+12. Do not silently accept missing inputs, mismatched table headers, or empty
+    outputs caused by wiring bugs; fail with a concrete message.
+13. Keep commits atomic: each commit should contain one coherent behavior,
+    contract, or documentation change and exclude unrelated workspace noise.
 
 ## Progressive Disclosure
 
