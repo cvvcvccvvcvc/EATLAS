@@ -77,6 +77,8 @@ Agent workflow rules:
     outputs caused by wiring bugs; fail with a concrete message.
 13. Keep commits atomic: each commit should contain one coherent behavior,
     contract, or documentation change and exclude unrelated workspace noise.
+14. After each logically complete code change, offer to commit it before moving
+    on so finished work does not pile up into a hard-to-review diff.
 
 ## Progressive Disclosure
 
