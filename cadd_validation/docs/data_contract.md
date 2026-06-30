@@ -87,6 +87,13 @@ Baseline tables should include labels and CADD/conservation columns such as:
 - `phastCons`
 - `GERP`
 
+For a CADD-only pilot, `fetch_cadd_scores` writes:
+
+- `variant_id`
+- `CADD_RAW`
+- `CADD_PHRED`
+- `cadd_status`
+
 ## Evaluation Dataset
 
 `evaluate_ablation` expects:

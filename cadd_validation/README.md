@@ -56,11 +56,30 @@ PYTHONPATH=cadd_validation/src .venv/bin/python -m cadd_validation.build_variant
   --out-tsv /tmp/gaph_clinvar_variants.tsv
 ```
 
+For a pilot where the target genes have not been chosen yet, first select
+ClinVar-rich genes with both pathogenic and benign SNVs:
+
+```bash
+PYTHONPATH=cadd_validation/src .venv/bin/python -m cadd_validation.select_clinvar_genes \
+  --clinvar-vcf clinvar.vcf.gz \
+  --out-genes /tmp/gaph_cadd_pilot/gene_ids.txt \
+  --out-gene-summary /tmp/gaph_cadd_pilot/selected_genes.tsv \
+  --out-variants /tmp/gaph_cadd_pilot/selected_clinvar_variants.tsv \
+  --min-per-label 3 \
+  --max-genes 10
+```
+
 Build variant-level GAPH features from existing Stage 2 outputs:
 
 ```bash
-PYTHONPATH=cadd_validation/src .venv/bin/python -m cadd_validation.build_features \
+PYTHONPATH=cadd_validation/src .venv/bin/python -m cadd_validation.sample_variants \
   --variants-tsv /tmp/gaph_clinvar_variants.tsv \
+  --out-tsv /tmp/gaph_clinvar_variants.sampled.tsv \
+  --group-columns gene_id,label \
+  --max-per-group 20
+
+PYTHONPATH=cadd_validation/src .venv/bin/python -m cadd_validation.build_features \
+  --variants-tsv /tmp/gaph_clinvar_variants.sampled.tsv \
   --segments-tsv results/run_001/alignment/alignment_segments.tsv.gz \
   --events-tsv results/run_001/alignment/alignment_events.tsv.gz \
   --summaries-tsv results/run_001/alignment/ortholog_alignment_summary.tsv.gz \
@@ -73,9 +92,13 @@ PYTHONPATH=cadd_validation/src .venv/bin/python -m cadd_validation.build_feature
 Join CADD/conservation annotations and labels:
 
 ```bash
+PYTHONPATH=cadd_validation/src .venv/bin/python -m cadd_validation.fetch_cadd_scores \
+  --variants-tsv /tmp/gaph_variant_features.tsv \
+  --out-tsv /tmp/gaph_cadd_scores.tsv
+
 PYTHONPATH=cadd_validation/src .venv/bin/python -m cadd_validation.join_baseline \
   --gaph-features-tsv /tmp/gaph_variant_features.tsv \
-  --baseline-tsv baseline_annotations.tsv \
+  --baseline-tsv /tmp/gaph_cadd_scores.tsv \
   --out-tsv /tmp/gaph_cadd_validation_dataset.tsv
 ```
 

@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import unquote
 
+from .fetch_cadd_scores import cadd_chrom
 from .io import iter_tsv, write_tsv
 
 
@@ -79,7 +80,14 @@ def load_gene_intervals(path: Path) -> dict[str, list[GeneInterval]]:
             end1 = int(row["genomic_end1"])
         except (KeyError, TypeError, ValueError):
             continue
-        by_accession[accession].append(GeneInterval(gene_id, accession, start1, end1))
+        interval = GeneInterval(gene_id, accession, start1, end1)
+        aliases = {accession}
+        chrom = cadd_chrom(accession)
+        if chrom:
+            aliases.add(chrom)
+            aliases.add(f"chr{chrom}")
+        for alias in aliases:
+            by_accession[alias].append(interval)
     for intervals in by_accession.values():
         intervals.sort(key=lambda item: (item.low, item.high, item.gene_id))
     return by_accession
@@ -213,4 +221,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

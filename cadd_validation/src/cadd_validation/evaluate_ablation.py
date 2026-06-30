@@ -216,19 +216,33 @@ def summarize_predictions(
         "auroc_oof": metric_value(y_true, scores, "auroc"),
         "auroc_ci_low": auroc_ci[0],
         "auroc_ci_high": auroc_ci[1],
-        "auroc_fold_mean": float(np.nanmean([item["auroc"] for item in fold_metrics])),
-        "auroc_fold_std": float(np.nanstd([item["auroc"] for item in fold_metrics])),
+        "auroc_fold_mean": safe_nanmean([item["auroc"] for item in fold_metrics]),
+        "auroc_fold_std": safe_nanstd([item["auroc"] for item in fold_metrics]),
         "auprc_oof": metric_value(y_true, scores, "auprc"),
         "auprc_ci_low": auprc_ci[0],
         "auprc_ci_high": auprc_ci[1],
-        "auprc_fold_mean": float(np.nanmean([item["auprc"] for item in fold_metrics])),
-        "auprc_fold_std": float(np.nanstd([item["auprc"] for item in fold_metrics])),
+        "auprc_fold_mean": safe_nanmean([item["auprc"] for item in fold_metrics]),
+        "auprc_fold_std": safe_nanstd([item["auprc"] for item in fold_metrics]),
         "brier_oof": metric_value(y_true, scores, "brier"),
         "brier_ci_low": brier_ci[0],
         "brier_ci_high": brier_ci[1],
-        "brier_fold_mean": float(np.nanmean([item["brier"] for item in fold_metrics])),
-        "brier_fold_std": float(np.nanstd([item["brier"] for item in fold_metrics])),
+        "brier_fold_mean": safe_nanmean([item["brier"] for item in fold_metrics]),
+        "brier_fold_std": safe_nanstd([item["brier"] for item in fold_metrics]),
     }
+
+
+def safe_nanmean(values: list[float]) -> float:
+    values_array = np.asarray(values, dtype=float)
+    if np.isnan(values_array).all():
+        return float("nan")
+    return float(np.nanmean(values_array))
+
+
+def safe_nanstd(values: list[float]) -> float:
+    values_array = np.asarray(values, dtype=float)
+    if np.isnan(values_array).all():
+        return float("nan")
+    return float(np.nanstd(values_array))
 
 
 def evaluate_feature_set(
