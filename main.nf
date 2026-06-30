@@ -216,8 +216,8 @@ workflow ANNOTATION_STAGE {
 }
 
 workflow {
-    clinvar_vcf = params.clinvar_vcf ? file(params.clinvar_vcf) : file('NO_CLINVAR')
-    clinvar_vcf_tbi = params.clinvar_vcf ? file("${params.clinvar_vcf}.tbi") : file('NO_CLINVAR_TBI')
+    clinvar_vcf = params.clinvar_vcf ? file(params.clinvar_vcf) : file("${projectDir}/assets/no_clinvar.vcf")
+    clinvar_vcf_tbi = params.clinvar_vcf ? file("${params.clinvar_vcf}.tbi") : file("${projectDir}/assets/no_clinvar.vcf.tbi")
 
     if (params.stage == 'all') {
         FETCH_STAGE(file(params.ids_file))
@@ -232,13 +232,6 @@ workflow {
         FETCH_STAGE(file(params.ids_file))
     } else if (params.stage == 'align') {
         ALIGNMENT_STAGE_FROM_DIR()
-        ANNOTATION_STAGE(
-            ALIGNMENT_STAGE_FROM_DIR.out.events,
-            ALIGNMENT_STAGE_FROM_DIR.out.genes,
-            ALIGNMENT_STAGE_FROM_DIR.out.sequences,
-            clinvar_vcf,
-            clinvar_vcf_tbi
-        )
     } else if (params.stage == 'annotate') {
         fetch_dir = file(params.fetch_dir)
         ANNOTATION_STAGE(

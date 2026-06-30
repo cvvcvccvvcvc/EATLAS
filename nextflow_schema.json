@@ -18,7 +18,7 @@
                     "type": "string",
                     "default": "all",
                     "enum": ["all", "fetch", "align", "annotate"],
-                    "description": "Pipeline stage to run"
+                    "description": "Pipeline stage to run. 'all' runs fetch, alignment, and annotation; 'align' runs alignment only from an existing fetch directory."
                 },
                 "ids_file": {
                     "type": "string",
@@ -26,7 +26,7 @@
                 },
                 "fetch_dir": {
                     "type": "string",
-                    "description": "Directory containing fetched sequences and target context (required if stage is 'align' or 'annotate')"
+                    "description": "Directory containing fetched sequences and target context. Required if stage is 'align' or 'annotate'."
                 },
                 "events_tsv": {
                     "type": "string",
@@ -45,6 +45,10 @@
                     "type": "string",
                     "description": "Output directory specifically for alignment stage results"
                 },
+                "annotation_outdir": {
+                    "type": "string",
+                    "description": "Output directory specifically for annotation stage results"
+                },
                 "alignment_strategies": {
                     "type": "string",
                     "default": "all",
@@ -52,8 +56,7 @@
                 },
                 "clinvar_vcf": {
                     "type": "string",
-                    "default": "/Users/cvv/code/Bioinformatics/course-work/course-work-code/data/clinvar.vcf.gz",
-                    "description": "Path to ClinVar VCF file for annotation (or NO_CLINVAR to skip)"
+                    "description": "Path to ClinVar VCF file for annotation. Defaults to the CLINVAR_VCF environment variable when set."
                 }
             }
         },
@@ -81,13 +84,6 @@
                 "target_annotation_gff3": {
                     "type": "string",
                     "description": "Optional local NCBI RefSeq GFF3 for the target assembly; if omitted, fetch merge downloads it with NCBI Datasets"
-                },
-                "taxonomy_batch_size": {
-                    "type": "integer",
-                    "default": 200
-                },
-                "taxonomy_file": {
-                    "type": "string"
                 }
             }
         },
@@ -101,7 +97,8 @@
                 },
                 "alignment_max_forks": {
                     "type": "integer",
-                    "default": 2
+                    "default": 2,
+                    "description": "Maximum concurrent tasks per alignment strategy process. With multiple strategies selected, total alignment concurrency can be higher and is also bounded by executor CPU/queue limits."
                 },
                 "keep_native_alignments": {
                     "type": "boolean",

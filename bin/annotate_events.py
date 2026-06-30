@@ -6,7 +6,6 @@ import csv
 import gzip
 import logging
 import sys
-import os
 import concurrent.futures
 from collections import Counter
 from pathlib import Path
@@ -353,10 +352,12 @@ def main():
 
     # 4. Open ClinVar
     clinvar = None
-    if args.clinvar_vcf and args.clinvar_vcf.exists():
+    if args.clinvar_vcf:
+        if not args.clinvar_vcf.exists():
+            raise FileNotFoundError(f"ClinVar VCF not found: {args.clinvar_vcf}")
         clinvar = pysam.VariantFile(str(args.clinvar_vcf))
     else:
-        logger.warning("No clinvar VCF provided or found. ClinVar annotation will be empty.")
+        logger.warning("No clinvar VCF provided. ClinVar annotation will be empty.")
     clinvar_cache = build_clinvar_cache(clinvar, accession_positions, contexts)
     logger.info(f"Cached {len(clinvar_cache)} ClinVar variants.")
 

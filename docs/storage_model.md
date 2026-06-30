@@ -10,6 +10,7 @@ For the default end-to-end run, `params.outdir` is a run root:
 results/run_001/
   fetch/
   alignment/
+  annotation/
 ```
 
 `fetch/` contains the normalized data layer for downstream pipeline stages:
@@ -27,11 +28,17 @@ results/run_001/
 - compact taxonomy preset metadata
 - `manifest.json`
 
+`annotation/` contains:
+
+- annotated event tables
+
 This layer should be kept.
 
 ## Execution Cache
 
-Nextflow `work/` is a resume cache. It can contain:
+Nextflow `work/` is a resume cache. By default this repository puts it under
+`$GAPH_WORK_DIR` when set, otherwise under the system temporary directory. It can
+contain:
 
 - task scripts and logs
 - per-chunk intermediate outputs
@@ -60,6 +67,7 @@ Control peak disk with:
 - smaller `--chunk_size`
 - lower `--fetch_max_forks`
 - `-work-dir` on scratch storage
+- `GAPH_WORK_DIR=/path/to/scratch/gaph_v2_work`
 - `scratch = true` for fetch/parse tasks
 
 Recommended starting point for large runs:

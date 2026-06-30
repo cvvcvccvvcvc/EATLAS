@@ -1,6 +1,6 @@
 # Run And Validation
 
-Use this when running or validating the current end-to-end fetch + alignment
+Use this when running or validating the current end-to-end fetch + alignment + annotation
 workflow.
 
 ## Local Run
@@ -12,6 +12,10 @@ nextflow run . \
   --outdir results/run_001 \
   -resume
 ```
+
+The default `--stage all` runs every stage. Annotation fetches gnomAD data from
+the live API for clustered event regions and uses an in-memory cache within that
+single run.
 
 If command-line tools are not on `PATH`, pass them explicitly:
 
@@ -26,6 +30,15 @@ nextflow run . \
   --show_coords_bin /path/to/show-coords \
   --show_snps_bin /path/to/show-snps \
   -resume
+```
+
+For persistent local paths, environment variables keep machine-specific values
+out of the repository:
+
+```bash
+export DATASETS_BIN=/path/to/datasets
+export CLINVAR_VCF=/path/to/clinvar.vcf.gz
+export GAPH_WORK_DIR=/path/to/scratch/gaph_v2_work
 ```
 
 ## Cluster Run
@@ -89,6 +102,7 @@ Expected layout:
 /tmp/gaph_v2_smoke_run/
   fetch/
   alignment/
+  annotation/
 ```
 
 Fetch expected properties:
@@ -110,6 +124,11 @@ Alignment expected properties:
 - `alignment/feature_coverage.tsv.gz` has rows for each aligned gene, enabled
   strategy, and target structural feature.
 - `alignment/native/` is absent unless `--keep_native_alignments true` was used.
+
+Annotation expected properties:
+- `annotation/alignment_events_annotated.tsv.gz` exists for end-to-end runs.
+- `clinvar_*` columns are empty when no ClinVar VCF was configured.
+- `gnomad_*` columns are populated only for events found in fetched gnomAD regions.
 
 ## Quick Checks
 

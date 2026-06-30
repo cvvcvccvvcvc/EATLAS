@@ -1,6 +1,5 @@
 process ANNOTATE_EVENTS {
     tag "annotate"
-    publishDir "${params.outdir}", mode: 'copy'
 
     input:
     path events_tsv
@@ -14,7 +13,7 @@ process ANNOTATE_EVENTS {
     path "alignment_events_annotated.tsv.gz", emit: annotated_events
 
     script:
-    def clinvarArg = clinvar_vcf.name != 'NO_CLINVAR' ? "--clinvar-vcf \"${clinvar_vcf}\"" : ""
+    def clinvarArg = clinvar_vcf.name != 'no_clinvar.vcf' ? "--clinvar-vcf \"${clinvar_vcf}\"" : ""
     """
     python3 "${annotate_script}" \\
         --events-tsv "${events_tsv}" \\

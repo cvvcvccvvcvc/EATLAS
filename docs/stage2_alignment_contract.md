@@ -62,16 +62,10 @@ empty rather than failing.
 
 ## Taxonomy Presets
 
-Taxonomy enrichment uses batch NCBI Datasets taxonomy summary calls:
-
-```bash
-datasets summary taxonomy taxon <tax_ids...> --as-json-lines
-```
-
-The workflow does not use `--parents` because the normal taxonomy summary row
-already includes a compact `parents` list and `classification` block for each
-requested taxon. `--parents` expands every ancestor into separate heavy JSONL
-records and only supports one taxon per request.
+Taxonomy enrichment uses the offline class dictionary published in
+`assets/taxonomy_classes.json.gz`. The alignment stage maps every selected
+ortholog `tax_id` to a compact preset group without making taxonomy network
+requests during alignment.
 
 Preset policy:
 

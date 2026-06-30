@@ -45,7 +45,7 @@ runs.
 
 - `bin/fetch_taxonomy_presets.py`
   - reads unique ortholog `tax_id` values
-  - queries compact NCBI taxonomy summaries
+  - maps them through `assets/taxonomy_classes.json.gz`
   - writes `taxonomy_presets.tsv.gz`
 
 - `bin/prepare_alignment_tasks.py`
@@ -68,6 +68,11 @@ runs.
   - intersects target features with alignment segments for coverage/depth summaries
   - copies optional native outputs only when enabled
 
+- `bin/annotate_events.py`
+  - normalizes alignment events to VCF-style keys using target context
+  - annotates events with ClinVar when a VCF is configured
+  - fetches gnomAD regions through the live API and caches them in memory for one run
+
 ## Output Boundary
 
 Durable final outputs are published under `params.outdir`.
@@ -78,6 +83,7 @@ Default end-to-end layout:
 results/run_001/
   fetch/
   alignment/
+  annotation/
 ```
 
 Temporary files that must not be treated as final outputs:

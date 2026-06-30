@@ -1,10 +1,11 @@
 # GAPH v2
 
-GAPH v2 currently implements two stages of the gene-level comparative variant
+GAPH v2 currently implements three stages of the gene-level comparative variant
 pipeline:
 
 1. fetch human target gene loci and NCBI ortholog gene sequences for Entrez Gene IDs
 2. align selected ortholog gene sequences against the fixed human target loci
+3. annotate emitted alignment events with ClinVar and gnomAD evidence
 
 The pipeline is implemented with Nextflow DSL2. It keeps raw NCBI packages and
 native aligner outputs in temporary task work directories by default and
@@ -12,7 +13,7 @@ publishes normalized compressed FASTA/TSV outputs.
 
 ## Run
 
-Default local execution runs fetch and alignment in one command:
+Default local execution runs every stage in one command:
 
 ```bash
 nextflow run . \
@@ -20,6 +21,14 @@ nextflow run . \
   --ids_file gene_ids.txt \
   --outdir results/run_test \
   -resume
+```
+
+By default the workflow expects `datasets` and aligner binaries on `PATH`.
+Set persistent local paths once through environment variables when needed:
+
+```bash
+export DATASETS_BIN=/path/to/datasets
+export CLINVAR_VCF=/path/to/clinvar.vcf.gz
 ```
 
 For Slurm, use the same workflow with the `slurm` profile and put `work/` on
@@ -45,6 +54,18 @@ nextflow run . \
   -resume
 ```
 
+Annotation-only debug mode can reuse an existing alignment event table:
+
+```bash
+nextflow run . \
+  -profile local \
+  --stage annotate \
+  --events_tsv results/run_test/alignment/alignment_events.tsv.gz \
+  --fetch_dir results/run_test/fetch \
+  --outdir results/annotate_debug \
+  -resume
+```
+
 By default, alignment runs every strategy registered in the workflow. Use a
 comma-separated list to run a subset:
 
@@ -66,6 +87,7 @@ Default output layout:
 results/run_test/
   fetch/
   alignment/
+  annotation/
 ```
 
 Fetch outputs:
@@ -92,6 +114,10 @@ Alignment outputs:
 - `alignment/feature_coverage.tsv.gz` - coverage/depth by target feature and strategy.
 - `alignment/alignment_events.tsv.gz` - raw mismatch/indel evidence.
 - `alignment/failures.tsv.gz` - alignment-stage failures.
+
+Annotation outputs:
+
+- `annotation/alignment_events_annotated.tsv.gz` - alignment events plus ClinVar and gnomAD annotation columns.
 
 The target assembly is fixed to GRCh38.p14 (`GCF_000001405.40`). Ortholog
 retrieval always uses the complete NCBI ortholog set (`--ortholog all`).
@@ -123,3 +149,4 @@ directory or home quota.
 | 9 | `ALIGN_NUCMER_COMPARATOR` | Multi-query nucmer comparator without global one-to-one delta filtering. | Per-gene normalized evidence in `work/` |
 | 10 | `ALIGN_BWA_PSEUDOREADS` | Pseudoread comparator evidence. | Per-gene normalized evidence in `work/` |
 | 11 | `MERGE_ALIGNMENT_EVIDENCE` | Merge normalized alignment evidence and summarize feature coverage. | `alignment/` |
+| 12 | `ANNOTATE_EVENTS` | Normalize event keys and annotate with ClinVar/gnomAD evidence. | `annotation/` |

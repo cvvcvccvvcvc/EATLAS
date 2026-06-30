@@ -7,7 +7,6 @@ import argparse
 import csv
 import gzip
 import json
-import sys
 from pathlib import Path
 from typing import Iterable
 
@@ -20,18 +19,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--orthologs-tsv", required=True, type=Path)
     parser.add_argument("--outdir", required=True, type=Path)
     parser.add_argument("--taxonomy-classes", required=True, type=Path, help="Path to taxonomy_classes.json.gz")
-    # Kept for compatibility but ignored
-    parser.add_argument("--datasets-bin", help=argparse.SUPPRESS)
-    parser.add_argument("--batch-size", help=argparse.SUPPRESS)
-    parser.add_argument("--taxonomy-file", help=argparse.SUPPRESS)
-    parser.add_argument("--fast-mock", action="store_true", help=argparse.SUPPRESS)
     return parser.parse_args()
-
-
-def open_maybe_gzip(path: Path):
-    if path.suffix == ".gz":
-        return gzip.open(path, "rt", newline="")
-    return path.open(newline="")
 
 
 def write_tsv_gz(path: Path, fields: list[str], rows: Iterable[dict[str, object]]) -> int:
