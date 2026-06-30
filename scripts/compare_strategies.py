@@ -5,7 +5,10 @@ from __future__ import annotations
 
 import argparse
 import os
+import re
 import warnings
+from datetime import datetime
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -25,8 +28,41 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--events-tsv", required=True, help="Annotated or raw alignment events TSV")
     parser.add_argument("--feature-coverage-tsv", help="Feature coverage TSV produced by alignment merge")
-    parser.add_argument("--out-html", required=True, help="Path to output HTML report")
+    parser.add_argument(
+        "--out-html",
+        help="Path to output HTML report. Default: reports/alignment_strategies_<timestamp>.html",
+    )
+    parser.add_argument(
+        "--report-name",
+        help="Short report file name inside the project reports/ directory. '.html' is added if omitted.",
+    )
     return parser.parse_args()
+
+
+def project_root() -> Path:
+    return Path(__file__).resolve().parents[1]
+
+
+def reports_dir() -> Path:
+    return project_root() / "reports"
+
+
+def safe_report_name(name: str) -> str:
+    cleaned = re.sub(r"[^A-Za-z0-9._-]+", "_", name.strip())
+    cleaned = cleaned.strip("._-")
+    return cleaned or "report"
+
+
+def resolve_out_html(args: argparse.Namespace) -> str:
+    if args.out_html:
+        return args.out_html
+    if args.report_name:
+        name = safe_report_name(Path(args.report_name).name)
+        if not name.endswith(".html"):
+            name += ".html"
+        return str(reports_dir() / name)
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    return str(reports_dir() / f"alignment_strategies_{stamp}.html")
 
 
 def read_events(path: str) -> pd.DataFrame:
@@ -492,6 +528,7 @@ def render_tabs(sections: list[tuple[str, str, list[str]]]) -> str:
 
 def main() -> None:
     args = parse_args()
+    args.out_html = resolve_out_html(args)
     df = read_events(args.events_tsv)
     cov = read_feature_coverage(args.feature_coverage_tsv)
 
@@ -580,7 +617,9 @@ def main() -> None:
     </body>
     </html>
     """
-    with open(args.out_html, "w") as handle:
+    out_html = os.path.abspath(args.out_html)
+    os.makedirs(os.path.dirname(out_html), exist_ok=True)
+    with open(out_html, "w") as handle:
         handle.write(html)
     print("Done!")
 

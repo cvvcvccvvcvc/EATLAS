@@ -2,12 +2,17 @@
 .nf-test/
 work/
 results/
+outputs/
 tmp/
 *.log
 __pycache__/
+.pytest_cache/
 .venv/
 .DS_Store
 /datasets
 /scratch*.py
+/report.html
+/compare_results.txt
+/mock_events.tsv.gz
 /bin/nf-test
 /bin/nf-test.jar
