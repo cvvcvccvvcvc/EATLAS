@@ -222,37 +222,6 @@ can be streamed and discarded, leaving only normalized evidence for the target
 region. For whole-genome processing, the durable output should be normalized
 TSV/SQLite/Parquet evidence, not retained source chunks.
 
-## GERP Region Test
-
-The matching human GERP scores were fetched from the release-116 92-mammals
-human GRCh38 bigWig by HTTP range access with `pyBigWig`.
-
-Input:
-
-```text
-https://ftp.ensembl.org/pub/release-116/compara/conservation_scores/92_mammals.gerp_conservation_score/gerp_conservation_scores.homo_sapiens.GRCh38.bw
-chr4:122600000-122700000
-```
-
-Observed result:
-
-| Item | Value |
-| --- | ---: |
-| Full human bigWig size from FTP listing | 8.9 GiB |
-| Requested interval | 100001 bp |
-| Values returned | 95728 |
-| Missing bases | 4273 |
-| Intervals written | 72525 |
-| Output TSV gzip size | 472 KiB |
-| Min score | -5.36 |
-| Max score | 2.68 |
-| Mean score | -0.902747 |
-
-This means GERP does not require downloading the 8.9 GiB human bigWig for each
-run. The production path can query exactly the target intervals, write compact
-regional score tables, and leave the full 542 GiB cross-species conservation
-directory untouched.
-
 ## Current Recommendation
 
 If disk space is acceptable, start with `92_mammals.epo_extended` because it is
@@ -260,9 +229,6 @@ the most detailed mammal alignment set inspected and is only about 71.5 GiB
 compressed. Also keep `44_mammals.epo` in mind as a cleaner baseline: it is
 smaller and likely easier to reason about when validating the parser.
 
-Do not start by downloading all GERP bigWigs. The full inspected GERP directory
-is about 542 GiB. The practical route is region access over the human GRCh38
-bigWig, which supports HTTP range reads with `pyBigWig`; the 100 kb chr4 test
-above fetched values without downloading the 8.9 GiB file. Add GERP as a
-chunked annotation/QC layer tied to the same target intervals as the extracted
-MAF blocks.
+Do not include GERP in the alignment strategy. Conservation scores are handled
+by the downstream conservation annotation path, currently
+`scripts/annotate_variant_conservation.py`.

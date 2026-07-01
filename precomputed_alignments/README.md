@@ -30,8 +30,8 @@ As of the checked FTP index, `release-116` has no top-level `current_maf/`
 alias, so production code should pin a release explicitly instead of relying on
 an implicit moving target. Useful release-116 MAF sets include
 `10_primates.epo`, `44_mammals.epo`, and `92_mammals.epo_extended`.
-GERP conservation scores are available for `92_mammals.gerp_conservation_score`
-and selected other species sets.
+GERP conservation scores are a downstream annotation/QC resource, not an
+alignment strategy input.
 
 Observed useful Compara methods:
 
@@ -41,7 +41,7 @@ Observed useful Compara methods:
 | `EPO_EXTENDED` | Extended EPO tree alignment | Larger species sets, potentially noisier. |
 | `PECAN` | Pecan multiple alignment | Alternative MSA source. |
 | `CACTUS_HAL` / `CACTUS_DB` | Cactus whole-genome alignment | Worth revisiting if HAL dumps or APIs are practical. |
-| `GERP_CONSERVATION_SCORE` | Conservation score track | Not an alignment strategy by itself, but useful QC/annotation evidence. |
+| `GERP_CONSERVATION_SCORE` | Conservation score track | Downstream annotation/QC evidence, not alignment input. |
 
 REST is the right MVP path because it can fetch a single human genomic interval.
 FTP MAF is the scalable production path, but files are chromosome/chunk-sized and
@@ -94,17 +94,6 @@ python3 precomputed_alignments/scripts/extract_ensembl_maf_region.py \
   --output precomputed_alignments/data/maf_92_mammals_chr4_region.json
 ```
 
-Fetch matching GERP scores for the same region via remote bigWig range access:
-
-```bash
-PYTHONPATH=/private/tmp/gaph_pydeps \
-python3 precomputed_alignments/scripts/fetch_ensembl_gerp_region.py \
-  --chrom 4 \
-  --start1 122600000 \
-  --end1 122700000 \
-  --out-tsv precomputed_alignments/outputs/gerp_chr4_122600000_122700000.tsv.gz \
-  --summary-json precomputed_alignments/outputs/gerp_chr4_122600000_122700000.summary.json
-```
 
 ## Current Compatibility
 
