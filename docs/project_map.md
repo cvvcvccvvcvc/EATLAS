@@ -10,6 +10,10 @@ Production logic is in:
 - `bin/*.py`
 - `envs/*.yml`
 
+Standalone validation and research packages live under `experiments/`.
+They may consume production outputs, but they should keep their scratch data and
+generated reports inside their own package directories.
+
 Do not put experiments, ad hoc downloaded data, or smoke-test outputs in the
 repository root. Use `/private/tmp`, `/tmp`, or cluster scratch for temporary
 runs.

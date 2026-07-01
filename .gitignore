@@ -2,7 +2,6 @@
 .nf-test/
 work/
 results/
-outputs/
 tmp/
 *.log
 __pycache__/

@@ -26,7 +26,7 @@ especially AUPRC, under gene- or chromosome-aware splits.
 ## Layout
 
 ```text
-cadd_validation/
+experiments/cadd_validation/
   docs/
     validation_design.md
     data_contract.md
@@ -44,27 +44,28 @@ Create a local environment from the repository root:
 
 ```bash
 python3 -m venv .venv
-.venv/bin/python -m pip install -r cadd_validation/requirements.txt
+.venv/bin/python -m pip install -r experiments/cadd_validation/requirements.txt
+mkdir -p experiments/cadd_validation/outputs/pilot
 ```
 
 Build an independent ClinVar variant universe for GAPH target loci:
 
 ```bash
-PYTHONPATH=cadd_validation/src .venv/bin/python -m cadd_validation.build_variant_universe \
+PYTHONPATH=experiments/cadd_validation/src .venv/bin/python -m cadd_validation.build_variant_universe \
   --clinvar-vcf clinvar.vcf.gz \
   --target-features-tsv results/run_001/fetch/target_features.tsv.gz \
-  --out-tsv /tmp/gaph_clinvar_variants.tsv
+  --out-tsv experiments/cadd_validation/outputs/pilot/clinvar_variants.tsv
 ```
 
 For a pilot where the target genes have not been chosen yet, first select
 ClinVar-rich genes with both pathogenic and benign SNVs:
 
 ```bash
-PYTHONPATH=cadd_validation/src .venv/bin/python -m cadd_validation.select_clinvar_genes \
+PYTHONPATH=experiments/cadd_validation/src .venv/bin/python -m cadd_validation.select_clinvar_genes \
   --clinvar-vcf clinvar.vcf.gz \
-  --out-genes /tmp/gaph_cadd_pilot/gene_ids.txt \
-  --out-gene-summary /tmp/gaph_cadd_pilot/selected_genes.tsv \
-  --out-variants /tmp/gaph_cadd_pilot/selected_clinvar_variants.tsv \
+  --out-genes experiments/cadd_validation/outputs/pilot/gene_ids.txt \
+  --out-gene-summary experiments/cadd_validation/outputs/pilot/selected_genes.tsv \
+  --out-variants experiments/cadd_validation/outputs/pilot/selected_clinvar_variants.tsv \
   --min-per-label 3 \
   --max-genes 10
 ```
@@ -72,45 +73,45 @@ PYTHONPATH=cadd_validation/src .venv/bin/python -m cadd_validation.select_clinva
 Build variant-level GAPH features from existing Stage 2 outputs:
 
 ```bash
-PYTHONPATH=cadd_validation/src .venv/bin/python -m cadd_validation.sample_variants \
-  --variants-tsv /tmp/gaph_clinvar_variants.tsv \
-  --out-tsv /tmp/gaph_clinvar_variants.sampled.tsv \
+PYTHONPATH=experiments/cadd_validation/src .venv/bin/python -m cadd_validation.sample_variants \
+  --variants-tsv experiments/cadd_validation/outputs/pilot/clinvar_variants.tsv \
+  --out-tsv experiments/cadd_validation/outputs/pilot/clinvar_variants.sampled.tsv \
   --group-columns gene_id,label \
   --max-per-group 20
 
-PYTHONPATH=cadd_validation/src .venv/bin/python -m cadd_validation.build_features \
-  --variants-tsv /tmp/gaph_clinvar_variants.sampled.tsv \
+PYTHONPATH=experiments/cadd_validation/src .venv/bin/python -m cadd_validation.build_features \
+  --variants-tsv experiments/cadd_validation/outputs/pilot/clinvar_variants.sampled.tsv \
   --segments-tsv results/run_001/alignment/alignment_segments.tsv.gz \
   --events-tsv results/run_001/alignment/alignment_events.tsv.gz \
   --summaries-tsv results/run_001/alignment/ortholog_alignment_summary.tsv.gz \
   --taxonomy-presets-tsv results/run_001/alignment/taxonomy_presets.tsv.gz \
   --target-features-tsv results/run_001/fetch/target_features.tsv.gz \
   --feature-coverage-tsv results/run_001/alignment/feature_coverage.tsv.gz \
-  --out-tsv /tmp/gaph_variant_features.tsv
+  --out-tsv experiments/cadd_validation/outputs/pilot/variant_features.tsv
 ```
 
 Join CADD/conservation annotations and labels:
 
 ```bash
-PYTHONPATH=cadd_validation/src .venv/bin/python -m cadd_validation.fetch_cadd_scores \
-  --variants-tsv /tmp/gaph_variant_features.tsv \
-  --out-tsv /tmp/gaph_cadd_scores.tsv
+PYTHONPATH=experiments/cadd_validation/src .venv/bin/python -m cadd_validation.fetch_cadd_scores \
+  --variants-tsv experiments/cadd_validation/outputs/pilot/variant_features.tsv \
+  --out-tsv experiments/cadd_validation/outputs/pilot/cadd_scores.tsv
 
-PYTHONPATH=cadd_validation/src .venv/bin/python -m cadd_validation.join_baseline \
-  --gaph-features-tsv /tmp/gaph_variant_features.tsv \
-  --baseline-tsv /tmp/gaph_cadd_scores.tsv \
-  --out-tsv /tmp/gaph_cadd_validation_dataset.tsv
+PYTHONPATH=experiments/cadd_validation/src .venv/bin/python -m cadd_validation.join_baseline \
+  --gaph-features-tsv experiments/cadd_validation/outputs/pilot/variant_features.tsv \
+  --baseline-tsv experiments/cadd_validation/outputs/pilot/cadd_scores.tsv \
+  --out-tsv experiments/cadd_validation/outputs/pilot/validation_dataset.tsv
 ```
 
 Run the ablation:
 
 ```bash
-PYTHONPATH=cadd_validation/src .venv/bin/python -m cadd_validation.evaluate_ablation \
-  --dataset-tsv /tmp/gaph_cadd_validation_dataset.tsv \
+PYTHONPATH=experiments/cadd_validation/src .venv/bin/python -m cadd_validation.evaluate_ablation \
+  --dataset-tsv experiments/cadd_validation/outputs/pilot/validation_dataset.tsv \
   --label-column label \
   --baseline-features CADD_RAW,CADD_PHRED,phyloP,phastCons,GERP \
   --group-column gene_id \
-  --outdir /tmp/gaph_cadd_ablation
+  --outdir experiments/cadd_validation/outputs/pilot/ablation
 ```
 
 Use `--strategies minimap2_asm20` in `build_features` when validating one

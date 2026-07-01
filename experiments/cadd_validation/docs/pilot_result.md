@@ -132,17 +132,18 @@ Provide or fetch CADD annotations for
 `/tmp/gaph_cadd_real/gaph_features_pilot5_sample200.tsv`, then run:
 
 ```bash
-PYTHONPATH=cadd_validation/src .venv/bin/python -m cadd_validation.join_baseline \
+mkdir -p experiments/cadd_validation/outputs/pilot_real
+
+PYTHONPATH=experiments/cadd_validation/src .venv/bin/python -m cadd_validation.join_baseline \
   --gaph-features-tsv /tmp/gaph_cadd_real/gaph_features_pilot5_sample200.tsv \
   --baseline-tsv /path/to/cadd_scores.tsv \
-  --out-tsv /tmp/gaph_cadd_real/dataset_with_cadd.tsv
+  --out-tsv experiments/cadd_validation/outputs/pilot_real/dataset_with_cadd.tsv
 
-PYTHONPATH=cadd_validation/src .venv/bin/python -m cadd_validation.evaluate_ablation \
-  --dataset-tsv /tmp/gaph_cadd_real/dataset_with_cadd.tsv \
+PYTHONPATH=experiments/cadd_validation/src .venv/bin/python -m cadd_validation.evaluate_ablation \
+  --dataset-tsv experiments/cadd_validation/outputs/pilot_real/dataset_with_cadd.tsv \
   --label-column label \
   --baseline-features CADD_RAW,CADD_PHRED \
   --group-column gene_id \
   --folds 5 \
-  --outdir /tmp/gaph_cadd_real/eval_gaph_plus_cadd
+  --outdir experiments/cadd_validation/outputs/pilot_real/eval_gaph_plus_cadd
 ```
-

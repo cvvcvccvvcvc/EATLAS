@@ -200,7 +200,7 @@ A streaming test was run against the release-116
 
 The extractor did not keep the full source MAF locally. It streamed the remote
 gzip file, selected overlapping MAF blocks, and wrote only the extracted JSON
-under the ignored `precomputed_alignments/data/` scratch directory.
+under the ignored `experiments/precomputed_alignments/data/` scratch directory.
 
 Observed result:
 

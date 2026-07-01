@@ -52,19 +52,19 @@ need an interval index before they are ergonomic for gene-level queries.
 Fetch a small MSA around a human locus:
 
 ```bash
-python3 precomputed_alignments/scripts/fetch_ensembl_rest_alignment.py \
+python3 experiments/precomputed_alignments/scripts/fetch_ensembl_rest_alignment.py \
   --region 4:122612500-122612650 \
   --method EPO \
   --species-set-group mammals \
-  --output precomputed_alignments/data/ensembl_epo_4_122612500_122612650.json
+  --output experiments/precomputed_alignments/data/ensembl_epo_4_122612500_122612650.json
 ```
 
 Convert the REST JSON into GAPH-like alignment tables:
 
 ```bash
-python3 precomputed_alignments/scripts/rest_alignment_to_gaph_tables.py \
-  --input precomputed_alignments/data/ensembl_epo_4_122612500_122612650.json \
-  --outdir precomputed_alignments/outputs/epo_region_4 \
+python3 experiments/precomputed_alignments/scripts/rest_alignment_to_gaph_tables.py \
+  --input experiments/precomputed_alignments/data/ensembl_epo_4_122612500_122612650.json \
+  --outdir experiments/precomputed_alignments/outputs/epo_region_4 \
   --gene-id demo_region_4 \
   --strategy ensembl_compara_rest_epo \
   --method EPO \
@@ -75,23 +75,22 @@ Run the existing strategy report on the produced events:
 
 ```bash
 python3 scripts/compare_strategies.py \
-  --events-tsv precomputed_alignments/outputs/epo_region_4/alignment_events.tsv.gz \
-  --out-html /private/tmp/gaph_precomputed_alignment_demo.html
+  --events-tsv experiments/precomputed_alignments/outputs/epo_region_4/alignment_events.tsv.gz \
+  --out-html experiments/precomputed_alignments/outputs/epo_region_4/compare_report.html
 ```
 
 The prototype writes `data/` and `outputs/` as ignored scratch directories.
-The report command above writes outside the repository for the same reason.
 
 Extract a region directly from a release-pinned MAF chunk without keeping the
 full `.maf.gz` file locally:
 
 ```bash
-python3 precomputed_alignments/scripts/extract_ensembl_maf_region.py \
+python3 experiments/precomputed_alignments/scripts/extract_ensembl_maf_region.py \
   --maf https://ftp.ensembl.org/pub/release-116/maf/ensembl-compara/multiple_alignments/92_mammals.epo_extended/92_mammals.epo_extended.4_14.maf.gz \
   --human-src homo_sapiens.4 \
   --start1 122600000 \
   --end1 122700000 \
-  --output precomputed_alignments/data/maf_92_mammals_chr4_region.json
+  --output experiments/precomputed_alignments/data/maf_92_mammals_chr4_region.json
 ```
 
 
