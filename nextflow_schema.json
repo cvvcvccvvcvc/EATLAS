@@ -56,7 +56,7 @@
                 },
                 "clinvar_vcf": {
                     "type": "string",
-                    "description": "Path to ClinVar VCF file for annotation. Defaults to CLINVAR_VCF, then assets/reference/clinvar/clinvar.vcf.gz when present, otherwise assets/reference/clinvar/no_clinvar.vcf."
+                    "description": "Path to ClinVar VCF file for annotation. Defaults to CLINVAR_VCF, then assets/reference/clinvar/clinvar.vcf.gz when present. If no ClinVar VCF is configured, ClinVar annotation is skipped."
                 }
             }
         },
@@ -150,7 +150,10 @@
             "title": "Binary Paths",
             "type": "object",
             "properties": {
-                "datasets_bin": { "type": "string" },
+                "datasets_bin": {
+                    "type": "string",
+                    "description": "Path/name for the NCBI Datasets CLI. Defaults to DATASETS_BIN, then tools/bin/datasets when present, otherwise datasets on PATH."
+                },
                 "minimap2_bin": { "type": "string" },
                 "nucmer_bin": { "type": "string" },
                 "show_coords_bin": { "type": "string" },

@@ -46,8 +46,11 @@ When neither `--target_annotation_gff3` nor `GAPH_TARGET_ANNOTATION_GFF3` is
 set, fetch uses
 `assets/reference/ncbi/refseq/GCF_000001405.40_GRCh38.p14/genomic.gff.gz`.
 When neither `--clinvar_vcf` nor `CLINVAR_VCF` is set, annotation uses
-`assets/reference/clinvar/clinvar.vcf.gz` if present and indexed, otherwise the
-empty `assets/reference/clinvar/no_clinvar.vcf` placeholder.
+`assets/reference/clinvar/clinvar.vcf.gz` if present and indexed. If no ClinVar
+VCF is configured, ClinVar evidence is skipped.
+
+The NCBI Datasets CLI is resolved as `DATASETS_BIN`, then
+`tools/bin/datasets` when present, then `datasets` on `PATH`.
 
 ## Cluster Run
 

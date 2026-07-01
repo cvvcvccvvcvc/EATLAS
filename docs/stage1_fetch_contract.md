@@ -22,7 +22,9 @@ Optional operational parameters:
 - `--outdir`: final output directory.
 - `--chunk_size`: accepted IDs per NCBI package request.
 - `--fetch_max_forks`: max concurrent NCBI fetch/parse tasks.
-- `--datasets_bin`: path/name for the NCBI Datasets CLI.
+- `--datasets_bin`: path/name for the NCBI Datasets CLI. Defaults to
+  `DATASETS_BIN`, then `tools/bin/datasets` when present, otherwise `datasets`
+  on `PATH`.
 - `--target_annotation_gff3`: local NCBI RefSeq GFF3 for
   `GCF_000001405.40`; defaults to `GAPH_TARGET_ANNOTATION_GFF3`, then
   `assets/reference/ncbi/refseq/GCF_000001405.40_GRCh38.p14/genomic.gff.gz`.

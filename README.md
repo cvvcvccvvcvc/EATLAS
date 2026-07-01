@@ -23,7 +23,9 @@ nextflow run . \
   -resume
 ```
 
-By default the workflow expects `datasets` and aligner binaries on `PATH`.
+By default the workflow resolves the NCBI Datasets CLI as `DATASETS_BIN`, then
+`tools/bin/datasets` when present, then `datasets` on `PATH`. Aligner binaries
+are expected on `PATH`.
 Set persistent local paths once through environment variables when needed:
 
 ```bash
@@ -41,8 +43,8 @@ unset, the precomputed Ensembl strategy uses the matching manifest under
 `assets/reference/ensembl/compara/` when present, otherwise it builds one during
 the run.
 If `--clinvar_vcf` and `CLINVAR_VCF` are unset, annotation uses
-`assets/reference/clinvar/clinvar.vcf.gz` when present, otherwise the empty
-`assets/reference/clinvar/no_clinvar.vcf` placeholder.
+`assets/reference/clinvar/clinvar.vcf.gz` when present. If no ClinVar VCF is
+configured, ClinVar evidence is skipped instead of using a placeholder file.
 
 For Slurm, use the same workflow with the `slurm` profile and put `work/` on
 scratch storage:

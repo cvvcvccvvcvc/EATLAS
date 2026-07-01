@@ -124,10 +124,17 @@ assets/reference/ensembl/compara/release-116/92_mammals.epo_extended/
 
 `assets/inputs/gene_ids/` contains reusable input lists for local runs.
 `assets/reference/` contains operational cache/reference inputs. Large
-reference files are not Git-tracked source files. Small required placeholders
-and lookup tables under `assets/reference/` can be Git-tracked through
-`.gitignore` exceptions. The workflow uses these paths as defaults when
-matching explicit parameters or environment variables are not set.
+reference files are not Git-tracked source files. Small required lookup tables
+under `assets/reference/` can be Git-tracked through `.gitignore` exceptions.
+The workflow uses these paths as defaults when matching explicit parameters or
+environment variables are not set.
+
+## Local Tools
+
+`tools/bin/` is an ignored local directory for symlinks or copies of external
+CLI binaries that should not be committed. The workflow resolves the NCBI
+Datasets CLI as `DATASETS_BIN`, then `tools/bin/datasets` when present, then
+`datasets` on `PATH`.
 
 ## Design Direction
 
