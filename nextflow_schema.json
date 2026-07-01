@@ -56,7 +56,7 @@
                 },
                 "clinvar_vcf": {
                     "type": "string",
-                    "description": "Path to ClinVar VCF file for annotation. Defaults to the CLINVAR_VCF environment variable when set."
+                    "description": "Path to ClinVar VCF file for annotation. Defaults to CLINVAR_VCF, then assets/clinvar.vcf.gz when present, otherwise assets/no_clinvar.vcf."
                 }
             }
         },

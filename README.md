@@ -18,7 +18,7 @@ Default local execution runs every stage in one command:
 ```bash
 nextflow run . \
   -profile local \
-  --ids_file gene_ids.txt \
+  --ids_file assets/gene_ids.txt \
   --outdir results/run_test \
   -resume
 ```
@@ -34,6 +34,9 @@ export CLINVAR_VCF=/path/to/clinvar.vcf.gz
 
 If `--target_annotation_gff3` and `GAPH_TARGET_ANNOTATION_GFF3` are unset, the
 fetch stage uses `assets/reference/GCF_000001405.40/genomic.gff`.
+If `--clinvar_vcf` and `CLINVAR_VCF` are unset, annotation uses
+`assets/clinvar.vcf.gz` when present, otherwise the empty
+`assets/no_clinvar.vcf` placeholder.
 
 For Slurm, use the same workflow with the `slurm` profile and put `work/` on
 scratch storage:

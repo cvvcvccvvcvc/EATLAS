@@ -4,6 +4,8 @@ work/
 results/
 tmp/
 assets/reference/
+/assets/clinvar.vcf.gz
+/assets/clinvar.vcf.gz.tbi
 *.log
 __pycache__/
 .pytest_cache/

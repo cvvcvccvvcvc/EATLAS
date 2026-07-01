@@ -8,7 +8,7 @@ workflow.
 ```bash
 nextflow run . \
   -profile local \
-  --ids_file gene_ids.txt \
+  --ids_file assets/gene_ids.txt \
   --outdir results/run_001 \
   -resume
 ```
@@ -22,7 +22,7 @@ If command-line tools are not on `PATH`, pass them explicitly:
 ```bash
 nextflow run . \
   -profile local \
-  --ids_file gene_ids.txt \
+  --ids_file assets/gene_ids.txt \
   --outdir results/run_001 \
   --datasets_bin /path/to/datasets \
   --minimap2_bin /path/to/minimap2 \
@@ -44,6 +44,9 @@ export GAPH_WORK_DIR=/path/to/scratch/gaph_v2_work
 
 When neither `--target_annotation_gff3` nor `GAPH_TARGET_ANNOTATION_GFF3` is
 set, fetch uses `assets/reference/GCF_000001405.40/genomic.gff`.
+When neither `--clinvar_vcf` nor `CLINVAR_VCF` is set, annotation uses
+`assets/clinvar.vcf.gz` if present and indexed, otherwise the empty
+`assets/no_clinvar.vcf` placeholder.
 
 ## Cluster Run
 

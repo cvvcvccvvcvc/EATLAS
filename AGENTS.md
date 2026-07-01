@@ -47,7 +47,7 @@ Core files:
 Default local run for all stages:
 
 ```bash
-nextflow run . -profile local --ids_file gene_ids.txt --outdir results/run_001 -resume
+nextflow run . -profile local --ids_file assets/gene_ids.txt --outdir results/run_001 -resume
 ```
 
 Cluster run:

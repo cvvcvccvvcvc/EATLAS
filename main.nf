@@ -34,6 +34,22 @@ def parseAlignmentStrategies(rawValue) {
     return selected
 }
 
+def resolveClinvarInputs() {
+    def selectedVcf = params.clinvar_vcf
+    if (!selectedVcf) {
+        def assetClinvar = "${projectDir}/assets/clinvar.vcf.gz"
+        selectedVcf = file(assetClinvar).exists() ? assetClinvar : "${projectDir}/assets/no_clinvar.vcf"
+    }
+    def selectedTbi = "${selectedVcf}.tbi"
+    if (!file(selectedVcf).exists()) {
+        error "ClinVar VCF not found: ${selectedVcf}. Pass --clinvar_vcf, set CLINVAR_VCF, or place the file at assets/clinvar.vcf.gz"
+    }
+    if (!file(selectedTbi).exists()) {
+        error "ClinVar VCF index not found: ${selectedTbi}. Place the .tbi next to the VCF."
+    }
+    return [vcf: file(selectedVcf), tbi: file(selectedTbi), path: selectedVcf]
+}
+
 // Print help message
 if (params.help) {
     log.info paramsHelp("gaph_v2")
@@ -237,10 +253,9 @@ workflow ANNOTATION_STAGE {
 }
 
 workflow {
-    clinvar_vcf = params.clinvar_vcf ? file(params.clinvar_vcf) : file("${projectDir}/assets/no_clinvar.vcf")
-    clinvar_vcf_tbi = params.clinvar_vcf ? file("${params.clinvar_vcf}.tbi") : file("${projectDir}/assets/no_clinvar.vcf.tbi")
-
     if (params.stage == 'all') {
+        clinvar_inputs = resolveClinvarInputs()
+        log.info "Using ClinVar VCF: ${clinvar_inputs.path}"
         FETCH_STAGE(file(params.ids_file))
         ALIGNMENT_STAGE(
             FETCH_STAGE.out.genes,
@@ -248,19 +263,27 @@ workflow {
             FETCH_STAGE.out.orthologs_selected,
             FETCH_STAGE.out.sequences
         )
-        ANNOTATION_STAGE(ALIGNMENT_STAGE.out.events, FETCH_STAGE.out.genes, FETCH_STAGE.out.sequences, clinvar_vcf, clinvar_vcf_tbi)
+        ANNOTATION_STAGE(
+            ALIGNMENT_STAGE.out.events,
+            FETCH_STAGE.out.genes,
+            FETCH_STAGE.out.sequences,
+            clinvar_inputs.vcf,
+            clinvar_inputs.tbi
+        )
     } else if (params.stage == 'fetch') {
         FETCH_STAGE(file(params.ids_file))
     } else if (params.stage == 'align') {
         ALIGNMENT_STAGE_FROM_DIR()
     } else if (params.stage == 'annotate') {
+        clinvar_inputs = resolveClinvarInputs()
+        log.info "Using ClinVar VCF: ${clinvar_inputs.path}"
         fetch_dir = file(params.fetch_dir)
         ANNOTATION_STAGE(
             file(params.events_tsv),
             file("${fetch_dir}/genes.tsv.gz"),
             file("${fetch_dir}/sequences"),
-            clinvar_vcf,
-            clinvar_vcf_tbi
+            clinvar_inputs.vcf,
+            clinvar_inputs.tbi
         )
     }
 }
