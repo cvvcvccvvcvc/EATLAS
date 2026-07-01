@@ -3,6 +3,7 @@
 work/
 results/
 tmp/
+assets/reference/
 *.log
 __pycache__/
 .pytest_cache/

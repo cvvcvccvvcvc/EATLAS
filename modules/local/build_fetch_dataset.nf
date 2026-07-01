@@ -1,11 +1,12 @@
-process MERGE_FETCH_RESULTS {
-    tag "merge"
+process BUILD_FETCH_DATASET {
+    tag "fetch_dataset"
 
     input:
     path ids_tsv
     path chunks_tsv
     path chunk_dirs
-    path merge_script
+    path target_annotation_gff3
+    path build_fetch_dataset_script
 
     output:
     path "manifest.json", emit: manifest
@@ -21,15 +22,14 @@ process MERGE_FETCH_RESULTS {
     script:
     def chunkArgs = chunk_dirs.collect { "--chunk-dir \"${it}\"" }.join(' ')
     """
-    python3 "${merge_script}" \\
+    python3 "${build_fetch_dataset_script}" \\
         --ids-tsv "${ids_tsv}" \\
         --chunks-tsv "${chunks_tsv}" \\
         --outdir . \\
         --target-assembly-accession "${params.target_assembly_accession}" \\
         --target-assembly-name "${params.target_assembly_name}" \\
         --target-tax-id "${params.target_tax_id}" \\
-        --datasets-bin "${params.datasets_bin}" \\
-        ${params.target_annotation_gff3 ? "--target-annotation-gff3 \"${params.target_annotation_gff3}\"" : ""} \\
+        --target-annotation-gff3 "${target_annotation_gff3}" \\
         ${chunkArgs}
     """
 }

@@ -32,7 +32,7 @@ Core files:
 - `nextflow.config` - local/slurm profiles and process resource policy.
 - `bin/normalize_ids.py` - input ID normalization and chunking.
 - `bin/fetch_parse_chunk.py` - NCBI Datasets fetch + package parsing.
-- `bin/merge_fetch_results.py` - final table/FASTA merge.
+- `bin/build_fetch_dataset.py` - final fetch dataset assembly.
 - `bin/fetch_taxonomy_presets.py` - compact taxonomy-to-preset table.
 - `bin/prepare_alignment_tasks.py` - per-gene alignment task preparation.
 - `bin/run_minimap2_alignment.py` - minimap2 execution and PAF parsing.

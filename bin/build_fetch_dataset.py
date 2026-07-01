@@ -1,20 +1,17 @@
 #!/usr/bin/env python3
-"""Merge normalized fetch-stage chunk outputs."""
+"""Build the normalized fetch-stage dataset from per-chunk outputs."""
 
 from __future__ import annotations
 
 import argparse
+import bisect
 import csv
 import gzip
 import hashlib
 import json
-import os
 import shutil
-import subprocess
-import sys
-import time
-import zipfile
 from collections import defaultdict
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import unquote
@@ -28,8 +25,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--target-assembly-accession", required=True)
     parser.add_argument("--target-assembly-name", required=True)
     parser.add_argument("--target-tax-id", required=True)
-    parser.add_argument("--datasets-bin", required=True)
-    parser.add_argument("--target-annotation-gff3", type=Path)
+    parser.add_argument("--target-annotation-gff3", required=True, type=Path)
     parser.add_argument("--chunk-dir", action="append", required=True, type=Path)
     return parser.parse_args()
 
@@ -86,75 +82,6 @@ def write_tsv_gz(path: Path, fields: list[str], rows: list[dict[str, object]]) -
     return count
 
 
-def resolve_datasets_bin(raw: str) -> str:
-    expanded = Path(raw).expanduser()
-    if expanded.is_file():
-        return str(expanded)
-    found = shutil.which(raw)
-    if found:
-        return found
-    raise FileNotFoundError(f"NCBI Datasets CLI not found: {raw!r}")
-
-
-def download_genome_gff3(datasets_bin: str, assembly_accession: str, workdir: Path) -> tuple[Path, dict[str, object]]:
-    zip_path = workdir / "target_annotation.zip"
-    extract_dir = workdir / "target_annotation_unpacked"
-    cmd = [
-        datasets_bin,
-        "download",
-        "genome",
-        "accession",
-        assembly_accession,
-        "--include",
-        "gff3",
-        "--filename",
-        str(zip_path),
-        "--no-progressbar",
-    ]
-    api_key = os.environ.get("NCBI_API_KEY") or os.environ.get("ENTREZ_API_KEY")
-    if api_key:
-        cmd.extend(["--api-key", api_key])
-
-    result = None
-    for attempt in range(1, 4):
-        if zip_path.exists():
-            zip_path.unlink()
-        result = subprocess.run(cmd, text=True, capture_output=True)
-        if result.returncode == 0:
-            break
-        if attempt < 3:
-            message = (result.stderr or result.stdout or "").strip()
-            print(
-                f"datasets genome GFF3 download attempt {attempt}/3 failed; retrying: {message}",
-                file=sys.stderr,
-            )
-            time.sleep(5 * attempt)
-
-    if result is None or result.returncode != 0:
-        if result and result.stdout:
-            print(result.stdout, file=sys.stderr)
-        if result and result.stderr:
-            print(result.stderr, file=sys.stderr)
-        exit_code = result.returncode if result else "unknown"
-        raise RuntimeError(f"datasets genome GFF3 download failed with exit code {exit_code}")
-
-    with zipfile.ZipFile(zip_path) as archive:
-        archive.extractall(extract_dir)
-
-    candidates = sorted(
-        path
-        for path in extract_dir.rglob("*")
-        if path.is_file() and path.name.endswith((".gff", ".gff3", ".gff.gz", ".gff3.gz"))
-    )
-    if not candidates:
-        raise FileNotFoundError(f"No GFF3 file found in downloaded annotation package: {zip_path}")
-
-    return candidates[0], {
-        "target_annotation_source": "ncbi_datasets_genome_gff3",
-        "target_annotation_package_sha256": sha256_file(zip_path),
-    }
-
-
 def parse_gff3_attributes(raw: str) -> dict[str, str]:
     attrs: dict[str, str] = {}
     for part in raw.split(";"):
@@ -187,6 +114,50 @@ def gene_ids_from_attrs(attrs: dict[str, str]) -> set[str]:
 def read_genes(path: Path) -> dict[str, dict[str, str]]:
     with gzip.open(path, "rt", newline="") as handle:
         return {row["gene_id"]: row for row in csv.DictReader(handle, delimiter="\t")}
+
+
+@dataclass(frozen=True)
+class TargetInterval:
+    gene_id: str
+    start1: int
+    end1: int
+
+
+@dataclass(frozen=True)
+class TargetIntervalIndex:
+    intervals_by_accession: dict[str, list[TargetInterval]]
+    starts_by_accession: dict[str, list[int]]
+
+    @classmethod
+    def from_genes(cls, genes: dict[str, dict[str, str]]) -> "TargetIntervalIndex":
+        intervals_by_accession: dict[str, list[TargetInterval]] = defaultdict(list)
+        for gene_id, gene in genes.items():
+            accession = gene.get("genomic_accession", "")
+            if not accession:
+                continue
+            begin = to_int(gene["begin"])
+            end = to_int(gene["end"])
+            start1 = min(begin, end)
+            end1 = max(begin, end)
+            intervals_by_accession[accession].append(TargetInterval(gene_id, start1, end1))
+
+        starts_by_accession: dict[str, list[int]] = {}
+        for accession, intervals in intervals_by_accession.items():
+            intervals.sort(key=lambda item: (item.start1, item.end1, item.gene_id))
+            starts_by_accession[accession] = [item.start1 for item in intervals]
+        return cls(dict(intervals_by_accession), starts_by_accession)
+
+    def overlapping_gene_ids(self, accession: str, start1: int, end1: int) -> set[str]:
+        intervals = self.intervals_by_accession.get(accession)
+        if not intervals:
+            return set()
+        starts = self.starts_by_accession[accession]
+        limit = bisect.bisect_right(starts, end1)
+        return {
+            item.gene_id
+            for item in intervals[:limit]
+            if item.end1 >= start1
+        }
 
 
 def to_int(value: str) -> int:
@@ -240,37 +211,13 @@ def subtract_intervals(
     return result
 
 
-def map_gff3_feature_ids(gff3_path: Path, target_gene_ids: set[str]) -> dict[str, str]:
-    feature_to_gene: dict[str, str] = {}
-    with open_maybe_gzip(gff3_path) as handle:
-        for line in handle:
-            if not line or line.startswith("#"):
-                continue
-            fields = line.rstrip("\n").split("\t")
-            if len(fields) != 9:
-                continue
-            attrs = parse_gff3_attributes(fields[8])
-            direct_gene_ids = gene_ids_from_attrs(attrs) & target_gene_ids
-            parent_gene_ids = {
-                feature_to_gene[parent_id]
-                for parent_id in split_attr_values(attrs.get("Parent", ""))
-                if parent_id in feature_to_gene
-            }
-            resolved_gene_ids = direct_gene_ids or parent_gene_ids
-            if len(resolved_gene_ids) != 1:
-                continue
-            gene_id = next(iter(resolved_gene_ids))
-            for feature_id in split_attr_values(attrs.get("ID", "")):
-                feature_to_gene[feature_id] = gene_id
-    return feature_to_gene
-
-
 def collect_gff3_intervals(
     gff3_path: Path,
     genes: dict[str, dict[str, str]],
 ) -> dict[str, dict[str, list[tuple[int, int]]]]:
     target_gene_ids = set(genes)
-    feature_to_gene = map_gff3_feature_ids(gff3_path, target_gene_ids)
+    interval_index = TargetIntervalIndex.from_genes(genes)
+    feature_to_gene: dict[str, str] = {}
     intervals: dict[str, dict[str, list[tuple[int, int]]]] = defaultdict(lambda: defaultdict(list))
     wanted_types = {"exon", "CDS", "five_prime_UTR", "three_prime_UTR"}
 
@@ -282,30 +229,40 @@ def collect_gff3_intervals(
             if len(fields) != 9:
                 continue
             seqid, _source, feature_type, start_text, end_text, _score, _strand, _phase, raw_attrs = fields
-            if feature_type not in wanted_types:
+            if seqid not in interval_index.intervals_by_accession:
                 continue
+            start1 = to_int(start_text)
+            end1 = to_int(end_text)
+            feature_start1 = min(start1, end1)
+            feature_end1 = max(start1, end1)
+            overlapping_gene_ids = interval_index.overlapping_gene_ids(seqid, feature_start1, feature_end1)
+            if not overlapping_gene_ids:
+                continue
+
             attrs = parse_gff3_attributes(raw_attrs)
-            direct_gene_ids = gene_ids_from_attrs(attrs) & target_gene_ids
+            direct_gene_ids = gene_ids_from_attrs(attrs) & target_gene_ids & overlapping_gene_ids
             parent_gene_ids = {
                 feature_to_gene[parent_id]
                 for parent_id in split_attr_values(attrs.get("Parent", ""))
-                if parent_id in feature_to_gene
-            }
+                if parent_id in feature_to_gene and feature_to_gene[parent_id] in overlapping_gene_ids
+            } & target_gene_ids
             resolved_gene_ids = direct_gene_ids or parent_gene_ids
             if len(resolved_gene_ids) != 1:
                 continue
 
             gene_id = next(iter(resolved_gene_ids))
-            gene = genes[gene_id]
-            if seqid != gene.get("genomic_accession"):
+            for feature_id in split_attr_values(attrs.get("ID", "")):
+                feature_to_gene[feature_id] = gene_id
+
+            if feature_type not in wanted_types:
                 continue
+
+            gene = genes[gene_id]
 
             gene_begin = min(to_int(gene["begin"]), to_int(gene["end"]))
             gene_length = to_int(gene["sequence_length"])
-            start1 = to_int(start_text)
-            end1 = to_int(end_text)
-            start0 = max(0, min(start1, end1) - gene_begin)
-            end0 = min(gene_length, max(start1, end1) - gene_begin + 1)
+            start0 = max(0, feature_start1 - gene_begin)
+            end0 = min(gene_length, feature_end1 - gene_begin + 1)
             if end0 <= start0:
                 continue
 
@@ -487,23 +444,14 @@ def main() -> None:
         name: merge_tsv_gz(paths, outdir / name) for name, paths in table_inputs.items()
     }
     target_files, ortholog_files = copy_sequences(args.chunk_dir, outdir)
-    if args.target_annotation_gff3:
-        gff3_path = args.target_annotation_gff3.expanduser()
-        if not gff3_path.exists():
-            raise FileNotFoundError(f"Target annotation GFF3 does not exist: {gff3_path}")
-        annotation_manifest = {
-            "target_annotation_source": "user_gff3",
-            "target_annotation_gff3": str(gff3_path),
-            "target_annotation_gff3_sha256": sha256_file(gff3_path),
-        }
-    else:
-        datasets_bin = resolve_datasets_bin(args.datasets_bin)
-        gff3_path, annotation_manifest = download_genome_gff3(
-            datasets_bin,
-            args.target_assembly_accession,
-            Path("."),
-        )
-        annotation_manifest["target_annotation_datasets_bin"] = datasets_bin
+    gff3_path = args.target_annotation_gff3.expanduser()
+    if not gff3_path.exists():
+        raise FileNotFoundError(f"Target annotation GFF3 does not exist: {gff3_path}")
+    annotation_manifest = {
+        "target_annotation_source": "user_gff3",
+        "target_annotation_gff3": str(gff3_path),
+        "target_annotation_gff3_sha256": sha256_file(gff3_path),
+    }
 
     target_feature_count, feature_manifest = build_target_features(
         outdir / "genes.tsv.gz",

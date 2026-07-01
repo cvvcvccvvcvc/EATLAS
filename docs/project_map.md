@@ -41,10 +41,10 @@ runs.
   - selects one non-human sequence per ortholog GeneID
   - writes compressed per-chunk FASTA and TSV outputs
 
-- `bin/merge_fetch_results.py`
+- `bin/build_fetch_dataset.py`
   - merges per-chunk TSV files
   - copies target and ortholog FASTA files into the final layout
-  - derives collapsed target structural features from the target assembly GFF3
+  - derives collapsed target structural features from the configured local target assembly GFF3
   - writes final `manifest.json`
 
 - `bin/fetch_taxonomy_presets.py`

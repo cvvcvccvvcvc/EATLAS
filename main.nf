@@ -47,6 +47,10 @@ if (['all', 'fetch'].contains(params.stage) && !params.ids_file) {
     error "Missing required parameter: --ids_file"
 }
 
+if (['all', 'fetch'].contains(params.stage) && !file(params.target_annotation_gff3).exists()) {
+    error "Target annotation GFF3 not found for --stage ${params.stage}: ${params.target_annotation_gff3}. Pass --target_annotation_gff3, set GAPH_TARGET_ANNOTATION_GFF3, or place the file at assets/reference/GCF_000001405.40/genomic.gff"
+}
+
 if (params.stage == 'align' && !params.fetch_dir) {
     error "Missing required parameter for --stage align: --fetch_dir"
 }
@@ -63,7 +67,7 @@ SELECTED_ALIGNMENT_STRATEGIES = parseAlignmentStrategies(params.alignment_strate
 
 include { VALIDATE_IDS } from './modules/local/validate_ids.nf'
 include { FETCH_PARSE_CHUNK } from './modules/local/fetch_parse_chunk.nf'
-include { MERGE_FETCH_RESULTS } from './modules/local/merge_fetch_results.nf'
+include { BUILD_FETCH_DATASET } from './modules/local/build_fetch_dataset.nf'
 include { FETCH_TAXONOMY_PRESETS } from './modules/local/fetch_taxonomy_presets.nf'
 include { BUILD_ALIGNMENT_TASKS } from './modules/local/build_alignment_tasks.nf'
 include { ALIGN_MINIMAP2_ASM10 } from './modules/local/align_minimap2_asm10.nf'
@@ -83,30 +87,32 @@ workflow FETCH_STAGE {
     main:
     normalize_script = file("${projectDir}/bin/normalize_ids.py")
     fetch_script = file("${projectDir}/bin/fetch_parse_chunk.py")
-    merge_script = file("${projectDir}/bin/merge_fetch_results.py")
+    build_fetch_dataset_script = file("${projectDir}/bin/build_fetch_dataset.py")
+    target_annotation_gff3 = file(params.target_annotation_gff3)
 
     VALIDATE_IDS(ids, normalize_script)
 
     chunk_files = VALIDATE_IDS.out.chunk_files.flatten().map { file -> tuple([id: file.baseName], file) }
     FETCH_PARSE_CHUNK(chunk_files, fetch_script)
 
-    MERGE_FETCH_RESULTS(
+    BUILD_FETCH_DATASET(
         VALIDATE_IDS.out.ids_tsv,
         VALIDATE_IDS.out.chunks_tsv,
         FETCH_PARSE_CHUNK.out.chunk_dirs.map { meta, dir -> dir }.collect(),
-        merge_script
+        target_annotation_gff3,
+        build_fetch_dataset_script
     )
 
     emit:
-    manifest = MERGE_FETCH_RESULTS.out.manifest
-    input_ids = MERGE_FETCH_RESULTS.out.input_ids
-    chunks = MERGE_FETCH_RESULTS.out.chunks
-    genes = MERGE_FETCH_RESULTS.out.genes
-    target_features = MERGE_FETCH_RESULTS.out.target_features
-    orthologs_selected = MERGE_FETCH_RESULTS.out.orthologs_selected
-    orthologs_candidates = MERGE_FETCH_RESULTS.out.orthologs_candidates
-    failures = MERGE_FETCH_RESULTS.out.failures
-    sequences = MERGE_FETCH_RESULTS.out.sequences
+    manifest = BUILD_FETCH_DATASET.out.manifest
+    input_ids = BUILD_FETCH_DATASET.out.input_ids
+    chunks = BUILD_FETCH_DATASET.out.chunks
+    genes = BUILD_FETCH_DATASET.out.genes
+    target_features = BUILD_FETCH_DATASET.out.target_features
+    orthologs_selected = BUILD_FETCH_DATASET.out.orthologs_selected
+    orthologs_candidates = BUILD_FETCH_DATASET.out.orthologs_candidates
+    failures = BUILD_FETCH_DATASET.out.failures
+    sequences = BUILD_FETCH_DATASET.out.sequences
 }
 
 workflow ALIGNMENT_STAGE {

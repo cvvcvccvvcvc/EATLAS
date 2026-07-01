@@ -23,8 +23,9 @@ Optional operational parameters:
 - `--chunk_size`: accepted IDs per NCBI package request.
 - `--fetch_max_forks`: max concurrent NCBI fetch/parse tasks.
 - `--datasets_bin`: path/name for the NCBI Datasets CLI.
-- `--target_annotation_gff3`: optional local NCBI RefSeq GFF3 for
-  `GCF_000001405.40`; if omitted, merge fetch downloads the assembly GFF3 once.
+- `--target_annotation_gff3`: local NCBI RefSeq GFF3 for
+  `GCF_000001405.40`; defaults to `GAPH_TARGET_ANNOTATION_GFF3`, then
+  `assets/reference/GCF_000001405.40/genomic.gff`.
 
 ## Processing Steps
 
@@ -61,10 +62,10 @@ Optional operational parameters:
      4. lexical accession/range tie-break
    - Writes rejected candidates as metadata rows only, without sequences.
 
-5. `MERGE_FETCH_RESULTS`
+5. `BUILD_FETCH_DATASET`
    - Merges chunk tables.
    - Copies final per-gene FASTA files.
-   - Builds compact target structural features from the target assembly GFF3.
+   - Builds compact target structural features from the configured local target assembly GFF3.
    - Writes final `manifest.json`.
 
 ## Final Output Files

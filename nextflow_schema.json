@@ -83,7 +83,7 @@
                 },
                 "target_annotation_gff3": {
                     "type": "string",
-                    "description": "Optional local NCBI RefSeq GFF3 for the target assembly; if omitted, fetch merge downloads it with NCBI Datasets"
+                    "description": "Local NCBI RefSeq GFF3 for the target assembly. Defaults to GAPH_TARGET_ANNOTATION_GFF3, then assets/reference/GCF_000001405.40/genomic.gff."
                 }
             }
         },

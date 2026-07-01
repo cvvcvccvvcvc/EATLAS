@@ -37,9 +37,13 @@ out of the repository:
 
 ```bash
 export DATASETS_BIN=/path/to/datasets
+export GAPH_TARGET_ANNOTATION_GFF3=/path/to/GCF_000001405.40/genomic.gff
 export CLINVAR_VCF=/path/to/clinvar.vcf.gz
 export GAPH_WORK_DIR=/path/to/scratch/gaph_v2_work
 ```
+
+When neither `--target_annotation_gff3` nor `GAPH_TARGET_ANNOTATION_GFF3` is
+set, fetch uses `assets/reference/GCF_000001405.40/genomic.gff`.
 
 ## Cluster Run
 

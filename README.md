@@ -28,8 +28,12 @@ Set persistent local paths once through environment variables when needed:
 
 ```bash
 export DATASETS_BIN=/path/to/datasets
+export GAPH_TARGET_ANNOTATION_GFF3=/path/to/GCF_000001405.40/genomic.gff
 export CLINVAR_VCF=/path/to/clinvar.vcf.gz
 ```
+
+If `--target_annotation_gff3` and `GAPH_TARGET_ANNOTATION_GFF3` are unset, the
+fetch stage uses `assets/reference/GCF_000001405.40/genomic.gff`.
 
 For Slurm, use the same workflow with the `slurm` profile and put `work/` on
 scratch storage:
@@ -140,7 +144,7 @@ directory or home quota.
 | --- | --- | --- | --- |
 | 1 | `VALIDATE_IDS` | Read Entrez IDs, remove duplicates, split accepted IDs into chunks. | `fetch/input.ids.tsv`, `fetch/chunks.tsv` |
 | 2 | `FETCH_PARSE_CHUNK` | Download one NCBI gene package with `--ortholog all --include gene`; parse `data_report.jsonl` and `gene.fna`; select GRCh38 human target and one sequence per ortholog GeneID. | Per-chunk compressed FASTA/TSV files in `work/` |
-| 3 | `MERGE_FETCH_RESULTS` | Merge chunk tables, copy selected per-gene FASTA files, and derive target structural features. | `fetch/` |
+| 3 | `BUILD_FETCH_DATASET` | Assemble chunk tables, selected per-gene FASTA files, and target structural features into the final fetch dataset. | `fetch/` |
 | 4 | `FETCH_TAXONOMY_PRESETS` | Build compact tax_id to minimap2 preset metadata. | `alignment/taxonomy_presets.tsv.gz` |
 | 5 | `BUILD_ALIGNMENT_TASKS` | Validate fetch outputs and create per-gene alignment inputs with stable sequence IDs. | `alignment/alignment_tasks.tsv.gz` |
 | 6 | `ALIGN_MINIMAP2_ASM10` | Fixed minimap2 baseline. | Per-gene normalized evidence in `work/` |
