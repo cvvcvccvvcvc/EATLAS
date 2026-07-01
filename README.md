@@ -18,7 +18,7 @@ Default local execution runs every stage in one command:
 ```bash
 nextflow run . \
   -profile local \
-  --ids_file assets/gene_ids.txt \
+  --ids_file assets/inputs/gene_ids/smoke_5_genes.txt \
   --outdir results/run_test \
   -resume
 ```
@@ -41,8 +41,8 @@ unset, the precomputed Ensembl strategy uses the matching manifest under
 `assets/reference/ensembl/compara/` when present, otherwise it builds one during
 the run.
 If `--clinvar_vcf` and `CLINVAR_VCF` are unset, annotation uses
-`assets/clinvar.vcf.gz` when present, otherwise the empty
-`assets/no_clinvar.vcf` placeholder.
+`assets/reference/clinvar/clinvar.vcf.gz` when present, otherwise the empty
+`assets/reference/clinvar/no_clinvar.vcf` placeholder.
 
 For Slurm, use the same workflow with the `slurm` profile and put `work/` on
 scratch storage:

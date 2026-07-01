@@ -49,7 +49,7 @@ runs.
 
 - `bin/fetch_taxonomy_presets.py`
   - reads unique ortholog `tax_id` values
-  - maps them through `assets/taxonomy_classes.json.gz`
+  - maps them through `assets/reference/ncbi/taxonomy/taxonomy_classes.json.gz`
   - writes `taxonomy_presets.tsv.gz`
 
 - `bin/prepare_alignment_tasks.py`
@@ -109,19 +109,25 @@ Temporary files that must not be treated as final outputs:
 - Nextflow `work/`
 - `.nextflow*` local execution metadata
 
-## Reference Assets
+## Assets
 
-Large local reference inputs live under ignored `assets/reference/`, grouped by
-provider and resource family:
+Reusable local inputs and reference files live under `assets/`, grouped by role,
+provider, and resource family:
 
 ```text
+assets/inputs/gene_ids/
+assets/reference/clinvar/
 assets/reference/ncbi/refseq/GCF_000001405.40_GRCh38.p14/genomic.gff.gz
+assets/reference/ncbi/taxonomy/taxonomy_classes.json.gz
 assets/reference/ensembl/compara/release-116/92_mammals.epo_extended/
 ```
 
-These files are operational cache/reference inputs, not Git-tracked source
-files. The workflow uses them as defaults when matching explicit parameters or
-environment variables are not set.
+`assets/inputs/gene_ids/` contains reusable input lists for local runs.
+`assets/reference/` contains operational cache/reference inputs. Large
+reference files are not Git-tracked source files. Small required placeholders
+and lookup tables under `assets/reference/` can be Git-tracked through
+`.gitignore` exceptions. The workflow uses these paths as defaults when
+matching explicit parameters or environment variables are not set.
 
 ## Design Direction
 

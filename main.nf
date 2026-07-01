@@ -37,12 +37,12 @@ def parseAlignmentStrategies(rawValue) {
 def resolveClinvarInputs() {
     def selectedVcf = params.clinvar_vcf
     if (!selectedVcf) {
-        def assetClinvar = "${projectDir}/assets/clinvar.vcf.gz"
-        selectedVcf = file(assetClinvar).exists() ? assetClinvar : "${projectDir}/assets/no_clinvar.vcf"
+        def assetClinvar = "${projectDir}/assets/reference/clinvar/clinvar.vcf.gz"
+        selectedVcf = file(assetClinvar).exists() ? assetClinvar : "${projectDir}/assets/reference/clinvar/no_clinvar.vcf"
     }
     def selectedTbi = "${selectedVcf}.tbi"
     if (!file(selectedVcf).exists()) {
-        error "ClinVar VCF not found: ${selectedVcf}. Pass --clinvar_vcf, set CLINVAR_VCF, or place the file at assets/clinvar.vcf.gz"
+        error "ClinVar VCF not found: ${selectedVcf}. Pass --clinvar_vcf, set CLINVAR_VCF, or place the file at assets/reference/clinvar/clinvar.vcf.gz"
     }
     if (!file(selectedTbi).exists()) {
         error "ClinVar VCF index not found: ${selectedTbi}. Place the .tbi next to the VCF."
@@ -140,7 +140,7 @@ workflow ALIGNMENT_STAGE {
 
     main:
     taxonomy_script = file("${projectDir}/bin/fetch_taxonomy_presets.py")
-    taxonomy_classes = file("${projectDir}/assets/taxonomy_classes.json.gz")
+    taxonomy_classes = file("${projectDir}/assets/reference/ncbi/taxonomy/taxonomy_classes.json.gz")
     prepare_script = file("${projectDir}/bin/prepare_alignment_tasks.py")
     minimap2_script = file("${projectDir}/bin/run_minimap2_alignment.py")
     nucmer_script = file("${projectDir}/bin/run_nucmer_alignment.py")

@@ -75,7 +75,7 @@ because it preserves maximum traceability.
 ## Taxonomy Presets
 
 Taxonomy enrichment uses the offline class dictionary published in
-`assets/taxonomy_classes.json.gz`. The alignment stage maps every selected
+`assets/reference/ncbi/taxonomy/taxonomy_classes.json.gz`. The alignment stage maps every selected
 ortholog `tax_id` to a compact preset group without making taxonomy network
 requests during alignment.
 
