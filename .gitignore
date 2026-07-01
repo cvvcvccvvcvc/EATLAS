@@ -3,6 +3,9 @@
 work/
 results/
 tmp/
+.env
+.env.*
+!.env.example
 assets/reference/
 !assets/reference/
 !assets/reference/clinvar/

@@ -21,10 +21,17 @@ Required:
 Optional operational parameters:
 - `--outdir`: final output directory.
 - `--chunk_size`: accepted IDs per NCBI package request.
-- `--fetch_max_forks`: max concurrent NCBI fetch/parse tasks.
+- `--fetch_max_forks`: max concurrent NCBI fetch/parse tasks. Default is 5.
+- `--fetch_request_stagger_seconds`: minimum spacing between starts of NCBI
+  Datasets download requests across concurrent local fetch tasks. Default is
+  10 seconds.
 - `--datasets_bin`: path/name for the NCBI Datasets CLI. Defaults to
   `DATASETS_BIN`, then `tools/bin/datasets` when present, otherwise `datasets`
   on `PATH`.
+- `ENTREZ_API_KEY` or `NCBI_API_KEY`: optional NCBI API key passed to
+  `datasets download` as `--api-key`.
+- `ENTREZ_EMAIL` or `NCBI_EMAIL`: optional contact email recorded as configured
+  metadata; NCBI Datasets CLI does not expose an email flag for this command.
 - `--target_annotation_gff3`: local NCBI RefSeq GFF3 for
   `GCF_000001405.40`; defaults to `GAPH_TARGET_ANNOTATION_GFF3`, then
   `assets/reference/ncbi/refseq/GCF_000001405.40_GRCh38.p14/genomic.gff.gz`.
@@ -47,6 +54,7 @@ Optional operational parameters:
    - Uses `data_report.jsonl` to map every ortholog GeneID back to the requested
      query GeneID via `geneGroups[].id`.
    - Uses `gene.fna` as the source of genomic gene sequences.
+   - Writes per-chunk timings into chunk `manifest.json`.
 
 3. Target selection
    - Selects the requested human GeneID.
@@ -68,6 +76,8 @@ Optional operational parameters:
    - Merges chunk tables.
    - Copies final per-gene FASTA files.
    - Builds compact target structural features from the configured local target assembly GFF3.
+   - Writes `chunk_metrics.tsv.gz` with durable per-chunk timing and package-size
+     metrics.
    - Writes final `manifest.json`.
 
 ## Final Output Files

@@ -43,6 +43,30 @@ TARGET_FEATURE_FIELDS = [
     "strand",
 ]
 
+CHUNK_METRIC_FIELDS = [
+    "chunk_id",
+    "requested_gene_count",
+    "target_gene_count",
+    "selected_ortholog_count",
+    "candidate_record_count",
+    "failure_count",
+    "gene_fna_uncompressed_bytes",
+    "data_report_uncompressed_bytes",
+    "ncbi_api_key_configured",
+    "ncbi_contact_email_configured",
+    "request_stagger_seconds",
+    "request_stagger_wait_seconds",
+    "timing_total_seconds",
+    "timing_download_package_seconds",
+    "timing_extract_package_seconds",
+    "timing_load_report_seconds",
+    "timing_scan_fasta_seconds",
+    "timing_select_records_seconds",
+    "timing_write_sequences_seconds",
+    "timing_write_tables_seconds",
+    "timing_package_sha256_seconds",
+]
+
 
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
@@ -426,6 +450,38 @@ def load_chunk_manifests(chunk_dirs: list[Path]) -> list[dict]:
     return manifests
 
 
+def chunk_metric_rows(chunk_manifests: list[dict]) -> list[dict[str, object]]:
+    rows = []
+    for manifest in chunk_manifests:
+        timings = manifest.get("step_timings_seconds") or {}
+        rows.append(
+            {
+                "chunk_id": manifest.get("chunk_id", ""),
+                "requested_gene_count": manifest.get("requested_gene_count", ""),
+                "target_gene_count": manifest.get("target_gene_count", ""),
+                "selected_ortholog_count": manifest.get("selected_ortholog_count", ""),
+                "candidate_record_count": manifest.get("candidate_record_count", ""),
+                "failure_count": manifest.get("failure_count", ""),
+                "gene_fna_uncompressed_bytes": manifest.get("gene_fna_uncompressed_bytes", ""),
+                "data_report_uncompressed_bytes": manifest.get("data_report_uncompressed_bytes", ""),
+                "ncbi_api_key_configured": manifest.get("ncbi_api_key_configured", ""),
+                "ncbi_contact_email_configured": manifest.get("ncbi_contact_email_configured", ""),
+                "request_stagger_seconds": manifest.get("request_stagger_seconds", ""),
+                "request_stagger_wait_seconds": manifest.get("request_stagger_wait_seconds", ""),
+                "timing_total_seconds": timings.get("total_seconds", ""),
+                "timing_download_package_seconds": timings.get("download_package", ""),
+                "timing_extract_package_seconds": timings.get("extract_package", ""),
+                "timing_load_report_seconds": timings.get("load_report", ""),
+                "timing_scan_fasta_seconds": timings.get("scan_fasta", ""),
+                "timing_select_records_seconds": timings.get("select_records", ""),
+                "timing_write_sequences_seconds": timings.get("write_sequences", ""),
+                "timing_write_tables_seconds": timings.get("write_tables", ""),
+                "timing_package_sha256_seconds": timings.get("package_sha256", ""),
+            }
+        )
+    return sorted(rows, key=lambda row: str(row.get("chunk_id", "")))
+
+
 def main() -> None:
     args = parse_args()
     outdir = args.outdir
@@ -461,6 +517,11 @@ def main() -> None:
 
     input_total, input_unique = read_input_counts(args.ids_tsv)
     chunk_manifests = load_chunk_manifests(args.chunk_dir)
+    chunk_metric_count = write_tsv_gz(
+        outdir / "chunk_metrics.tsv.gz",
+        CHUNK_METRIC_FIELDS,
+        chunk_metric_rows(chunk_manifests),
+    )
     datasets_versions = sorted(
         {manifest.get("datasets_version", "") for manifest in chunk_manifests if manifest.get("datasets_version")}
     )
@@ -471,6 +532,7 @@ def main() -> None:
         "input_record_count": input_total,
         "unique_gene_count": input_unique,
         "chunk_count": len(args.chunk_dir),
+        "chunk_metric_count": chunk_metric_count,
         "target_gene_count": table_counts["genes.tsv.gz"],
         "selected_ortholog_count": table_counts["orthologs.selected.tsv.gz"],
         "candidate_record_count": table_counts["orthologs.candidates.tsv.gz"],

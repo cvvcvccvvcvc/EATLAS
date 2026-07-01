@@ -51,6 +51,8 @@ VCF is configured, ClinVar evidence is skipped.
 
 The NCBI Datasets CLI is resolved as `DATASETS_BIN`, then
 `tools/bin/datasets` when present, then `datasets` on `PATH`.
+`FETCH_PARSE_CHUNK` also loads an ignored project `.env` file when present.
+Use `.env.example` as the template for `ENTREZ_EMAIL` and `ENTREZ_API_KEY`.
 
 ## Cluster Run
 
@@ -68,11 +70,13 @@ nextflow run . \
 Conservative starting parameters:
 
 ```bash
---chunk_size 10 --fetch_max_forks 1 --alignment_max_forks 2
+--chunk_size 10 --fetch_max_forks 5 --fetch_request_stagger_seconds 10 --alignment_max_forks 2
 ```
 
-Increase only after measuring disk, runtime, NCBI behavior, and alignment task
-memory on the target cluster.
+`fetch_max_forks` controls local fetch concurrency. `fetch_request_stagger_seconds`
+spaces out the starts of NCBI Datasets download requests so concurrent tasks do
+not all submit at the same instant. Tune these only after measuring disk,
+runtime, NCBI behavior, and alignment task memory on the target cluster.
 
 ## End-To-End Smoke Test
 
@@ -121,6 +125,7 @@ Fetch expected properties:
 - `input_record_count` is 4.
 - `unique_gene_count` is 3.
 - `chunk_count` is 3.
+- `chunk_metrics.tsv.gz` exists and includes per-chunk download/parse timings.
 - `target_gene_count` is 3.
 - `target_feature_count` is greater than `target_gene_count`.
 - `failure_count` is 0, unless NCBI data changed or the request failed.

@@ -4,7 +4,9 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import csv
+import fcntl
 import gzip
 import hashlib
 import json
@@ -13,6 +15,7 @@ import re
 import shutil
 import subprocess
 import sys
+import time
 import zipfile
 from collections import defaultdict
 from dataclasses import dataclass, field
@@ -67,11 +70,53 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--target-assembly-accession", required=True)
     parser.add_argument("--target-assembly-name", required=True)
     parser.add_argument("--target-tax-id", required=True)
+    parser.add_argument("--request-stagger-seconds", type=float, default=0.0)
+    parser.add_argument("--request-throttle-dir", type=Path)
     return parser.parse_args()
 
 
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+@contextlib.contextmanager
+def time_step(timings: dict[str, float], name: str):
+    start = time.perf_counter()
+    try:
+        yield
+    finally:
+        timings[name] = round(time.perf_counter() - start, 3)
+
+
+def env_configured(*names: str) -> bool:
+    return any(bool(os.environ.get(name)) for name in names)
+
+
+def throttle_ncbi_request(throttle_dir: Path | None, stagger_seconds: float) -> float:
+    if throttle_dir is None or stagger_seconds <= 0:
+        return 0.0
+
+    throttle_dir.mkdir(parents=True, exist_ok=True)
+    lock_path = throttle_dir / "request_schedule.lock"
+    state_path = throttle_dir / "next_request_epoch.txt"
+
+    with lock_path.open("a+") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        now = time.time()
+        next_allowed = 0.0
+        if state_path.exists():
+            try:
+                next_allowed = float(state_path.read_text().strip())
+            except ValueError:
+                next_allowed = 0.0
+        start_at = max(now, next_allowed)
+        state_path.write_text(f"{start_at + stagger_seconds:.6f}\n")
+        fcntl.flock(lock, fcntl.LOCK_UN)
+
+    wait_seconds = max(0.0, start_at - time.time())
+    if wait_seconds > 0:
+        time.sleep(wait_seconds)
+    return round(wait_seconds, 3)
 
 
 def read_ids(path: Path) -> list[str]:
@@ -657,37 +702,53 @@ def selected_ortholog_rows(records: list[FastaMeta], checksums: dict[int, str]) 
 
 
 def main() -> None:
+    total_start = time.perf_counter()
+    timings: dict[str, float] = {}
     args = parse_args()
-    requested_ids = read_ids(args.ids_file)
+    with time_step(timings, "read_ids"):
+        requested_ids = read_ids(args.ids_file)
     requested_set = set(requested_ids)
     outdir = args.outdir
     outdir.mkdir(parents=True, exist_ok=True)
 
-    datasets_bin = resolve_datasets_bin(args.datasets_bin)
-    version = datasets_version(datasets_bin)
+    with time_step(timings, "resolve_datasets_bin"):
+        datasets_bin = resolve_datasets_bin(args.datasets_bin)
+    with time_step(timings, "datasets_version"):
+        version = datasets_version(datasets_bin)
 
     zip_path = Path("ncbi_dataset.zip")
     extract_dir = Path("ncbi_dataset_unpacked")
-    download_package(datasets_bin, args.ids_file, zip_path)
-    report_path, gene_fna, catalog_path = extract_package(zip_path, extract_dir)
+    with time_step(timings, "ncbi_request_stagger"):
+        ncbi_request_wait_seconds = throttle_ncbi_request(
+            args.request_throttle_dir,
+            args.request_stagger_seconds,
+        )
+    with time_step(timings, "download_package"):
+        download_package(datasets_bin, args.ids_file, zip_path)
+    with time_step(timings, "extract_package"):
+        report_path, gene_fna, catalog_path = extract_package(zip_path, extract_dir)
 
-    report_by_gene_id, gene_to_query = load_report(report_path, requested_set)
-    fasta_records = build_fasta_metadata(gene_fna, report_by_gene_id, gene_to_query)
-    failures = select_records(
-        fasta_records,
-        requested_ids,
-        report_by_gene_id,
-        args.target_assembly_accession,
-        args.target_tax_id,
-    )
-    target_checksums, ortholog_checksums = write_sequences(
-        gene_fna,
-        fasta_records,
-        report_by_gene_id,
-        outdir,
-        args.target_assembly_accession,
-        args.target_assembly_name,
-    )
+    with time_step(timings, "load_report"):
+        report_by_gene_id, gene_to_query = load_report(report_path, requested_set)
+    with time_step(timings, "scan_fasta"):
+        fasta_records = build_fasta_metadata(gene_fna, report_by_gene_id, gene_to_query)
+    with time_step(timings, "select_records"):
+        failures = select_records(
+            fasta_records,
+            requested_ids,
+            report_by_gene_id,
+            args.target_assembly_accession,
+            args.target_tax_id,
+        )
+    with time_step(timings, "write_sequences"):
+        target_checksums, ortholog_checksums = write_sequences(
+            gene_fna,
+            fasta_records,
+            report_by_gene_id,
+            outdir,
+            args.target_assembly_accession,
+            args.target_assembly_name,
+        )
 
     gene_fields = [
         "gene_id",
@@ -752,50 +813,76 @@ def main() -> None:
     ]
     failure_fields = ["gene_id", "failure_type", "message"]
 
-    genes_count = write_tsv_gz(
-        outdir / "genes.tsv.gz",
-        gene_fields,
-        genes_rows(
-            requested_ids,
-            report_by_gene_id,
-            fasta_records,
-            target_checksums,
-            args.target_assembly_accession,
-            args.target_assembly_name,
-        ),
-    )
-    selected_count = write_tsv_gz(
-        outdir / "orthologs.selected.tsv.gz",
-        selected_fields,
-        selected_ortholog_rows(fasta_records, ortholog_checksums),
-    )
-    candidate_count = write_tsv_gz(
-        outdir / "orthologs.candidates.tsv.gz",
-        candidate_fields,
-        candidate_rows(fasta_records, args.target_tax_id),
-    )
-    failure_count = write_tsv_gz(outdir / "failures.tsv.gz", failure_fields, failures)
+    with time_step(timings, "write_tables"):
+        genes_count = write_tsv_gz(
+            outdir / "genes.tsv.gz",
+            gene_fields,
+            genes_rows(
+                requested_ids,
+                report_by_gene_id,
+                fasta_records,
+                target_checksums,
+                args.target_assembly_accession,
+                args.target_assembly_name,
+            ),
+        )
+        selected_count = write_tsv_gz(
+            outdir / "orthologs.selected.tsv.gz",
+            selected_fields,
+            selected_ortholog_rows(fasta_records, ortholog_checksums),
+        )
+        candidate_count = write_tsv_gz(
+            outdir / "orthologs.candidates.tsv.gz",
+            candidate_fields,
+            candidate_rows(fasta_records, args.target_tax_id),
+        )
+        failure_count = write_tsv_gz(outdir / "failures.tsv.gz", failure_fields, failures)
 
     catalog = {}
     if catalog_path and catalog_path.exists():
-        catalog = json.loads(catalog_path.read_text())
+        with time_step(timings, "load_dataset_catalog"):
+            catalog = json.loads(catalog_path.read_text())
 
+    catalog_files = {
+        item.get("filePath"): item
+        for item in (catalog.get("genes", {}).get("files", []) if catalog else [])
+    }
+    gene_fna_uncompressed_bytes = catalog_files.get("gene.fna", {}).get("uncompressedLengthBytes", "")
+    report_uncompressed_bytes = catalog_files.get("data_report.jsonl", {}).get("uncompressedLengthBytes", "")
+
+    with time_step(timings, "package_sha256"):
+        package_sha256 = sha256_file(zip_path)
     manifest = {
         "created_at": utc_now(),
+        "chunk_id": outdir.name.removeprefix("fetch_"),
         "requested_gene_count": len(requested_ids),
         "target_gene_count": genes_count,
         "selected_ortholog_count": selected_count,
         "candidate_record_count": candidate_count,
         "failure_count": failure_count,
+        "gene_fna_uncompressed_bytes": gene_fna_uncompressed_bytes,
+        "data_report_uncompressed_bytes": report_uncompressed_bytes,
         "target_assembly_accession": args.target_assembly_accession,
         "target_assembly_name": args.target_assembly_name,
         "ortholog_scope": "all",
         "datasets_bin": datasets_bin,
         "datasets_version": version,
-        "package_sha256": sha256_file(zip_path),
+        "ncbi_api_key_configured": env_configured("NCBI_API_KEY", "ENTREZ_API_KEY"),
+        "ncbi_contact_email_configured": env_configured("NCBI_EMAIL", "ENTREZ_EMAIL"),
+        "request_stagger_seconds": args.request_stagger_seconds,
+        "request_stagger_wait_seconds": ncbi_request_wait_seconds,
+        "package_sha256": package_sha256,
         "dataset_catalog": catalog,
     }
-    (outdir / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
+    manifest_path = outdir / "manifest.json"
+    manifest["step_timings_seconds"] = timings
+    manifest_text = json.dumps(manifest, indent=2) + "\n"
+    write_start = time.perf_counter()
+    manifest_path.write_text(manifest_text)
+    timings["write_manifest"] = round(time.perf_counter() - write_start, 3)
+    timings["total_seconds"] = round(time.perf_counter() - total_start, 3)
+    manifest["step_timings_seconds"] = timings
+    manifest_path.write_text(json.dumps(manifest, indent=2) + "\n")
 
 
 if __name__ == "__main__":

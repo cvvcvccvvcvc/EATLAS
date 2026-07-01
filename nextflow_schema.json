@@ -93,7 +93,13 @@
             "properties": {
                 "fetch_max_forks": {
                     "type": "integer",
-                    "default": 1
+                    "default": 5,
+                    "description": "Maximum concurrent NCBI fetch/parse tasks."
+                },
+                "fetch_request_stagger_seconds": {
+                    "type": "integer",
+                    "default": 10,
+                    "description": "Minimum spacing between starts of NCBI Datasets download requests across concurrent local fetch tasks."
                 },
                 "alignment_max_forks": {
                     "type": "integer",

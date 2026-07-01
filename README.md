@@ -30,10 +30,18 @@ Set persistent local paths once through environment variables when needed:
 
 ```bash
 export DATASETS_BIN=/path/to/datasets
+export ENTREZ_EMAIL=you@example.org
+export ENTREZ_API_KEY=your_ncbi_api_key
 export GAPH_TARGET_ANNOTATION_GFF3=/path/to/genomic.gff.gz
 export ENSEMBL_COMPARA_MAF_MANIFEST=/path/to/ensembl_compara_maf_manifest.tsv.gz
 export CLINVAR_VCF=/path/to/clinvar.vcf.gz
 ```
+
+For local runs, these values can also be stored in an ignored `.env` file using
+the format shown in `.env.example`. `FETCH_PARSE_CHUNK` loads `.env` before
+calling NCBI Datasets. The API key is passed to `datasets download` as
+`--api-key`; the email is recorded as configured contact metadata for NCBI/API
+auditability.
 
 If `--target_annotation_gff3` and `GAPH_TARGET_ANNOTATION_GFF3` are unset, the
 fetch stage uses
@@ -110,6 +118,7 @@ Fetch outputs:
 - `fetch/manifest.json` - run constants and tool versions.
 - `fetch/input.ids.tsv` - normalized input IDs.
 - `fetch/chunks.tsv` - deterministic chunk list used for NCBI requests.
+- `fetch/chunk_metrics.tsv.gz` - per-chunk fetch timing and package-size metrics.
 - `fetch/genes.tsv.gz` - target gene metadata.
 - `fetch/target_features.tsv.gz` - collapsed target structural intervals.
 - `fetch/orthologs.selected.tsv.gz` - selected ortholog sequence metadata.
@@ -155,7 +164,7 @@ directory or home quota.
 | Step | Process | What Happens | Durable Output |
 | --- | --- | --- | --- |
 | 1 | `VALIDATE_IDS` | Read Entrez IDs, remove duplicates, split accepted IDs into chunks. | `fetch/input.ids.tsv`, `fetch/chunks.tsv` |
-| 2 | `FETCH_PARSE_CHUNK` | Download one NCBI gene package with `--ortholog all --include gene`; parse `data_report.jsonl` and `gene.fna`; select GRCh38 human target and one sequence per ortholog GeneID. | Per-chunk compressed FASTA/TSV files in `work/` |
+| 2 | `FETCH_PARSE_CHUNK` | Download one NCBI gene package with `--ortholog all --include gene`; parse `data_report.jsonl` and `gene.fna`; select GRCh38 human target and one sequence per ortholog GeneID. Concurrent downloads are staggered by `--fetch_request_stagger_seconds`. | Per-chunk compressed FASTA/TSV files in `work/`; durable metrics in `fetch/chunk_metrics.tsv.gz` |
 | 3 | `BUILD_FETCH_DATASET` | Assemble chunk tables, selected per-gene FASTA files, and target structural features into the final fetch dataset. | `fetch/` |
 | 4 | `FETCH_TAXONOMY_PRESETS` | Build compact tax_id to minimap2 preset metadata. | `alignment/taxonomy_presets.tsv.gz` |
 | 5 | `BUILD_ALIGNMENT_TASKS` | Validate fetch outputs and create per-gene alignment inputs with stable sequence IDs. | `alignment/alignment_tasks.tsv.gz` |
