@@ -83,7 +83,7 @@
                 },
                 "target_annotation_gff3": {
                     "type": "string",
-                    "description": "Local NCBI RefSeq GFF3 for the target assembly. Defaults to GAPH_TARGET_ANNOTATION_GFF3, then assets/reference/GCF_000001405.40/genomic.gff."
+                    "description": "Local NCBI RefSeq GFF3 for the target assembly. Defaults to GAPH_TARGET_ANNOTATION_GFF3, then assets/reference/ncbi/refseq/GCF_000001405.40_GRCh38.p14/genomic.gff.gz."
                 }
             }
         },
@@ -137,7 +137,7 @@
                 },
                 "ensembl_compara_maf_manifest": {
                     "type": "string",
-                    "description": "Optional precomputed Ensembl Compara MAF chunk manifest. Defaults to ENSEMBL_COMPARA_MAF_MANIFEST when set, then assets/reference/ensembl_compara/release-<release>/<species_set>/ensembl_compara_maf_manifest.tsv.gz when present; otherwise the manifest is built during the run."
+                    "description": "Optional precomputed Ensembl Compara MAF chunk manifest. Defaults to ENSEMBL_COMPARA_MAF_MANIFEST when set, then assets/reference/ensembl/compara/release-<release>/<species_set>/ensembl_compara_maf_manifest.tsv.gz when present; otherwise the manifest is built during the run."
                 },
                 "ensembl_compara_maf_base_url": {
                     "type": "string",

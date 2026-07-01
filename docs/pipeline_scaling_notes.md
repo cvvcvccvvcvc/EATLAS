@@ -89,7 +89,7 @@ export ENSEMBL_COMPARA_MAF_MANIFEST=/path/to/ensembl_compara_maf_manifest.tsv.gz
 If no explicit manifest is provided, the workflow also checks:
 
 ```text
-assets/reference/ensembl_compara/release-<release>/<species_set>/ensembl_compara_maf_manifest.tsv.gz
+assets/reference/ensembl/compara/release-<release>/<species_set>/ensembl_compara_maf_manifest.tsv.gz
 ```
 
 If that file is absent, the workflow falls back to building the manifest during

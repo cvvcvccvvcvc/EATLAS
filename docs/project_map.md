@@ -109,6 +109,20 @@ Temporary files that must not be treated as final outputs:
 - Nextflow `work/`
 - `.nextflow*` local execution metadata
 
+## Reference Assets
+
+Large local reference inputs live under ignored `assets/reference/`, grouped by
+provider and resource family:
+
+```text
+assets/reference/ncbi/refseq/GCF_000001405.40_GRCh38.p14/genomic.gff.gz
+assets/reference/ensembl/compara/release-116/92_mammals.epo_extended/
+```
+
+These files are operational cache/reference inputs, not Git-tracked source
+files. The workflow uses them as defaults when matching explicit parameters or
+environment variables are not set.
+
 ## Design Direction
 
 This repository uses Nextflow for orchestration and Python for small parsing

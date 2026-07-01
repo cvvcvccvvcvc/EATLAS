@@ -25,7 +25,7 @@ Optional operational parameters:
 - `--datasets_bin`: path/name for the NCBI Datasets CLI.
 - `--target_annotation_gff3`: local NCBI RefSeq GFF3 for
   `GCF_000001405.40`; defaults to `GAPH_TARGET_ANNOTATION_GFF3`, then
-  `assets/reference/GCF_000001405.40/genomic.gff`.
+  `assets/reference/ncbi/refseq/GCF_000001405.40_GRCh38.p14/genomic.gff.gz`.
 
 ## Processing Steps
 

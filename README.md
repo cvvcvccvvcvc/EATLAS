@@ -28,16 +28,17 @@ Set persistent local paths once through environment variables when needed:
 
 ```bash
 export DATASETS_BIN=/path/to/datasets
-export GAPH_TARGET_ANNOTATION_GFF3=/path/to/GCF_000001405.40/genomic.gff
+export GAPH_TARGET_ANNOTATION_GFF3=/path/to/genomic.gff.gz
 export ENSEMBL_COMPARA_MAF_MANIFEST=/path/to/ensembl_compara_maf_manifest.tsv.gz
 export CLINVAR_VCF=/path/to/clinvar.vcf.gz
 ```
 
 If `--target_annotation_gff3` and `GAPH_TARGET_ANNOTATION_GFF3` are unset, the
-fetch stage uses `assets/reference/GCF_000001405.40/genomic.gff`.
+fetch stage uses
+`assets/reference/ncbi/refseq/GCF_000001405.40_GRCh38.p14/genomic.gff.gz`.
 If `--ensembl_compara_maf_manifest` and `ENSEMBL_COMPARA_MAF_MANIFEST` are
 unset, the precomputed Ensembl strategy uses the matching manifest under
-`assets/reference/ensembl_compara/` when present, otherwise it builds one during
+`assets/reference/ensembl/compara/` when present, otherwise it builds one during
 the run.
 If `--clinvar_vcf` and `CLINVAR_VCF` are unset, annotation uses
 `assets/clinvar.vcf.gz` when present, otherwise the empty

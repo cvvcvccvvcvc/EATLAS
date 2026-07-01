@@ -64,7 +64,7 @@ if (['all', 'fetch'].contains(params.stage) && !params.ids_file) {
 }
 
 if (['all', 'fetch'].contains(params.stage) && !file(params.target_annotation_gff3).exists()) {
-    error "Target annotation GFF3 not found for --stage ${params.stage}: ${params.target_annotation_gff3}. Pass --target_annotation_gff3, set GAPH_TARGET_ANNOTATION_GFF3, or place the file at assets/reference/GCF_000001405.40/genomic.gff"
+    error "Target annotation GFF3 not found for --stage ${params.stage}: ${params.target_annotation_gff3}. Pass --target_annotation_gff3, set GAPH_TARGET_ANNOTATION_GFF3, or place the file at assets/reference/ncbi/refseq/GCF_000001405.40_GRCh38.p14/genomic.gff.gz"
 }
 
 if (params.stage == 'align' && !params.fetch_dir) {
@@ -187,7 +187,7 @@ workflow ALIGNMENT_STAGE {
     }
 
     if (SELECTED_ALIGNMENT_STRATEGIES.contains('precomputed_ensembl_92_mammals_epo_extended')) {
-        default_maf_manifest = file("${projectDir}/assets/reference/ensembl_compara/release-${params.ensembl_compara_maf_release}/${params.ensembl_compara_maf_species_set}/ensembl_compara_maf_manifest.tsv.gz")
+        default_maf_manifest = file("${projectDir}/assets/reference/ensembl/compara/release-${params.ensembl_compara_maf_release}/${params.ensembl_compara_maf_species_set}/ensembl_compara_maf_manifest.tsv.gz")
         configured_maf_manifest = params.ensembl_compara_maf_manifest ? file(params.ensembl_compara_maf_manifest) : null
         if (configured_maf_manifest && !configured_maf_manifest.exists()) {
             error "Configured Ensembl Compara MAF manifest not found: ${params.ensembl_compara_maf_manifest}"

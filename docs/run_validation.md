@@ -37,13 +37,14 @@ out of the repository:
 
 ```bash
 export DATASETS_BIN=/path/to/datasets
-export GAPH_TARGET_ANNOTATION_GFF3=/path/to/GCF_000001405.40/genomic.gff
+export GAPH_TARGET_ANNOTATION_GFF3=/path/to/genomic.gff.gz
 export CLINVAR_VCF=/path/to/clinvar.vcf.gz
 export GAPH_WORK_DIR=/path/to/scratch/gaph_v2_work
 ```
 
 When neither `--target_annotation_gff3` nor `GAPH_TARGET_ANNOTATION_GFF3` is
-set, fetch uses `assets/reference/GCF_000001405.40/genomic.gff`.
+set, fetch uses
+`assets/reference/ncbi/refseq/GCF_000001405.40_GRCh38.p14/genomic.gff.gz`.
 When neither `--clinvar_vcf` nor `CLINVAR_VCF` is set, annotation uses
 `assets/clinvar.vcf.gz` if present and indexed, otherwise the empty
 `assets/no_clinvar.vcf` placeholder.

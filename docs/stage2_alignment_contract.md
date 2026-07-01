@@ -138,7 +138,7 @@ durable outputs.
 
 The MAF chunk manifest can be supplied with `--ensembl_compara_maf_manifest` or
 `ENSEMBL_COMPARA_MAF_MANIFEST`. If neither is set, the workflow checks
-`assets/reference/ensembl_compara/release-<release>/<species_set>/ensembl_compara_maf_manifest.tsv.gz`;
+`assets/reference/ensembl/compara/release-<release>/<species_set>/ensembl_compara_maf_manifest.tsv.gz`;
 if that file is absent, it builds the manifest during the run.
 
 This strategy is not based on NCBI ortholog GeneIDs. Its support unit is the
