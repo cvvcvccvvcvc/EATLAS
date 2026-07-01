@@ -90,6 +90,11 @@ Agent workflow rules:
     before committing when the boundary is unclear.
 16. Keep alignment and annotation as separate stages; `--stage align` must not
     trigger annotation.
+17. Put standalone experiments that build on the pipeline or its data under
+    `experiments/<experiment_name>/` (create `experiments/` when needed). Keep
+    each experiment's code, data, scratch files, reports, and generated outputs
+    isolated inside that experiment directory unless an external scratch path is
+    explicitly documented.
 
 ## Progressive Disclosure
 
