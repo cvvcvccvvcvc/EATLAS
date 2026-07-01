@@ -17,12 +17,14 @@ Default local execution runs every stage in one command:
 
 ```bash
 nextflow run . \
-  -profile local \
+  -profile local,conda \
   --ids_file assets/inputs/gene_ids/smoke_5_genes.txt \
   --outdir results/run_test \
   -resume
 ```
 
+Use the `conda` profile for normal runs so tasks use `envs/*.yml` through
+micromamba/conda instead of whatever Python environment is active in the shell.
 By default the workflow resolves the NCBI Datasets CLI as `DATASETS_BIN`, then
 `tools/bin/datasets` when present, then `datasets` on `PATH`. Aligner binaries
 are expected on `PATH`.
@@ -59,7 +61,7 @@ scratch storage:
 
 ```bash
 nextflow run . \
-  -profile slurm \
+  -profile slurm,conda \
   --ids_file /path/to/gene_ids.txt \
   --outdir /scratch/$USER/gaph_v2/results/run_001 \
   -work-dir /scratch/$USER/gaph_v2/work/run_001 \

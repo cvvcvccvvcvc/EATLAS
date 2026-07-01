@@ -85,6 +85,7 @@ if (params.stage == 'annotate' && !params.fetch_dir) {
 SELECTED_ALIGNMENT_STRATEGIES = parseAlignmentStrategies(params.alignment_strategies)
 
 include { VALIDATE_IDS } from './modules/local/validate_ids.nf'
+include { CHECK_RUNTIME } from './modules/local/check_runtime.nf'
 include { FETCH_PARSE_CHUNK } from './modules/local/fetch_parse_chunk.nf'
 include { BUILD_FETCH_DATASET } from './modules/local/build_fetch_dataset.nf'
 include { FETCH_TAXONOMY_PRESETS } from './modules/local/fetch_taxonomy_presets.nf'
@@ -148,6 +149,7 @@ workflow ALIGNMENT_STAGE {
     minimap2_script = file("${projectDir}/bin/run_minimap2_alignment.py")
     nucmer_script = file("${projectDir}/bin/run_nucmer_alignment.py")
     bwa_script = file("${projectDir}/bin/run_bwa_pseudoreads.py")
+    bam_filtering_script = file("${projectDir}/bin/bam_filtering_v1.py")
     ensembl_compara_maf_manifest_script = file("${projectDir}/bin/build_ensembl_compara_maf_manifest.py")
     ensembl_compara_maf_script = file("${projectDir}/bin/run_ensembl_compara_maf_alignment.py")
     merge_script = file("${projectDir}/bin/merge_alignment_results.py")
@@ -185,7 +187,7 @@ workflow ALIGNMENT_STAGE {
     }
 
     if (SELECTED_ALIGNMENT_STRATEGIES.contains('bwa_pseudoreads')) {
-        ALIGN_BWA_PSEUDOREADS(task_dirs, bwa_script)
+        ALIGN_BWA_PSEUDOREADS(task_dirs, bwa_script, bam_filtering_script)
         alignment_result_dirs = alignment_result_dirs.mix(ALIGN_BWA_PSEUDOREADS.out.bwa_result_dirs.map { meta, dir -> dir })
     }
 
@@ -282,6 +284,9 @@ workflow ANNOTATION_STAGE_WITH_CLINVAR {
 }
 
 workflow {
+    runtime_check_script = file("${projectDir}/bin/check_runtime.py")
+    CHECK_RUNTIME(runtime_check_script, params.stage, SELECTED_ALIGNMENT_STRATEGIES.join(','))
+
     if (params.stage == 'all') {
         clinvar_inputs = resolveClinvarInputs()
         if (clinvar_inputs.enabled) {

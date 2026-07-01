@@ -7,21 +7,22 @@ workflow.
 
 ```bash
 nextflow run . \
-  -profile local \
+  -profile local,conda \
   --ids_file assets/inputs/gene_ids/smoke_5_genes.txt \
   --outdir results/run_001 \
   -resume
 ```
 
-The default `--stage all` runs every stage. Annotation fetches gnomAD data from
-the live API for clustered event regions and uses an in-memory cache within that
-single run.
+The default `--stage all` runs every stage. Use the `conda` profile for normal
+local runs so tasks use `envs/*.yml` instead of the active shell environment.
+Annotation fetches gnomAD data from the live API for clustered event regions and
+uses an in-memory cache within that single run.
 
 If command-line tools are not on `PATH`, pass them explicitly:
 
 ```bash
 nextflow run . \
-  -profile local \
+  -profile local,conda \
   --ids_file assets/inputs/gene_ids/smoke_5_genes.txt \
   --outdir results/run_001 \
   --datasets_bin /path/to/datasets \
@@ -60,7 +61,7 @@ Use the same workflow and put `work/` on scratch storage:
 
 ```bash
 nextflow run . \
-  -profile slurm \
+  -profile slurm,conda \
   --ids_file /path/to/gene_ids.txt \
   --outdir /scratch/$USER/gaph_v2/results/run_001 \
   -work-dir /scratch/$USER/gaph_v2/work/run_001 \
@@ -77,6 +78,10 @@ Conservative starting parameters:
 spaces out the starts of NCBI Datasets download requests so concurrent tasks do
 not all submit at the same instant. Tune these only after measuring disk,
 runtime, NCBI behavior, and alignment task memory on the target cluster.
+
+In the `slurm` profile, `executor.queueSize` limits how many jobs Nextflow keeps
+submitted to Slurm at once. It does not affect local runs, task CPU count, or
+threads inside an aligner process.
 
 ## End-To-End Smoke Test
 
