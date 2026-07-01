@@ -100,5 +100,6 @@ Raw aligner outputs are also not retained by default:
 - nucmer `.delta`
 - `show-coords`
 - `show-snps`
+- Ensembl Compara MAF chunks used by precomputed alignment strategies
 
 Set `--keep_native_alignments true` only for targeted debug/benchmark runs.

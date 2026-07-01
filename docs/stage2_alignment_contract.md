@@ -45,8 +45,11 @@ strategy, not a hard-coded command-line list.
 | `minimap2_taxonomy_adaptive` | minimap2 | Preset chosen from NCBI taxonomy summary. |
 | `nucmer` | MUMmer/nucmer | Independent comparator using multi-query nucmer output. |
 | `bwa_pseudoreads` | BWA/samtools/pysam/VarScan | Pseudoread comparator that emits `bwa_pseudoreads_pysam` and, when available, `bwa_pseudoreads_varscan` evidence rows. |
+| `precomputed_ensembl_92_mammals_epo_extended` | Ensembl Compara MAF | Uses release-pinned precomputed `92_mammals.epo_extended` whole-genome MSA blocks overlapping the human target gene interval. |
 
 No LASTZ, consensus calling, or production variant filtering is part of Stage 2.
+Conservation scores such as GERP are not part of alignment; they belong to the
+later annotation/analysis layer.
 
 Example selections:
 
@@ -54,11 +57,16 @@ Example selections:
 --alignment_strategies all
 --alignment_strategies minimap2_asm20
 --alignment_strategies minimap2_asm10,nucmer
+--alignment_strategies minimap2_asm20,precomputed_ensembl_92_mammals_epo_extended
 ```
 
 At least one strategy must be selected. Single-strategy runs are valid; compare
 or report layers must treat cross-strategy-only sections as not applicable or
 empty rather than failing.
+
+`all` means every registered strategy, including precomputed alignment
+strategies. When using remote Ensembl FTP sources, keep
+`--ensembl_compara_maf_max_forks` conservative.
 
 ## Taxonomy Presets
 
@@ -111,6 +119,23 @@ Raw multi-query nucmer is used, but the workflow does not run global
 assemblies, but it is wrong for many orthologs that are all expected to align to
 the same human target locus. The parser separates evidence by query sequence and
 adds `unfiltered_nucmer` QC flags.
+
+For Ensembl Compara MAF:
+
+```text
+precomputed whole-genome MSA blocks overlapping the human target gene interval
+```
+
+The workflow first builds a small run-specific MAF chunk manifest for the human
+chromosomes present in `genes.tsv.gz`. One alignment task then streams the
+candidate MAF chunks for one gene and clips evidence to the target interval
+before writing normalized Stage 2 tables. Full MAF chunks are not published as
+durable outputs.
+
+This strategy is not based on NCBI ortholog GeneIDs. Its support unit is the
+species row in the precomputed MSA. Consequently, `ortholog_gene_id` contains
+the species name for this strategy, and support-count reports should interpret
+it as species support.
 
 ## Durable Outputs
 
@@ -172,6 +197,10 @@ are removed unless `--keep_native_alignments true` is set.
 
 Durable output is limited to compressed normalized TSV files so large runs do
 not duplicate sequence data and native aligner output in `results/`.
+
+For precomputed MAF strategies, the source MAF files are streamed or read from a
+configured local directory. They are treated as external inputs/cache, not final
+pipeline results.
 
 Nextflow `work/` remains a resume cache. After validating a run, it can be
 cleaned according to `docs/storage_model.md`.

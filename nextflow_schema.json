@@ -103,6 +103,37 @@
                 "keep_native_alignments": {
                     "type": "boolean",
                     "default": false
+                },
+                "ensembl_compara_maf_max_forks": {
+                    "type": "integer",
+                    "default": 1,
+                    "description": "Maximum concurrent Ensembl Compara MAF alignment tasks. Keep low for remote FTP streaming."
+                }
+            }
+        },
+        "precomputed_alignment_options": {
+            "title": "Precomputed Alignment Options",
+            "type": "object",
+            "properties": {
+                "ensembl_compara_maf_release": {
+                    "type": "string",
+                    "default": "116",
+                    "description": "Ensembl release label for the precomputed Compara MAF strategy."
+                },
+                "ensembl_compara_maf_species_set": {
+                    "type": "string",
+                    "default": "92_mammals.epo_extended",
+                    "description": "Ensembl Compara MAF species set directory/name."
+                },
+                "ensembl_compara_maf_method": {
+                    "type": "string",
+                    "default": "EPO_EXTENDED",
+                    "description": "Compara method label written to alignment output metadata."
+                },
+                "ensembl_compara_maf_base_url": {
+                    "type": "string",
+                    "default": "https://ftp.ensembl.org/pub/release-116/maf/ensembl-compara/multiple_alignments/92_mammals.epo_extended",
+                    "description": "HTTP(S) URL or local directory containing the selected Ensembl Compara MAF files."
                 }
             }
         },
@@ -130,6 +161,9 @@
         },
         {
             "$ref": "#/definitions/execution_options"
+        },
+        {
+            "$ref": "#/definitions/precomputed_alignment_options"
         },
         {
             "$ref": "#/definitions/binary_paths"

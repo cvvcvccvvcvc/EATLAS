@@ -63,6 +63,17 @@ runs.
   - parses `show-coords` and `show-snps`
   - writes the same normalized alignment evidence schema
 
+- `bin/build_ensembl_compara_maf_manifest.py`
+  - builds a small run-specific manifest of Ensembl Compara MAF chunks for the
+    human chromosomes present in `genes.tsv.gz`
+  - reads MAF directory listings and first human rows, not whole MAF files
+
+- `bin/run_ensembl_compara_maf_alignment.py`
+  - streams selected Ensembl Compara MAF chunks for one target gene
+  - clips MSA evidence to the target gene interval
+  - writes the same normalized alignment evidence schema with species as the
+    support unit
+
 - `bin/merge_alignment_results.py`
   - merges per-gene/per-strategy alignment evidence tables
   - intersects target features with alignment segments for coverage/depth summaries

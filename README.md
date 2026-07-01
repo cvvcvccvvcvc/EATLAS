@@ -127,9 +127,9 @@ retrieval always uses the complete NCBI ortholog set (`--ortholog all`).
 Nextflow `work/` is the execution cache used by `-resume`. Published `results/`
 is the durable data layer for downstream stages.
 
-Raw NCBI zip files, unpacked `gene.fna`, minimap2 PAF, and MUMmer delta/coords
-files are not published by default. Set `--keep_native_alignments true` only for
-targeted debug or benchmark runs.
+Raw NCBI zip files, unpacked `gene.fna`, minimap2 PAF, MUMmer delta/coords
+files, and external Ensembl Compara MAF chunks are not published by default.
+Set `--keep_native_alignments true` only for targeted debug or benchmark runs.
 
 For cluster runs, keep `-work-dir` on scratch storage, not in the project
 directory or home quota.
@@ -148,5 +148,7 @@ directory or home quota.
 | 8 | `ALIGN_MINIMAP2_TAXONOMY_ADAPTIVE` | Taxonomy-driven minimap2 presets. | Per-gene normalized evidence in `work/` |
 | 9 | `ALIGN_NUCMER_COMPARATOR` | Multi-query nucmer comparator without global one-to-one delta filtering. | Per-gene normalized evidence in `work/` |
 | 10 | `ALIGN_BWA_PSEUDOREADS` | Pseudoread comparator evidence. | Per-gene normalized evidence in `work/` |
-| 11 | `MERGE_ALIGNMENT_EVIDENCE` | Merge normalized alignment evidence and summarize feature coverage. | `alignment/` |
-| 12 | `ANNOTATE_EVENTS` | Normalize event keys and annotate with ClinVar/gnomAD evidence. | `annotation/` |
+| 11 | `BUILD_ENSEMBL_COMPARA_MAF_MANIFEST` | When selected, build a run-specific manifest for Ensembl Compara MAF chunks covering target chromosomes. | Per-run manifest in `work/` |
+| 12 | `ALIGN_ENSEMBL_COMPARA_MAF` | When selected, stream precomputed Ensembl Compara MAF blocks and normalize species-level evidence. | Per-gene normalized evidence in `work/` |
+| 13 | `MERGE_ALIGNMENT_EVIDENCE` | Merge normalized alignment evidence and summarize feature coverage. | `alignment/` |
+| 14 | `ANNOTATE_EVENTS` | Normalize event keys and annotate with ClinVar/gnomAD evidence. | `annotation/` |

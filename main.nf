@@ -8,6 +8,7 @@ AVAILABLE_ALIGNMENT_STRATEGIES = [
     'minimap2_taxonomy_adaptive',
     'nucmer',
     'bwa_pseudoreads',
+    'precomputed_ensembl_92_mammals_epo_extended',
 ]
 
 def parseAlignmentStrategies(rawValue) {
@@ -71,6 +72,8 @@ include { ALIGN_MINIMAP2_ADAPTIVE } from './modules/local/align_minimap2_adaptiv
 include { MERGE_ALIGNMENT } from './modules/local/merge_alignment.nf'
 include { ALIGN_NUCMER_COMPARATOR } from './modules/local/align_nucmer_comparator.nf'
 include { ALIGN_BWA_PSEUDOREADS } from './modules/local/align_bwa_pseudoreads.nf'
+include { BUILD_ENSEMBL_COMPARA_MAF_MANIFEST } from './modules/local/build_ensembl_compara_maf_manifest.nf'
+include { ALIGN_ENSEMBL_COMPARA_MAF } from './modules/local/align_ensembl_compara_maf.nf'
 include { ANNOTATE_EVENTS } from './modules/local/annotate_events.nf'
 
 workflow FETCH_STAGE {
@@ -120,6 +123,8 @@ workflow ALIGNMENT_STAGE {
     minimap2_script = file("${projectDir}/bin/run_minimap2_alignment.py")
     nucmer_script = file("${projectDir}/bin/run_nucmer_alignment.py")
     bwa_script = file("${projectDir}/bin/run_bwa_pseudoreads.py")
+    ensembl_compara_maf_manifest_script = file("${projectDir}/bin/build_ensembl_compara_maf_manifest.py")
+    ensembl_compara_maf_script = file("${projectDir}/bin/run_ensembl_compara_maf_alignment.py")
     merge_script = file("${projectDir}/bin/merge_alignment_results.py")
 
     FETCH_TAXONOMY_PRESETS(orthologs_selected, taxonomy_script, taxonomy_classes)
@@ -157,6 +162,16 @@ workflow ALIGNMENT_STAGE {
     if (SELECTED_ALIGNMENT_STRATEGIES.contains('bwa_pseudoreads')) {
         ALIGN_BWA_PSEUDOREADS(task_dirs, bwa_script)
         alignment_result_dirs = alignment_result_dirs.mix(ALIGN_BWA_PSEUDOREADS.out.bwa_result_dirs.map { meta, dir -> dir })
+    }
+
+    if (SELECTED_ALIGNMENT_STRATEGIES.contains('precomputed_ensembl_92_mammals_epo_extended')) {
+        BUILD_ENSEMBL_COMPARA_MAF_MANIFEST(genes, ensembl_compara_maf_manifest_script)
+        ALIGN_ENSEMBL_COMPARA_MAF(
+            task_dirs,
+            BUILD_ENSEMBL_COMPARA_MAF_MANIFEST.out.maf_manifest,
+            ensembl_compara_maf_script
+        )
+        alignment_result_dirs = alignment_result_dirs.mix(ALIGN_ENSEMBL_COMPARA_MAF.out.ensembl_compara_maf_result_dirs.map { meta, dir -> dir })
     }
 
     MERGE_ALIGNMENT(
