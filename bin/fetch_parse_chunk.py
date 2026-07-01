@@ -35,6 +35,8 @@ TARGET_SEQUENCE_ORIENTATION = "plus"
 class FastaMeta:
     record_index: int
     header: str
+    record_start_offset: int
+    record_end_offset: int
     accession: str
     range_text: str
     begin: int | None
@@ -262,23 +264,29 @@ def parse_header(header: str) -> dict[str, object]:
     }
 
 
-def iter_fasta_lengths(path: Path):
+def iter_fasta_slices(path: Path):
     header = None
     length = 0
     record_index = 0
-    with path.open() as handle:
-        for line in handle:
-            line = line.rstrip("\n")
-            if line.startswith(">"):
+    record_start_offset = 0
+    with path.open("rb") as handle:
+        while True:
+            line_start = handle.tell()
+            line = handle.readline()
+            if not line:
+                break
+            text = line.decode("utf-8").rstrip("\r\n")
+            if text.startswith(">"):
                 if header is not None:
-                    yield record_index, header, length
+                    yield record_index, header, length, record_start_offset, line_start
                 record_index += 1
-                header = line[1:]
+                header = text[1:]
                 length = 0
+                record_start_offset = line_start
             elif header is not None:
-                length += len(line.strip())
+                length += len(text.strip())
         if header is not None:
-            yield record_index, header, length
+            yield record_index, header, length, record_start_offset, handle.tell()
 
 
 def accession_rank(accession: str) -> int:
@@ -299,7 +307,7 @@ def build_fasta_metadata(
     }
     records: list[FastaMeta] = []
 
-    for record_index, header, length in iter_fasta_lengths(gene_fna):
+    for record_index, header, length, record_start_offset, record_end_offset in iter_fasta_slices(gene_fna):
         parsed = parse_header(header)
         gene_id = str(parsed["gene_id"])
         report = report_by_gene_id.get(gene_id, {})
@@ -323,6 +331,8 @@ def build_fasta_metadata(
             FastaMeta(
                 record_index=record_index,
                 header=header,
+                record_start_offset=record_start_offset,
+                record_end_offset=record_end_offset,
                 accession=accession,
                 range_text=str(parsed["range_text"]),
                 begin=begin,
@@ -453,23 +463,20 @@ def failure_row(gene_id: str, failure_type: str, message: str) -> dict[str, obje
     }
 
 
-def iter_fasta_sequences(path: Path):
+def read_fasta_sequence_slice(path: Path, start_offset: int, end_offset: int) -> str:
     header = None
     seq_parts: list[str] = []
-    record_index = 0
-    with path.open() as handle:
-        for line in handle:
-            line = line.rstrip("\n")
+    with path.open("rb") as handle:
+        handle.seek(start_offset)
+        data = handle.read(end_offset - start_offset).decode("utf-8").splitlines()
+        for line in data:
             if line.startswith(">"):
-                if header is not None:
-                    yield record_index, header, "".join(seq_parts)
-                record_index += 1
                 header = line[1:]
-                seq_parts = []
             elif header is not None:
                 seq_parts.append(line.strip())
-        if header is not None:
-            yield record_index, header, "".join(seq_parts)
+    if header is None:
+        raise ValueError(f"No FASTA header found at byte offset {start_offset} in {path}")
+    return "".join(seq_parts)
 
 
 def reverse_complement(seq: str) -> str:
@@ -518,7 +525,9 @@ def write_sequences(
     ortholog_handles: dict[str, gzip.GzipFile] = {}
 
     try:
-        for record_index, _header, seq in iter_fasta_sequences(gene_fna):
+        for record_index in sorted(set(target_by_index) | set(ortholog_by_index)):
+            record = target_by_index.get(record_index) or ortholog_by_index[record_index]
+            seq = read_fasta_sequence_slice(gene_fna, record.record_start_offset, record.record_end_offset)
             if record_index in target_by_index:
                 record = target_by_index[record_index]
                 output_seq = reverse_complement(seq) if record.is_complement else seq

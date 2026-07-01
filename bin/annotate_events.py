@@ -2,12 +2,13 @@
 """Annotate TSV variants with ClinVar and gnomAD."""
 
 import argparse
+import bisect
 import csv
 import gzip
 import logging
 import sys
 import concurrent.futures
-from collections import Counter
+from collections import Counter, defaultdict
 from pathlib import Path
 
 # Add bin to path so we can import fetch_gnomad_variants
@@ -124,10 +125,32 @@ def load_target_contexts(genes_tsv: Path | None, target_sequences_dir: Path | No
                 "chrom": normalize_chrom(row["chromosome"]) or _refseq_accession_to_gnomad_chrom(row["genomic_accession"]),
                 "begin": int(row["begin"]),
                 "end": int(row["end"]),
-                "seq": read_fasta_sequence(fasta_path),
+                "fasta_path": fasta_path,
             }
     logger.info(f"Loaded target context for {len(contexts)} gene(s).")
     return contexts
+
+
+def context_sequence(context: dict) -> str:
+    seq = context.get("seq")
+    if seq is None:
+        seq = read_fasta_sequence(context["fasta_path"])
+        context["seq"] = seq
+    return seq
+
+
+def build_context_index(contexts: dict[str, dict]) -> dict[str, tuple[list[dict], list[int]]]:
+    by_chrom: dict[str, list[dict]] = defaultdict(list)
+    for context in contexts.values():
+        chrom = context.get("chrom")
+        if chrom:
+            by_chrom[chrom].append(context)
+
+    index: dict[str, tuple[list[dict], list[int]]] = {}
+    for chrom, rows in by_chrom.items():
+        rows.sort(key=lambda row: (int(row["begin"]), int(row["end"]), row["gene_id"]))
+        index[chrom] = (rows, [int(row["begin"]) for row in rows])
+    return index
 
 
 def normalize_vcf_key_for_context(
@@ -142,7 +165,7 @@ def normalize_vcf_key_for_context(
     if not ref or not alt:
         return None, "empty_vcf_allele"
 
-    seq = context["seq"]
+    seq = context_sequence(context)
     pos0 = pos - int(context["begin"])
     if pos0 < 0 or pos0 + len(ref) > len(seq):
         return None, "out_of_target"
@@ -180,7 +203,7 @@ def event_vcf_key(row: dict, contexts: dict[str, dict]) -> tuple[tuple[str, int,
     except ValueError:
         return raw_key, "bad_target_position"
 
-    seq = context["seq"]
+    seq = context_sequence(context)
     event_type = row.get("event_type", "")
     ref = row.get("ref", "").upper()
     alt = row.get("alt", "").upper()
@@ -210,12 +233,14 @@ def event_vcf_key(row: dict, contexts: dict[str, dict]) -> tuple[tuple[str, int,
     return (normalized or raw_key), status
 
 
-def contexts_for_variant(contexts: dict[str, dict], chrom: str, pos: int) -> list[dict]:
-    matches = []
-    for context in contexts.values():
-        if context["chrom"] == chrom and int(context["begin"]) <= pos <= int(context["end"]):
-            matches.append(context)
-    return matches
+def contexts_for_variant(
+    context_index: dict[str, tuple[list[dict], list[int]]],
+    chrom: str,
+    pos: int,
+) -> list[dict]:
+    rows, starts = context_index.get(chrom, ([], []))
+    limit = bisect.bisect_right(starts, pos)
+    return [context for context in rows[:limit] if int(context["end"]) >= pos]
 
 
 def add_annotation_cache_entry(
@@ -223,11 +248,12 @@ def add_annotation_cache_entry(
     key: tuple[str, int, str, str],
     value,
     contexts: dict[str, dict],
+    context_index: dict[str, tuple[list[dict], list[int]]],
     status_counts: Counter,
 ) -> None:
     cache[key] = value
     chrom, pos, ref, alt = key
-    matched_contexts = contexts_for_variant(contexts, chrom, pos)
+    matched_contexts = contexts_for_variant(context_index, chrom, pos)
     if not matched_contexts:
         status_counts["raw_no_context"] += 1
         return
@@ -255,6 +281,7 @@ def build_clinvar_cache(
     clinvar,
     accession_positions: dict[str, set[int]],
     contexts: dict[str, dict],
+    context_index: dict[str, tuple[list[dict], list[int]]],
 ) -> dict[tuple[str, int, str, str], tuple[str, str, str]]:
     cache = {}
     if clinvar is None:
@@ -277,6 +304,7 @@ def build_clinvar_cache(
                             (chrom, rec.pos, rec.ref, alt),
                             (clin_sig, clin_rev, clin_id),
                             contexts,
+                            context_index,
                             status_counts,
                         )
             except ValueError:
@@ -291,10 +319,10 @@ def main():
     args.outdir.mkdir(parents=True, exist_ok=True)
     out_tsv = args.outdir / "alignment_events_annotated.tsv.gz"
     contexts = load_target_contexts(args.genes_tsv, args.target_sequences_dir)
+    context_index = build_context_index(contexts)
     
     # 1. Read variants to find regions to query
-    accession_positions = {}
-    rows = []
+    accession_positions = defaultdict(set)
     event_key_status_counts = Counter()
     with gzip.open(args.events_tsv, "rt") as f:
         reader = csv.DictReader(f, delimiter="\t")
@@ -304,12 +332,9 @@ def main():
         if missing:
             raise ValueError(f"Events table missing required columns: {', '.join(sorted(missing))}")
         for row in reader:
-            rows.append(row)
             acc = row["genomic_accession"]
             if acc:
                 pos = int(row["genomic_start1"])
-                if acc not in accession_positions:
-                    accession_positions[acc] = set()
                 accession_positions[acc].add(pos)
                 lookup_key, status = event_vcf_key(row, contexts)
                 event_key_status_counts[status] += 1
@@ -342,7 +367,14 @@ def main():
                 vars_list = future.result()
                 for v in vars_list:
                     key = (v["chrom"], int(v["pos"]), v["ref"], v["alt"])
-                    add_annotation_cache_entry(gnomad_cache, key, v, contexts, gnomad_key_status_counts)
+                    add_annotation_cache_entry(
+                        gnomad_cache,
+                        key,
+                        v,
+                        contexts,
+                        context_index,
+                        gnomad_key_status_counts,
+                    )
             except Exception as exc:
                 logger.error(f"gnomAD fetch failed for {task}: {exc}")
 
@@ -358,7 +390,7 @@ def main():
         clinvar = pysam.VariantFile(str(args.clinvar_vcf))
     else:
         logger.warning("No clinvar VCF provided. ClinVar annotation will be empty.")
-    clinvar_cache = build_clinvar_cache(clinvar, accession_positions, contexts)
+    clinvar_cache = build_clinvar_cache(clinvar, accession_positions, contexts, context_index)
     logger.info(f"Cached {len(clinvar_cache)} ClinVar variants.")
 
     # 5. Annotate rows
@@ -370,39 +402,40 @@ def main():
     with gzip.open(out_tsv, "wt", newline="") as out:
         writer = csv.DictWriter(out, fieldnames=new_header, delimiter="\t", lineterminator="\n")
         writer.writeheader()
-        
-        for row in rows:
-            lookup_key, _ = event_vcf_key(row, contexts)
-            
-            clin_sig = ""
-            clin_rev = ""
-            clin_id = ""
-            gnom_af = ""
-            gnom_src = ""
-            gnom_csq = ""
-            
-            # ClinVar Lookup
-            if lookup_key:
-                clin_sig, clin_rev, clin_id = clinvar_cache.get(lookup_key, ("", "", ""))
-                    
-            # gnomAD Lookup
-            if lookup_key:
-                if lookup_key in gnomad_cache:
+
+        with gzip.open(args.events_tsv, "rt") as f:
+            reader = csv.DictReader(f, delimiter="\t")
+            for row in reader:
+                lookup_key, _ = event_vcf_key(row, contexts)
+
+                clin_sig = ""
+                clin_rev = ""
+                clin_id = ""
+                gnom_af = ""
+                gnom_src = ""
+                gnom_csq = ""
+
+                # ClinVar Lookup
+                if lookup_key:
+                    clin_sig, clin_rev, clin_id = clinvar_cache.get(lookup_key, ("", "", ""))
+
+                # gnomAD Lookup
+                if lookup_key and lookup_key in gnomad_cache:
                     v = gnomad_cache[lookup_key]
                     af, af_src, _, _, _, _, _ = _select_af_metrics(v)
                     gnom_af = f"{af:.6g}" if af is not None else ""
                     gnom_src = af_src or ""
                     gnom_csq = v.get("consequence", "")
-            
-            new_row = dict(row)
-            new_row["clinvar_sig"] = clin_sig
-            new_row["clinvar_revstat"] = clin_rev
-            new_row["clinvar_id"] = clin_id
-            new_row["gnomad_af"] = gnom_af
-            new_row["gnomad_af_source"] = gnom_src
-            new_row["gnomad_csq"] = gnom_csq
-            
-            writer.writerow(new_row)
+
+                new_row = dict(row)
+                new_row["clinvar_sig"] = clin_sig
+                new_row["clinvar_revstat"] = clin_rev
+                new_row["clinvar_id"] = clin_id
+                new_row["gnomad_af"] = gnom_af
+                new_row["gnomad_af_source"] = gnom_src
+                new_row["gnomad_csq"] = gnom_csq
+
+                writer.writerow(new_row)
             
     logger.info(f"Saved annotated events to {out_tsv}")
 

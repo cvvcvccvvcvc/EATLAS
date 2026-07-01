@@ -68,6 +68,10 @@ empty rather than failing.
 strategies. When using remote Ensembl FTP sources, keep
 `--ensembl_compara_maf_max_forks` conservative.
 
+Large runs can enable `--compact_alignment_events true` to publish unique event
+support rows instead of raw per-support event rows. Raw remains the default
+because it preserves maximum traceability.
+
 ## Taxonomy Presets
 
 Taxonomy enrichment uses the offline class dictionary published in
@@ -132,6 +136,11 @@ candidate MAF chunks for one gene and clips evidence to the target interval
 before writing normalized Stage 2 tables. Full MAF chunks are not published as
 durable outputs.
 
+The MAF chunk manifest can be supplied with `--ensembl_compara_maf_manifest` or
+`ENSEMBL_COMPARA_MAF_MANIFEST`. If neither is set, the workflow checks
+`assets/reference/ensembl_compara/release-<release>/<species_set>/ensembl_compara_maf_manifest.tsv.gz`;
+if that file is absent, it builds the manifest during the run.
+
 This strategy is not based on NCBI ortholog GeneIDs. Its support unit is the
 species row in the precomputed MSA. Consequently, `ortholog_gene_id` contains
 the species name for this strategy, and support-count reports should interpret
@@ -150,7 +159,7 @@ Stage 2 publishes:
 | `ortholog_alignment_summary.tsv.gz` | One row per gene/ortholog/output strategy when that strategy emits summary evidence. |
 | `alignment_segments.tsv.gz` | Normalized alignment intervals. |
 | `feature_coverage.tsv.gz` | Per-gene, per-strategy coverage and depth over target structural intervals. |
-| `alignment_events.tsv.gz` | Raw mismatch/indel events normalized to target coordinates. |
+| `alignment_events.tsv.gz` | Raw mismatch/indel events normalized to target coordinates by default; unique event support rows when `--compact_alignment_events true`. |
 | `failures.tsv.gz` | Alignment-stage failures. |
 | `native/` | Optional raw PAF/delta/coords/snps files when enabled. |
 

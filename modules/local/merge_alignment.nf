@@ -24,6 +24,7 @@ process MERGE_ALIGNMENT {
     script:
     def resultDirList = result_dirs instanceof List ? result_dirs : [result_dirs]
     def resultDirArgs = resultDirList.collect { "--result-dir \"${it}\"" }.join(' ')
+    def compactEventsArg = params.compact_alignment_events ? "--compact-events" : ""
     """
     python3 "${merge_script}" \\
         --alignment-tasks "${alignment_tasks}" \\
@@ -31,6 +32,7 @@ process MERGE_ALIGNMENT {
         --taxonomy-failures "${taxonomy_failures}" \\
         --target-features "${target_features}" \\
         --outdir . \\
+        ${compactEventsArg} \\
         ${resultDirArgs}
     """
 }

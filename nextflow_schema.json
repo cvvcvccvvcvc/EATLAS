@@ -100,6 +100,11 @@
                     "default": 2,
                     "description": "Maximum concurrent tasks per alignment strategy process. With multiple strategies selected, total alignment concurrency can be higher and is also bounded by executor CPU/queue limits."
                 },
+                "compact_alignment_events": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Write final alignment_events.tsv.gz as unique event support rows instead of raw per-ortholog/per-strategy event rows. Raw remains the default."
+                },
                 "keep_native_alignments": {
                     "type": "boolean",
                     "default": false
@@ -129,6 +134,10 @@
                     "type": "string",
                     "default": "EPO_EXTENDED",
                     "description": "Compara method label written to alignment output metadata."
+                },
+                "ensembl_compara_maf_manifest": {
+                    "type": "string",
+                    "description": "Optional precomputed Ensembl Compara MAF chunk manifest. Defaults to ENSEMBL_COMPARA_MAF_MANIFEST when set, then assets/reference/ensembl_compara/release-<release>/<species_set>/ensembl_compara_maf_manifest.tsv.gz when present; otherwise the manifest is built during the run."
                 },
                 "ensembl_compara_maf_base_url": {
                     "type": "string",

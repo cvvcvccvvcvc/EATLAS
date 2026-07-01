@@ -187,10 +187,22 @@ workflow ALIGNMENT_STAGE {
     }
 
     if (SELECTED_ALIGNMENT_STRATEGIES.contains('precomputed_ensembl_92_mammals_epo_extended')) {
-        BUILD_ENSEMBL_COMPARA_MAF_MANIFEST(genes, ensembl_compara_maf_manifest_script)
+        default_maf_manifest = file("${projectDir}/assets/reference/ensembl_compara/release-${params.ensembl_compara_maf_release}/${params.ensembl_compara_maf_species_set}/ensembl_compara_maf_manifest.tsv.gz")
+        configured_maf_manifest = params.ensembl_compara_maf_manifest ? file(params.ensembl_compara_maf_manifest) : null
+        if (configured_maf_manifest && !configured_maf_manifest.exists()) {
+            error "Configured Ensembl Compara MAF manifest not found: ${params.ensembl_compara_maf_manifest}"
+        }
+        if (configured_maf_manifest) {
+            maf_manifest = Channel.value(configured_maf_manifest)
+        } else if (default_maf_manifest.exists()) {
+            maf_manifest = Channel.value(default_maf_manifest)
+        } else {
+            BUILD_ENSEMBL_COMPARA_MAF_MANIFEST(genes, ensembl_compara_maf_manifest_script)
+            maf_manifest = BUILD_ENSEMBL_COMPARA_MAF_MANIFEST.out.maf_manifest
+        }
         ALIGN_ENSEMBL_COMPARA_MAF(
             task_dirs,
-            BUILD_ENSEMBL_COMPARA_MAF_MANIFEST.out.maf_manifest,
+            maf_manifest,
             ensembl_compara_maf_script
         )
         alignment_result_dirs = alignment_result_dirs.mix(ALIGN_ENSEMBL_COMPARA_MAF.out.ensembl_compara_maf_result_dirs.map { meta, dir -> dir })

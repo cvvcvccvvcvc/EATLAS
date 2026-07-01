@@ -29,11 +29,16 @@ Set persistent local paths once through environment variables when needed:
 ```bash
 export DATASETS_BIN=/path/to/datasets
 export GAPH_TARGET_ANNOTATION_GFF3=/path/to/GCF_000001405.40/genomic.gff
+export ENSEMBL_COMPARA_MAF_MANIFEST=/path/to/ensembl_compara_maf_manifest.tsv.gz
 export CLINVAR_VCF=/path/to/clinvar.vcf.gz
 ```
 
 If `--target_annotation_gff3` and `GAPH_TARGET_ANNOTATION_GFF3` are unset, the
 fetch stage uses `assets/reference/GCF_000001405.40/genomic.gff`.
+If `--ensembl_compara_maf_manifest` and `ENSEMBL_COMPARA_MAF_MANIFEST` are
+unset, the precomputed Ensembl strategy uses the matching manifest under
+`assets/reference/ensembl_compara/` when present, otherwise it builds one during
+the run.
 If `--clinvar_vcf` and `CLINVAR_VCF` are unset, annotation uses
 `assets/clinvar.vcf.gz` when present, otherwise the empty
 `assets/no_clinvar.vcf` placeholder.
@@ -119,7 +124,8 @@ Alignment outputs:
 - `alignment/ortholog_alignment_summary.tsv.gz` - one row per gene/ortholog/strategy.
 - `alignment/alignment_segments.tsv.gz` - normalized alignment intervals.
 - `alignment/feature_coverage.tsv.gz` - coverage/depth by target feature and strategy.
-- `alignment/alignment_events.tsv.gz` - raw mismatch/indel evidence.
+- `alignment/alignment_events.tsv.gz` - raw mismatch/indel evidence by default;
+  unique event support rows with `--compact_alignment_events true`.
 - `alignment/failures.tsv.gz` - alignment-stage failures.
 
 Annotation outputs:

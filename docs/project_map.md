@@ -81,12 +81,13 @@ runs.
 - `bin/merge_alignment_results.py`
   - merges per-gene/per-strategy alignment evidence tables
   - intersects target features with alignment segments for coverage/depth summaries
+  - can write compact event support rows when `--compact_alignment_events true`
   - copies optional native outputs only when enabled
 
 - `bin/annotate_events.py`
   - normalizes alignment events to VCF-style keys using target context
   - annotates events with ClinVar when a VCF is configured
-  - fetches gnomAD regions through the live API and caches them in memory for one run
+  - streams event rows and fetches gnomAD regions through the live API for one run
 
 ## Output Boundary
 
@@ -113,3 +114,6 @@ Temporary files that must not be treated as final outputs:
 This repository uses Nextflow for orchestration and Python for small parsing
 utilities. Keep that separation: Nextflow owns task graph, resources, retry, and
 resume; Python owns deterministic file parsing and table generation.
+
+See `docs/pipeline_scaling_notes.md` for known scaling risks and future
+large-run refactoring directions.
