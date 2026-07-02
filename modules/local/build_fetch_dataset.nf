@@ -13,6 +13,7 @@ process BUILD_FETCH_DATASET {
     path "input.ids.tsv", emit: input_ids
     path "chunks.tsv", emit: chunks
     path "genes.tsv.gz", emit: genes
+    path "chunk_metrics.tsv.gz", emit: chunk_metrics
     path "target_features.tsv.gz", emit: target_features
     path "orthologs.selected.tsv.gz", emit: orthologs_selected
     path "orthologs.candidates.tsv.gz", emit: orthologs_candidates

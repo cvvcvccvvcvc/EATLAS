@@ -33,6 +33,7 @@ HEADER_LOC_RE = re.compile(r"^(?P<acc>[^:\s]+):(?P<complement>c?)(?P<a>\d+)-(?P<
 TSV_NULL = ""
 FASTA_WIDTH = 80
 TARGET_SEQUENCE_ORIENTATION = "plus"
+SEQUENCE_GZIP_COMPRESSLEVEL = 3
 
 
 @dataclass
@@ -619,7 +620,7 @@ def write_sequences(
                 if handle is None:
                     path = outdir / "sequences" / "targets" / f"{record.gene_id}.fa.gz"
                     path.parent.mkdir(parents=True, exist_ok=True)
-                    handle = gzip.open(path, "wt")
+                    handle = gzip.open(path, "wt", compresslevel=SEQUENCE_GZIP_COMPRESSLEVEL)
                     target_handles[record.gene_id] = handle
                 row = report_by_gene_id.get(record.gene_id, {})
                 handle.write(f">{fasta_header_target(record, row, target_assembly_accession, target_assembly_name)}\n")
@@ -632,7 +633,7 @@ def write_sequences(
                 if handle is None:
                     path = outdir / "sequences" / "orthologs" / f"{record.query_gene_id}.fa.gz"
                     path.parent.mkdir(parents=True, exist_ok=True)
-                    handle = gzip.open(path, "wt")
+                    handle = gzip.open(path, "wt", compresslevel=SEQUENCE_GZIP_COMPRESSLEVEL)
                     ortholog_handles[record.query_gene_id] = handle
                 handle.write(f">{fasta_header_ortholog(record)}\n")
                 handle.write(wrap_fasta(seq))
@@ -917,6 +918,7 @@ def main() -> None:
         "request_stagger_wait_seconds": ncbi_request_wait_seconds,
         "download_retries": args.download_retries,
         "download_retry_base_seconds": args.download_retry_base_seconds,
+        "sequence_gzip_compresslevel": SEQUENCE_GZIP_COMPRESSLEVEL,
         "package_sha256": package_sha256,
         "dataset_catalog": catalog,
     }

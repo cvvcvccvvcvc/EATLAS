@@ -128,6 +128,7 @@ workflow FETCH_STAGE {
     manifest = BUILD_FETCH_DATASET.out.manifest
     input_ids = BUILD_FETCH_DATASET.out.input_ids
     chunks = BUILD_FETCH_DATASET.out.chunks
+    chunk_metrics = BUILD_FETCH_DATASET.out.chunk_metrics
     genes = BUILD_FETCH_DATASET.out.genes
     target_features = BUILD_FETCH_DATASET.out.target_features
     orthologs_selected = BUILD_FETCH_DATASET.out.orthologs_selected
