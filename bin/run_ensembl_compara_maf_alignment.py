@@ -7,9 +7,12 @@ import argparse
 import csv
 import gzip
 import json
+import os
+import shutil
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
@@ -166,6 +169,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--timeout", type=float, default=120.0)
     parser.add_argument("--retries", type=int, default=3)
     parser.add_argument("--candidate-neighbors", type=int, default=1)
+    parser.add_argument("--maf-cache-dir", type=Path)
     return parser.parse_args()
 
 
@@ -236,12 +240,78 @@ def truthy(value: str) -> bool:
     return str(value).lower() in {"1", "true", "yes", "y"}
 
 
-def open_maf_text(source: str, timeout: float) -> TextIO:
-    if source.startswith(("http://", "https://")):
+def is_remote_source(source: str) -> bool:
+    return source.startswith(("http://", "https://"))
+
+
+def maf_source_name(source: str) -> str:
+    if is_remote_source(source):
+        return Path(urllib.parse.urlparse(source).path).name
+    return Path(source).name
+
+
+def validate_gzip(path: Path) -> None:
+    with gzip.open(path, "rb") as handle:
+        while handle.read(1024 * 1024):
+            pass
+
+
+def download_and_validate_maf(source: str, cache_dir: Path, timeout: float) -> Path:
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    file_name = maf_source_name(source)
+    if not file_name:
+        raise ValueError(f"Could not derive MAF file name from source: {source}")
+    target = cache_dir / file_name
+    ok_marker = cache_dir / f"{file_name}.ok"
+    if target.exists() and ok_marker.exists() and ok_marker.stat().st_mtime >= target.stat().st_mtime:
+        return target
+    if target.exists():
+        validate_gzip(target)
+        ok_marker.write_text("ok\n")
+        return target
+
+    tmp = cache_dir / f".{file_name}.{os.getpid()}.part"
+    try:
         request = urllib.request.Request(source, headers={"User-Agent": "gaph-ensembl-compara-maf/0.1"})
+        with urllib.request.urlopen(request, timeout=timeout) as response, tmp.open("wb") as handle:
+            shutil.copyfileobj(response, handle, length=1024 * 1024)
+        validate_gzip(tmp)
+        os.replace(tmp, target)
+        ok_marker.write_text("ok\n")
+        return target
+    except Exception:
+        tmp.unlink(missing_ok=True)
+        target.unlink(missing_ok=True)
+        ok_marker.unlink(missing_ok=True)
+        raise
+
+
+def resolve_maf_source(source: str, args: argparse.Namespace) -> Path | str:
+    if is_remote_source(source) and args.maf_cache_dir:
+        return download_and_validate_maf(source, args.maf_cache_dir, args.timeout)
+    return source
+
+
+def open_maf_text(source: Path | str, timeout: float) -> TextIO:
+    source_text = str(source)
+    if is_remote_source(source_text):
+        request = urllib.request.Request(source_text, headers={"User-Agent": "gaph-ensembl-compara-maf/0.1"})
         response = urllib.request.urlopen(request, timeout=timeout)
         return gzip.open(response, "rt")
-    return gzip.open(source, "rt")
+    return gzip.open(source_text, "rt")
+
+
+def retryable_maf_error(exc: Exception) -> bool:
+    return isinstance(
+        exc,
+        (
+            EOFError,
+            gzip.BadGzipFile,
+            urllib.error.URLError,
+            TimeoutError,
+            OSError,
+        ),
+    )
 
 
 def iter_maf_blocks(handle: TextIO) -> Iterable[list[MafSequence]]:
@@ -708,7 +778,9 @@ def scan_source(
     last_error: Exception | None = None
     for attempt in range(1, args.retries + 1):
         try:
-            with open_maf_text(source, args.timeout) as handle:
+            resolved_source = resolve_maf_source(source, args)
+            source_name = maf_source_name(source)
+            with open_maf_text(resolved_source, args.timeout) as handle:
                 for block in iter_maf_blocks(handle):
                     block_count += 1
                     human_rows = [row for row in block if row.src == human_src]
@@ -733,7 +805,7 @@ def scan_source(
                             empty_summary(args, query_row, target_end1 - target_origin1 + 1),
                         )
                         summary["gene_id"] = gene_id
-                        native_record_id = f"{Path(source).name}:block{block_count}:row{query_index}"
+                        native_record_id = f"{source_name}:block{block_count}:row{query_index}"
                         event_id = convert_pair(
                             args,
                             gene_id,
@@ -749,12 +821,14 @@ def scan_source(
                             event_writer,
                         )
             return event_id, used_block_count, row_count
-        except (urllib.error.URLError, TimeoutError, OSError) as exc:
+        except Exception as exc:
+            if not retryable_maf_error(exc):
+                raise
             last_error = exc
             if attempt < args.retries:
                 time.sleep(2.0 * attempt)
                 continue
-            raise RuntimeError(f"Could not scan MAF source {source}: {exc}") from exc
+            raise RuntimeError(f"Could not scan MAF source {source}: {type(exc).__name__}: {exc}") from exc
     raise RuntimeError(f"Could not scan MAF source {source}: {last_error}")
 
 

@@ -19,6 +19,7 @@ process ALIGN_ENSEMBL_COMPARA_MAF {
         --strategy precomputed_ensembl_92_mammals_epo_extended \\
         --release "${params.ensembl_compara_maf_release}" \\
         --species-set "${params.ensembl_compara_maf_species_set}" \\
-        --method "${params.ensembl_compara_maf_method}"
+        --method "${params.ensembl_compara_maf_method}" \\
+        --maf-cache-dir "${params.ensembl_compara_maf_cache_dir}"
     """
 }
