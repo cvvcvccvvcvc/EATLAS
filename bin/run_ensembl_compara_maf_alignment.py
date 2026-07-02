@@ -7,8 +7,6 @@ import argparse
 import csv
 import gzip
 import json
-import os
-import shutil
 import sys
 import time
 import urllib.error
@@ -169,7 +167,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--timeout", type=float, default=120.0)
     parser.add_argument("--retries", type=int, default=3)
     parser.add_argument("--candidate-neighbors", type=int, default=1)
-    parser.add_argument("--maf-cache-dir", type=Path)
     return parser.parse_args()
 
 
@@ -250,55 +247,12 @@ def maf_source_name(source: str) -> str:
     return Path(source).name
 
 
-def validate_gzip(path: Path) -> None:
-    with gzip.open(path, "rb") as handle:
-        while handle.read(1024 * 1024):
-            pass
-
-
-def download_and_validate_maf(source: str, cache_dir: Path, timeout: float) -> Path:
-    cache_dir.mkdir(parents=True, exist_ok=True)
-    file_name = maf_source_name(source)
-    if not file_name:
-        raise ValueError(f"Could not derive MAF file name from source: {source}")
-    target = cache_dir / file_name
-    ok_marker = cache_dir / f"{file_name}.ok"
-    if target.exists() and ok_marker.exists() and ok_marker.stat().st_mtime >= target.stat().st_mtime:
-        return target
-    if target.exists():
-        validate_gzip(target)
-        ok_marker.write_text("ok\n")
-        return target
-
-    tmp = cache_dir / f".{file_name}.{os.getpid()}.part"
-    try:
+def open_maf_text(source: str, timeout: float) -> TextIO:
+    if is_remote_source(source):
         request = urllib.request.Request(source, headers={"User-Agent": "gaph-ensembl-compara-maf/0.1"})
-        with urllib.request.urlopen(request, timeout=timeout) as response, tmp.open("wb") as handle:
-            shutil.copyfileobj(response, handle, length=1024 * 1024)
-        validate_gzip(tmp)
-        os.replace(tmp, target)
-        ok_marker.write_text("ok\n")
-        return target
-    except Exception:
-        tmp.unlink(missing_ok=True)
-        target.unlink(missing_ok=True)
-        ok_marker.unlink(missing_ok=True)
-        raise
-
-
-def resolve_maf_source(source: str, args: argparse.Namespace) -> Path | str:
-    if is_remote_source(source) and args.maf_cache_dir:
-        return download_and_validate_maf(source, args.maf_cache_dir, args.timeout)
-    return source
-
-
-def open_maf_text(source: Path | str, timeout: float) -> TextIO:
-    source_text = str(source)
-    if is_remote_source(source_text):
-        request = urllib.request.Request(source_text, headers={"User-Agent": "gaph-ensembl-compara-maf/0.1"})
         response = urllib.request.urlopen(request, timeout=timeout)
         return gzip.open(response, "rt")
-    return gzip.open(source_text, "rt")
+    return gzip.open(source, "rt")
 
 
 def retryable_maf_error(exc: Exception) -> bool:
@@ -778,9 +732,8 @@ def scan_source(
     last_error: Exception | None = None
     for attempt in range(1, args.retries + 1):
         try:
-            resolved_source = resolve_maf_source(source, args)
             source_name = maf_source_name(source)
-            with open_maf_text(resolved_source, args.timeout) as handle:
+            with open_maf_text(source, args.timeout) as handle:
                 for block in iter_maf_blocks(handle):
                     block_count += 1
                     human_rows = [row for row in block if row.src == human_src]

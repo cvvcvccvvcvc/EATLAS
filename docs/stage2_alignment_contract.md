@@ -133,22 +133,15 @@ precomputed whole-genome MSA blocks overlapping the human target gene interval
 ```
 
 The workflow first builds a small run-specific MAF chunk manifest for the human
-chromosomes present in `genes.tsv.gz`. One alignment task then reads the
+chromosomes present in `genes.tsv.gz`. One alignment task then streams the
 candidate MAF chunks for one gene and clips evidence to the target interval
-before writing normalized Stage 2 tables. Remote MAF chunks are downloaded into
-a local cache with atomic writes and gzip validation before parsing. Full MAF
-chunks are not published as durable outputs.
+before writing normalized Stage 2 tables. Transient network and truncated-gzip
+read failures are retried. Full MAF chunks are not published as durable outputs.
 
 The MAF chunk manifest can be supplied with `--ensembl_compara_maf_manifest` or
 `ENSEMBL_COMPARA_MAF_MANIFEST`. If neither is set, the workflow checks
 `assets/reference/ensembl/compara/release-<release>/<species_set>/ensembl_compara_maf_manifest.tsv.gz`;
 if that file is absent, it builds the manifest during the run.
-
-Remote MAF chunks are cached under
-`--ensembl_compara_maf_cache_dir`, defaulting to
-`assets/reference/ensembl/compara/release-<release>/<species_set>/maf_files`.
-The cache prevents repeated network reads of the same chunk, but it can grow by
-hundreds of MB per human chromosome region touched by a run.
 
 This strategy is not based on NCBI ortholog GeneIDs. Its support unit is the
 species row in the precomputed MSA. Consequently, `ortholog_gene_id` contains
@@ -216,7 +209,7 @@ are removed unless `--keep_native_alignments true` is set.
 Durable output is limited to compressed normalized TSV files so large runs do
 not duplicate sequence data and native aligner output in `results/`.
 
-For precomputed MAF strategies, the source MAF files are cached/read from a
+For precomputed MAF strategies, the source MAF files are streamed or read from a
 configured local directory. They are treated as external inputs/cache, not final
 pipeline results.
 
