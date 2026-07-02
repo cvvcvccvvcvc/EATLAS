@@ -75,11 +75,12 @@ def main() -> None:
             require_executable("nucmer", args.nucmer_bin, errors)
             require_executable("show-coords", args.show_coords_bin, errors)
             require_executable("show-snps", args.show_snps_bin, errors)
-        if "bwa_pseudoreads" in strategies:
+        if strategies & {"bwa_pseudoreads", "bwa_pseudoreads_varscan"}:
             require_python_module("pysam", errors)
             require_python_module("bam_filtering_v1", errors)
             require_executable("bwa", args.bwa_bin, errors)
             require_executable("samtools", args.samtools_bin, errors)
+        if "bwa_pseudoreads_varscan" in strategies:
             require_varscan(args.varscan_jar, errors)
 
     if args.stage in {"all", "annotate"}:

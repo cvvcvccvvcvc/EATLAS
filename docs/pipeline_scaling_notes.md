@@ -49,24 +49,28 @@ This keeps memory bounded and avoids a single huge `alignment_events.tsv.gz`.
 
 ## BWA Pseudoreads
 
-`bwa_pseudoreads` is intentionally left out of the current cleanup. It currently
-does more temporary I/O than the other aligners:
+The BWA pseudoread strategies still do more compute work than the other local
+aligners because they generate synthetic reads, build a per-gene BWA index, run
+BWA, sort/index BAM, and apply the LIS BAM filter.
 
-- copies the whole task directory into the output directory;
-- generates pseudoreads;
-- builds a BWA index per task;
-- writes SAM, BAM, sorted BAM, BAM index, mpileup, and VarScan VCF files;
-- emits two event streams: `bwa_pseudoreads_pysam` and
-  `bwa_pseudoreads_varscan`.
+Current behavior:
+
+- `bwa_pseudoreads` and `bwa_pseudoreads_varscan` are separate selectable
+  strategies;
+- VarScan is required only when `bwa_pseudoreads_varscan` is selected;
+- `bwa mem` is streamed through `samtools view` and `samtools sort`, avoiding
+  durable SAM and unsorted BAM intermediates;
+- native BAM, mpileup, and VCF files are kept only with
+  `--keep_native_alignments true`;
+- normalized segments, summaries, events, failures, and manifest files are
+  emitted like the other aligner strategies.
 
 Future direction:
 
-- make the module write to `--outdir` like the other aligner scripts instead of
-  copying the task directory;
-- stream `bwa mem` into `samtools view/sort` to avoid durable SAM and unsorted
-  BAM intermediates;
-- make VarScan optional as a separate strategy or submode;
-- write normalized summaries/segments consistently with other strategies.
+- avoid rebuilding the BWA target index when many strategies or repeated runs
+  reuse the same target sequence;
+- evaluate whether pseudoread generation can be made sparser for long genes
+  without losing sensitivity at exon/feature boundaries.
 
 ## Ensembl Compara MAF Manifest
 

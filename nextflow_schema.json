@@ -115,6 +115,36 @@
                     "type": "boolean",
                     "default": false
                 },
+                "bwa_pseudoread_len": {
+                    "type": "integer",
+                    "default": 75,
+                    "description": "Pseudo-read length used by the BWA pseudoread strategies."
+                },
+                "bwa_pseudoread_step": {
+                    "type": "integer",
+                    "default": 35,
+                    "description": "Step size between generated pseudo-read starts for the BWA pseudoread strategies."
+                },
+                "bwa_pseudoread_phred": {
+                    "type": "integer",
+                    "default": 30,
+                    "description": "Synthetic PHRED quality assigned to generated BWA pseudo-reads."
+                },
+                "bwa_varscan_min_coverage": {
+                    "type": "integer",
+                    "default": 2,
+                    "description": "VarScan --min-coverage value used by the bwa_pseudoreads_varscan strategy."
+                },
+                "bwa_varscan_min_reads2": {
+                    "type": "integer",
+                    "default": 1,
+                    "description": "VarScan --min-reads2 value used by the bwa_pseudoreads_varscan strategy."
+                },
+                "bwa_varscan_min_var_freq": {
+                    "type": "number",
+                    "default": 0.01,
+                    "description": "VarScan --min-var-freq value used by the bwa_pseudoreads_varscan strategy."
+                },
                 "ensembl_compara_maf_max_forks": {
                     "type": "integer",
                     "default": 1,

@@ -44,7 +44,8 @@ strategy, not a hard-coded command-line list.
 | `minimap2_asm20` | minimap2 | More permissive fixed minimap2 preset. |
 | `minimap2_taxonomy_adaptive` | minimap2 | Preset chosen from NCBI taxonomy summary. |
 | `nucmer` | MUMmer/nucmer | Independent comparator using multi-query nucmer output. |
-| `bwa_pseudoreads` | BWA/samtools/pysam/VarScan | Pseudoread comparator that emits `bwa_pseudoreads_pysam` and, when available, `bwa_pseudoreads_varscan` evidence rows. |
+| `bwa_pseudoreads` | BWA/samtools/pysam | Pseudoread comparator that maps generated ortholog pseudo-reads to the target and extracts BAM/CIGAR-supported events. |
+| `bwa_pseudoreads_varscan` | BWA/samtools/VarScan | Uses the same BWA pseudoread alignment preparation, then calls variants with VarScan. This strategy is selected independently and is the only BWA mode that requires VarScan. |
 | `precomputed_ensembl_92_mammals_epo_extended` | Ensembl Compara MAF | Uses release-pinned precomputed `92_mammals.epo_extended` whole-genome MSA blocks overlapping the human target gene interval. |
 
 No LASTZ, consensus calling, or production variant filtering is part of Stage 2.
@@ -57,6 +58,7 @@ Example selections:
 --alignment_strategies all
 --alignment_strategies minimap2_asm20
 --alignment_strategies minimap2_asm10,nucmer
+--alignment_strategies bwa_pseudoreads,bwa_pseudoreads_varscan
 --alignment_strategies minimap2_asm20,precomputed_ensembl_92_mammals_epo_extended
 ```
 

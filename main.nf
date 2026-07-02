@@ -8,6 +8,7 @@ AVAILABLE_ALIGNMENT_STRATEGIES = [
     'minimap2_taxonomy_adaptive',
     'nucmer',
     'bwa_pseudoreads',
+    'bwa_pseudoreads_varscan',
     'precomputed_ensembl_92_mammals_epo_extended',
 ]
 
@@ -186,8 +187,11 @@ workflow ALIGNMENT_STAGE {
         alignment_result_dirs = alignment_result_dirs.mix(ALIGN_NUCMER_COMPARATOR.out.nucmer_result_dirs.map { meta, dir -> dir })
     }
 
-    if (SELECTED_ALIGNMENT_STRATEGIES.contains('bwa_pseudoreads')) {
-        ALIGN_BWA_PSEUDOREADS(task_dirs, bwa_script, bam_filtering_script)
+    selected_bwa_strategies = SELECTED_ALIGNMENT_STRATEGIES.findAll {
+        ['bwa_pseudoreads', 'bwa_pseudoreads_varscan'].contains(it)
+    }
+    if (selected_bwa_strategies) {
+        ALIGN_BWA_PSEUDOREADS(task_dirs, bwa_script, bam_filtering_script, selected_bwa_strategies.join(','))
         alignment_result_dirs = alignment_result_dirs.mix(ALIGN_BWA_PSEUDOREADS.out.bwa_result_dirs.map { meta, dir -> dir })
     }
 
