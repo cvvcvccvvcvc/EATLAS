@@ -71,13 +71,15 @@ nextflow run . \
 Conservative starting parameters:
 
 ```bash
---chunk_size 10 --fetch_max_forks 5 --fetch_request_stagger_seconds 5 --alignment_max_forks 2
+--chunk_size 10 --fetch_max_forks 2 --fetch_request_stagger_seconds 5 --alignment_max_forks 2
 ```
 
 `fetch_max_forks` controls local fetch concurrency. `fetch_request_stagger_seconds`
 spaces out the starts of NCBI Datasets download requests so concurrent tasks do
-not all submit at the same instant. Tune these only after measuring disk,
-runtime, NCBI behavior, and alignment task memory on the target cluster.
+not all submit at the same instant. `fetch_download_retries` handles transient
+NCBI stream resets inside one fetch task before Nextflow sees a failure. Tune
+these only after measuring disk, runtime, NCBI behavior, and alignment task
+memory on the target cluster.
 
 In the `slurm` profile, `executor.queueSize` limits how many jobs Nextflow keeps
 submitted to Slurm at once. It does not affect local runs, task CPU count, or

@@ -21,10 +21,14 @@ Required:
 Optional operational parameters:
 - `--outdir`: final output directory.
 - `--chunk_size`: accepted IDs per NCBI package request.
-- `--fetch_max_forks`: max concurrent NCBI fetch/parse tasks. Default is 5.
+- `--fetch_max_forks`: max concurrent NCBI fetch/parse tasks. Default is 2.
 - `--fetch_request_stagger_seconds`: minimum spacing between starts of NCBI
   Datasets download requests across concurrent local fetch tasks. Default is
   5 seconds.
+- `--fetch_download_retries`: in-process retries for transient NCBI Datasets
+  download failures. Default is 4.
+- `--fetch_download_retry_base_seconds`: base exponential backoff interval for
+  NCBI Datasets download retries. Default is 30 seconds.
 - `--datasets_bin`: path/name for the NCBI Datasets CLI. Defaults to
   `DATASETS_BIN`, then `tools/bin/datasets` when present, otherwise `datasets`
   on `PATH`.

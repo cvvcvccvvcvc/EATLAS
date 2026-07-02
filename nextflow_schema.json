@@ -93,13 +93,23 @@
             "properties": {
                 "fetch_max_forks": {
                     "type": "integer",
-                    "default": 5,
+                    "default": 2,
                     "description": "Maximum concurrent NCBI fetch/parse tasks."
                 },
                 "fetch_request_stagger_seconds": {
                     "type": "integer",
                     "default": 5,
                     "description": "Minimum spacing between starts of NCBI Datasets download requests across concurrent local fetch tasks."
+                },
+                "fetch_download_retries": {
+                    "type": "integer",
+                    "default": 4,
+                    "description": "Number of in-process retries for transient NCBI Datasets download failures before the fetch chunk fails."
+                },
+                "fetch_download_retry_base_seconds": {
+                    "type": "integer",
+                    "default": 30,
+                    "description": "Base exponential backoff interval in seconds for NCBI Datasets download retries."
                 },
                 "alignment_max_forks": {
                     "type": "integer",

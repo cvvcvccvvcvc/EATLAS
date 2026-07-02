@@ -11,6 +11,7 @@ import gzip
 import hashlib
 import json
 import os
+import random
 import re
 import shutil
 import subprocess
@@ -72,6 +73,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--target-tax-id", required=True)
     parser.add_argument("--request-stagger-seconds", type=float, default=0.0)
     parser.add_argument("--request-throttle-dir", type=Path)
+    parser.add_argument("--download-retries", type=int, default=4)
+    parser.add_argument("--download-retry-base-seconds", type=float, default=30.0)
     return parser.parse_args()
 
 
@@ -175,7 +178,7 @@ def datasets_version(datasets_bin: str) -> str:
     return (result.stdout or result.stderr).strip()
 
 
-def download_package(datasets_bin: str, ids_file: Path, zip_path: Path) -> None:
+def run_datasets_download(datasets_bin: str, ids_file: Path, zip_path: Path) -> subprocess.CompletedProcess:
     cmd = [
         datasets_bin,
         "download",
@@ -195,13 +198,48 @@ def download_package(datasets_bin: str, ids_file: Path, zip_path: Path) -> None:
     if api_key:
         cmd.extend(["--api-key", api_key])
 
-    result = subprocess.run(cmd, text=True, capture_output=True)
-    if result.returncode != 0:
+    return subprocess.run(cmd, text=True, capture_output=True)
+
+
+def download_package(
+    datasets_bin: str,
+    ids_file: Path,
+    zip_path: Path,
+    retries: int,
+    retry_base_seconds: float,
+) -> None:
+    attempts = max(1, retries + 1)
+    last_result: subprocess.CompletedProcess | None = None
+    for attempt in range(1, attempts + 1):
+        if zip_path.exists():
+            zip_path.unlink()
+        result = run_datasets_download(datasets_bin, ids_file, zip_path)
+        last_result = result
+        if result.returncode == 0:
+            return
+
         if result.stdout:
             print(result.stdout, file=sys.stderr)
         if result.stderr:
             print(result.stderr, file=sys.stderr)
-        raise RuntimeError(f"datasets download failed with exit code {result.returncode}")
+        if attempt >= attempts:
+            break
+
+        wait_seconds = retry_base_seconds * (2 ** (attempt - 1))
+        wait_seconds += random.uniform(0, retry_base_seconds * 0.25)
+        print(
+            f"datasets download failed with exit code {result.returncode}; "
+            f"retrying attempt {attempt + 1}/{attempts} after {wait_seconds:.1f}s",
+            file=sys.stderr,
+            flush=True,
+        )
+        time.sleep(wait_seconds)
+
+    result = last_result
+    if result is None:
+        raise RuntimeError("datasets download did not run")
+    if result.returncode != 0:
+        raise RuntimeError(f"datasets download failed after {attempts} attempts with exit code {result.returncode}")
 
 
 def extract_package(zip_path: Path, extract_dir: Path) -> tuple[Path, Path, Path | None]:
@@ -724,7 +762,13 @@ def main() -> None:
             args.request_stagger_seconds,
         )
     with time_step(timings, "download_package"):
-        download_package(datasets_bin, args.ids_file, zip_path)
+        download_package(
+            datasets_bin,
+            args.ids_file,
+            zip_path,
+            retries=args.download_retries,
+            retry_base_seconds=args.download_retry_base_seconds,
+        )
     with time_step(timings, "extract_package"):
         report_path, gene_fna, catalog_path = extract_package(zip_path, extract_dir)
 
@@ -871,6 +915,8 @@ def main() -> None:
         "ncbi_contact_email_configured": env_configured("NCBI_EMAIL", "ENTREZ_EMAIL"),
         "request_stagger_seconds": args.request_stagger_seconds,
         "request_stagger_wait_seconds": ncbi_request_wait_seconds,
+        "download_retries": args.download_retries,
+        "download_retry_base_seconds": args.download_retry_base_seconds,
         "package_sha256": package_sha256,
         "dataset_catalog": catalog,
     }
