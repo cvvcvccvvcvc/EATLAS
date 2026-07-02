@@ -73,7 +73,7 @@ Control peak disk with:
 Recommended starting point for large runs:
 
 ```bash
---chunk_size 10 --fetch_max_forks 5 --fetch_request_stagger_seconds 10
+--chunk_size 10 --fetch_max_forks 5 --fetch_request_stagger_seconds 5
 ```
 
 Lower `--fetch_max_forks` if the target cluster, network, scratch filesystem, or
