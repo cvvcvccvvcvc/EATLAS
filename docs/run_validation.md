@@ -47,8 +47,9 @@ When neither `--target_annotation_gff3` nor `GAPH_TARGET_ANNOTATION_GFF3` is
 set, fetch uses
 `assets/reference/ncbi/refseq/GCF_000001405.40_GRCh38.p14/genomic.gff.gz`.
 When neither `--clinvar_vcf` nor `CLINVAR_VCF` is set, annotation uses
-`assets/reference/clinvar/clinvar.vcf.gz` if present and indexed. If no ClinVar
-VCF is configured, ClinVar evidence is skipped.
+`assets/reference/clinvar/clinvar.vcf.gz` if present and indexed. ClinVar is
+required for annotation, so the workflow fails early when no VCF and matching
+`.tbi` are available.
 
 The NCBI Datasets CLI is resolved as `DATASETS_BIN`, then
 `tools/bin/datasets` when present, then `datasets` on `PATH`.
@@ -150,7 +151,9 @@ Alignment expected properties:
 
 Annotation expected properties:
 - `annotation/alignment_events_annotated.tsv.gz` exists for end-to-end runs.
-- `clinvar_*` columns are empty when no ClinVar VCF was configured.
+- `annotation/manifest.json` records row counts, source metadata, and annotation counters.
+- `annotation/failures.tsv.gz` records non-fatal external lookup failures.
+- `clinvar_*` columns are present and populated when matching ClinVar records exist.
 - `gnomad_*` columns are populated only for events found in fetched gnomAD regions.
 
 ## Quick Checks

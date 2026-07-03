@@ -53,8 +53,9 @@ unset, the precomputed Ensembl strategy uses the matching manifest under
 `assets/reference/ensembl/compara/` when present, otherwise it builds one during
 the run.
 If `--clinvar_vcf` and `CLINVAR_VCF` are unset, annotation uses
-`assets/reference/clinvar/clinvar.vcf.gz` when present. If no ClinVar VCF is
-configured, ClinVar evidence is skipped instead of using a placeholder file.
+`assets/reference/clinvar/clinvar.vcf.gz` when present. Annotation requires a
+ClinVar VCF and matching `.tbi`; the workflow fails early when neither the
+parameter, environment variable, nor default asset is available.
 
 For Slurm, use the same workflow with the `slurm` profile and put `work/` on
 scratch storage:
@@ -145,6 +146,8 @@ Alignment outputs:
 Annotation outputs:
 
 - `annotation/alignment_events_annotated.tsv.gz` - alignment events plus ClinVar and gnomAD annotation columns.
+- `annotation/manifest.json` - annotation input, source, row-count, cache, and diagnostic counters.
+- `annotation/failures.tsv.gz` - non-fatal external annotation lookup failures, such as gnomAD region fetch errors.
 
 The target assembly is fixed to GRCh38.p14 (`GCF_000001405.40`). Ortholog
 retrieval always uses the complete NCBI ortholog set (`--ortholog all`).

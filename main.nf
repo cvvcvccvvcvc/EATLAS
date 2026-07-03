@@ -42,7 +42,7 @@ def resolveClinvarInputs() {
         selectedVcf = file(assetClinvar).exists() ? assetClinvar : null
     }
     if (!selectedVcf) {
-        return [enabled: false, vcf: null, tbi: null, path: null]
+        error "ClinVar VCF is required for annotation. Pass --clinvar_vcf, set CLINVAR_VCF, or place the file at assets/reference/clinvar/clinvar.vcf.gz"
     }
     def selectedTbi = "${selectedVcf}.tbi"
     if (!file(selectedVcf).exists()) {
@@ -51,7 +51,7 @@ def resolveClinvarInputs() {
     if (!file(selectedTbi).exists()) {
         error "ClinVar VCF index not found: ${selectedTbi}. Place the .tbi next to the VCF."
     }
-    return [enabled: true, vcf: file(selectedVcf), tbi: file(selectedTbi), path: selectedVcf]
+    return [vcf: file(selectedVcf), tbi: file(selectedTbi), path: selectedVcf]
 }
 
 // Print help message
@@ -99,7 +99,7 @@ include { ALIGN_NUCMER_COMPARATOR } from './modules/local/align_nucmer_comparato
 include { ALIGN_BWA_PSEUDOREADS } from './modules/local/align_bwa_pseudoreads.nf'
 include { BUILD_ENSEMBL_COMPARA_MAF_MANIFEST } from './modules/local/build_ensembl_compara_maf_manifest.nf'
 include { ALIGN_ENSEMBL_COMPARA_MAF } from './modules/local/align_ensembl_compara_maf.nf'
-include { ANNOTATE_EVENTS; ANNOTATE_EVENTS_WITH_CLINVAR } from './modules/local/annotate_events.nf'
+include { ANNOTATE_EVENTS } from './modules/local/annotate_events.nf'
 
 workflow FETCH_STAGE {
     take:
@@ -263,29 +263,17 @@ workflow ANNOTATION_STAGE {
     events_tsv
     genes_tsv
     sequences_dir
-
-    main:
-    annotate_script = file("${projectDir}/bin/annotate_events.py")
-    ANNOTATE_EVENTS(events_tsv, genes_tsv, sequences_dir, annotate_script)
-
-    emit:
-    annotated_events = ANNOTATE_EVENTS.out.annotated_events
-}
-
-workflow ANNOTATION_STAGE_WITH_CLINVAR {
-    take:
-    events_tsv
-    genes_tsv
-    sequences_dir
     clinvar_vcf
     clinvar_vcf_tbi
 
     main:
     annotate_script = file("${projectDir}/bin/annotate_events.py")
-    ANNOTATE_EVENTS_WITH_CLINVAR(events_tsv, genes_tsv, sequences_dir, annotate_script, clinvar_vcf, clinvar_vcf_tbi)
+    ANNOTATE_EVENTS(events_tsv, genes_tsv, sequences_dir, annotate_script, clinvar_vcf, clinvar_vcf_tbi)
 
     emit:
-    annotated_events = ANNOTATE_EVENTS_WITH_CLINVAR.out.annotated_events
+    annotated_events = ANNOTATE_EVENTS.out.annotated_events
+    manifest = ANNOTATE_EVENTS.out.manifest
+    failures = ANNOTATE_EVENTS.out.failures
 }
 
 workflow {
@@ -294,11 +282,7 @@ workflow {
 
     if (params.stage == 'all') {
         clinvar_inputs = resolveClinvarInputs()
-        if (clinvar_inputs.enabled) {
-            log.info "Using ClinVar VCF: ${clinvar_inputs.path}"
-        } else {
-            log.info "ClinVar VCF is not configured; ClinVar annotation will be skipped"
-        }
+        log.info "Using ClinVar VCF: ${clinvar_inputs.path}"
         FETCH_STAGE(file(params.ids_file))
         ALIGNMENT_STAGE(
             FETCH_STAGE.out.genes,
@@ -306,47 +290,27 @@ workflow {
             FETCH_STAGE.out.orthologs_selected,
             FETCH_STAGE.out.sequences
         )
-        if (clinvar_inputs.enabled) {
-            ANNOTATION_STAGE_WITH_CLINVAR(
-                ALIGNMENT_STAGE.out.events,
-                FETCH_STAGE.out.genes,
-                FETCH_STAGE.out.sequences,
-                clinvar_inputs.vcf,
-                clinvar_inputs.tbi
-            )
-        } else {
-            ANNOTATION_STAGE(
-                ALIGNMENT_STAGE.out.events,
-                FETCH_STAGE.out.genes,
-                FETCH_STAGE.out.sequences
-            )
-        }
+        ANNOTATION_STAGE(
+            ALIGNMENT_STAGE.out.events,
+            FETCH_STAGE.out.genes,
+            FETCH_STAGE.out.sequences,
+            clinvar_inputs.vcf,
+            clinvar_inputs.tbi
+        )
     } else if (params.stage == 'fetch') {
         FETCH_STAGE(file(params.ids_file))
     } else if (params.stage == 'align') {
         ALIGNMENT_STAGE_FROM_DIR()
     } else if (params.stage == 'annotate') {
         clinvar_inputs = resolveClinvarInputs()
-        if (clinvar_inputs.enabled) {
-            log.info "Using ClinVar VCF: ${clinvar_inputs.path}"
-        } else {
-            log.info "ClinVar VCF is not configured; ClinVar annotation will be skipped"
-        }
+        log.info "Using ClinVar VCF: ${clinvar_inputs.path}"
         fetch_dir = file(params.fetch_dir)
-        if (clinvar_inputs.enabled) {
-            ANNOTATION_STAGE_WITH_CLINVAR(
-                file(params.events_tsv),
-                file("${fetch_dir}/genes.tsv.gz"),
-                file("${fetch_dir}/sequences"),
-                clinvar_inputs.vcf,
-                clinvar_inputs.tbi
-            )
-        } else {
-            ANNOTATION_STAGE(
-                file(params.events_tsv),
-                file("${fetch_dir}/genes.tsv.gz"),
-                file("${fetch_dir}/sequences")
-            )
-        }
+        ANNOTATION_STAGE(
+            file(params.events_tsv),
+            file("${fetch_dir}/genes.tsv.gz"),
+            file("${fetch_dir}/sequences"),
+            clinvar_inputs.vcf,
+            clinvar_inputs.tbi
+        )
     }
 }

@@ -56,7 +56,7 @@
                 },
                 "clinvar_vcf": {
                     "type": "string",
-                    "description": "Path to ClinVar VCF file for annotation. Defaults to CLINVAR_VCF, then assets/reference/clinvar/clinvar.vcf.gz when present. If no ClinVar VCF is configured, ClinVar annotation is skipped."
+                    "description": "Path to ClinVar VCF file for annotation. Defaults to CLINVAR_VCF, then assets/reference/clinvar/clinvar.vcf.gz when present. ClinVar is required for annotation."
                 }
             }
         },
@@ -159,6 +159,26 @@
                     "type": "integer",
                     "default": 1,
                     "description": "Maximum concurrent Ensembl Compara MAF alignment tasks. Keep low for remote FTP streaming."
+                },
+                "ensembl_compara_maf_timeout_seconds": {
+                    "type": "integer",
+                    "default": 120,
+                    "description": "HTTP timeout in seconds for each Ensembl Compara MAF chunk request."
+                },
+                "ensembl_compara_maf_retries": {
+                    "type": "integer",
+                    "default": 3,
+                    "description": "Number of retries for transient Ensembl Compara MAF stream failures."
+                },
+                "ensembl_compara_maf_retry_base_seconds": {
+                    "type": "number",
+                    "default": 2.0,
+                    "description": "Initial retry backoff in seconds for transient Ensembl Compara MAF stream failures."
+                },
+                "ensembl_compara_maf_retry_max_seconds": {
+                    "type": "number",
+                    "default": 30.0,
+                    "description": "Maximum retry backoff in seconds for transient Ensembl Compara MAF stream failures."
                 }
             }
         },

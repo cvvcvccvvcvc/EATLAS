@@ -4,6 +4,7 @@
 import argparse
 import bisect
 import csv
+import json
 import gzip
 import logging
 import sys
@@ -14,7 +15,7 @@ from pathlib import Path
 # Add bin to path so we can import fetch_gnomad_variants
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 try:
-    from fetch_gnomad_variants import fetch_region_variants_recursive, _select_af_metrics
+    from fetch_gnomad_variants import GNOMAD_API_URL, fetch_region_variants_recursive, _select_af_metrics
 except ImportError as e:
     print(f"Error importing fetch_gnomad_variants: {e}")
     sys.exit(1)
@@ -28,12 +29,25 @@ except ImportError:
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 logger = logging.getLogger(__name__)
 
+ANNOTATION_COLUMNS = [
+    "clinvar_sig",
+    "clinvar_revstat",
+    "clinvar_id",
+    "gnomad_af",
+    "gnomad_af_source",
+    "gnomad_csq",
+]
+
+FAILURE_FIELDS = ["source", "scope", "chrom", "start", "end", "failure_type", "message"]
+GNOMAD_DATASET = "gnomad_r4"
+
+
 def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--events-tsv", required=True, type=Path)
     parser.add_argument("--genes-tsv", required=False, type=Path)
     parser.add_argument("--target-sequences-dir", required=False, type=Path)
-    parser.add_argument("--clinvar-vcf", required=False, type=Path)
+    parser.add_argument("--clinvar-vcf", required=True, type=Path)
     parser.add_argument("--outdir", required=True, type=Path)
     return parser.parse_args()
 
@@ -73,6 +87,44 @@ def cluster_positions(positions: list[int], max_gap: int = 100000) -> list[tuple
 
 def open_text(path: Path):
     return gzip.open(path, "rt") if str(path).endswith(".gz") else path.open()
+
+
+def write_tsv_gz(path: Path, fields: list[str], rows: list[dict]) -> int:
+    with gzip.open(path, "wt", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fields, delimiter="\t", lineterminator="\n")
+        writer.writeheader()
+        for row in rows:
+            writer.writerow({field: row.get(field, "") for field in fields})
+    return len(rows)
+
+
+def path_metadata(path: Path) -> dict[str, object]:
+    stat = path.stat()
+    return {
+        "path": str(path),
+        "size_bytes": stat.st_size,
+        "mtime": int(stat.st_mtime),
+    }
+
+
+def failure_row(
+    source: str,
+    scope: str,
+    chrom: str | None,
+    start: int | str | None,
+    end: int | str | None,
+    failure_type: str,
+    message: str,
+) -> dict[str, object]:
+    return {
+        "source": source,
+        "scope": scope,
+        "chrom": chrom or "",
+        "start": start if start is not None else "",
+        "end": end if end is not None else "",
+        "failure_type": failure_type,
+        "message": message,
+    }
 
 
 def read_fasta_sequence(path: Path) -> str:
@@ -282,14 +334,24 @@ def build_clinvar_cache(
     accession_positions: dict[str, set[int]],
     contexts: dict[str, dict],
     context_index: dict[str, tuple[list[dict], list[int]]],
-) -> dict[tuple[str, int, str, str], tuple[str, str, str]]:
+    failures: list[dict],
+) -> tuple[dict[tuple[str, int, str, str], tuple[str, str, str]], Counter]:
     cache = {}
-    if clinvar is None:
-        return cache
     status_counts = Counter()
     for acc, positions in accession_positions.items():
         chrom = _refseq_accession_to_gnomad_chrom(acc)
         if not chrom:
+            failures.append(
+                failure_row(
+                    "clinvar",
+                    "accession",
+                    "",
+                    "",
+                    "",
+                    "unknown_chrom",
+                    f"Could not map genomic accession to chromosome: {acc}",
+                )
+            )
             continue
         for start, end in cluster_positions(list(positions), max_gap=200000):
             try:
@@ -307,23 +369,37 @@ def build_clinvar_cache(
                             context_index,
                             status_counts,
                         )
-            except ValueError:
-                logger.warning(f"ClinVar contig not found for chrom={chrom}; skipping region {start}-{end}.")
+            except ValueError as exc:
+                message = f"ClinVar contig not found for chrom={chrom}; skipping region {start}-{end}."
+                logger.warning(message)
+                failures.append(
+                    failure_row("clinvar", "region", chrom, start, end, "contig_not_found", str(exc))
+                )
     if status_counts:
         logger.info(f"ClinVar key normalization status: {dict(status_counts)}")
-    return cache
+    return cache, status_counts
 
 
 def main():
     args = parse_args()
     args.outdir.mkdir(parents=True, exist_ok=True)
     out_tsv = args.outdir / "alignment_events_annotated.tsv.gz"
+    failures_tsv = args.outdir / "failures.tsv.gz"
+    manifest_json = args.outdir / "manifest.json"
+    if not args.clinvar_vcf.exists():
+        raise FileNotFoundError(f"ClinVar VCF not found: {args.clinvar_vcf}")
+    clinvar_tbi = Path(f"{args.clinvar_vcf}.tbi")
+    if not clinvar_tbi.exists():
+        raise FileNotFoundError(f"ClinVar VCF index not found: {clinvar_tbi}")
+
+    failures: list[dict] = []
     contexts = load_target_contexts(args.genes_tsv, args.target_sequences_dir)
     context_index = build_context_index(contexts)
     
     # 1. Read variants to find regions to query
     accession_positions = defaultdict(set)
     event_key_status_counts = Counter()
+    input_row_count = 0
     with gzip.open(args.events_tsv, "rt") as f:
         reader = csv.DictReader(f, delimiter="\t")
         header = reader.fieldnames
@@ -332,6 +408,7 @@ def main():
         if missing:
             raise ValueError(f"Events table missing required columns: {', '.join(sorted(missing))}")
         for row in reader:
+            input_row_count += 1
             acc = row["genomic_accession"]
             if acc:
                 pos = int(row["genomic_start1"])
@@ -356,6 +433,8 @@ def main():
     # 3. Fetch gnomAD in parallel and cache
     gnomad_cache = {}
     gnomad_key_status_counts = Counter()
+    gnomad_region_success_count = 0
+    gnomad_raw_variant_count = 0
     with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
         future_to_task = {
             executor.submit(fetch_gnomad_for_cluster, chrom, start, end): (chrom, start, end)
@@ -365,6 +444,8 @@ def main():
             task = future_to_task[future]
             try:
                 vars_list = future.result()
+                gnomad_region_success_count += 1
+                gnomad_raw_variant_count += len(vars_list)
                 for v in vars_list:
                     key = (v["chrom"], int(v["pos"]), v["ref"], v["alt"])
                     add_annotation_cache_entry(
@@ -377,27 +458,38 @@ def main():
                     )
             except Exception as exc:
                 logger.error(f"gnomAD fetch failed for {task}: {exc}")
+                chrom, start, end = task
+                failures.append(
+                    failure_row(
+                        "gnomad",
+                        "region",
+                        chrom,
+                        start,
+                        end,
+                        type(exc).__name__,
+                        str(exc),
+                    )
+                )
 
     logger.info(f"Cached {len(gnomad_cache)} gnomAD variants.")
     if gnomad_key_status_counts:
         logger.info(f"gnomAD key normalization status: {dict(gnomad_key_status_counts)}")
 
     # 4. Open ClinVar
-    clinvar = None
-    if args.clinvar_vcf:
-        if not args.clinvar_vcf.exists():
-            raise FileNotFoundError(f"ClinVar VCF not found: {args.clinvar_vcf}")
-        clinvar = pysam.VariantFile(str(args.clinvar_vcf))
-    else:
-        logger.warning("No clinvar VCF provided. ClinVar annotation will be empty.")
-    clinvar_cache = build_clinvar_cache(clinvar, accession_positions, contexts, context_index)
+    clinvar = pysam.VariantFile(str(args.clinvar_vcf))
+    clinvar_cache, clinvar_key_status_counts = build_clinvar_cache(
+        clinvar,
+        accession_positions,
+        contexts,
+        context_index,
+        failures,
+    )
     logger.info(f"Cached {len(clinvar_cache)} ClinVar variants.")
 
     # 5. Annotate rows
-    new_header = list(header) + [
-        "clinvar_sig", "clinvar_revstat", "clinvar_id",
-        "gnomad_af", "gnomad_af_source", "gnomad_csq"
-    ]
+    new_header = list(header) + ANNOTATION_COLUMNS
+    annotation_value_counts = Counter()
+    output_row_count = 0
     
     with gzip.open(out_tsv, "wt", newline="") as out:
         writer = csv.DictWriter(out, fieldnames=new_header, delimiter="\t", lineterminator="\n")
@@ -434,10 +526,39 @@ def main():
                 new_row["gnomad_af"] = gnom_af
                 new_row["gnomad_af_source"] = gnom_src
                 new_row["gnomad_csq"] = gnom_csq
+                for column in ANNOTATION_COLUMNS:
+                    if new_row[column]:
+                        annotation_value_counts[column] += 1
 
                 writer.writerow(new_row)
-            
+                output_row_count += 1
+
+    failure_count = write_tsv_gz(failures_tsv, FAILURE_FIELDS, failures)
+    manifest = {
+        "event_row_count": input_row_count,
+        "annotated_event_row_count": output_row_count,
+        "target_context_count": len(contexts),
+        "clinvar_vcf": path_metadata(args.clinvar_vcf),
+        "clinvar_tbi": path_metadata(clinvar_tbi),
+        "clinvar_cached_variant_count": len(clinvar_cache),
+        "gnomad_api_url": GNOMAD_API_URL,
+        "gnomad_dataset": GNOMAD_DATASET,
+        "gnomad_region_count": len(gnomad_tasks),
+        "gnomad_region_success_count": gnomad_region_success_count,
+        "gnomad_region_failure_count": len(gnomad_tasks) - gnomad_region_success_count,
+        "gnomad_raw_variant_count": gnomad_raw_variant_count,
+        "gnomad_cached_variant_count": len(gnomad_cache),
+        "failure_count": failure_count,
+        "annotation_nonempty_counts": dict(annotation_value_counts),
+        "event_key_status_counts": dict(event_key_status_counts),
+        "gnomad_key_status_counts": dict(gnomad_key_status_counts),
+        "clinvar_key_status_counts": dict(clinvar_key_status_counts),
+    }
+    manifest_json.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
+
     logger.info(f"Saved annotated events to {out_tsv}")
+    logger.info(f"Saved annotation failures to {failures_tsv}")
+    logger.info(f"Saved annotation manifest to {manifest_json}")
 
 if __name__ == "__main__":
     main()
