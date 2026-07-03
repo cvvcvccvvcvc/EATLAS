@@ -87,12 +87,15 @@ Agent workflow rules:
 14. Commit finished, narrow, verified changes directly once their scope is
     closed. Stage only the relevant files and use a message that names the
     user-facing purpose.
-15. Do not auto-commit broad, exploratory, cross-cutting, or partially
+15. Before committing a fix, manually run the narrowest realistic check that
+    exercises the changed behavior and verify it behaves as intended, not only
+    that it exits successfully. Report any skipped check in the final status.
+16. Do not auto-commit broad, exploratory, cross-cutting, or partially
     validated work. Leave it uncommitted with a clear status summary, or ask
     before committing when the boundary is unclear.
-16. Keep alignment and annotation as separate stages; `--stage align` must not
+17. Keep alignment and annotation as separate stages; `--stage align` must not
     trigger annotation.
-17. Put standalone experiments that build on the pipeline or its data under
+18. Put standalone experiments that build on the pipeline or its data under
     `experiments/<experiment_name>/` (create `experiments/` when needed). Keep
     each experiment's code, data, scratch files, reports, and generated outputs
     isolated inside that experiment directory unless an external scratch path is

@@ -136,7 +136,11 @@ The workflow first builds a small run-specific MAF chunk manifest for the human
 chromosomes present in `genes.tsv.gz`. One alignment task then streams the
 candidate MAF chunks for one gene and clips evidence to the target interval
 before writing normalized Stage 2 tables. Transient network and truncated-gzip
-read failures are retried. Full MAF chunks are not published as durable outputs.
+read failures are retried with block-level resume: already committed MAF blocks
+are skipped on the next attempt. If a source still cannot be fully read after
+all attempts, the task records a failure row and continues with the remaining
+sources so one unstable remote chunk does not abort the whole workflow. Full MAF
+chunks are not published as durable outputs.
 
 The MAF chunk manifest can be supplied with `--ensembl_compara_maf_manifest` or
 `ENSEMBL_COMPARA_MAF_MANIFEST`. If neither is set, the workflow checks

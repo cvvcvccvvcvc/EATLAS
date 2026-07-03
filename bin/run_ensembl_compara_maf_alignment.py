@@ -7,6 +7,7 @@ import argparse
 import csv
 import gzip
 import json
+import random
 import sys
 import time
 import urllib.error
@@ -96,6 +97,7 @@ FAILURE_FIELDS = ["gene_id", "ortholog_gene_id", "strategy", "tool", "failure_ty
 DNA_BASES = {"A", "C", "G", "T"}
 COMPLEMENT = str.maketrans("ACGTNacgtn", "TGCANtgcan")
 TOOL_NAME = "ensembl_compara_maf"
+OUTPUT_GZIP_COMPRESSLEVEL = 3
 
 
 @dataclass(frozen=True)
@@ -141,7 +143,7 @@ class AlignmentRow:
 class TsvGzWriter:
     def __init__(self, path: Path, fields: list[str]) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
-        self.handle = gzip.open(path, "wt", newline="")
+        self.handle = gzip.open(path, "wt", newline="", compresslevel=OUTPUT_GZIP_COMPRESSLEVEL)
         self.writer = csv.DictWriter(self.handle, fieldnames=fields, delimiter="\t", extrasaction="ignore")
         self.writer.writeheader()
         self.fields = fields
@@ -166,6 +168,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--method", default="EPO_EXTENDED")
     parser.add_argument("--timeout", type=float, default=120.0)
     parser.add_argument("--retries", type=int, default=3)
+    parser.add_argument("--retry-base-seconds", type=float, default=2.0)
+    parser.add_argument("--retry-max-seconds", type=float, default=30.0)
     parser.add_argument("--candidate-neighbors", type=int, default=1)
     return parser.parse_args()
 
@@ -183,7 +187,7 @@ def read_tsv_gz(path: Path) -> list[dict[str, str]]:
 def write_tsv_gz(path: Path, fields: list[str], rows: Iterable[dict[str, object]]) -> int:
     path.parent.mkdir(parents=True, exist_ok=True)
     count = 0
-    with gzip.open(path, "wt", newline="") as handle:
+    with gzip.open(path, "wt", newline="", compresslevel=OUTPUT_GZIP_COMPRESSLEVEL) as handle:
         writer = csv.DictWriter(handle, fieldnames=fields, delimiter="\t", extrasaction="ignore")
         writer.writeheader()
         for row in rows:
@@ -266,6 +270,39 @@ def retryable_maf_error(exc: Exception) -> bool:
             OSError,
         ),
     )
+
+
+def retry_sleep_seconds(args: argparse.Namespace, attempt: int) -> float:
+    base = max(float(args.retry_base_seconds), 0.0)
+    cap = max(float(args.retry_max_seconds), 0.0)
+    delay = min(cap, base * (2 ** max(attempt - 1, 0))) if cap else base
+    jitter = random.uniform(0.0, min(1.5, delay * 0.25)) if delay > 0 else 0.0
+    return delay + jitter
+
+
+def source_read_failure(
+    args: argparse.Namespace,
+    gene_id: str,
+    source: str,
+    attempts: int,
+    completed_block_count: int,
+    used_block_count: int,
+    exc: Exception | None,
+) -> dict[str, object]:
+    error_text = f"{type(exc).__name__}: {exc}" if exc else "unknown error"
+    return {
+        "gene_id": gene_id,
+        "ortholog_gene_id": "",
+        "strategy": args.strategy,
+        "tool": TOOL_NAME,
+        "failure_type": "maf_source_read_failed",
+        "message": (
+            f"{source} failed after {attempts} attempts; "
+            f"committed_blocks={completed_block_count}; "
+            f"used_blocks={used_block_count}; "
+            f"last_error={error_text}"
+        ),
+    }
 
 
 def iter_maf_blocks(handle: TextIO) -> Iterable[list[MafSequence]]:
@@ -725,40 +762,63 @@ def scan_source(
     segment_writer: TsvGzWriter,
     event_writer: TsvGzWriter,
     event_id: int,
-) -> tuple[int, int, int]:
-    block_count = 0
+) -> tuple[int, int, int, dict[str, object] | None]:
+    source_name = maf_source_name(source)
+    completed_block_count = 0
     used_block_count = 0
     row_count = 0
     last_error: Exception | None = None
-    for attempt in range(1, args.retries + 1):
+    attempts = max(int(args.retries), 1)
+    for attempt in range(1, attempts + 1):
+        current_block_count = 0
+        attempt_error: Exception | None = None
         try:
-            source_name = maf_source_name(source)
-            with open_maf_text(source, args.timeout) as handle:
-                for block in iter_maf_blocks(handle):
-                    block_count += 1
+            handle = open_maf_text(source, args.timeout)
+        except Exception as exc:
+            if not retryable_maf_error(exc):
+                raise
+            attempt_error = exc
+        else:
+            with handle:
+                block_iter = iter_maf_blocks(handle)
+                while True:
+                    try:
+                        block = next(block_iter)
+                    except StopIteration:
+                        return event_id, used_block_count, row_count, None
+                    except Exception as exc:
+                        if not retryable_maf_error(exc):
+                            raise
+                        attempt_error = exc
+                        break
+
+                    current_block_count += 1
+                    if current_block_count <= completed_block_count:
+                        continue
                     human_rows = [row for row in block if row.src == human_src]
                     if not human_rows:
+                        completed_block_count = current_block_count
                         continue
                     human_maf = human_rows[0]
                     human_start0, human_end0 = human_maf.forward_interval0()
                     if not overlaps(human_start0 + 1, human_end0, target_origin1, target_end1):
+                        completed_block_count = current_block_count
                         continue
-                    used_block_count += 1
                     flip_orientation = human_maf.strand == "-"
                     human_row = to_alignment_row(human_maf, flip_orientation)
+                    block_row_count = 0
                     for query_index, maf_row in enumerate(block, start=1):
                         if maf_row.src == human_src:
                             continue
                         query_row = to_alignment_row(maf_row, flip_orientation)
                         if is_ancestral(query_row):
                             continue
-                        row_count += 1
                         summary = summaries.setdefault(
                             query_row.species,
                             empty_summary(args, query_row, target_end1 - target_origin1 + 1),
                         )
                         summary["gene_id"] = gene_id
-                        native_record_id = f"{source_name}:block{block_count}:row{query_index}"
+                        native_record_id = f"{source_name}:block{current_block_count}:row{query_index}"
                         event_id = convert_pair(
                             args,
                             gene_id,
@@ -773,16 +833,35 @@ def scan_source(
                             segment_writer,
                             event_writer,
                         )
-            return event_id, used_block_count, row_count
-        except Exception as exc:
-            if not retryable_maf_error(exc):
-                raise
-            last_error = exc
-            if attempt < args.retries:
-                time.sleep(2.0 * attempt)
-                continue
-            raise RuntimeError(f"Could not scan MAF source {source}: {type(exc).__name__}: {exc}") from exc
-    raise RuntimeError(f"Could not scan MAF source {source}: {last_error}")
+                        block_row_count += 1
+                    used_block_count += 1
+                    row_count += block_row_count
+                    completed_block_count = current_block_count
+
+        if attempt_error is None:
+            continue
+        last_error = attempt_error
+        message = (
+            f"MAF source read attempt {attempt}/{attempts} failed for {source_name} "
+            f"after {completed_block_count} committed blocks: "
+            f"{type(attempt_error).__name__}: {attempt_error}"
+        )
+        print(message, file=sys.stderr)
+        if attempt < attempts:
+            time.sleep(retry_sleep_seconds(args, attempt))
+            continue
+        return (
+            event_id,
+            used_block_count,
+            row_count,
+            source_read_failure(args, gene_id, source, attempts, completed_block_count, used_block_count, attempt_error),
+        )
+    return (
+        event_id,
+        used_block_count,
+        row_count,
+        source_read_failure(args, gene_id, source, attempts, completed_block_count, used_block_count, last_error),
+    )
 
 
 def main() -> None:
@@ -805,6 +884,7 @@ def main() -> None:
     failures: list[dict[str, object]] = []
     summaries: dict[str, dict[str, object]] = {}
     source_count = 0
+    source_failure_count = 0
     used_block_count = 0
     alignment_row_count = 0
     event_id = 1
@@ -834,7 +914,7 @@ def main() -> None:
         for candidate in candidates:
             source = candidate["source"]
             source_count += 1
-            event_id, block_delta, row_delta = scan_source(
+            event_id, block_delta, row_delta, source_failure = scan_source(
                 source,
                 human_src,
                 args,
@@ -849,6 +929,9 @@ def main() -> None:
             )
             used_block_count += block_delta
             alignment_row_count += row_delta
+            if source_failure:
+                failures.append(source_failure)
+                source_failure_count += 1
     except Exception as exc:
         failures.append(
             {
@@ -865,6 +948,10 @@ def main() -> None:
         segment_writer.close()
         event_writer.close()
 
+    if source_failure_count:
+        for summary in summaries.values():
+            summary["qc_flags"].add("maf_source_read_failed")
+
     summary_rows = [finalize_summary(row) for row in summaries.values()]
     write_tsv_gz(args.outdir / "ortholog_alignment_summary.tsv.gz", SUMMARY_FIELDS, summary_rows)
     write_tsv_gz(args.outdir / "failures.tsv.gz", FAILURE_FIELDS, failures)
@@ -875,12 +962,14 @@ def main() -> None:
         "release": args.release,
         "species_set": args.species_set,
         "method": args.method,
+        "output_gzip_compresslevel": OUTPUT_GZIP_COMPRESSLEVEL,
         "human_src": human_src,
         "genomic_accession": genomic_accession,
         "target_start1": target_origin1,
         "target_end1": target_end1,
         "target_length": target_length,
         "candidate_source_count": source_count,
+        "source_failure_count": source_failure_count,
         "used_block_count": used_block_count,
         "alignment_row_count": alignment_row_count,
         "summary_count": len(summary_rows),
