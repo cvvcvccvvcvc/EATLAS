@@ -332,6 +332,17 @@ def manifest_strategies(manifests: list[dict]) -> list[str]:
     return sorted(strategies)
 
 
+def manifest_gene_ids(manifests: list[dict]) -> list[str]:
+    gene_ids: set[str] = set()
+    for manifest in manifests:
+        if manifest.get("gene_id"):
+            gene_ids.add(str(manifest["gene_id"]))
+        for gene_id in manifest.get("gene_ids", []) or []:
+            if gene_id:
+                gene_ids.add(str(gene_id))
+    return sorted(gene_ids, key=lambda value: int(value) if value.isdigit() else value)
+
+
 def main() -> None:
     args = parse_args()
     args.outdir.mkdir(parents=True, exist_ok=True)
@@ -384,7 +395,7 @@ def main() -> None:
     native_file_count = copy_native(result_dirs, args.outdir)
     manifests = load_manifests(result_dirs)
     strategies = manifest_strategies(manifests)
-    gene_ids = sorted({str(manifest.get("gene_id", "")) for manifest in manifests if manifest.get("gene_id")})
+    gene_ids = manifest_gene_ids(manifests)
 
     manifest = {
         "created_at": utc_now(),

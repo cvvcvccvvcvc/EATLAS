@@ -157,8 +157,8 @@
                 },
                 "ensembl_compara_maf_max_forks": {
                     "type": "integer",
-                    "default": 1,
-                    "description": "Maximum concurrent Ensembl Compara MAF alignment tasks. Keep low for remote FTP streaming."
+                    "default": 3,
+                    "description": "Maximum concurrent Ensembl Compara MAF alignment tasks."
                 },
                 "ensembl_compara_maf_timeout_seconds": {
                     "type": "integer",

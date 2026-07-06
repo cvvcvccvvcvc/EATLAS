@@ -67,8 +67,9 @@ or report layers must treat cross-strategy-only sections as not applicable or
 empty rather than failing.
 
 `all` means every registered strategy, including precomputed alignment
-strategies. When using remote Ensembl FTP sources, keep
-`--ensembl_compara_maf_max_forks` conservative.
+strategies. Remote Ensembl MAF chunk tasks default to
+`--ensembl_compara_maf_max_forks 3`; increase it only after checking network
+stability.
 
 Large runs can enable `--compact_alignment_events true` to publish unique event
 support rows instead of raw per-support event rows. Raw remains the default

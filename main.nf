@@ -116,6 +116,8 @@ include { ALIGN_NUCMER_COMPARATOR } from './modules/local/align_nucmer_comparato
 include { ALIGN_BWA_PSEUDOREADS } from './modules/local/align_bwa_pseudoreads.nf'
 include { BUILD_ENSEMBL_COMPARA_MAF_MANIFEST } from './modules/local/build_ensembl_compara_maf_manifest.nf'
 include { ALIGN_ENSEMBL_COMPARA_MAF } from './modules/local/align_ensembl_compara_maf.nf'
+include { BUILD_ENSEMBL_COMPARA_MAF_CHUNK_TASKS } from './modules/local/build_ensembl_compara_maf_chunk_tasks.nf'
+include { ALIGN_ENSEMBL_COMPARA_MAF_CHUNK } from './modules/local/align_ensembl_compara_maf_chunk.nf'
 include { ANNOTATE_EVENTS } from './modules/local/annotate_events.nf'
 
 workflow FETCH_STAGE {
@@ -171,6 +173,8 @@ workflow ALIGNMENT_STAGE {
     bam_filtering_script = file("${projectDir}/bin/bam_filtering_v1.py")
     ensembl_compara_maf_manifest_script = file("${projectDir}/bin/build_ensembl_compara_maf_manifest.py")
     ensembl_compara_maf_script = file("${projectDir}/bin/run_ensembl_compara_maf_alignment.py")
+    ensembl_compara_maf_chunk_tasks_script = file("${projectDir}/bin/prepare_ensembl_compara_maf_chunk_tasks.py")
+    ensembl_compara_maf_chunk_script = file("${projectDir}/bin/run_ensembl_compara_maf_chunk_alignment.py")
     merge_script = file("${projectDir}/bin/merge_alignment_results.py")
 
     FETCH_TAXONOMY_PRESETS(orthologs_selected, taxonomy_script, taxonomy_classes)
@@ -239,12 +243,20 @@ workflow ALIGNMENT_STAGE {
             BUILD_ENSEMBL_COMPARA_MAF_MANIFEST(genes, ensembl_compara_maf_manifest_script)
             maf_manifest = BUILD_ENSEMBL_COMPARA_MAF_MANIFEST.out.maf_manifest
         }
-        ALIGN_ENSEMBL_COMPARA_MAF(
-            task_dirs,
+        BUILD_ENSEMBL_COMPARA_MAF_CHUNK_TASKS(
+            task_dirs.map { meta, dir -> dir }.collect(),
             maf_manifest,
-            ensembl_compara_maf_script
+            ensembl_compara_maf_chunk_tasks_script
         )
-        alignment_result_dirs = alignment_result_dirs.mix(ALIGN_ENSEMBL_COMPARA_MAF.out.ensembl_compara_maf_result_dirs.map { meta, dir -> dir })
+        maf_chunk_task_dirs = BUILD_ENSEMBL_COMPARA_MAF_CHUNK_TASKS.out.chunk_task_dirs.flatten().map { dir ->
+            tuple([id: dir.baseName], dir)
+        }
+        ALIGN_ENSEMBL_COMPARA_MAF_CHUNK(
+            maf_chunk_task_dirs,
+            ensembl_compara_maf_chunk_script,
+            target_features
+        )
+        alignment_result_dirs = alignment_result_dirs.mix(ALIGN_ENSEMBL_COMPARA_MAF_CHUNK.out.ensembl_compara_maf_result_dirs.map { meta, dir -> dir })
     }
 
     MERGE_ALIGNMENT(
