@@ -155,11 +155,11 @@ Alignment expected properties:
 - `alignment/native/` is absent unless `--keep_native_alignments true` was used.
 
 Annotation expected properties:
-- `annotation/alignment_events_annotated.tsv.gz` exists for end-to-end runs.
-- `annotation/manifest.json` records row counts, source metadata, and annotation counters.
+- `annotation/variant_annotations.tsv.gz` exists for end-to-end runs.
+- `annotation/manifest.json` records event and unique variant-context row counts, source metadata, and annotation counters.
 - `annotation/failures.tsv.gz` records non-fatal external lookup failures.
 - `clinvar_*` columns are present and populated when matching ClinVar records exist.
-- `gnomad_*` columns are populated only for events found in fetched gnomAD regions.
+- `gnomad_*` columns are populated only for variants found in fetched gnomAD regions.
 
 ## Quick Checks
 

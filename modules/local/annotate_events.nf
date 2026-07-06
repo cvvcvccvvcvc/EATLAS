@@ -10,7 +10,7 @@ process ANNOTATE_EVENTS {
     path clinvar_vcf_tbi
 
     output:
-    path "alignment_events_annotated.tsv.gz", emit: annotated_events
+    path "variant_annotations.tsv.gz", emit: variant_annotations
     path "manifest.json", emit: manifest
     path "failures.tsv.gz", emit: failures
 

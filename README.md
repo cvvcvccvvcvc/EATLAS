@@ -145,7 +145,7 @@ Alignment outputs:
 
 Annotation outputs:
 
-- `annotation/alignment_events_annotated.tsv.gz` - alignment events plus ClinVar and gnomAD annotation columns.
+- `annotation/variant_annotations.tsv.gz` - unique variant-context rows with ClinVar and gnomAD annotation columns.
 - `annotation/manifest.json` - annotation input, source, row-count, cache, and diagnostic counters.
 - `annotation/failures.tsv.gz` - non-fatal external annotation lookup failures, such as gnomAD region fetch errors.
 

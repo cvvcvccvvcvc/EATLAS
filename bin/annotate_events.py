@@ -29,17 +29,85 @@ except ImportError:
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 logger = logging.getLogger(__name__)
 
-ANNOTATION_COLUMNS = [
+CLINVAR_COLUMNS = [
     "clinvar_sig",
     "clinvar_revstat",
+    "clinvar_review_stars",
+    "clinvar_review_stars_status",
     "clinvar_id",
+    "clinvar_allele_id",
+    "clinvar_sig_conflict",
+    "clinvar_scv_count",
+    "clinvar_scv_accessions",
+    "clinvar_hgvs",
+    "clinvar_geneinfo",
+    "clinvar_disease",
+    "clinvar_disease_db",
+    "clinvar_variant_type",
+    "clinvar_variant_type_so",
+    "clinvar_origin",
+    "clinvar_rs",
+]
+
+GNOMAD_COLUMNS = [
     "gnomad_af",
     "gnomad_af_source",
     "gnomad_csq",
+    "gnomad_variant_id",
+    "gnomad_af_exome",
+    "gnomad_af_genome",
+    "gnomad_af_joint",
+    "gnomad_ac_joint",
+    "gnomad_an_joint",
+    "gnomad_hgvsc",
+    "gnomad_hgvsp",
+]
+
+ANNOTATION_COLUMNS = CLINVAR_COLUMNS + GNOMAD_COLUMNS
+
+VARIANT_ANNOTATION_FIELDS = [
+    "variant_key",
+    "gene_id",
+    "event_type",
+    "target_start0",
+    "target_end0",
+    "genomic_accession",
+    "genomic_start1",
+    "genomic_end1",
+    "ref",
+    "alt",
+    "lookup_chrom",
+    "lookup_pos",
+    "lookup_ref",
+    "lookup_alt",
+    "lookup_status",
+    "support_row_count",
+    "support_ortholog_count",
+    "support_strategy_count",
+    "strategies",
+    "tools",
+    "presets",
+    "tax_id_count",
+    "taxname_count",
+    *ANNOTATION_COLUMNS,
 ]
 
 FAILURE_FIELDS = ["source", "scope", "chrom", "start", "end", "failure_type", "message"]
 GNOMAD_DATASET = "gnomad_r4"
+
+CLINVAR_REVIEW_STARS = {
+    "practice_guideline": "4",
+    "reviewed_by_expert_panel": "3",
+    "criteria_provided,_multiple_submitters,_no_conflicts": "2",
+    "criteria_provided,_multiple_submitters": "2",
+    "criteria_provided,_conflicting_classifications": "1",
+    "criteria_provided,_conflicting_interpretations": "1",
+    "criteria_provided,_single_submitter": "1",
+    "no_assertion_criteria_provided": "0",
+    "no_assertion_provided": "0",
+    "no_classification_provided": "0",
+    "no_classification_for_the_individual_variant": "0",
+}
 
 
 def parse_args():
@@ -96,6 +164,26 @@ def write_tsv_gz(path: Path, fields: list[str], rows: list[dict]) -> int:
         for row in rows:
             writer.writerow({field: row.get(field, "") for field in fields})
     return len(rows)
+
+
+def split_values(value: str | None) -> set[str]:
+    if not value:
+        return set()
+    return {item for item in str(value).replace("|", ",").split(",") if item}
+
+
+def lookup_key_text(key: tuple[str, int, str, str] | None) -> str:
+    if not key:
+        return ""
+    chrom, pos, ref, alt = key
+    return f"{chrom}:{pos}:{ref}>{alt}"
+
+
+def int_or_default(value, default: int = 0) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
 
 
 def path_metadata(path: Path) -> dict[str, object]:
@@ -329,13 +417,93 @@ def format_info_value(value) -> str:
     return str(value)
 
 
+def empty_annotation(columns: list[str]) -> dict[str, str]:
+    return {column: "" for column in columns}
+
+
+def normalize_review_status(value: str) -> str:
+    return str(value or "").strip().lower().replace(" ", "_")
+
+
+def clinvar_review_stars(review_status: str) -> tuple[str, str]:
+    if not review_status:
+        return "", "missing"
+    statuses = [normalize_review_status(item) for item in review_status.split("|") if item]
+    if not statuses:
+        return "", "missing"
+
+    stars = []
+    for status in statuses:
+        star_value = CLINVAR_REVIEW_STARS.get(status)
+        if star_value is None:
+            return "", f"unmapped:{status}"
+        stars.append(star_value)
+
+    unique_stars = sorted(set(stars))
+    if len(unique_stars) != 1:
+        return "", "ambiguous_multiple_review_statuses"
+    return unique_stars[0], "mapped"
+
+
+def count_pipe_values(value: str) -> str:
+    if not value:
+        return "0"
+    return str(len([item for item in value.split("|") if item]))
+
+
+def format_float(value) -> str:
+    return f"{value:.6g}" if value is not None else ""
+
+
+def clinvar_annotation_from_record(rec) -> dict[str, str]:
+    review_status = format_info_value(rec.info.get("CLNREVSTAT"))
+    stars, stars_status = clinvar_review_stars(review_status)
+    scv_accessions = format_info_value(rec.info.get("CLNSIGSCV"))
+    return {
+        "clinvar_sig": format_info_value(rec.info.get("CLNSIG")),
+        "clinvar_revstat": review_status,
+        "clinvar_review_stars": stars,
+        "clinvar_review_stars_status": stars_status,
+        "clinvar_id": rec.id or "",
+        "clinvar_allele_id": format_info_value(rec.info.get("ALLELEID")),
+        "clinvar_sig_conflict": format_info_value(rec.info.get("CLNSIGCONF")),
+        "clinvar_scv_count": count_pipe_values(scv_accessions),
+        "clinvar_scv_accessions": scv_accessions,
+        "clinvar_hgvs": format_info_value(rec.info.get("CLNHGVS")),
+        "clinvar_geneinfo": format_info_value(rec.info.get("GENEINFO")),
+        "clinvar_disease": format_info_value(rec.info.get("CLNDN")),
+        "clinvar_disease_db": format_info_value(rec.info.get("CLNDISDB")),
+        "clinvar_variant_type": format_info_value(rec.info.get("CLNVC")),
+        "clinvar_variant_type_so": format_info_value(rec.info.get("CLNVCSO")),
+        "clinvar_origin": format_info_value(rec.info.get("ORIGIN")),
+        "clinvar_rs": format_info_value(rec.info.get("RS")),
+    }
+
+
+def gnomad_annotation_from_variant(variant: dict) -> dict[str, str]:
+    af, af_source, af_exome, af_genome, af_joint, an_joint, ac_joint = _select_af_metrics(variant)
+    return {
+        "gnomad_af": format_float(af),
+        "gnomad_af_source": af_source or "",
+        "gnomad_csq": str(variant.get("consequence") or ""),
+        "gnomad_variant_id": str(variant.get("variant_id") or ""),
+        "gnomad_af_exome": format_float(af_exome),
+        "gnomad_af_genome": format_float(af_genome),
+        "gnomad_af_joint": format_float(af_joint),
+        "gnomad_ac_joint": str(ac_joint) if ac_joint is not None else "",
+        "gnomad_an_joint": str(an_joint) if an_joint is not None else "",
+        "gnomad_hgvsc": str(variant.get("hgvsc") or ""),
+        "gnomad_hgvsp": str(variant.get("hgvsp") or ""),
+    }
+
+
 def build_clinvar_cache(
     clinvar,
     accession_positions: dict[str, set[int]],
     contexts: dict[str, dict],
     context_index: dict[str, tuple[list[dict], list[int]]],
     failures: list[dict],
-) -> tuple[dict[tuple[str, int, str, str], tuple[str, str, str]], Counter]:
+) -> tuple[dict[tuple[str, int, str, str], dict[str, str]], Counter]:
     cache = {}
     status_counts = Counter()
     for acc, positions in accession_positions.items():
@@ -357,14 +525,12 @@ def build_clinvar_cache(
             try:
                 for rec in clinvar.fetch(chrom, max(0, start - 1), end + 1):
                     rec_alts = rec.alts or ()
-                    clin_sig = format_info_value(rec.info.get("CLNSIG"))
-                    clin_rev = format_info_value(rec.info.get("CLNREVSTAT"))
-                    clin_id = rec.id or ""
+                    annotation = clinvar_annotation_from_record(rec)
                     for alt in rec_alts:
                         add_annotation_cache_entry(
                             cache,
                             (chrom, rec.pos, rec.ref, alt),
-                            (clin_sig, clin_rev, clin_id),
+                            annotation,
                             contexts,
                             context_index,
                             status_counts,
@@ -383,7 +549,7 @@ def build_clinvar_cache(
 def main():
     args = parse_args()
     args.outdir.mkdir(parents=True, exist_ok=True)
-    out_tsv = args.outdir / "alignment_events_annotated.tsv.gz"
+    out_tsv = args.outdir / "variant_annotations.tsv.gz"
     failures_tsv = args.outdir / "failures.tsv.gz"
     manifest_json = args.outdir / "manifest.json"
     if not args.clinvar_vcf.exists():
@@ -395,10 +561,12 @@ def main():
     failures: list[dict] = []
     contexts = load_target_contexts(args.genes_tsv, args.target_sequences_dir)
     context_index = build_context_index(contexts)
-    
-    # 1. Read variants to find regions to query
+
+    # 1. Read events once, collect lookup regions, and collapse repeated support rows.
     accession_positions = defaultdict(set)
     event_key_status_counts = Counter()
+    unique_lookup_status_counts = Counter()
+    variant_aggregates: dict[tuple, dict] = {}
     input_row_count = 0
     with gzip.open(args.events_tsv, "rt") as f:
         reader = csv.DictReader(f, delimiter="\t")
@@ -410,26 +578,103 @@ def main():
         for row in reader:
             input_row_count += 1
             acc = row["genomic_accession"]
-            if acc:
-                pos = int(row["genomic_start1"])
-                accession_positions[acc].add(pos)
-                lookup_key, status = event_vcf_key(row, contexts)
-                event_key_status_counts[status] += 1
-                if lookup_key:
-                    accession_positions[acc].add(int(lookup_key[1]))
+            raw_pos = int_or_default(row.get("genomic_start1"), -1)
+            if acc and raw_pos > 0:
+                accession_positions[acc].add(raw_pos)
+            lookup_key, status = event_vcf_key(row, contexts)
+            event_key_status_counts[status] += 1
+            if acc and lookup_key:
+                accession_positions[acc].add(int(lookup_key[1]))
+
+            lookup_chrom = lookup_key[0] if lookup_key else ""
+            lookup_pos = lookup_key[1] if lookup_key else ""
+            lookup_ref = lookup_key[2] if lookup_key else ""
+            lookup_alt = lookup_key[3] if lookup_key else ""
+            variant_key = lookup_key_text(lookup_key)
+            aggregate_key = (
+                row.get("gene_id", ""),
+                row.get("event_type", ""),
+                row.get("target_start0", ""),
+                row.get("target_end0", ""),
+                row.get("genomic_accession", ""),
+                row.get("genomic_start1", ""),
+                row.get("genomic_end1", ""),
+                row.get("ref", ""),
+                row.get("alt", ""),
+                variant_key,
+            )
+            aggregate = variant_aggregates.get(aggregate_key)
+            if aggregate is None:
+                aggregate = {
+                    "variant_key": variant_key,
+                    "gene_id": row.get("gene_id", ""),
+                    "event_type": row.get("event_type", ""),
+                    "target_start0": row.get("target_start0", ""),
+                    "target_end0": row.get("target_end0", ""),
+                    "genomic_accession": row.get("genomic_accession", ""),
+                    "genomic_start1": row.get("genomic_start1", ""),
+                    "genomic_end1": row.get("genomic_end1", ""),
+                    "ref": row.get("ref", ""),
+                    "alt": row.get("alt", ""),
+                    "lookup_chrom": lookup_chrom,
+                    "lookup_pos": lookup_pos,
+                    "lookup_ref": lookup_ref,
+                    "lookup_alt": lookup_alt,
+                    "lookup_status": status,
+                    "support_row_count": 0,
+                    "_lookup_key": lookup_key,
+                    "_orthologs": set(),
+                    "_ortholog_count_hint": 0,
+                    "_strategies": set(),
+                    "_strategy_count_hint": 0,
+                    "_tools": set(),
+                    "_presets": set(),
+                    "_tax_ids": set(),
+                    "_tax_id_count_hint": 0,
+                    "_taxnames": set(),
+                    "_taxname_count_hint": 0,
+                }
+                variant_aggregates[aggregate_key] = aggregate
+                unique_lookup_status_counts[status] += 1
+
+            aggregate["support_row_count"] += int_or_default(row.get("support_row_count"), 1)
+            if row.get("ortholog_gene_id"):
+                aggregate["_orthologs"].add(row["ortholog_gene_id"])
+            else:
+                aggregate["_ortholog_count_hint"] += int_or_default(row.get("support_ortholog_count"), 0)
+
+            aggregate["_strategies"].update(split_values(row.get("strategy")))
+            aggregate["_strategies"].update(split_values(row.get("strategies")))
+            aggregate["_strategy_count_hint"] += int_or_default(row.get("support_strategy_count"), 0)
+
+            aggregate["_tools"].update(split_values(row.get("tool")))
+            aggregate["_tools"].update(split_values(row.get("tools")))
+            aggregate["_presets"].update(split_values(row.get("preset")))
+            aggregate["_presets"].update(split_values(row.get("presets")))
+
+            if row.get("tax_id"):
+                aggregate["_tax_ids"].add(row["tax_id"])
+            else:
+                aggregate["_tax_id_count_hint"] += int_or_default(row.get("tax_id_count"), 0)
+            if row.get("taxname"):
+                aggregate["_taxnames"].add(row["taxname"])
+            else:
+                aggregate["_taxname_count_hint"] += int_or_default(row.get("taxname_count"), 0)
     logger.info(f"Event key normalization status: {dict(event_key_status_counts)}")
-                
+    logger.info(f"Collapsed {input_row_count} event row(s) to {len(variant_aggregates)} variant-context row(s).")
+
     # 2. Determine gnomAD clusters
     gnomad_tasks = []
     for acc, positions in accession_positions.items():
         chrom = _refseq_accession_to_gnomad_chrom(acc)
-        if not chrom: continue
+        if not chrom:
+            continue
         clusters = cluster_positions(list(positions), max_gap=200000)
         for c_start, c_end in clusters:
             gnomad_tasks.append((chrom, c_start, c_end))
-            
+
     logger.info(f"Will fetch {len(gnomad_tasks)} region(s) from gnomAD API.")
-    
+
     # 3. Fetch gnomAD in parallel and cache
     gnomad_cache = {}
     gnomad_key_status_counts = Counter()
@@ -486,57 +731,56 @@ def main():
     )
     logger.info(f"Cached {len(clinvar_cache)} ClinVar variants.")
 
-    # 5. Annotate rows
-    new_header = list(header) + ANNOTATION_COLUMNS
+    # 5. Annotate unique variant-context rows.
     annotation_value_counts = Counter()
-    output_row_count = 0
-    
-    with gzip.open(out_tsv, "wt", newline="") as out:
-        writer = csv.DictWriter(out, fieldnames=new_header, delimiter="\t", lineterminator="\n")
-        writer.writeheader()
+    variant_rows: list[dict] = []
+    for aggregate in variant_aggregates.values():
+        lookup_key = aggregate["_lookup_key"]
+        clinvar_annotation = empty_annotation(CLINVAR_COLUMNS)
+        gnomad_annotation = empty_annotation(GNOMAD_COLUMNS)
 
-        with gzip.open(args.events_tsv, "rt") as f:
-            reader = csv.DictReader(f, delimiter="\t")
-            for row in reader:
-                lookup_key, _ = event_vcf_key(row, contexts)
+        if lookup_key:
+            clinvar_annotation = clinvar_cache.get(lookup_key, clinvar_annotation)
+        if lookup_key and lookup_key in gnomad_cache:
+            gnomad_annotation = gnomad_annotation_from_variant(gnomad_cache[lookup_key])
 
-                clin_sig = ""
-                clin_rev = ""
-                clin_id = ""
-                gnom_af = ""
-                gnom_src = ""
-                gnom_csq = ""
+        row = {field: aggregate.get(field, "") for field in VARIANT_ANNOTATION_FIELDS}
+        row["support_ortholog_count"] = max(
+            len(aggregate["_orthologs"]),
+            int_or_default(aggregate["_ortholog_count_hint"]),
+        )
+        row["support_strategy_count"] = max(
+            len(aggregate["_strategies"]),
+            int_or_default(aggregate["_strategy_count_hint"]),
+        )
+        row["strategies"] = ",".join(sorted(aggregate["_strategies"]))
+        row["tools"] = ",".join(sorted(aggregate["_tools"]))
+        row["presets"] = ",".join(sorted(aggregate["_presets"]))
+        row["tax_id_count"] = max(len(aggregate["_tax_ids"]), int_or_default(aggregate["_tax_id_count_hint"]))
+        row["taxname_count"] = max(len(aggregate["_taxnames"]), int_or_default(aggregate["_taxname_count_hint"]))
+        row.update(clinvar_annotation)
+        row.update(gnomad_annotation)
+        for column in ANNOTATION_COLUMNS:
+            if row[column]:
+                annotation_value_counts[column] += 1
+        variant_rows.append(row)
 
-                # ClinVar Lookup
-                if lookup_key:
-                    clin_sig, clin_rev, clin_id = clinvar_cache.get(lookup_key, ("", "", ""))
-
-                # gnomAD Lookup
-                if lookup_key and lookup_key in gnomad_cache:
-                    v = gnomad_cache[lookup_key]
-                    af, af_src, _, _, _, _, _ = _select_af_metrics(v)
-                    gnom_af = f"{af:.6g}" if af is not None else ""
-                    gnom_src = af_src or ""
-                    gnom_csq = v.get("consequence", "")
-
-                new_row = dict(row)
-                new_row["clinvar_sig"] = clin_sig
-                new_row["clinvar_revstat"] = clin_rev
-                new_row["clinvar_id"] = clin_id
-                new_row["gnomad_af"] = gnom_af
-                new_row["gnomad_af_source"] = gnom_src
-                new_row["gnomad_csq"] = gnom_csq
-                for column in ANNOTATION_COLUMNS:
-                    if new_row[column]:
-                        annotation_value_counts[column] += 1
-
-                writer.writerow(new_row)
-                output_row_count += 1
+    variant_rows.sort(
+        key=lambda row: (
+            int_or_default(row.get("gene_id"), 10**18),
+            int_or_default(row.get("target_start0"), 10**18),
+            row.get("event_type", ""),
+            row.get("variant_key", ""),
+        )
+    )
+    output_row_count = write_tsv_gz(out_tsv, VARIANT_ANNOTATION_FIELDS, variant_rows)
 
     failure_count = write_tsv_gz(failures_tsv, FAILURE_FIELDS, failures)
     manifest = {
+        "output_mode": "unique_variant_context",
         "event_row_count": input_row_count,
-        "annotated_event_row_count": output_row_count,
+        "variant_context_count": len(variant_aggregates),
+        "annotated_variant_context_count": output_row_count,
         "target_context_count": len(contexts),
         "clinvar_vcf": path_metadata(args.clinvar_vcf),
         "clinvar_tbi": path_metadata(clinvar_tbi),
@@ -551,12 +795,13 @@ def main():
         "failure_count": failure_count,
         "annotation_nonempty_counts": dict(annotation_value_counts),
         "event_key_status_counts": dict(event_key_status_counts),
+        "unique_lookup_status_counts": dict(unique_lookup_status_counts),
         "gnomad_key_status_counts": dict(gnomad_key_status_counts),
         "clinvar_key_status_counts": dict(clinvar_key_status_counts),
     }
     manifest_json.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
 
-    logger.info(f"Saved annotated events to {out_tsv}")
+    logger.info(f"Saved variant annotations to {out_tsv}")
     logger.info(f"Saved annotation failures to {failures_tsv}")
     logger.info(f"Saved annotation manifest to {manifest_json}")
 

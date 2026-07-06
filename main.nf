@@ -300,7 +300,7 @@ workflow ANNOTATION_STAGE {
     ANNOTATE_EVENTS(events_tsv, genes_tsv, sequences_dir, annotate_script, clinvar_vcf, clinvar_vcf_tbi)
 
     emit:
-    annotated_events = ANNOTATE_EVENTS.out.annotated_events
+    variant_annotations = ANNOTATE_EVENTS.out.variant_annotations
     manifest = ANNOTATE_EVENTS.out.manifest
     failures = ANNOTATE_EVENTS.out.failures
 }
