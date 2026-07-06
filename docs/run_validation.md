@@ -86,6 +86,11 @@ In the `slurm` profile, `executor.queueSize` limits how many jobs Nextflow keeps
 submitted to Slurm at once. It does not affect local runs, task CPU count, or
 threads inside an aligner process.
 
+Use `-profile low_storage` only when preserving the published outputs matters
+more than preserving the execution cache. It disables process caching and cleans
+the work directory after a successful run, so do not expect `-resume` to reuse
+completed tasks from that run.
+
 ## End-To-End Smoke Test
 
 Small multi-chunk smoke test:

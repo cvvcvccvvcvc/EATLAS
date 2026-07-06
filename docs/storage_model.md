@@ -48,6 +48,12 @@ contain:
 It is useful while developing or recovering a failed run with `-resume`, but it
 is not the data product.
 
+The `low_storage` profile is for runs where the published result layer is more
+important than resume. It disables process caching, enables Nextflow successful
+run cleanup, and moves terminal annotation outputs into the published annotation
+directory instead of keeping a second copy in `work/`. Do not rely on `-resume`
+with this profile after a successful run.
+
 ## Raw NCBI Data
 
 Raw NCBI zip packages and unpacked `gene.fna` files are intentionally not
@@ -70,6 +76,7 @@ Control peak disk with:
 - `-work-dir` on scratch storage
 - `GAPH_WORK_DIR=/path/to/scratch/gaph_v2_work`
 - `scratch = true` for fetch/parse tasks
+- `-profile low_storage` when resume is not required after successful completion
 
 Recommended starting point for large runs:
 
