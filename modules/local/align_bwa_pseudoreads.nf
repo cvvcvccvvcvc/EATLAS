@@ -5,6 +5,7 @@ process ALIGN_BWA_PSEUDOREADS {
     tuple val(meta), path(task_dir), path(source_target_fasta, stageAs: 'source_target.fa.gz'), path(source_ortholog_fasta, stageAs: 'source_ortholog.fa.gz')
     path bwa_script
     path bam_filtering_script
+    path target_features
     val selected_strategies
 
     output:
@@ -29,6 +30,7 @@ process ALIGN_BWA_PSEUDOREADS {
         --pseudoread-len "${params.bwa_pseudoread_len}" \\
         --pseudoread-step "${params.bwa_pseudoread_step}" \\
         --pseudoread-phred "${params.bwa_pseudoread_phred}" \\
+        --target-features "${target_features}" \\
         --keep-native "${params.keep_native_alignments}"
     """
 }

@@ -198,22 +198,22 @@ workflow ALIGNMENT_STAGE {
     alignment_result_dirs = Channel.empty()
 
     if (SELECTED_ALIGNMENT_STRATEGIES.contains('minimap2_asm10')) {
-        ALIGN_MINIMAP2_ASM10(alignment_inputs, minimap2_script)
+        ALIGN_MINIMAP2_ASM10(alignment_inputs, minimap2_script, target_features)
         alignment_result_dirs = alignment_result_dirs.mix(ALIGN_MINIMAP2_ASM10.out.asm10_result_dirs.map { meta, dir -> dir })
     }
 
     if (SELECTED_ALIGNMENT_STRATEGIES.contains('minimap2_asm20')) {
-        ALIGN_MINIMAP2_ASM20(alignment_inputs, minimap2_script)
+        ALIGN_MINIMAP2_ASM20(alignment_inputs, minimap2_script, target_features)
         alignment_result_dirs = alignment_result_dirs.mix(ALIGN_MINIMAP2_ASM20.out.asm20_result_dirs.map { meta, dir -> dir })
     }
 
     if (SELECTED_ALIGNMENT_STRATEGIES.contains('minimap2_taxonomy_adaptive')) {
-        ALIGN_MINIMAP2_ADAPTIVE(alignment_inputs, minimap2_script)
+        ALIGN_MINIMAP2_ADAPTIVE(alignment_inputs, minimap2_script, target_features)
         alignment_result_dirs = alignment_result_dirs.mix(ALIGN_MINIMAP2_ADAPTIVE.out.adaptive_result_dirs.map { meta, dir -> dir })
     }
 
     if (SELECTED_ALIGNMENT_STRATEGIES.contains('nucmer')) {
-        ALIGN_NUCMER_COMPARATOR(alignment_inputs, nucmer_script)
+        ALIGN_NUCMER_COMPARATOR(alignment_inputs, nucmer_script, target_features)
         alignment_result_dirs = alignment_result_dirs.mix(ALIGN_NUCMER_COMPARATOR.out.nucmer_result_dirs.map { meta, dir -> dir })
     }
 
@@ -221,7 +221,7 @@ workflow ALIGNMENT_STAGE {
         ['bwa_pseudoreads', 'bwa_pseudoreads_varscan'].contains(it)
     }
     if (selected_bwa_strategies) {
-        ALIGN_BWA_PSEUDOREADS(alignment_inputs, bwa_script, bam_filtering_script, selected_bwa_strategies.join(','))
+        ALIGN_BWA_PSEUDOREADS(alignment_inputs, bwa_script, bam_filtering_script, target_features, selected_bwa_strategies.join(','))
         alignment_result_dirs = alignment_result_dirs.mix(ALIGN_BWA_PSEUDOREADS.out.bwa_result_dirs.map { meta, dir -> dir })
     }
 

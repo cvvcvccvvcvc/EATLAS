@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Iterable
 
 from alignment_task_io import load_task_context, materialize_task_fastas
+from feature_coverage import summarize_feature_coverage
 
 
 TSV_NULL = ""
@@ -104,6 +105,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--nucmer-bin", required=True)
     parser.add_argument("--show-coords-bin", required=True)
     parser.add_argument("--show-snps-bin", required=True)
+    parser.add_argument("--target-features", type=Path)
     parser.add_argument("--keep-native", default="false")
     return parser.parse_args()
 
@@ -458,6 +460,14 @@ def main() -> None:
     write_tsv_gz(args.outdir / "alignment_events.tsv.gz", EVENT_FIELDS, events)
     write_tsv_gz(args.outdir / "ortholog_alignment_summary.tsv.gz", SUMMARY_FIELDS, summary_rows)
     write_tsv_gz(args.outdir / "failures.tsv.gz", FAILURE_FIELDS, failures)
+    feature_coverage_count = None
+    if args.target_features:
+        feature_coverage_count = summarize_feature_coverage(
+            args.target_features,
+            args.outdir / "ortholog_alignment_summary.tsv.gz",
+            args.outdir / "alignment_segments.tsv.gz",
+            args.outdir / "feature_coverage.tsv.gz",
+        )
     manifest = {
         "gene_id": gene_id,
         "strategy": "nucmer",
@@ -465,6 +475,7 @@ def main() -> None:
         "commands": commands,
         "segment_count": len(segments),
         "event_count": len(events),
+        "feature_coverage_count": feature_coverage_count,
         "ortholog_count": len(ortholog_meta),
         "keep_native": keep_native,
         "filtering": "no global delta-filter; downstream parser evaluates records per ortholog",

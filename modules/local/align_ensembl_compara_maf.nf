@@ -5,6 +5,7 @@ process ALIGN_ENSEMBL_COMPARA_MAF {
     tuple val(meta), path(task_dir)
     path maf_manifest
     path align_script
+    path target_features
 
     output:
     tuple val(meta), path("align_ensembl_compara_maf_${meta.id}"), emit: ensembl_compara_maf_result_dirs
@@ -20,6 +21,7 @@ process ALIGN_ENSEMBL_COMPARA_MAF {
         --release "${params.ensembl_compara_maf_release}" \\
         --species-set "${params.ensembl_compara_maf_species_set}" \\
         --method "${params.ensembl_compara_maf_method}" \\
+        --target-features "${target_features}" \\
         --timeout "${params.ensembl_compara_maf_timeout_seconds}" \\
         --retries "${params.ensembl_compara_maf_retries}" \\
         --retry-base-seconds "${params.ensembl_compara_maf_retry_base_seconds}" \\

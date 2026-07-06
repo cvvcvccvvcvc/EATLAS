@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Iterable
 
 from alignment_task_io import load_task_context, materialize_task_fastas
+from feature_coverage import summarize_feature_coverage
 
 
 CS_OP_RE = re.compile(r"(:\d+|=[A-Za-z]+|\*[A-Za-z][A-Za-z]|[+\-][A-Za-z]+|~[A-Za-z]{2}\d+[A-Za-z]{2})")
@@ -109,6 +110,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--mode", choices=["fixed", "adaptive"], required=True)
     parser.add_argument("--fixed-preset", default="asm10")
     parser.add_argument("--minimap2-bin", required=True)
+    parser.add_argument("--target-features", type=Path)
     parser.add_argument("--keep-native", default="false")
     return parser.parse_args()
 
@@ -130,9 +132,10 @@ def write_tsv_gz(path: Path, fields: list[str], rows: Iterable[dict[str, object]
 
 
 def iter_fasta(path: Path):
+    opener = gzip.open if path.suffix == ".gz" else open
     header = None
     seq_parts: list[str] = []
-    with path.open() as handle:
+    with opener(path, "rt") as handle:
         for line in handle:
             line = line.rstrip("\n")
             if line.startswith(">"):
@@ -566,6 +569,14 @@ def main() -> None:
     write_tsv_gz(args.outdir / "alignment_events.tsv.gz", EVENT_FIELDS, all_events)
     write_tsv_gz(args.outdir / "ortholog_alignment_summary.tsv.gz", SUMMARY_FIELDS, summary_rows)
     write_tsv_gz(args.outdir / "failures.tsv.gz", FAILURE_FIELDS, failures)
+    feature_coverage_count = None
+    if args.target_features:
+        feature_coverage_count = summarize_feature_coverage(
+            args.target_features,
+            args.outdir / "ortholog_alignment_summary.tsv.gz",
+            args.outdir / "alignment_segments.tsv.gz",
+            args.outdir / "feature_coverage.tsv.gz",
+        )
     manifest = {
         "gene_id": gene_id,
         "strategy": args.strategy,
@@ -574,6 +585,7 @@ def main() -> None:
         "commands": commands,
         "segment_count": len(all_segments),
         "event_count": len(all_events),
+        "feature_coverage_count": feature_coverage_count,
         "ortholog_count": len(ortholog_meta),
         "keep_native": keep_native,
     }

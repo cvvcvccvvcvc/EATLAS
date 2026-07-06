@@ -16,6 +16,7 @@ from pathlib import Path
 import pysam
 
 from alignment_task_io import load_task_context, materialize_task_fastas
+from feature_coverage import summarize_feature_coverage
 import bam_filtering_v1
 
 
@@ -116,6 +117,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--pseudoread-len", default=75, type=int)
     parser.add_argument("--pseudoread-step", default=35, type=int)
     parser.add_argument("--pseudoread-phred", default=30, type=int)
+    parser.add_argument("--target-features", type=Path)
     parser.add_argument("--keep-native", default="false")
     return parser.parse_args()
 
@@ -781,6 +783,14 @@ def main() -> None:
         write_tsv_gz(outdir / "alignment_events.tsv.gz", EVENT_FIELDS, event_rows)
         write_tsv_gz(outdir / "ortholog_alignment_summary.tsv.gz", SUMMARY_FIELDS, summary_rows)
         write_tsv_gz(outdir / "failures.tsv.gz", FAILURE_FIELDS, [])
+        feature_coverage_count = None
+        if args.target_features:
+            feature_coverage_count = summarize_feature_coverage(
+                args.target_features,
+                outdir / "ortholog_alignment_summary.tsv.gz",
+                outdir / "alignment_segments.tsv.gz",
+                outdir / "feature_coverage.tsv.gz",
+            )
 
         if keep_native:
             keep_native_outputs(work_dir, outdir)
@@ -792,6 +802,7 @@ def main() -> None:
             "tool": "bwa",
             "segment_count": len(segment_rows),
             "event_count": len(event_rows),
+            "feature_coverage_count": feature_coverage_count,
             "ortholog_count": len(ortholog_meta),
             "pseudoread_count": pseudoread_count,
             "keep_native": keep_native,

@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Iterable, TextIO
 
 from alignment_task_io import load_task_context
+from feature_coverage import summarize_feature_coverage
 
 
 SEGMENT_FIELDS = [
@@ -168,6 +169,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--release", default="116")
     parser.add_argument("--species-set", default="92_mammals.epo_extended")
     parser.add_argument("--method", default="EPO_EXTENDED")
+    parser.add_argument("--target-features", type=Path)
     parser.add_argument("--timeout", type=float, default=120.0)
     parser.add_argument("--retries", type=int, default=3)
     parser.add_argument("--retry-base-seconds", type=float, default=2.0)
@@ -951,6 +953,14 @@ def main() -> None:
     summary_rows = [finalize_summary(row) for row in summaries.values()]
     write_tsv_gz(args.outdir / "ortholog_alignment_summary.tsv.gz", SUMMARY_FIELDS, summary_rows)
     write_tsv_gz(args.outdir / "failures.tsv.gz", FAILURE_FIELDS, failures)
+    feature_coverage_count = None
+    if args.target_features:
+        feature_coverage_count = summarize_feature_coverage(
+            args.target_features,
+            args.outdir / "ortholog_alignment_summary.tsv.gz",
+            args.outdir / "alignment_segments.tsv.gz",
+            args.outdir / "feature_coverage.tsv.gz",
+        )
     manifest = {
         "gene_id": gene_id,
         "strategy": args.strategy,
@@ -971,6 +981,7 @@ def main() -> None:
         "summary_count": len(summary_rows),
         "segment_count": segment_writer.count,
         "event_count": event_writer.count,
+        "feature_coverage_count": feature_coverage_count,
         "failure_count": len(failures),
     }
     (args.outdir / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")

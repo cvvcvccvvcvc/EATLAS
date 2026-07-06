@@ -4,6 +4,7 @@ process ALIGN_NUCMER_COMPARATOR {
     input:
     tuple val(meta), path(task_dir), path(source_target_fasta, stageAs: 'source_target.fa.gz'), path(source_ortholog_fasta, stageAs: 'source_ortholog.fa.gz')
     path nucmer_script
+    path target_features
 
     output:
     tuple val(meta), path("align_nucmer_${meta.id}"), emit: nucmer_result_dirs
@@ -19,6 +20,7 @@ process ALIGN_NUCMER_COMPARATOR {
         --nucmer-bin "${params.nucmer_bin}" \\
         --show-coords-bin "${params.show_coords_bin}" \\
         --show-snps-bin "${params.show_snps_bin}" \\
+        --target-features "${target_features}" \\
         --keep-native "${params.keep_native_alignments}"
     """
 }
