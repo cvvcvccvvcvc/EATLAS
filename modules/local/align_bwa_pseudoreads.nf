@@ -2,7 +2,7 @@ process ALIGN_BWA_PSEUDOREADS {
     tag { meta.id }
 
     input:
-    tuple val(meta), path(task_dir)
+    tuple val(meta), path(task_dir), path(source_target_fasta, stageAs: 'source_target.fa.gz'), path(source_ortholog_fasta, stageAs: 'source_ortholog.fa.gz')
     path bwa_script
     path bam_filtering_script
     val selected_strategies
@@ -16,6 +16,8 @@ process ALIGN_BWA_PSEUDOREADS {
     export PYTHONPATH="\$PWD:\${PYTHONPATH:-}"
     python3 "${bwa_script}" \\
         --task-dir "${task_dir}" \\
+        --source-target-fasta "${source_target_fasta}" \\
+        --source-ortholog-fasta "${source_ortholog_fasta}" \\
         --outdir "${resultDir}" \\
         --strategies "${selected_strategies}" \\
         --bwa-bin "${params.bwa_bin}" \\

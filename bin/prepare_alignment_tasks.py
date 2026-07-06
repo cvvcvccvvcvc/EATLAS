@@ -7,14 +7,11 @@ import argparse
 import csv
 import gzip
 import json
-import re
 from collections import defaultdict
 from pathlib import Path
 from typing import Iterable
 
 
-ORTHOLOG_GENE_RE = re.compile(r"(?:^|\|)ortholog_gene_(\d+)(?:\||$)")
-FASTA_WIDTH = 80
 TSV_NULL = ""
 
 
@@ -27,12 +24,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--target-fasta", action="append", required=True, type=Path)
     parser.add_argument("--ortholog-fasta", action="append", required=True, type=Path)
     return parser.parse_args()
-
-
-def open_text(path: Path):
-    if path.suffix == ".gz":
-        return gzip.open(path, "rt", newline="")
-    return path.open(newline="")
 
 
 def write_tsv(path: Path, fields: list[str], rows: Iterable[dict[str, object]]) -> int:
@@ -77,38 +68,58 @@ def gene_id_from_fasta_path(path: Path) -> str:
     return path.stem
 
 
-def iter_fasta(path: Path):
-    opener = gzip.open if path.suffix == ".gz" else open
-    header = None
-    seq_parts: list[str] = []
-    with opener(path, "rt") as handle:
-        for line in handle:
-            line = line.rstrip("\n")
-            if line.startswith(">"):
-                if header is not None:
-                    yield header, "".join(seq_parts)
-                header = line[1:]
-                seq_parts = []
-            elif header is not None:
-                seq_parts.append(line.strip())
-        if header is not None:
-            yield header, "".join(seq_parts)
-
-
-def write_fasta_record(handle, sequence_id: str, seq: str) -> None:
-    handle.write(f">{sequence_id}\n")
-    for index in range(0, len(seq), FASTA_WIDTH):
-        handle.write(seq[index : index + FASTA_WIDTH] + "\n")
-
-
-def parse_ortholog_gene_id(header: str) -> str:
-    match = ORTHOLOG_GENE_RE.search(header)
-    return match.group(1) if match else ""
-
-
 def load_taxonomy(path: Path) -> dict[str, dict[str, str]]:
     rows = read_tsv_gz(path)
     return {row.get("tax_id", ""): row for row in rows if row.get("tax_id")}
+
+
+def target_metadata(gene_id: str, gene: dict[str, str], target_id: str) -> dict[str, object]:
+    return {
+        "gene_id": gene_id,
+        "sequence_id": target_id,
+        "genomic_accession": gene.get("genomic_accession", ""),
+        "genomic_begin": gene.get("begin", ""),
+        "genomic_end": gene.get("end", ""),
+        "orientation": gene.get("orientation", ""),
+        "sequence_orientation": gene.get("sequence_orientation", ""),
+        "sequence_length": gene.get("sequence_length", ""),
+        "sequence_sha256": gene.get("sequence_sha256", ""),
+    }
+
+
+def reconstructed_ortholog_header(row: dict[str, str]) -> str:
+    taxname = row.get("taxname", "").replace(" ", "_")
+    return (
+        f"query_{row.get('query_gene_id', '')}|ortholog_gene_{row.get('ortholog_gene_id', '')}|"
+        f"symbol={row.get('symbol', '')}|tax_id={row.get('tax_id', '')}|taxname={taxname}|"
+        f"accession={row.get('accession', '')}|range={row.get('range_text', '')}|"
+        f"orientation={row.get('orientation', '')}"
+    )
+
+
+def ortholog_metadata_row(gene_id: str, source_meta: dict[str, str], taxonomy: dict[str, dict[str, str]]) -> dict[str, object]:
+    ortholog_gene_id = source_meta["ortholog_gene_id"]
+    tax = taxonomy.get(source_meta.get("tax_id", ""), {})
+    return {
+        "gene_id": gene_id,
+        "sequence_id": f"ortholog_{ortholog_gene_id}",
+        "ortholog_gene_id": ortholog_gene_id,
+        "tax_id": source_meta.get("tax_id", ""),
+        "taxname": source_meta.get("taxname", ""),
+        "symbol": source_meta.get("symbol", ""),
+        "gene_type": source_meta.get("gene_type", ""),
+        "accession": source_meta.get("accession", ""),
+        "chromosome": source_meta.get("chromosome", ""),
+        "begin": source_meta.get("begin", ""),
+        "end": source_meta.get("end", ""),
+        "orientation": source_meta.get("orientation", ""),
+        "source_complement": source_meta.get("source_complement", ""),
+        "sequence_length": source_meta.get("sequence_length", ""),
+        "sequence_sha256": source_meta.get("sequence_sha256", ""),
+        "taxonomy_group": tax.get("preset_group", "other_or_unknown"),
+        "minimap2_preset": tax.get("minimap2_preset", "asm20"),
+        "original_header": reconstructed_ortholog_header(source_meta),
+    }
 
 
 def main() -> None:
@@ -162,72 +173,11 @@ def main() -> None:
         task_dir = tasks_dir / f"task_{gene_id}"
         task_dir.mkdir(parents=True, exist_ok=True)
         target_id = f"target_{gene_id}"
-        target_records = list(iter_fasta(target_path))
-        if len(target_records) != 1:
-            task_row.update(
-                {
-                    "status": "invalid_target_fasta",
-                    "message": f"Expected one target FASTA record, found {len(target_records)}",
-                }
-            )
-            task_rows.append(task_row)
-            continue
-
-        target_header, target_seq = target_records[0]
-        with (task_dir / "target.fa").open("w") as handle:
-            write_fasta_record(handle, target_id, target_seq)
-
-        target_meta = {
-            "gene_id": gene_id,
-            "sequence_id": target_id,
-            "original_header": target_header,
-            "genomic_accession": gene.get("genomic_accession", ""),
-            "genomic_begin": gene.get("begin", ""),
-            "genomic_end": gene.get("end", ""),
-            "orientation": gene.get("orientation", ""),
-            "sequence_orientation": gene.get("sequence_orientation", ""),
-            "sequence_length": len(target_seq),
-        }
-        write_tsv(task_dir / "target.metadata.tsv", list(target_meta), [target_meta])
-
-        ortholog_meta_rows: list[dict[str, object]] = []
-        written_orthologs = 0
-        with (task_dir / "orthologs.fa").open("w") as out_fasta:
-            for original_header, seq in iter_fasta(ortholog_path):
-                ortholog_gene_id = parse_ortholog_gene_id(original_header)
-                source_meta = ortholog_meta_by_id.get(ortholog_gene_id)
-                if source_meta is None:
-                    continue
-                sequence_id = f"ortholog_{ortholog_gene_id}"
-                tax = taxonomy.get(source_meta.get("tax_id", ""), {})
-                row = {
-                    "gene_id": gene_id,
-                    "sequence_id": sequence_id,
-                    "ortholog_gene_id": ortholog_gene_id,
-                    "tax_id": source_meta.get("tax_id", ""),
-                    "taxname": source_meta.get("taxname", ""),
-                    "symbol": source_meta.get("symbol", ""),
-                    "gene_type": source_meta.get("gene_type", ""),
-                    "accession": source_meta.get("accession", ""),
-                    "chromosome": source_meta.get("chromosome", ""),
-                    "begin": source_meta.get("begin", ""),
-                    "end": source_meta.get("end", ""),
-                    "orientation": source_meta.get("orientation", ""),
-                    "source_complement": source_meta.get("source_complement", ""),
-                    "sequence_length": len(seq),
-                    "sequence_sha256": source_meta.get("sequence_sha256", ""),
-                    "taxonomy_group": tax.get("preset_group", "other_or_unknown"),
-                    "minimap2_preset": tax.get("minimap2_preset", "asm20"),
-                    "original_header": original_header,
-                }
-                ortholog_meta_rows.append(row)
-                write_fasta_record(out_fasta, sequence_id, seq)
-                written_orthologs += 1
-
-        if written_orthologs == 0:
-            task_row.update({"status": "no_ortholog_sequences", "message": "No ortholog FASTA records matched metadata"})
-            task_rows.append(task_row)
-            continue
+        target_meta = target_metadata(gene_id, gene, target_id)
+        ortholog_meta_rows = [
+            ortholog_metadata_row(gene_id, source_meta, taxonomy)
+            for source_meta in orthologs_by_gene.get(gene_id, [])
+        ]
 
         ortholog_fields = [
             "gene_id",
@@ -254,20 +204,18 @@ def main() -> None:
             "gene_id": gene_id,
             "symbol": gene.get("symbol", ""),
             "target_id": target_id,
-            "target_length": len(target_seq),
-            "ortholog_count": written_orthologs,
-            "target_metadata": "target.metadata.tsv",
+            "target_length": gene.get("sequence_length", ""),
+            "target": target_meta,
+            "ortholog_count": len(ortholog_meta_rows),
             "ortholog_metadata": "orthologs.metadata.tsv",
-            "target_fasta": "target.fa",
-            "ortholog_fasta": "orthologs.fa",
         }
         (task_dir / "task.json").write_text(json.dumps(manifest, indent=2) + "\n")
         task_row.update(
             {
-                "target_fasta": str(task_dir / "target.fa"),
-                "ortholog_fasta": str(task_dir / "orthologs.fa"),
-                "ortholog_count": written_orthologs,
-                "target_length": len(target_seq),
+                "target_fasta": str(Path("sequences") / "targets" / target_path.name),
+                "ortholog_fasta": str(Path("sequences") / "orthologs" / ortholog_path.name),
+                "ortholog_count": len(ortholog_meta_rows),
+                "target_length": gene.get("sequence_length", ""),
             }
         )
         task_rows.append(task_row)

@@ -10,9 +10,12 @@ import json
 import re
 import shutil
 import subprocess
+import tempfile
 from collections import defaultdict
 from pathlib import Path
 from typing import Iterable
+
+from alignment_task_io import load_task_context, materialize_task_fastas
 
 
 CS_OP_RE = re.compile(r"(:\d+|=[A-Za-z]+|\*[A-Za-z][A-Za-z]|[+\-][A-Za-z]+|~[A-Za-z]{2}\d+[A-Za-z]{2})")
@@ -99,6 +102,8 @@ FAILURE_FIELDS = ["gene_id", "ortholog_gene_id", "strategy", "tool", "failure_ty
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--task-dir", required=True, type=Path)
+    parser.add_argument("--source-target-fasta", required=True, type=Path)
+    parser.add_argument("--source-ortholog-fasta", required=True, type=Path)
     parser.add_argument("--outdir", required=True, type=Path)
     parser.add_argument("--strategy", required=True)
     parser.add_argument("--mode", choices=["fixed", "adaptive"], required=True)
@@ -110,11 +115,6 @@ def parse_args() -> argparse.Namespace:
 
 def truthy(value: str) -> bool:
     return str(value).lower() in {"1", "true", "yes", "y"}
-
-
-def read_tsv(path: Path) -> list[dict[str, str]]:
-    with path.open(newline="") as handle:
-        return [dict(row) for row in csv.DictReader(handle, delimiter="\t")]
 
 
 def write_tsv_gz(path: Path, fields: list[str], rows: Iterable[dict[str, object]]) -> int:
@@ -152,15 +152,19 @@ def write_fasta_record(handle, sequence_id: str, seq: str) -> None:
         handle.write(seq[index : index + 80] + "\n")
 
 
-def split_orthologs_by_preset(task_dir: Path, meta_by_sequence: dict[str, dict[str, str]]) -> dict[str, Path]:
+def split_orthologs_by_preset(
+    orthologs_fasta: Path,
+    meta_by_sequence: dict[str, dict[str, str]],
+    outdir: Path,
+) -> dict[str, Path]:
     grouped: dict[str, list[tuple[str, str]]] = defaultdict(list)
-    for sequence_id, seq in iter_fasta(task_dir / "orthologs.fa"):
+    for sequence_id, seq in iter_fasta(orthologs_fasta):
         preset = meta_by_sequence.get(sequence_id, {}).get("minimap2_preset") or "asm20"
         grouped[preset].append((sequence_id, seq))
 
     paths: dict[str, Path] = {}
     for preset, records in grouped.items():
-        path = task_dir / f"orthologs.{preset}.fa"
+        path = outdir / f"orthologs.{preset}.fa"
         with path.open("w") as handle:
             for sequence_id, seq in records:
                 write_fasta_record(handle, sequence_id, seq)
@@ -485,18 +489,11 @@ def main() -> None:
     args.outdir.mkdir(parents=True, exist_ok=True)
     keep_native = truthy(args.keep_native)
 
-    task = json.loads((args.task_dir / "task.json").read_text())
+    task, target_meta, ortholog_meta = load_task_context(args.task_dir)
     gene_id = task["gene_id"]
-    target_meta = read_tsv(args.task_dir / "target.metadata.tsv")[0]
-    ortholog_meta = read_tsv(args.task_dir / "orthologs.metadata.tsv")
     meta_by_sequence = {row["sequence_id"]: row for row in ortholog_meta}
     target_length = int(target_meta.get("sequence_length") or task.get("target_length") or 0)
 
-    groups = (
-        {args.fixed_preset: args.task_dir / "orthologs.fa"}
-        if args.mode == "fixed"
-        else split_orthologs_by_preset(args.task_dir, meta_by_sequence)
-    )
     summaries = {
         sequence_id: empty_summary(
             gene_id,
@@ -514,40 +511,55 @@ def main() -> None:
     commands: list[str] = []
     event_index = 1
 
-    for preset, query_fa in sorted(groups.items()):
-        paf_path = Path(f"{args.strategy}.{preset}.paf")
-        try:
-            command = run_minimap2(args.minimap2_bin, preset, args.task_dir / "target.fa", query_fa, paf_path)
-            commands.append(command)
-            segments, events, event_index = parse_paf(
-                paf_path,
-                gene_id,
-                args.strategy,
-                preset,
-                target_meta,
-                meta_by_sequence,
-                summaries,
-                event_index,
-            )
-            all_segments.extend(segments)
-            all_events.extend(events)
-            if keep_native:
-                gzip_copy(paf_path, args.outdir / "native" / f"{gene_id}.{preset}.paf.gz")
-        except Exception as exc:
-            failures.append(
-                {
-                    "gene_id": gene_id,
-                    "ortholog_gene_id": "",
-                    "strategy": args.strategy,
-                    "tool": "minimap2",
-                    "failure_type": "minimap2_failed",
-                    "message": str(exc),
-                }
-            )
-            raise
-        finally:
-            if paf_path.exists() and not keep_native:
-                paf_path.unlink()
+    with tempfile.TemporaryDirectory(prefix=f"{args.strategy}_", dir=args.outdir) as tmp_name:
+        work_dir = Path(tmp_name)
+        target_fasta, orthologs_fasta = materialize_task_fastas(
+            args.source_target_fasta,
+            args.source_ortholog_fasta,
+            task,
+            ortholog_meta,
+            work_dir,
+        )
+        groups = (
+            {args.fixed_preset: orthologs_fasta}
+            if args.mode == "fixed"
+            else split_orthologs_by_preset(orthologs_fasta, meta_by_sequence, work_dir)
+        )
+
+        for preset, query_fa in sorted(groups.items()):
+            paf_path = Path(f"{args.strategy}.{preset}.paf")
+            try:
+                command = run_minimap2(args.minimap2_bin, preset, target_fasta, query_fa, paf_path)
+                commands.append(command)
+                segments, events, event_index = parse_paf(
+                    paf_path,
+                    gene_id,
+                    args.strategy,
+                    preset,
+                    target_meta,
+                    meta_by_sequence,
+                    summaries,
+                    event_index,
+                )
+                all_segments.extend(segments)
+                all_events.extend(events)
+                if keep_native:
+                    gzip_copy(paf_path, args.outdir / "native" / f"{gene_id}.{preset}.paf.gz")
+            except Exception as exc:
+                failures.append(
+                    {
+                        "gene_id": gene_id,
+                        "ortholog_gene_id": "",
+                        "strategy": args.strategy,
+                        "tool": "minimap2",
+                        "failure_type": "minimap2_failed",
+                        "message": str(exc),
+                    }
+                )
+                raise
+            finally:
+                if paf_path.exists() and not keep_native:
+                    paf_path.unlink()
 
     summary_rows = [finalize_summary(row) for row in summaries.values()]
     write_tsv_gz(args.outdir / "alignment_segments.tsv.gz", SEGMENT_FIELDS, all_segments)

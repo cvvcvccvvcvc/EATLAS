@@ -35,6 +35,23 @@ def parseAlignmentStrategies(rawValue) {
     return selected
 }
 
+def geneIdFromFastaPath(value) {
+    def name = value instanceof java.nio.file.Path ? value.getFileName().toString() : new File(value.toString()).name
+    return name
+        .replaceFirst(/\.fasta\.gz$/, '')
+        .replaceFirst(/\.fa\.gz$/, '')
+        .replaceFirst(/\.fasta$/, '')
+        .replaceFirst(/\.fa$/, '')
+}
+
+def fastaFilesByGene(seqDir, subdir) {
+    def matches = file("${seqDir}/${subdir}/*.fa.gz")
+    def paths = matches instanceof List ? matches : [matches]
+    return paths
+        .sort { left, right -> left.toString() <=> right.toString() }
+        .collect { path -> tuple(geneIdFromFastaPath(path), path) }
+}
+
 def resolveClinvarInputs() {
     def selectedVcf = params.clinvar_vcf
     if (!selectedVcf) {
@@ -165,26 +182,38 @@ workflow ALIGNMENT_STAGE {
         prepare_script
     )
 
-    task_dirs = BUILD_ALIGNMENT_TASKS.out.task_dirs.flatten().map { dir -> tuple([id: dir.baseName], dir) }
+    task_dirs_by_gene = BUILD_ALIGNMENT_TASKS.out.task_dirs.flatten().map { dir ->
+        gene_id = dir.baseName.replaceFirst(/^task_/, '')
+        tuple(gene_id, dir)
+    }
+    target_fastas_by_gene = sequences.flatMap { seq_dir -> fastaFilesByGene(seq_dir, 'targets') }
+    ortholog_fastas_by_gene = sequences.flatMap { seq_dir -> fastaFilesByGene(seq_dir, 'orthologs') }
+    alignment_inputs = task_dirs_by_gene
+        .join(target_fastas_by_gene)
+        .join(ortholog_fastas_by_gene)
+        .map { gene_id, task_dir, source_target_fasta, source_ortholog_fasta ->
+            tuple([id: "task_${gene_id}", gene_id: gene_id], task_dir, source_target_fasta, source_ortholog_fasta)
+        }
+    task_dirs = task_dirs_by_gene.map { gene_id, dir -> tuple([id: "task_${gene_id}", gene_id: gene_id], dir) }
     alignment_result_dirs = Channel.empty()
 
     if (SELECTED_ALIGNMENT_STRATEGIES.contains('minimap2_asm10')) {
-        ALIGN_MINIMAP2_ASM10(task_dirs, minimap2_script)
+        ALIGN_MINIMAP2_ASM10(alignment_inputs, minimap2_script)
         alignment_result_dirs = alignment_result_dirs.mix(ALIGN_MINIMAP2_ASM10.out.asm10_result_dirs.map { meta, dir -> dir })
     }
 
     if (SELECTED_ALIGNMENT_STRATEGIES.contains('minimap2_asm20')) {
-        ALIGN_MINIMAP2_ASM20(task_dirs, minimap2_script)
+        ALIGN_MINIMAP2_ASM20(alignment_inputs, minimap2_script)
         alignment_result_dirs = alignment_result_dirs.mix(ALIGN_MINIMAP2_ASM20.out.asm20_result_dirs.map { meta, dir -> dir })
     }
 
     if (SELECTED_ALIGNMENT_STRATEGIES.contains('minimap2_taxonomy_adaptive')) {
-        ALIGN_MINIMAP2_ADAPTIVE(task_dirs, minimap2_script)
+        ALIGN_MINIMAP2_ADAPTIVE(alignment_inputs, minimap2_script)
         alignment_result_dirs = alignment_result_dirs.mix(ALIGN_MINIMAP2_ADAPTIVE.out.adaptive_result_dirs.map { meta, dir -> dir })
     }
 
     if (SELECTED_ALIGNMENT_STRATEGIES.contains('nucmer')) {
-        ALIGN_NUCMER_COMPARATOR(task_dirs, nucmer_script)
+        ALIGN_NUCMER_COMPARATOR(alignment_inputs, nucmer_script)
         alignment_result_dirs = alignment_result_dirs.mix(ALIGN_NUCMER_COMPARATOR.out.nucmer_result_dirs.map { meta, dir -> dir })
     }
 
@@ -192,7 +221,7 @@ workflow ALIGNMENT_STAGE {
         ['bwa_pseudoreads', 'bwa_pseudoreads_varscan'].contains(it)
     }
     if (selected_bwa_strategies) {
-        ALIGN_BWA_PSEUDOREADS(task_dirs, bwa_script, bam_filtering_script, selected_bwa_strategies.join(','))
+        ALIGN_BWA_PSEUDOREADS(alignment_inputs, bwa_script, bam_filtering_script, selected_bwa_strategies.join(','))
         alignment_result_dirs = alignment_result_dirs.mix(ALIGN_BWA_PSEUDOREADS.out.bwa_result_dirs.map { meta, dir -> dir })
     }
 

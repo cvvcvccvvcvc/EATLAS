@@ -15,6 +15,7 @@ from pathlib import Path
 
 import pysam
 
+from alignment_task_io import load_task_context, materialize_task_fastas
 import bam_filtering_v1
 
 
@@ -102,6 +103,8 @@ FAILURE_FIELDS = ["gene_id", "ortholog_gene_id", "strategy", "tool", "failure_ty
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--task-dir", required=True, type=Path)
+    parser.add_argument("--source-target-fasta", required=True, type=Path)
+    parser.add_argument("--source-ortholog-fasta", required=True, type=Path)
     parser.add_argument("--outdir", required=True, type=Path)
     parser.add_argument("--strategies", required=True, help="Comma-separated BWA strategy names to emit.")
     parser.add_argument("--bwa-bin", default="bwa")
@@ -189,11 +192,6 @@ def iter_fasta(path: Path):
                 seq_parts.append(line)
         if header is not None:
             yield header, "".join(seq_parts)
-
-
-def read_tsv(path: Path) -> list[dict[str, str]]:
-    with path.open(newline="") as handle:
-        return list(csv.DictReader(handle, delimiter="\t"))
 
 
 def write_tsv_gz(path: Path, headers: list[str], rows) -> int:
@@ -689,26 +687,27 @@ def main() -> None:
     outdir = args.outdir
     outdir.mkdir(parents=True, exist_ok=True)
 
-    manifest = json.loads((task_dir / "task.json").read_text())
+    manifest, target_meta, ortholog_meta = load_task_context(task_dir)
     gene_id = manifest["gene_id"]
     target_id = manifest.get("target_id", f"target_{gene_id}")
-    target_fasta = task_dir / manifest["target_fasta"]
-    orthologs_fasta = task_dir / manifest["ortholog_fasta"]
-    target_meta = read_tsv(task_dir / "target.metadata.tsv")[0]
-    ortholog_meta = read_tsv(task_dir / "orthologs.metadata.tsv")
     ortholog_meta_by_id = {row["ortholog_gene_id"]: row for row in ortholog_meta}
     target_acc = target_meta.get("genomic_accession", "")
 
-    target_seq = read_target_sequence(target_fasta)
-    query_lengths = query_lengths_by_ortholog(orthologs_fasta)
-
     with tempfile.TemporaryDirectory(prefix="bwa_pseudoreads_", dir=outdir) as tmp_name:
         work_dir = Path(tmp_name)
-        local_target_fasta = work_dir / "target.fa"
-        shutil.copy2(target_fasta, local_target_fasta)
+        local_target_fasta, local_orthologs_fasta = materialize_task_fastas(
+            args.source_target_fasta,
+            args.source_ortholog_fasta,
+            manifest,
+            ortholog_meta,
+            work_dir,
+        )
+        target_seq = read_target_sequence(local_target_fasta)
+        query_lengths = query_lengths_by_ortholog(local_orthologs_fasta)
+
         pseudoreads_fastq = work_dir / "pseudo_reads.fastq"
         pseudoread_count = generate_pseudoreads(
-            orthologs_fasta,
+            local_orthologs_fasta,
             pseudoreads_fastq,
             read_len=args.pseudoread_len,
             step=args.pseudoread_step,

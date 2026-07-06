@@ -2,7 +2,7 @@ process ALIGN_MINIMAP2_ASM10 {
     tag { meta.id }
 
     input:
-    tuple val(meta), path(task_dir)
+    tuple val(meta), path(task_dir), path(source_target_fasta, stageAs: 'source_target.fa.gz'), path(source_ortholog_fasta, stageAs: 'source_ortholog.fa.gz')
     path minimap2_script
 
     output:
@@ -13,6 +13,8 @@ process ALIGN_MINIMAP2_ASM10 {
     """
     python3 "${minimap2_script}" \\
         --task-dir "${task_dir}" \\
+        --source-target-fasta "${source_target_fasta}" \\
+        --source-ortholog-fasta "${source_ortholog_fasta}" \\
         --outdir "${resultDir}" \\
         --strategy minimap2_asm10 \\
         --mode fixed \\

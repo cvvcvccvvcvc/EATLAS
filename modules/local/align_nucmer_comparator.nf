@@ -2,7 +2,7 @@ process ALIGN_NUCMER_COMPARATOR {
     tag { meta.id }
 
     input:
-    tuple val(meta), path(task_dir)
+    tuple val(meta), path(task_dir), path(source_target_fasta, stageAs: 'source_target.fa.gz'), path(source_ortholog_fasta, stageAs: 'source_ortholog.fa.gz')
     path nucmer_script
 
     output:
@@ -13,6 +13,8 @@ process ALIGN_NUCMER_COMPARATOR {
     """
     python3 "${nucmer_script}" \\
         --task-dir "${task_dir}" \\
+        --source-target-fasta "${source_target_fasta}" \\
+        --source-ortholog-fasta "${source_ortholog_fasta}" \\
         --outdir "${resultDir}" \\
         --nucmer-bin "${params.nucmer_bin}" \\
         --show-coords-bin "${params.show_coords_bin}" \\

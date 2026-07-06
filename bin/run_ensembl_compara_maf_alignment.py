@@ -17,6 +17,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, TextIO
 
+from alignment_task_io import load_task_context
+
 
 SEGMENT_FIELDS = [
     "gene_id",
@@ -172,11 +174,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--retry-max-seconds", type=float, default=30.0)
     parser.add_argument("--candidate-neighbors", type=int, default=1)
     return parser.parse_args()
-
-
-def read_tsv(path: Path) -> list[dict[str, str]]:
-    with path.open(newline="") as handle:
-        return [dict(row) for row in csv.DictReader(handle, delimiter="\t")]
 
 
 def read_tsv_gz(path: Path) -> list[dict[str, str]]:
@@ -868,9 +865,8 @@ def main() -> None:
     args = parse_args()
     args.outdir.mkdir(parents=True, exist_ok=True)
 
-    task = json.loads((args.task_dir / "task.json").read_text())
+    task, target_meta, _ortholog_meta = load_task_context(args.task_dir)
     gene_id = str(task["gene_id"])
-    target_meta = read_tsv(args.task_dir / "target.metadata.tsv")[0]
     genomic_accession = target_meta.get("genomic_accession", "")
     seq_region = refseq_to_ensembl_seq_region(genomic_accession)
     start_values = [int(target_meta["genomic_begin"]), int(target_meta["genomic_end"])]

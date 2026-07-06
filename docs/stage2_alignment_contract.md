@@ -210,6 +210,12 @@ inflate the per-base depth.
 Alignment processes use scratch task space. Raw PAF/delta files are temporary and
 are removed unless `--keep_native_alignments true` is set.
 
+Per-gene alignment task directories contain only the task manifest and metadata
+needed to run a strategy. They do not copy the Stage 1 target or ortholog FASTA
+files. Sequence-based strategies receive the needed per-gene FASTA files as
+explicit Nextflow inputs and materialize uncompressed aligner input FASTA files
+inside their scratch workspace.
+
 Durable output is limited to compressed normalized TSV files so large runs do
 not duplicate sequence data and native aligner output in `results/`.
 
