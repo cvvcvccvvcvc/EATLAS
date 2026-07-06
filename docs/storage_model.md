@@ -54,6 +54,11 @@ run cleanup, and moves terminal annotation outputs into the published annotation
 directory instead of keeping a second copy in `work/`. Do not rely on `-resume`
 with this profile after a successful run.
 
+Alignment task directories are metadata-only. They do not duplicate Stage 1
+target or ortholog FASTA files. Sequence-based aligner processes receive the
+needed per-gene Stage 1 FASTA files as explicit Nextflow inputs and materialize
+uncompressed FASTA files inside their own local task workspace.
+
 ## Raw NCBI Data
 
 Raw NCBI zip packages and unpacked `gene.fna` files are intentionally not
