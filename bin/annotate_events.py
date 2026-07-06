@@ -417,6 +417,14 @@ def format_info_value(value) -> str:
     return str(value)
 
 
+def format_review_status_value(value) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, (list, tuple)):
+        return ",".join(str(item) for item in value)
+    return str(value)
+
+
 def empty_annotation(columns: list[str]) -> dict[str, str]:
     return {column: "" for column in columns}
 
@@ -456,7 +464,7 @@ def format_float(value) -> str:
 
 
 def clinvar_annotation_from_record(rec) -> dict[str, str]:
-    review_status = format_info_value(rec.info.get("CLNREVSTAT"))
+    review_status = format_review_status_value(rec.info.get("CLNREVSTAT"))
     stars, stars_status = clinvar_review_stars(review_status)
     scv_accessions = format_info_value(rec.info.get("CLNSIGSCV"))
     return {

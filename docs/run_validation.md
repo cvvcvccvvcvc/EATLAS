@@ -158,8 +158,10 @@ Annotation expected properties:
 - `annotation/variant_annotations.tsv.gz` exists for end-to-end runs.
 - `annotation/manifest.json` records event and unique variant-context row counts, source metadata, and annotation counters.
 - `annotation/failures.tsv.gz` records non-fatal external lookup failures.
-- `clinvar_*` columns are present and populated when matching ClinVar records exist.
-- `gnomad_*` columns are populated only for variants found in fetched gnomAD regions.
+- `clinvar_*` columns are present and populated when matching ClinVar records exist;
+  `clinvar_review_stars` is derived from the raw `clinvar_revstat` value.
+- `gnomad_*` columns are populated only for variants found in fetched gnomAD regions,
+  including selected AF plus exome/genome/joint AF and joint AC/AN when available.
 
 ## Quick Checks
 
