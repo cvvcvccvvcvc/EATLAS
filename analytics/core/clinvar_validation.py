@@ -48,6 +48,7 @@ class ClinvarValidation:
     universe: pd.DataFrame
     strategy_results: pd.DataFrame
     manifest: dict
+    observed_by_strategy_type: dict[tuple[str, str], set[str]]
 
 
 def build_validation(
@@ -74,12 +75,24 @@ def build_validation(
         regions_path=regions_path,
     )
     universe = pd.read_csv(universe_path, sep="\t", compression="gzip", keep_default_na=False)
-    strategy_results = compute_strategy_results(
+    observed_by_strategy_type = collect_observed_keys_by_strategy_type(
         universe=universe,
         variant_annotations_tsv=variant_annotations_tsv,
         strategies=strategies,
     )
-    return ClinvarValidation(universe_path, manifest_path, universe, strategy_results, manifest)
+    strategy_results = compute_strategy_results(
+        universe=universe,
+        strategies=strategies,
+        observed_by_strategy_type=observed_by_strategy_type,
+    )
+    return ClinvarValidation(
+        universe_path,
+        manifest_path,
+        universe,
+        strategy_results,
+        manifest,
+        observed_by_strategy_type,
+    )
 
 
 def build_or_load_clinvar_universe(
@@ -375,19 +388,18 @@ def write_universe(path: Path, rows: list[dict[str, str]]) -> None:
             writer.writerow({field: row.get(field, "") for field in UNIVERSE_FIELDS})
 
 
-def compute_strategy_results(
+def collect_observed_keys_by_strategy_type(
     *,
     universe: pd.DataFrame,
     variant_annotations_tsv: Path,
     strategies: list[str],
     chunksize: int = 250_000,
-) -> pd.DataFrame:
+) -> dict[tuple[str, str], set[str]]:
     if universe.empty:
-        return pd.DataFrame(columns=result_columns())
+        return {(strategy, variant_kind): set() for strategy in strategies for variant_kind in VALIDATION_TYPES}
 
-    labels_by_key = dict(zip(universe["variant_key"].astype(str), universe["label_class"].astype(str)))
     types_by_key = dict(zip(universe["variant_key"].astype(str), universe["variant_type"].astype(str)))
-    universe_keys = set(labels_by_key)
+    universe_keys = set(types_by_key)
     observed_by_strategy_type: dict[tuple[str, str], set[str]] = {
         (strategy, variant_kind): set() for strategy in strategies for variant_kind in VALIDATION_TYPES
     }
@@ -410,6 +422,19 @@ def compute_strategy_results(
             for strategy in split_strategies(strategy_text):
                 observed_by_strategy_type.setdefault((strategy, variant_kind), set()).add(variant_key)
 
+    return observed_by_strategy_type
+
+
+def compute_strategy_results(
+    *,
+    universe: pd.DataFrame,
+    strategies: list[str],
+    observed_by_strategy_type: dict[tuple[str, str], set[str]],
+) -> pd.DataFrame:
+    if universe.empty:
+        return pd.DataFrame(columns=result_columns())
+
+    labels_by_key = dict(zip(universe["variant_key"].astype(str), universe["label_class"].astype(str)))
     rows = []
     all_strategies = sorted(set(strategies) | {strategy for strategy, _variant_kind in observed_by_strategy_type})
     for variant_kind in VALIDATION_TYPES:

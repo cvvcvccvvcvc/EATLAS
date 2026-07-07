@@ -19,6 +19,15 @@ class EnrichmentResult:
     fisher_p: float
 
 
+@dataclass(frozen=True)
+class AdjustedResult:
+    odds_ratio_mh: float
+    ci_low: float
+    ci_high: float
+    cmh_chi2: float
+    cmh_p: float
+
+
 def odds_ratio_and_ci(a: int, b: int, c: int, d: int) -> tuple[float, float, float]:
     """Return raw OR and approximate 95% CI for [[a, b], [c, d]].
 
@@ -69,6 +78,75 @@ def enrichment_result(name: str, a: int, b: int, c: int, d: int) -> EnrichmentRe
         ci_high=ci_high,
         fisher_p=fisher_exact_two_sided(a, b, c, d),
     )
+
+
+def mantel_haenszel_adjusted(results: list[EnrichmentResult]) -> AdjustedResult | None:
+    """Return a pooled stratified OR and CMH p-value across 2x2 strata."""
+
+    numerator = 0.0
+    denominator = 0.0
+    observed_minus_expected = 0.0
+    variance_sum = 0.0
+    weighted_log_or = 0.0
+    weight_sum = 0.0
+
+    for result in results:
+        a = result.benign_observed
+        b = result.pathogenic_observed
+        c = result.benign_not_observed
+        d = result.pathogenic_not_observed
+        n = a + b + c + d
+        if n <= 1:
+            continue
+
+        numerator += (a * d) / n
+        denominator += (b * c) / n
+
+        alt_total = a + b
+        no_alt_total = c + d
+        benign_total = a + c
+        pathogenic_total = b + d
+        expected_a = alt_total * benign_total / n
+        variance_a = alt_total * no_alt_total * benign_total * pathogenic_total / (n * n * (n - 1))
+        observed_minus_expected += a - expected_a
+        variance_sum += variance_a
+
+        aa, bb, cc, dd = float(a), float(b), float(c), float(d)
+        if min(aa, bb, cc, dd) == 0.0:
+            aa += 0.5
+            bb += 0.5
+            cc += 0.5
+            dd += 0.5
+        var_log_or = (1.0 / aa) + (1.0 / bb) + (1.0 / cc) + (1.0 / dd)
+        if var_log_or > 0:
+            weight = 1.0 / var_log_or
+            weighted_log_or += weight * math.log((aa * dd) / (bb * cc))
+            weight_sum += weight
+
+    if numerator == 0.0 and denominator == 0.0:
+        odds_ratio_mh = float("nan")
+    elif denominator == 0.0:
+        odds_ratio_mh = float("inf")
+    else:
+        odds_ratio_mh = numerator / denominator
+
+    if weight_sum > 0:
+        pooled_log_or = weighted_log_or / weight_sum
+        se = math.sqrt(1.0 / weight_sum)
+        ci_low = math.exp(pooled_log_or - 1.96 * se)
+        ci_high = math.exp(pooled_log_or + 1.96 * se)
+    else:
+        ci_low = float("nan")
+        ci_high = float("nan")
+
+    if variance_sum > 0:
+        cmh_chi2 = (observed_minus_expected * observed_minus_expected) / variance_sum
+        cmh_p = math.erfc(math.sqrt(cmh_chi2 / 2.0))
+    else:
+        cmh_chi2 = float("nan")
+        cmh_p = float("nan")
+
+    return AdjustedResult(odds_ratio_mh, ci_low, ci_high, cmh_chi2, cmh_p)
 
 
 def _log_comb(n: int, k: int) -> float:
