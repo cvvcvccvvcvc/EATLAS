@@ -16,6 +16,8 @@ import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 
+from analytics.core.clinvar_validation import build_validation
+
 
 warnings.filterwarnings("ignore", r"All-NaN (slice|axis) encountered")
 warnings.filterwarnings("ignore", r"Mean of empty slice")
@@ -65,6 +67,7 @@ VARIANT_REQUIRED = {"variant_key", "gene_id", "event_type", "strategies"}
 @dataclass(frozen=True)
 class RunInputs:
     run_dir: Path
+    genes_tsv: Path
     variant_annotations_tsv: Path
     annotation_manifest_json: Path
     annotation_failures_tsv: Path
@@ -77,6 +80,12 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--run-dir", required=True, type=Path, help="Completed GAPH run directory.")
     parser.add_argument(
+        "--clinvar-vcf",
+        type=Path,
+        default=project_root() / "assets" / "reference" / "clinvar" / "clinvar.vcf.gz",
+        help="Indexed ClinVar VCF used for validation. Default: assets/reference/clinvar/clinvar.vcf.gz",
+    )
+    parser.add_argument(
         "--out-html",
         type=Path,
         help="Output HTML path. Default: <run-dir>/reports/strategy_compare.html",
@@ -86,6 +95,10 @@ def parse_args() -> argparse.Namespace:
         help="Short report file name inside <run-dir>/reports. '.html' is added if omitted.",
     )
     return parser.parse_args()
+
+
+def project_root() -> Path:
+    return Path(__file__).resolve().parents[1]
 
 
 def safe_report_name(name: str) -> str:
@@ -103,6 +116,7 @@ def resolve_run_inputs(run_dir: Path) -> RunInputs:
 
     inputs = RunInputs(
         run_dir=run_dir,
+        genes_tsv=run_dir / "fetch" / "genes.tsv.gz",
         variant_annotations_tsv=run_dir / "annotation" / "variant_annotations.tsv.gz",
         annotation_manifest_json=run_dir / "annotation" / "manifest.json",
         annotation_failures_tsv=run_dir / "annotation" / "failures.tsv.gz",
@@ -115,6 +129,8 @@ def resolve_run_inputs(run_dir: Path) -> RunInputs:
             "Missing annotation/variant_annotations.tsv.gz under --run-dir. "
             "Run the annotation stage before building this report."
         )
+    if not inputs.genes_tsv.exists():
+        raise FileNotFoundError("Missing fetch/genes.tsv.gz under --run-dir.")
     return inputs
 
 
@@ -179,6 +195,28 @@ def format_percent(value, digits: int = 1) -> str:
     if pd.isna(value):
         return ""
     return f"{float(value) * 100:.{digits}f}%"
+
+
+def format_pvalue(value) -> str:
+    if pd.isna(value):
+        return ""
+    value = float(value)
+    if value == 0:
+        return "0"
+    if value < 0.001:
+        return f"{value:.2e}"
+    return f"{value:.3g}"
+
+
+def format_ratio(value) -> str:
+    if pd.isna(value):
+        return ""
+    value = float(value)
+    if np.isposinf(value):
+        return "inf"
+    if np.isneginf(value):
+        return "-inf"
+    return format_float(value, 3)
 
 
 def format_table_dataframe(df: pd.DataFrame) -> pd.DataFrame:
@@ -895,6 +933,147 @@ def build_feature_sections(cov: pd.DataFrame, include_plotly: bool) -> list[str]
     return sections
 
 
+def build_validation_sections(validation, include_plotly: bool) -> list[str]:
+    manifest = validation.manifest
+    results = validation.strategy_results.copy()
+    sections = ["<h2>ClinVar Validation</h2>"]
+    excluded = (
+        int(manifest.get("excluded_vus_count", 0))
+        + int(manifest.get("excluded_missing_count", 0))
+        + int(manifest.get("excluded_other_count", 0))
+        + int(manifest.get("ambiguous_mixed_label_count", 0))
+    )
+    sections.append(
+        metric_cards(
+            [
+                ("ClinVar SNV universe", format_int(manifest.get("usable_snv_allele_count", 0))),
+                ("B/LB SNVs", format_int(manifest.get("benign_count", 0))),
+                ("P/LP SNVs", format_int(manifest.get("pathogenic_count", 0))),
+                ("Excluded SNV alleles", format_int(excluded)),
+            ]
+        )
+    )
+    sections.append(
+        "<p class=\"lead\">SNV-only test: are ClinVar B/LB alternate alleles observed more often than ClinVar P/LP alternate alleles?</p>"
+    )
+
+    if results.empty:
+        sections.append("<p>No usable ClinVar validation rows were found.</p>")
+        return sections
+
+    results["Strategy"] = results["strategy"].map(strategy_label)
+    plot_df = results.dropna(subset=["ci_low", "ci_high"]).copy()
+    plot_df = plot_df[(plot_df["ci_low"] > 0) & (plot_df["ci_high"] > 0)]
+    plot_df["plot_odds_ratio"] = plot_df["odds_ratio"]
+    infinite_or = ~np.isfinite(plot_df["plot_odds_ratio"])
+    plot_df.loc[infinite_or, "plot_odds_ratio"] = np.sqrt(
+        plot_df.loc[infinite_or, "ci_low"] * plot_df.loc[infinite_or, "ci_high"]
+    )
+    plot_df = plot_df[np.isfinite(plot_df["plot_odds_ratio"]) & (plot_df["plot_odds_ratio"] > 0)]
+    if not plot_df.empty:
+        plot_df = plot_df.sort_values("plot_odds_ratio", ascending=False)
+        fig = go.Figure(
+            data=go.Scatter(
+                x=plot_df["plot_odds_ratio"],
+                y=plot_df["Strategy"],
+                mode="markers",
+                marker={"size": 10, "color": "#356d8f"},
+                error_x={
+                    "type": "data",
+                    "symmetric": False,
+                    "array": plot_df["ci_high"] - plot_df["plot_odds_ratio"],
+                    "arrayminus": plot_df["plot_odds_ratio"] - plot_df["ci_low"],
+                    "thickness": 1.4,
+                },
+                hovertemplate=(
+                    "%{y}<br>OR: %{x:.3g}<br>"
+                    "Raw OR: %{customdata[0]}<br>"
+                    "95% CI: %{customdata[1]:.3g}-%{customdata[2]:.3g}<br>"
+                    "Fisher p: %{customdata[3]:.3g}<extra></extra>"
+                ),
+                customdata=np.stack(
+                    [
+                        plot_df["odds_ratio"].map(format_ratio),
+                        plot_df["ci_low"],
+                        plot_df["ci_high"],
+                        plot_df["fisher_p"],
+                    ],
+                    axis=-1,
+                ),
+            )
+        )
+        fig.add_vline(x=1.0, line_dash="dash", line_color="#8c8c8c")
+        fig.update_layout(
+            title="ClinVar B/LB enrichment among observed alternate alleles",
+            xaxis_title="Odds ratio (log scale)",
+            yaxis_title="",
+            xaxis_type="log",
+            height=360,
+            margin={"l": 140, "r": 30, "t": 52, "b": 58},
+            template="plotly_white",
+        )
+        fig.update_yaxes(categoryorder="array", categoryarray=plot_df["Strategy"].tolist()[::-1])
+        if infinite_or.any():
+            fig.add_annotation(
+                text="Infinite raw ORs are plotted at the Haldane-corrected CI center.",
+                xref="paper",
+                yref="paper",
+                x=0,
+                y=-0.22,
+                showarrow=False,
+                font={"size": 12, "color": "#52606d"},
+                align="left",
+            )
+        sections.append(fig_html(fig, include_plotlyjs=include_plotly))
+    else:
+        sections.append("<p>Odds ratios were not finite enough to draw a log-scale forest plot.</p>")
+
+    table = results.sort_values("odds_ratio", ascending=False, na_position="last").copy()
+    table["Odds Ratio"] = table["odds_ratio"].map(format_ratio)
+    table["95% CI"] = table.apply(lambda row: f"{format_ratio(row['ci_low'])}-{format_ratio(row['ci_high'])}", axis=1)
+    table["Fisher p"] = table["fisher_p"].map(format_pvalue)
+    table = table.rename(
+        columns={
+            "benign_observed": "B/LB observed",
+            "pathogenic_observed": "P/LP observed",
+            "benign_not_observed": "B/LB not observed",
+            "pathogenic_not_observed": "P/LP not observed",
+        }
+    )
+    sections.append("<h3>2x2 Tables by Strategy</h3>")
+    sections.append(
+        table_html(
+            table[
+                [
+                    "Strategy",
+                    "B/LB observed",
+                    "P/LP observed",
+                    "B/LB not observed",
+                    "P/LP not observed",
+                    "Odds Ratio",
+                    "95% CI",
+                    "Fisher p",
+                ]
+            ],
+            classes="table table-sm table-striped",
+        )
+    )
+    sections.append(
+        "<details><summary>Validation cache files</summary>"
+        + table_html(
+            pd.DataFrame(
+                [
+                    {"Key": "ClinVar universe", "Path": str(validation.universe_path), "Size": file_size_label(validation.universe_path)},
+                    {"Key": "Manifest", "Path": str(validation.manifest_path), "Size": file_size_label(validation.manifest_path)},
+                ]
+            ),
+            classes="table table-sm table-striped",
+        )
+        + "</details>"
+    )
+    return sections
+
+
 def build_methods_sections(
     inputs: RunInputs,
     out_html: Path,
@@ -1094,6 +1273,15 @@ def main() -> None:
     ]
     strategy_stats = strategy_stats_full[[column for column in summary_columns if column in strategy_stats_full.columns]]
 
+    print("Computing ClinVar validation...")
+    validation = build_validation(
+        run_dir=inputs.run_dir,
+        variant_annotations_tsv=inputs.variant_annotations_tsv,
+        genes_tsv=inputs.genes_tsv,
+        clinvar_vcf=args.clinvar_vcf.expanduser().resolve(),
+        strategies=sorted(long["strategy"].astype(str).unique()),
+    )
+
     sections = [
         ("overview", "Overview", build_overview(variants, long, cov, strategy_stats, annotation_manifest, alignment_manifest)),
         ("variants", "Variant Profile", build_variant_sections(long, strategy_stats, include_plotly=True)),
@@ -1103,6 +1291,7 @@ def main() -> None:
             build_clinvar_gnomad_sections(variants, long, strategy_stats_full, include_plotly=True),
         ),
         ("coverage", "Feature Coverage", build_feature_sections(cov, include_plotly=True)),
+        ("validation", "Validation", build_validation_sections(validation, include_plotly=True)),
         (
             "qc",
             "QC",
