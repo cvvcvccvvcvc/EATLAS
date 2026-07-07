@@ -49,6 +49,33 @@ CONSEQUENCE_GROUP_COLORS = {
     "Noncoding/UTR/intron": "#abd9e9",
     "Other": "#9e9e9e",
 }
+CONSEQUENCE_GROUP_TERMS = {
+    "LoF/splice": [
+        "frameshift_variant",
+        "splice_acceptor_variant",
+        "splice_donor_variant",
+        "start_lost",
+        "stop_gained",
+        "stop_lost",
+    ],
+    "Missense/inframe": [
+        "inframe_deletion",
+        "inframe_insertion",
+        "missense_variant",
+        "protein_altering_variant",
+    ],
+    "Synonymous": [
+        "stop_retained_variant",
+        "synonymous_variant",
+    ],
+    "Noncoding/UTR/intron": [
+        "3_prime_UTR_variant",
+        "5_prime_UTR_variant",
+        "intron_variant",
+        "non_coding_transcript_exon_variant",
+        "splice_region_variant",
+    ],
+}
 STRATEGY_LABELS = {
     "bwa_pseudoreads": "BWA pseudo",
     "bwa_pseudoreads_varscan": "BWA VarScan",
@@ -710,28 +737,23 @@ def pathogenic_star_counts(variants: pd.DataFrame) -> pd.DataFrame:
 
 def consequence_group(value: str) -> str:
     consequence = str(value or "")
-    if consequence in {
-        "frameshift_variant",
-        "stop_gained",
-        "splice_donor_variant",
-        "splice_acceptor_variant",
-        "start_lost",
-        "stop_lost",
-    }:
-        return "LoF/splice"
-    if consequence in {"missense_variant", "inframe_deletion", "inframe_insertion", "protein_altering_variant"}:
-        return "Missense/inframe"
-    if consequence in {"synonymous_variant", "stop_retained_variant"}:
-        return "Synonymous"
-    if consequence in {
-        "intron_variant",
-        "3_prime_UTR_variant",
-        "5_prime_UTR_variant",
-        "non_coding_transcript_exon_variant",
-        "splice_region_variant",
-    }:
-        return "Noncoding/UTR/intron"
+    for group, terms in CONSEQUENCE_GROUP_TERMS.items():
+        if consequence in terms:
+            return group
     return "Other"
+
+
+def consequence_grouping_table() -> pd.DataFrame:
+    rows = [
+        {
+            "Group": group,
+            "gnomAD consequence values": ", ".join(CONSEQUENCE_GROUP_TERMS.get(group, []))
+            if group != "Other"
+            else "Any non-empty gnomAD consequence not listed above.",
+        }
+        for group in CONSEQUENCE_GROUP_ORDER
+    ]
+    return pd.DataFrame(rows)
 
 
 def consequence_counts_by_strategy(variants: pd.DataFrame, pathogenic_only: bool = False) -> pd.DataFrame:
@@ -1419,6 +1441,13 @@ def build_methods_sections(
             classes="table table-sm table-striped",
         )
     )
+    sections.append("</details>")
+    sections.append("<details><summary>gnomAD consequence grouping</summary>")
+    sections.append(
+        "<p class=\"lead\">The External Evidence consequence plots group raw values from the "
+        "<code>gnomad_csq</code> annotation column as follows.</p>"
+    )
+    sections.append(table_html(consequence_grouping_table(), classes="table table-sm table-striped"))
     sections.append("</details>")
     if validation is not None:
         validation_files = [
