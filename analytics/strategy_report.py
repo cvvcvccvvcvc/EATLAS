@@ -32,6 +32,23 @@ CLINVAR_COLORS = {
     "VUS": "#f1c40f",
     "Other": "#8c8c8c",
 }
+REVIEW_STAR_ORDER = ["4", "3", "2", "1", "0", "Unmapped"]
+REVIEW_STAR_COLORS = {
+    "4": "#08519c",
+    "3": "#3182bd",
+    "2": "#6baed6",
+    "1": "#9ecae1",
+    "0": "#fdbb84",
+    "Unmapped": "#bdbdbd",
+}
+CONSEQUENCE_GROUP_ORDER = ["LoF/splice", "Missense/inframe", "Synonymous", "Noncoding/UTR/intron", "Other"]
+CONSEQUENCE_GROUP_COLORS = {
+    "LoF/splice": "#de2d26",
+    "Missense/inframe": "#fb6a4a",
+    "Synonymous": "#74add1",
+    "Noncoding/UTR/intron": "#abd9e9",
+    "Other": "#9e9e9e",
+}
 STRATEGY_LABELS = {
     "bwa_pseudoreads": "BWA pseudo",
     "bwa_pseudoreads_varscan": "BWA VarScan",
@@ -55,11 +72,24 @@ VARIANT_USECOLS = [
     "support_ortholog_count",
     "support_strategy_count",
     "clinvar_id",
+    "clinvar_allele_id",
     "clinvar_sig",
+    "clinvar_revstat",
     "clinvar_review_stars",
+    "clinvar_review_stars_status",
+    "clinvar_sig_conflict",
+    "clinvar_scv_count",
+    "clinvar_hgvs",
+    "clinvar_geneinfo",
+    "clinvar_disease",
+    "clinvar_variant_type",
+    "clinvar_origin",
+    "clinvar_rs",
     "gnomad_af",
     "gnomad_af_source",
     "gnomad_csq",
+    "gnomad_hgvsc",
+    "gnomad_hgvsp",
 ]
 VARIANT_REQUIRED = {"variant_key", "gene_id", "event_type", "strategies"}
 
@@ -68,6 +98,7 @@ VARIANT_REQUIRED = {"variant_key", "gene_id", "event_type", "strategies"}
 class RunInputs:
     run_dir: Path
     genes_tsv: Path
+    target_sequences_dir: Path
     variant_annotations_tsv: Path
     annotation_manifest_json: Path
     annotation_failures_tsv: Path
@@ -117,6 +148,7 @@ def resolve_run_inputs(run_dir: Path) -> RunInputs:
     inputs = RunInputs(
         run_dir=run_dir,
         genes_tsv=run_dir / "fetch" / "genes.tsv.gz",
+        target_sequences_dir=run_dir / "fetch" / "sequences" / "targets",
         variant_annotations_tsv=run_dir / "annotation" / "variant_annotations.tsv.gz",
         annotation_manifest_json=run_dir / "annotation" / "manifest.json",
         annotation_failures_tsv=run_dir / "annotation" / "failures.tsv.gz",
@@ -131,6 +163,8 @@ def resolve_run_inputs(run_dir: Path) -> RunInputs:
         )
     if not inputs.genes_tsv.exists():
         raise FileNotFoundError("Missing fetch/genes.tsv.gz under --run-dir.")
+    if not inputs.target_sequences_dir.exists():
+        raise FileNotFoundError("Missing fetch/sequences/targets under --run-dir.")
     return inputs
 
 
@@ -227,7 +261,10 @@ def format_table_dataframe(df: pd.DataFrame) -> pd.DataFrame:
         if column.endswith("%") or " rate" in column.lower() or "breadth" in column.lower():
             shown[column] = shown[column].map(format_percent)
         elif any(token in column.lower() for token in ["variant", "found", "event", "ortholog", "gene", "row", "bp"]):
-            shown[column] = shown[column].map(format_int)
+            numeric = pd.to_numeric(shown[column], errors="coerce")
+            nonempty = shown[column].notna() & shown[column].astype(str).ne("")
+            if bool(nonempty.any()) and numeric[nonempty].notna().all():
+                shown[column] = numeric.map(format_int)
         elif pd.api.types.is_integer_dtype(shown[column]):
             shown[column] = shown[column].map(format_int)
         elif pd.api.types.is_float_dtype(shown[column]):
@@ -245,10 +282,14 @@ def categorize_clinvar_series(values: pd.Series) -> pd.Series:
     text = values.fillna("").astype(str).str.lower()
     category = pd.Series("Other", index=values.index, dtype="object")
     category[text.eq("")] = "Not Found"
-    category[text.str.contains("conflicting", na=False)] = "Other"
-    category[text.str.contains("uncertain|vus", regex=True, na=False)] = "VUS"
-    category[text.str.contains("pathogenic", na=False)] = "P/LP"
-    category[text.str.contains("benign", na=False)] = "B/LB"
+    conflicting = text.str.contains("conflicting", na=False)
+    uncertain = text.str.contains("uncertain|vus", regex=True, na=False)
+    benign = text.str.contains("benign", na=False)
+    pathogenic = text.str.contains("pathogenic", na=False)
+    category[conflicting] = "Other"
+    category[uncertain & ~conflicting] = "VUS"
+    category[pathogenic & ~benign & ~uncertain & ~conflicting] = "P/LP"
+    category[benign & ~pathogenic & ~uncertain & ~conflicting] = "B/LB"
     return pd.Categorical(category, categories=CLINVAR_ORDER, ordered=True)
 
 
@@ -306,6 +347,7 @@ def read_variant_annotations(path: Path) -> pd.DataFrame:
     df["support_strategy_count"] = (
         pd.to_numeric(df["support_strategy_count"], errors="coerce").fillna(0).astype("int64")
     )
+    df["clinvar_scv_count"] = pd.to_numeric(df["clinvar_scv_count"], errors="coerce").fillna(0).astype("int64")
     df["clinvar_found"] = df["clinvar_id"].astype(str) != ""
     df["clinvar_classified"] = df["clinvar_sig"].astype(str) != ""
     df["clinvar_category"] = categorize_clinvar_series(df["clinvar_sig"])
@@ -630,6 +672,159 @@ def binned_gnomad_af(long: pd.DataFrame, bin_count: int = 10) -> pd.DataFrame:
     return counts[["strategy", "bin_mid", "Variant_Count", "Density"]]
 
 
+def explode_variant_subset(variants: pd.DataFrame, columns: list[str]) -> pd.DataFrame:
+    if variants.empty:
+        return pd.DataFrame(columns=["variant_id", "strategy", "Strategy", *columns])
+    usecols = ["variant_id", "strategies", *columns]
+    work = variants[[column for column in usecols if column in variants.columns]].copy()
+    for column in columns:
+        if column not in work.columns:
+            work[column] = ""
+    work["strategy"] = work["strategies"].astype(str).str.split(",")
+    work = work.explode("strategy")
+    work["strategy"] = work["strategy"].fillna("").astype(str).str.strip()
+    work = work[work["strategy"] != ""].drop(columns=["strategies"])
+    work = work.drop_duplicates(["strategy", "variant_id"])
+    work["Strategy"] = work["strategy"].map(strategy_label)
+    return work.reset_index(drop=True)
+
+
+def review_star_category(row: pd.Series) -> str:
+    stars = str(row.get("clinvar_review_stars", "") or "").strip()
+    if stars in {"0", "1", "2", "3", "4"}:
+        return stars
+    return "Unmapped"
+
+
+def pathogenic_star_counts(variants: pd.DataFrame) -> pd.DataFrame:
+    pathogenic = variants[variants["clinvar_category"].astype(str) == "P/LP"].copy()
+    rows = explode_variant_subset(pathogenic, ["clinvar_review_stars", "clinvar_review_stars_status"])
+    if rows.empty:
+        return pd.DataFrame(columns=["Strategy", "Review stars", "Variant_Count"])
+    rows["Review stars"] = rows.apply(review_star_category, axis=1)
+    counts = rows.groupby(["Strategy", "Review stars"], observed=True).size().reset_index(name="Variant_Count")
+    present = [star for star in REVIEW_STAR_ORDER if star in set(counts["Review stars"])]
+    counts["Review stars"] = pd.Categorical(counts["Review stars"], categories=present, ordered=True)
+    return counts.sort_values(["Strategy", "Review stars"])
+
+
+def consequence_group(value: str) -> str:
+    consequence = str(value or "")
+    if consequence in {
+        "frameshift_variant",
+        "stop_gained",
+        "splice_donor_variant",
+        "splice_acceptor_variant",
+        "start_lost",
+        "stop_lost",
+    }:
+        return "LoF/splice"
+    if consequence in {"missense_variant", "inframe_deletion", "inframe_insertion", "protein_altering_variant"}:
+        return "Missense/inframe"
+    if consequence in {"synonymous_variant", "stop_retained_variant"}:
+        return "Synonymous"
+    if consequence in {
+        "intron_variant",
+        "3_prime_UTR_variant",
+        "5_prime_UTR_variant",
+        "non_coding_transcript_exon_variant",
+        "splice_region_variant",
+    }:
+        return "Noncoding/UTR/intron"
+    return "Other"
+
+
+def consequence_counts_by_strategy(variants: pd.DataFrame, pathogenic_only: bool = False) -> pd.DataFrame:
+    work = variants[variants["gnomad_af"].notna()].copy()
+    if pathogenic_only:
+        work = work[work["clinvar_category"].astype(str) == "P/LP"].copy()
+    if work.empty:
+        return pd.DataFrame(columns=["Strategy", "Consequence group", "Variant_Count", "Fraction"])
+
+    rows = explode_variant_subset(work, ["gnomad_csq"])
+    rows["Consequence group"] = rows["gnomad_csq"].map(consequence_group)
+    counts = rows.groupby(["Strategy", "Consequence group"], observed=True).size().reset_index(name="Variant_Count")
+    totals = counts.groupby("Strategy", observed=True)["Variant_Count"].transform("sum")
+    counts["Fraction"] = counts["Variant_Count"] / totals.replace(0, np.nan)
+    counts["Consequence group"] = pd.Categorical(
+        counts["Consequence group"], categories=CONSEQUENCE_GROUP_ORDER, ordered=True
+    )
+    return counts.sort_values(["Strategy", "Consequence group"])
+
+
+def consequence_strategy_order(counts: pd.DataFrame) -> list[str]:
+    if counts.empty:
+        return []
+    pivot = counts.pivot_table(
+        index="Strategy",
+        columns="Consequence group",
+        values="Fraction",
+        aggfunc="sum",
+        fill_value=0,
+        observed=True,
+    )
+    for column in CONSEQUENCE_GROUP_ORDER:
+        if column not in pivot.columns:
+            pivot[column] = 0.0
+    pivot["impact_fraction"] = pivot["LoF/splice"] + pivot["Missense/inframe"]
+    pivot["total_count"] = counts.groupby("Strategy", observed=True)["Variant_Count"].sum()
+    return pivot.sort_values(["impact_fraction", "total_count"], ascending=False).index.tolist()
+
+
+def compact_list_text(value: str, max_items: int = 2, max_chars: int = 90) -> str:
+    items = [item for item in re.split(r"[|,]", str(value or "")) if item and item != "."]
+    if not items:
+        return ""
+    shown = "; ".join(items[:max_items])
+    if len(items) > max_items:
+        shown += f"; +{len(items) - max_items}"
+    if len(shown) > max_chars:
+        shown = shown[: max_chars - 1].rstrip() + "..."
+    return shown
+
+
+def format_strategy_list(value: str) -> str:
+    strategies = [strategy_label(item.strip()) for item in str(value or "").split(",") if item.strip()]
+    return ", ".join(strategies)
+
+
+def pathogenic_variant_table(variants: pd.DataFrame) -> pd.DataFrame:
+    pathogenic = variants[variants["clinvar_category"].astype(str) == "P/LP"].copy()
+    if pathogenic.empty:
+        return pd.DataFrame()
+
+    pathogenic["Stars"] = pathogenic.apply(review_star_category, axis=1)
+    pathogenic["Strategies"] = pathogenic["strategies"].map(format_strategy_list)
+    pathogenic["Disease"] = pathogenic["clinvar_disease"].map(compact_list_text)
+    pathogenic["HGVS"] = pathogenic["clinvar_hgvs"].map(lambda value: compact_list_text(value, max_items=1, max_chars=70))
+    pathogenic["gnomAD AF"] = pathogenic["gnomad_af"]
+    table = pd.DataFrame(
+        {
+            "Key": pathogenic["variant_id"],
+            "Gene": pathogenic["gene_id"],
+            "Event": pathogenic["event_type"],
+            "ClinVar sig": pathogenic["clinvar_sig"],
+            "Stars": pathogenic["Stars"],
+            "Review status": pathogenic["clinvar_revstat"],
+            "SCVs": pathogenic["clinvar_scv_count"],
+            "ClinVar ID": pathogenic["clinvar_id"],
+            "Allele ID": pathogenic["clinvar_allele_id"],
+            "Disease": pathogenic["Disease"],
+            "HGVS": pathogenic["HGVS"],
+            "ClinVar type": pathogenic["clinvar_variant_type"],
+            "gnomAD AF": pathogenic["gnomAD AF"],
+            "gnomAD consequence": pathogenic["gnomad_csq"],
+            "Orthologs": pathogenic["support_ortholog_count"],
+            "Support events": pathogenic["support_row_count"],
+            "Strategies": pathogenic["Strategies"],
+        }
+    )
+    star_rank = table["Stars"].map({star: index for index, star in enumerate(REVIEW_STAR_ORDER[::-1])}).fillna(-1)
+    table["_star_rank"] = star_rank
+    table = table.sort_values(["_star_rank", "Orthologs", "Support events"], ascending=False).drop(columns=["_star_rank"])
+    return table
+
+
 def coverage_summary(cov: pd.DataFrame, feature_types: list[str] | None = None) -> pd.DataFrame:
     if cov.empty:
         return pd.DataFrame()
@@ -884,6 +1079,84 @@ def build_clinvar_gnomad_sections(
     else:
         sections.append("<p>No non-zero gnomAD AF values were found.</p>")
 
+    star_counts = pathogenic_star_counts(variants)
+    if not star_counts.empty:
+        present_stars = [star for star in REVIEW_STAR_ORDER if star in set(star_counts["Review stars"].astype(str))]
+        totals = star_counts.groupby("Strategy", observed=True)["Variant_Count"].sum()
+        high_conf = star_counts[star_counts["Review stars"].astype(str).isin(["4", "3", "2"])]
+        high_conf_totals = high_conf.groupby("Strategy", observed=True)["Variant_Count"].sum()
+        star_order = (
+            pd.DataFrame({"total": totals, "high_conf": high_conf_totals})
+            .fillna(0)
+            .sort_values(["high_conf", "total"], ascending=False)
+            .index.tolist()
+        )
+        fig_stars = px.bar(
+            star_counts,
+            x="Strategy",
+            y="Variant_Count",
+            color="Review stars",
+            barmode="stack",
+            title="Pathogenic ClinVar hits by review stars",
+            category_orders={"Strategy": star_order, "Review stars": present_stars},
+            color_discrete_map=REVIEW_STAR_COLORS,
+            labels={"Strategy": "", "Variant_Count": "P/LP ClinVar variants", "Review stars": "Review stars"},
+        )
+        compact_figure(fig_stars, height=340)
+        sections.append("<h3>Pathogenic ClinVar Evidence</h3>")
+        sections.append(fig_html(fig_stars))
+    else:
+        sections.append("<h3>Pathogenic ClinVar Evidence</h3>")
+        sections.append("<p>No P/LP ClinVar variants were found in the candidate set.</p>")
+
+    consequence_counts = consequence_counts_by_strategy(variants)
+    if not consequence_counts.empty:
+        order = consequence_strategy_order(consequence_counts)
+        fig_conseq = px.bar(
+            consequence_counts,
+            x="Strategy",
+            y="Fraction",
+            color="Consequence group",
+            barmode="stack",
+            title="gnomAD consequence mix among gnomAD hits",
+            category_orders={"Strategy": order, "Consequence group": CONSEQUENCE_GROUP_ORDER},
+            color_discrete_map=CONSEQUENCE_GROUP_COLORS,
+            labels={"Strategy": "", "Fraction": "Within-strategy fraction", "Consequence group": "Consequence group"},
+        )
+        fig_conseq.update_layout(yaxis_tickformat=".0%")
+        compact_figure(fig_conseq, height=360)
+        sections.append("<h3>gnomAD Consequence Profile</h3>")
+        sections.append(fig_html(fig_conseq))
+    else:
+        sections.append("<p>No gnomAD consequences were found.</p>")
+
+    pathogenic_consequence_counts = consequence_counts_by_strategy(variants, pathogenic_only=True)
+    if not pathogenic_consequence_counts.empty:
+        pathogenic_order = (
+            pathogenic_consequence_counts.groupby("Strategy", observed=True)["Variant_Count"]
+            .sum()
+            .sort_values(ascending=False)
+            .index.tolist()
+        )
+        fig_path_conseq = px.bar(
+            pathogenic_consequence_counts,
+            x="Strategy",
+            y="Variant_Count",
+            color="Consequence group",
+            barmode="stack",
+            title="gnomAD consequence groups for pathogenic ClinVar hits",
+            category_orders={"Strategy": pathogenic_order, "Consequence group": CONSEQUENCE_GROUP_ORDER},
+            color_discrete_map=CONSEQUENCE_GROUP_COLORS,
+            labels={"Strategy": "", "Variant_Count": "P/LP ClinVar variants", "Consequence group": "Consequence group"},
+        )
+        compact_figure(fig_path_conseq, height=320)
+        sections.append(fig_html(fig_path_conseq))
+
+    pathogenic_table = pathogenic_variant_table(variants)
+    if not pathogenic_table.empty:
+        sections.append("<h3>Pathogenic ClinVar Variants Found</h3>")
+        sections.append(table_html(pathogenic_table, classes="table table-sm table-striped", max_rows=100))
+
     return sections
 
 
@@ -933,36 +1206,61 @@ def build_feature_sections(cov: pd.DataFrame, include_plotly: bool) -> list[str]
     return sections
 
 
+def validation_excluded_count(manifest: dict, variant_kind: str) -> int:
+    return (
+        int(manifest.get(f"excluded_vus_{variant_kind}_count", 0))
+        + int(manifest.get(f"excluded_missing_{variant_kind}_count", 0))
+        + int(manifest.get(f"excluded_other_{variant_kind}_count", 0))
+        + int(manifest.get(f"excluded_normalization_{variant_kind}_count", 0))
+        + int(manifest.get(f"ambiguous_mixed_label_{variant_kind}_count", 0))
+    )
+
+
+def validation_kind_label(variant_kind: str) -> str:
+    return "INDEL" if variant_kind == "indel" else "SNV"
+
+
 def build_validation_sections(validation, include_plotly: bool) -> list[str]:
     manifest = validation.manifest
     results = validation.strategy_results.copy()
     sections = ["<h2>ClinVar Validation</h2>"]
-    excluded = (
-        int(manifest.get("excluded_vus_count", 0))
-        + int(manifest.get("excluded_missing_count", 0))
-        + int(manifest.get("excluded_other_count", 0))
-        + int(manifest.get("ambiguous_mixed_label_count", 0))
-    )
     sections.append(
         metric_cards(
             [
                 ("ClinVar SNV universe", format_int(manifest.get("usable_snv_allele_count", 0))),
-                ("B/LB SNVs", format_int(manifest.get("benign_count", 0))),
-                ("P/LP SNVs", format_int(manifest.get("pathogenic_count", 0))),
-                ("Excluded SNV alleles", format_int(excluded)),
+                ("B/LB SNVs", format_int(manifest.get("benign_snv_count", 0))),
+                ("P/LP SNVs", format_int(manifest.get("pathogenic_snv_count", 0))),
+                ("Excluded SNV alleles", format_int(validation_excluded_count(manifest, "snv"))),
+                ("ClinVar INDEL universe", format_int(manifest.get("usable_indel_allele_count", 0))),
+                ("B/LB INDELs", format_int(manifest.get("benign_indel_count", 0))),
+                ("P/LP INDELs", format_int(manifest.get("pathogenic_indel_count", 0))),
+                ("Excluded INDEL alleles", format_int(validation_excluded_count(manifest, "indel"))),
             ]
         )
     )
     sections.append(
-        "<p class=\"lead\">SNV-only test: are ClinVar B/LB alternate alleles observed more often than ClinVar P/LP alternate alleles?</p>"
+        "<p class=\"lead\">ClinVar validation asks whether observed alternate alleles are enriched for B/LB over P/LP labels. SNV and INDEL are computed separately.</p>"
     )
 
     if results.empty:
         sections.append("<p>No usable ClinVar validation rows were found.</p>")
         return sections
 
-    results["Strategy"] = results["strategy"].map(strategy_label)
-    plot_df = results.dropna(subset=["ci_low", "ci_high"]).copy()
+    for variant_kind in ["snv", "indel"]:
+        sections.extend(build_validation_kind_sections(results, variant_kind, include_plotly))
+    return sections
+
+
+def build_validation_kind_sections(results: pd.DataFrame, variant_kind: str, include_plotly: bool) -> list[str]:
+    label = validation_kind_label(variant_kind)
+    subset = results[results["variant_type"].astype(str) == variant_kind].copy()
+    sections = [f"<h3>{label} Enrichment</h3>"]
+    if subset.empty:
+        sections.append(f"<p>No usable ClinVar {label} rows were found.</p>")
+        return sections
+
+    subset["Strategy"] = subset["strategy"].map(strategy_label)
+    plot_df = subset.dropna(subset=["ci_low", "ci_high"]).copy()
     plot_df = plot_df[(plot_df["ci_low"] > 0) & (plot_df["ci_high"] > 0)]
     plot_df["plot_odds_ratio"] = plot_df["odds_ratio"]
     infinite_or = ~np.isfinite(plot_df["plot_odds_ratio"])
@@ -977,7 +1275,7 @@ def build_validation_sections(validation, include_plotly: bool) -> list[str]:
                 x=plot_df["plot_odds_ratio"],
                 y=plot_df["Strategy"],
                 mode="markers",
-                marker={"size": 10, "color": "#356d8f"},
+                marker={"size": 10, "color": "#356d8f" if variant_kind == "snv" else "#6f4aa8"},
                 error_x={
                     "type": "data",
                     "symmetric": False,
@@ -1004,7 +1302,7 @@ def build_validation_sections(validation, include_plotly: bool) -> list[str]:
         )
         fig.add_vline(x=1.0, line_dash="dash", line_color="#8c8c8c")
         fig.update_layout(
-            title="ClinVar B/LB enrichment among observed alternate alleles",
+            title=f"ClinVar B/LB enrichment among observed {label} alternate alleles",
             xaxis_title="Odds ratio (log scale)",
             yaxis_title="",
             xaxis_type="log",
@@ -1026,9 +1324,9 @@ def build_validation_sections(validation, include_plotly: bool) -> list[str]:
             )
         sections.append(fig_html(fig, include_plotlyjs=include_plotly))
     else:
-        sections.append("<p>Odds ratios were not finite enough to draw a log-scale forest plot.</p>")
+        sections.append(f"<p>{label} odds ratios were not finite enough to draw a log-scale forest plot.</p>")
 
-    table = results.sort_values("odds_ratio", ascending=False, na_position="last").copy()
+    table = subset.sort_values("odds_ratio", ascending=False, na_position="last").copy()
     table["Odds Ratio"] = table["odds_ratio"].map(format_ratio)
     table["95% CI"] = table.apply(lambda row: f"{format_ratio(row['ci_low'])}-{format_ratio(row['ci_high'])}", axis=1)
     table["Fisher p"] = table["fisher_p"].map(format_pvalue)
@@ -1040,7 +1338,7 @@ def build_validation_sections(validation, include_plotly: bool) -> list[str]:
             "pathogenic_not_observed": "P/LP not observed",
         }
     )
-    sections.append("<h3>2x2 Tables by Strategy</h3>")
+    sections.append(f"<h4>{label} 2x2 Tables by Strategy</h4>")
     sections.append(
         table_html(
             table[
@@ -1058,19 +1356,6 @@ def build_validation_sections(validation, include_plotly: bool) -> list[str]:
             classes="table table-sm table-striped",
         )
     )
-    sections.append(
-        "<details><summary>Validation cache files</summary>"
-        + table_html(
-            pd.DataFrame(
-                [
-                    {"Key": "ClinVar universe", "Path": str(validation.universe_path), "Size": file_size_label(validation.universe_path)},
-                    {"Key": "Manifest", "Path": str(validation.manifest_path), "Size": file_size_label(validation.manifest_path)},
-                ]
-            ),
-            classes="table table-sm table-striped",
-        )
-        + "</details>"
-    )
     return sections
 
 
@@ -1083,10 +1368,12 @@ def build_methods_sections(
     failures: pd.DataFrame,
     annotation_manifest: dict,
     alignment_manifest: dict,
+    validation=None,
 ) -> list[str]:
     files = [
         ("Run Dir", inputs.run_dir),
         ("Variant Annotations", inputs.variant_annotations_tsv),
+        ("Target Sequences", inputs.target_sequences_dir),
         ("Feature Coverage", inputs.feature_coverage_tsv),
         ("Strategy Quick Summary", inputs.strategy_quick_summary_tsv),
         ("Annotation Manifest", inputs.annotation_manifest_json),
@@ -1133,6 +1420,27 @@ def build_methods_sections(
         )
     )
     sections.append("</details>")
+    if validation is not None:
+        validation_files = [
+            ("ClinVar universe", validation.universe_path),
+            ("ClinVar universe manifest", validation.manifest_path),
+        ]
+        regions_bed = validation.manifest.get("regions_bed", "")
+        if regions_bed:
+            validation_files.append(("ClinVar target regions", Path(regions_bed)))
+        sections.append("<details><summary>Validation cache files</summary>")
+        sections.append(
+            table_html(
+                pd.DataFrame(
+                    [
+                        {"Key": label, "Path": str(path), "Exists": path.exists(), "Size": file_size_label(path)}
+                        for label, path in validation_files
+                    ]
+                ),
+                classes="table table-sm table-striped",
+            )
+        )
+        sections.append("</details>")
     return sections
 
 
@@ -1278,6 +1586,7 @@ def main() -> None:
         run_dir=inputs.run_dir,
         variant_annotations_tsv=inputs.variant_annotations_tsv,
         genes_tsv=inputs.genes_tsv,
+        target_sequences_dir=inputs.target_sequences_dir,
         clinvar_vcf=args.clinvar_vcf.expanduser().resolve(),
         strategies=sorted(long["strategy"].astype(str).unique()),
     )
@@ -1304,6 +1613,7 @@ def main() -> None:
                 failures,
                 annotation_manifest,
                 alignment_manifest,
+                validation,
             ),
         ),
     ]

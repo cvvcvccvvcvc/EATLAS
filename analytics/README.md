@@ -16,9 +16,12 @@ When an analysis needs durable intermediate tables, write them under
 `<run-dir>/analytics/`. The source tree does not keep a default scratch/work
 directory.
 
-The strategy report currently writes an SNV-only ClinVar validation cache under:
+The strategy report writes its ClinVar validation universe under:
 
 ```text
-<run-dir>/analytics/clinvar_universe.snv.tsv.gz
-<run-dir>/analytics/clinvar_universe.snv.manifest.json
+<run-dir>/analytics/clinvar_universe.snv_indel.tsv.gz
+<run-dir>/analytics/clinvar_universe.snv_indel.manifest.json
+<run-dir>/analytics/clinvar_target_regions.bed
 ```
+
+Validation statistics are computed separately for SNV and INDEL rows.

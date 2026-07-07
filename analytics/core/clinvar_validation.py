@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import bisect
 import csv
 import gzip
 import json
@@ -15,10 +14,20 @@ from pathlib import Path
 import pandas as pd
 
 from .stats import enrichment_result
+from .variant_keys import (
+    build_context_index,
+    contexts_for_variant,
+    load_target_contexts,
+    normalize_chrom,
+    normalize_vcf_key_for_context,
+    variant_key_text,
+    variant_type,
+)
 
 
 UNIVERSE_FIELDS = [
     "variant_key",
+    "variant_type",
     "chrom",
     "pos",
     "ref",
@@ -28,7 +37,8 @@ UNIVERSE_FIELDS = [
     "clinvar_sigs",
     "gene_ids",
 ]
-CACHE_VERSION = 1
+CACHE_VERSION = 2
+VALIDATION_TYPES = ["snv", "indel"]
 
 
 @dataclass(frozen=True)
@@ -45,17 +55,19 @@ def build_validation(
     run_dir: Path,
     variant_annotations_tsv: Path,
     genes_tsv: Path,
+    target_sequences_dir: Path,
     clinvar_vcf: Path,
     strategies: list[str],
 ) -> ClinvarValidation:
     analytics_dir = run_dir / "analytics"
     analytics_dir.mkdir(parents=True, exist_ok=True)
-    universe_path = analytics_dir / "clinvar_universe.snv.tsv.gz"
-    manifest_path = analytics_dir / "clinvar_universe.snv.manifest.json"
+    universe_path = analytics_dir / "clinvar_universe.snv_indel.tsv.gz"
+    manifest_path = analytics_dir / "clinvar_universe.snv_indel.manifest.json"
     regions_path = analytics_dir / "clinvar_target_regions.bed"
 
     manifest = build_or_load_clinvar_universe(
         genes_tsv=genes_tsv,
+        target_sequences_dir=target_sequences_dir,
         clinvar_vcf=clinvar_vcf,
         universe_path=universe_path,
         manifest_path=manifest_path,
@@ -73,6 +85,7 @@ def build_validation(
 def build_or_load_clinvar_universe(
     *,
     genes_tsv: Path,
+    target_sequences_dir: Path,
     clinvar_vcf: Path,
     universe_path: Path,
     manifest_path: Path,
@@ -80,9 +93,10 @@ def build_or_load_clinvar_universe(
 ) -> dict:
     expected_inputs = {
         "genes_tsv": path_metadata(genes_tsv),
+        "target_sequences_dir": directory_metadata(target_sequences_dir),
         "clinvar_vcf": path_metadata(clinvar_vcf),
         "clinvar_tbi": path_metadata(Path(f"{clinvar_vcf}.tbi")),
-        "mode": "snv_only",
+        "mode": "snv_indel",
         "cache_version": CACHE_VERSION,
     }
     if universe_path.exists() and manifest_path.exists():
@@ -91,23 +105,46 @@ def build_or_load_clinvar_universe(
             return manifest
 
     genes = read_genes(genes_tsv)
+    contexts = load_target_contexts(genes_tsv, target_sequences_dir)
+    context_index = build_context_index(contexts)
     intervals = merged_intervals(genes)
     write_regions_bed(regions_path, intervals)
-    rows, counts = query_clinvar_snv_universe(clinvar_vcf, regions_path, genes)
+    rows, counts = query_clinvar_variant_universe(clinvar_vcf, regions_path, context_index)
     write_universe(universe_path, rows)
+    row_counts = Counter((row["variant_type"], row["label_class"]) for row in rows)
     manifest = {
         "inputs": expected_inputs,
         "target_gene_count": len(genes),
         "target_region_count": len(intervals),
+        "raw_allele_count": counts["raw_allele_count"],
         "raw_snv_allele_count": counts["raw_snv_allele_count"],
-        "usable_snv_allele_count": len(rows),
-        "benign_count": counts["benign"],
-        "pathogenic_count": counts["pathogenic"],
-        "excluded_vus_count": counts["excluded_vus"],
-        "excluded_missing_count": counts["excluded_missing"],
-        "excluded_other_count": counts["excluded_other"],
-        "ambiguous_mixed_label_count": counts["ambiguous_mixed_label"],
-        "duplicate_usable_key_count": counts["duplicate_usable_key"],
+        "raw_indel_allele_count": counts["raw_indel_allele_count"],
+        "usable_allele_count": len(rows),
+        "usable_snv_allele_count": sum(1 for row in rows if row["variant_type"] == "snv"),
+        "usable_indel_allele_count": sum(1 for row in rows if row["variant_type"] == "indel"),
+        "benign_count": sum(1 for row in rows if row["label_class"] == "benign"),
+        "pathogenic_count": sum(1 for row in rows if row["label_class"] == "pathogenic"),
+        "benign_snv_count": row_counts[("snv", "benign")],
+        "pathogenic_snv_count": row_counts[("snv", "pathogenic")],
+        "benign_indel_count": row_counts[("indel", "benign")],
+        "pathogenic_indel_count": row_counts[("indel", "pathogenic")],
+        "excluded_vus_count": counts["excluded_vus_count"],
+        "excluded_missing_count": counts["excluded_missing_count"],
+        "excluded_other_count": counts["excluded_other_count"],
+        "excluded_vus_snv_count": counts["excluded_vus_snv_count"],
+        "excluded_missing_snv_count": counts["excluded_missing_snv_count"],
+        "excluded_other_snv_count": counts["excluded_other_snv_count"],
+        "excluded_vus_indel_count": counts["excluded_vus_indel_count"],
+        "excluded_missing_indel_count": counts["excluded_missing_indel_count"],
+        "excluded_other_indel_count": counts["excluded_other_indel_count"],
+        "excluded_normalization_snv_count": counts["excluded_normalization_snv_count"],
+        "excluded_normalization_indel_count": counts["excluded_normalization_indel_count"],
+        "excluded_complex_allele_count": counts["excluded_complex_allele_count"],
+        "excluded_unsupported_allele_count": counts["excluded_unsupported_allele_count"],
+        "ambiguous_mixed_label_count": counts["ambiguous_mixed_label_count"],
+        "ambiguous_mixed_label_snv_count": counts["ambiguous_mixed_label_snv_count"],
+        "ambiguous_mixed_label_indel_count": counts["ambiguous_mixed_label_indel_count"],
+        "duplicate_usable_key_count": counts["duplicate_usable_key_count"],
         "regions_bed": str(regions_path),
         "universe_tsv": str(universe_path),
     }
@@ -125,17 +162,10 @@ def read_genes(path: Path) -> list[dict[str, str]]:
         return [row for row in reader]
 
 
-def normalize_chrom(value: str) -> str:
-    chrom = str(value or "").strip()
-    if chrom.startswith("chr"):
-        chrom = chrom[3:]
-    return "MT" if chrom == "M" else chrom
-
-
 def merged_intervals(genes: list[dict[str, str]]) -> list[tuple[str, int, int]]:
     by_chrom: dict[str, list[tuple[int, int]]] = defaultdict(list)
     for row in genes:
-        chrom = normalize_chrom(row["chromosome"])
+        chrom = normalize_chrom(row["chromosome"]) or ""
         if not chrom:
             continue
         start = int(row["begin"])
@@ -176,10 +206,10 @@ def write_regions_bed(path: Path, intervals: list[tuple[str, int, int]]) -> None
             writer.writerow([chrom, max(0, start1 - 1), end1])
 
 
-def query_clinvar_snv_universe(
+def query_clinvar_variant_universe(
     clinvar_vcf: Path,
     regions_path: Path,
-    genes: list[dict[str, str]],
+    context_index: dict[str, tuple[list[dict], list[int]]],
 ) -> tuple[list[dict[str, str]], Counter]:
     tabix = shutil.which("tabix")
     if tabix is None:
@@ -194,7 +224,6 @@ def query_clinvar_snv_universe(
     if proc.returncode not in (0, 1):
         raise RuntimeError(f"tabix ClinVar query failed: {proc.stderr.strip()}")
 
-    gene_index = build_gene_index(genes)
     raw_by_key: dict[str, dict[str, object]] = {}
     counts = Counter()
     for line in proc.stdout.splitlines():
@@ -204,62 +233,73 @@ def query_clinvar_snv_universe(
         if len(fields) < 8:
             continue
         chrom, pos_text, rec_id, ref, alt_text, _qual, _filter, info_text = fields[:8]
-        chrom = normalize_chrom(chrom)
+        chrom = normalize_chrom(chrom) or ""
         pos = int(pos_text)
         ref = ref.upper()
         sig = info_value(info_text, "CLNSIG")
         label = clinvar_label(sig)
         for alt in alt_text.split(","):
             alt = alt.upper()
-            if not is_snv(ref, alt):
+            vtype = variant_type(ref, alt)
+            if vtype == "unsupported":
+                counts["excluded_unsupported_allele_count"] += 1
                 continue
-            counts["raw_snv_allele_count"] += 1
-            if label == "excluded_vus":
-                counts["excluded_vus"] += 1
-            elif label == "excluded_missing":
-                counts["excluded_missing"] += 1
-            elif label == "excluded_other":
-                counts["excluded_other"] += 1
+            if vtype == "complex":
+                counts["excluded_complex_allele_count"] += 1
+                continue
+            counts["raw_allele_count"] += 1
+            counts[f"raw_{vtype}_allele_count"] += 1
+            if label.startswith("excluded_"):
+                counts[f"{label}_count"] += 1
+                counts[f"{label}_{vtype}_count"] += 1
             if label not in {"benign", "pathogenic"}:
                 continue
-            key = f"{chrom}:{pos}:{ref}>{alt}"
-            entry = raw_by_key.setdefault(
-                key,
-                {
-                    "variant_key": key,
-                    "chrom": chrom,
-                    "pos": pos,
-                    "ref": ref,
-                    "alt": alt,
-                    "labels": set(),
-                    "clinvar_ids": set(),
-                    "clinvar_sigs": set(),
-                    "gene_ids": set(overlapping_gene_ids(gene_index, chrom, pos)),
-                },
-            )
-            entry["labels"].add(label)
-            if rec_id and rec_id != ".":
-                entry["clinvar_ids"].add(rec_id)
-            if sig:
-                entry["clinvar_sigs"].add(sig)
+
+            normalized_items = normalize_clinvar_allele_for_targets(context_index, chrom, pos, ref, alt)
+            if not normalized_items:
+                counts[f"excluded_normalization_{vtype}_count"] += 1
+                continue
+            for key, key_type, context in normalized_items:
+                key_text = variant_key_text(key)
+                entry = raw_by_key.setdefault(
+                    key_text,
+                    {
+                        "variant_key": key_text,
+                        "variant_type": key_type,
+                        "chrom": key[0],
+                        "pos": key[1],
+                        "ref": key[2],
+                        "alt": key[3],
+                        "labels": set(),
+                        "clinvar_ids": set(),
+                        "clinvar_sigs": set(),
+                        "gene_ids": set(),
+                    },
+                )
+                entry["labels"].add(label)
+                if rec_id and rec_id != ".":
+                    entry["clinvar_ids"].add(rec_id)
+                if sig:
+                    entry["clinvar_sigs"].add(sig)
+                entry["gene_ids"].add(str(context["gene_id"]))
 
     rows = []
     for entry in raw_by_key.values():
         labels = set(entry["labels"])
         if labels == {"benign"}:
             label_class = "benign"
-            counts["benign"] += 1
         elif labels == {"pathogenic"}:
             label_class = "pathogenic"
-            counts["pathogenic"] += 1
         else:
-            counts["ambiguous_mixed_label"] += 1
+            counts["ambiguous_mixed_label_count"] += 1
+            counts[f"ambiguous_mixed_label_{entry['variant_type']}_count"] += 1
             continue
         if len(entry["clinvar_ids"]) > 1 or len(entry["clinvar_sigs"]) > 1:
-            counts["duplicate_usable_key"] += 1
+            counts["duplicate_usable_key_count"] += 1
         rows.append(
             {
                 "variant_key": entry["variant_key"],
+                "variant_type": entry["variant_type"],
                 "chrom": entry["chrom"],
                 "pos": entry["pos"],
                 "ref": entry["ref"],
@@ -270,13 +310,32 @@ def query_clinvar_snv_universe(
                 "gene_ids": "|".join(sorted(entry["gene_ids"], key=gene_sort_key)),
             }
         )
-    rows.sort(key=lambda row: (chrom_sort_key(str(row["chrom"])), int(row["pos"]), row["ref"], row["alt"]))
+    rows.sort(key=lambda row: (row["variant_type"], chrom_sort_key(str(row["chrom"])), int(row["pos"]), row["ref"], row["alt"]))
     return rows, counts
 
 
-def is_snv(ref: str, alt: str) -> bool:
-    bases = {"A", "C", "G", "T"}
-    return len(ref) == 1 and len(alt) == 1 and ref in bases and alt in bases
+def normalize_clinvar_allele_for_targets(
+    context_index: dict[str, tuple[list[dict], list[int]]],
+    chrom: str,
+    pos: int,
+    ref: str,
+    alt: str,
+) -> list[tuple[tuple[str, int, str, str], str, dict]]:
+    normalized = []
+    seen = set()
+    for context in contexts_for_variant(context_index, chrom, pos):
+        key, status = normalize_vcf_key_for_context(context, chrom, pos, ref, alt)
+        if status != "ok" or key is None:
+            continue
+        key_type = variant_type(key[2], key[3])
+        if key_type not in VALIDATION_TYPES:
+            continue
+        dedupe_key = (key, context["gene_id"])
+        if dedupe_key in seen:
+            continue
+        seen.add(dedupe_key)
+        normalized.append((key, key_type, context))
+    return normalized
 
 
 def info_value(info_text: str, key: str) -> str:
@@ -304,37 +363,6 @@ def clinvar_label(clnsig: str) -> str:
     return "excluded_other"
 
 
-def build_gene_index(genes: list[dict[str, str]]) -> dict[str, tuple[list[dict[str, object]], list[int]]]:
-    by_chrom: dict[str, list[dict[str, object]]] = defaultdict(list)
-    for row in genes:
-        chrom = normalize_chrom(row["chromosome"])
-        if not chrom:
-            continue
-        by_chrom[chrom].append(
-            {
-                "gene_id": row["gene_id"],
-                "begin": int(row["begin"]),
-                "end": int(row["end"]),
-            }
-        )
-
-    index = {}
-    for chrom, rows in by_chrom.items():
-        rows.sort(key=lambda row: (int(row["begin"]), int(row["end"]), str(row["gene_id"])))
-        index[chrom] = (rows, [int(row["begin"]) for row in rows])
-    return index
-
-
-def overlapping_gene_ids(
-    gene_index: dict[str, tuple[list[dict[str, object]], list[int]]],
-    chrom: str,
-    pos: int,
-) -> list[str]:
-    rows, starts = gene_index.get(chrom, ([], []))
-    limit = bisect.bisect_right(starts, pos)
-    return [str(row["gene_id"]) for row in rows[:limit] if int(row["end"]) >= pos]
-
-
 def gene_sort_key(value: str) -> tuple[int, str]:
     return (int(value), value) if str(value).isdigit() else (10**18, str(value))
 
@@ -358,8 +386,11 @@ def compute_strategy_results(
         return pd.DataFrame(columns=result_columns())
 
     labels_by_key = dict(zip(universe["variant_key"].astype(str), universe["label_class"].astype(str)))
+    types_by_key = dict(zip(universe["variant_key"].astype(str), universe["variant_type"].astype(str)))
     universe_keys = set(labels_by_key)
-    observed_by_strategy: dict[str, set[str]] = {strategy: set() for strategy in strategies}
+    observed_by_strategy_type: dict[tuple[str, str], set[str]] = {
+        (strategy, variant_kind): set() for strategy in strategies for variant_kind in VALIDATION_TYPES
+    }
 
     for chunk in pd.read_csv(
         variant_annotations_tsv,
@@ -373,41 +404,51 @@ def compute_strategy_results(
         if matched.empty:
             continue
         for variant_key, strategy_text in zip(matched["variant_key"].astype(str), matched["strategies"].astype(str)):
+            variant_kind = types_by_key.get(variant_key)
+            if variant_kind not in VALIDATION_TYPES:
+                continue
             for strategy in split_strategies(strategy_text):
-                observed_by_strategy.setdefault(strategy, set()).add(variant_key)
+                observed_by_strategy_type.setdefault((strategy, variant_kind), set()).add(variant_key)
 
-    benign_total = int((universe["label_class"] == "benign").sum())
-    pathogenic_total = int((universe["label_class"] == "pathogenic").sum())
     rows = []
-    for strategy in sorted(observed_by_strategy):
-        observed = observed_by_strategy[strategy]
-        benign_observed = sum(1 for key in observed if labels_by_key.get(key) == "benign")
-        pathogenic_observed = sum(1 for key in observed if labels_by_key.get(key) == "pathogenic")
-        result = enrichment_result(
-            strategy,
-            benign_observed,
-            pathogenic_observed,
-            benign_total - benign_observed,
-            pathogenic_total - pathogenic_observed,
-        )
-        rows.append(
-            {
-                "strategy": strategy,
-                "benign_observed": result.benign_observed,
-                "pathogenic_observed": result.pathogenic_observed,
-                "benign_not_observed": result.benign_not_observed,
-                "pathogenic_not_observed": result.pathogenic_not_observed,
-                "odds_ratio": result.odds_ratio,
-                "ci_low": result.ci_low,
-                "ci_high": result.ci_high,
-                "fisher_p": result.fisher_p,
-            }
-        )
+    all_strategies = sorted(set(strategies) | {strategy for strategy, _variant_kind in observed_by_strategy_type})
+    for variant_kind in VALIDATION_TYPES:
+        subset = universe[universe["variant_type"].astype(str) == variant_kind]
+        if subset.empty:
+            continue
+        benign_total = int((subset["label_class"] == "benign").sum())
+        pathogenic_total = int((subset["label_class"] == "pathogenic").sum())
+        for strategy in all_strategies:
+            observed = observed_by_strategy_type.get((strategy, variant_kind), set())
+            benign_observed = sum(1 for key in observed if labels_by_key.get(key) == "benign")
+            pathogenic_observed = sum(1 for key in observed if labels_by_key.get(key) == "pathogenic")
+            result = enrichment_result(
+                strategy,
+                benign_observed,
+                pathogenic_observed,
+                benign_total - benign_observed,
+                pathogenic_total - pathogenic_observed,
+            )
+            rows.append(
+                {
+                    "variant_type": variant_kind,
+                    "strategy": strategy,
+                    "benign_observed": result.benign_observed,
+                    "pathogenic_observed": result.pathogenic_observed,
+                    "benign_not_observed": result.benign_not_observed,
+                    "pathogenic_not_observed": result.pathogenic_not_observed,
+                    "odds_ratio": result.odds_ratio,
+                    "ci_low": result.ci_low,
+                    "ci_high": result.ci_high,
+                    "fisher_p": result.fisher_p,
+                }
+            )
     return pd.DataFrame(rows, columns=result_columns())
 
 
 def result_columns() -> list[str]:
     return [
+        "variant_type",
         "strategy",
         "benign_observed",
         "pathogenic_observed",
@@ -429,3 +470,21 @@ def path_metadata(path: Path) -> dict[str, object]:
         raise FileNotFoundError(path)
     stat = path.stat()
     return {"path": str(path.resolve()), "size_bytes": stat.st_size, "mtime": int(stat.st_mtime)}
+
+
+def directory_metadata(path: Path) -> dict[str, object]:
+    if not path.exists():
+        raise FileNotFoundError(path)
+    files = sorted(item for item in path.glob("*.fa.gz") if item.is_file())
+    sizes = 0
+    mtimes = []
+    for item in files:
+        stat = item.stat()
+        sizes += stat.st_size
+        mtimes.append(int(stat.st_mtime))
+    return {
+        "path": str(path.resolve()),
+        "file_count": len(files),
+        "size_bytes": sizes,
+        "max_mtime": max(mtimes) if mtimes else 0,
+    }
