@@ -756,6 +756,163 @@ def consequence_grouping_table() -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+def clinvar_class_mapping_table() -> pd.DataFrame:
+    return pd.DataFrame(
+        [
+            {
+                "Class": "P/LP",
+                "Rule": "CLNSIG contains pathogenic and does not contain benign, uncertain/VUS, or conflicting.",
+                "Used for": "ClinVar class composition and pathogenic-only evidence plots.",
+            },
+            {
+                "Class": "B/LB",
+                "Rule": "CLNSIG contains benign and does not contain pathogenic, uncertain/VUS, or conflicting.",
+                "Used for": "ClinVar class composition and validation enrichment counts.",
+            },
+            {
+                "Class": "VUS",
+                "Rule": "CLNSIG contains uncertain or VUS, unless the record is marked conflicting.",
+                "Used for": "Shown as uncertainty in class composition; excluded from validation denominator.",
+            },
+            {
+                "Class": "Other",
+                "Rule": "Conflicting, mixed, ambiguous, or non-empty CLNSIG values outside the clean classes above.",
+                "Used for": "Shown separately in class composition; excluded from validation denominator.",
+            },
+            {
+                "Class": "Not Found",
+                "Rule": "No CLNSIG value in the annotation row.",
+                "Used for": "Not included in classified-variant plots or validation denominator.",
+            },
+        ]
+    )
+
+
+def clinvar_review_star_mapping_table() -> pd.DataFrame:
+    return pd.DataFrame(
+        [
+            {
+                "Stars": "4",
+                "ClinVar review status values": "practice_guideline",
+                "Interpretation": "Practice guideline.",
+            },
+            {
+                "Stars": "3",
+                "ClinVar review status values": "reviewed_by_expert_panel",
+                "Interpretation": "Reviewed by expert panel.",
+            },
+            {
+                "Stars": "2",
+                "ClinVar review status values": (
+                    "criteria_provided,_multiple_submitters,_no_conflicts; "
+                    "criteria_provided,_multiple_submitters"
+                ),
+                "Interpretation": "Multiple submitters with criteria; no-conflict status when provided by ClinVar.",
+            },
+            {
+                "Stars": "1",
+                "ClinVar review status values": (
+                    "criteria_provided,_single_submitter; "
+                    "criteria_provided,_conflicting_classifications; "
+                    "criteria_provided,_conflicting_interpretations"
+                ),
+                "Interpretation": "Criteria provided, but lower review confidence or conflicting submissions.",
+            },
+            {
+                "Stars": "0",
+                "ClinVar review status values": (
+                    "no_assertion_criteria_provided; no_assertion_provided; "
+                    "no_classification_provided; no_classification_for_the_individual_variant"
+                ),
+                "Interpretation": "No assertion criteria or no classification.",
+            },
+            {
+                "Stars": "Unmapped",
+                "ClinVar review status values": "Missing, empty, or unrecognized review status.",
+                "Interpretation": "Kept visible only when such records are present.",
+            },
+        ]
+    )
+
+
+def validation_method_table() -> pd.DataFrame:
+    return pd.DataFrame(
+        [
+            {
+                "Step": "Universe",
+                "Definition": (
+                    "ClinVar alleles overlapping fetched target loci, normalized to the same target-context "
+                    "variant_key representation as GAPH annotations."
+                ),
+            },
+            {
+                "Step": "Variant types",
+                "Definition": "SNV and INDEL validation are computed separately; complex/MNV/symbolic alleles are excluded.",
+            },
+            {
+                "Step": "Included labels",
+                "Definition": "Only clean B/LB and clean P/LP ClinVar labels enter the validation denominator.",
+            },
+            {
+                "Step": "Excluded labels",
+                "Definition": "VUS, missing CLNSIG, conflicting/other, mixed B/P labels, and unnormalizable alleles.",
+            },
+            {
+                "Step": "Observed",
+                "Definition": "A ClinVar allele is observed for a strategy when its normalized variant_key is present in that strategy's variant_annotations rows.",
+            },
+            {
+                "Step": "2x2 table",
+                "Definition": "[B/LB observed, P/LP observed; B/LB not observed, P/LP not observed].",
+            },
+            {
+                "Step": "Statistics",
+                "Definition": (
+                    "Raw odds ratio, approximate 95% CI on log(OR) with Haldane 0.5 correction for zero cells, "
+                    "and two-sided Fisher exact p-value."
+                ),
+            },
+        ]
+    )
+
+
+def feature_coverage_formula_table() -> pd.DataFrame:
+    return pd.DataFrame(
+        [
+            {
+                "Metric": "Per-feature breadth",
+                "Formula": "coverage_breadth = covered_bases / length_bp",
+                "Notes": "Read directly from alignment/feature_coverage.tsv.gz.",
+            },
+            {
+                "Metric": "Weighted breadth",
+                "Formula": "sum(covered_bases) / sum(length_bp)",
+                "Notes": "Length-weighted aggregate used for feature breadth ranges.",
+            },
+            {
+                "Metric": "Per-feature mean depth",
+                "Formula": "mean_depth = depth_bases / length_bp",
+                "Notes": "Uses pipeline-provided depth_bases; the report does not recompute depth from raw aligner output.",
+            },
+            {
+                "Metric": "Weighted mean ortholog depth",
+                "Formula": "sum(depth_bases) / sum(length_bp)",
+                "Notes": "Main Feature Coverage plot metric.",
+            },
+            {
+                "Metric": "Median feature metrics",
+                "Formula": "median(coverage_breadth), median(mean_depth), median(orthologs_covered)",
+                "Notes": "Computed over feature rows within each strategy and feature type.",
+            },
+            {
+                "Metric": "Main feature classes",
+                "Formula": "CDS, UTR, intron",
+                "Notes": "The main plot uses disjoint target feature classes to avoid exon/gene aggregates dominating interpretation.",
+            },
+        ]
+    )
+
+
 def consequence_counts_by_strategy(variants: pd.DataFrame, pathogenic_only: bool = False) -> pd.DataFrame:
     work = variants[variants["gnomad_af"].notna()].copy()
     if pathogenic_only:
@@ -1442,12 +1599,36 @@ def build_methods_sections(
         )
     )
     sections.append("</details>")
+    sections.append("<details><summary>ClinVar class mapping</summary>")
+    sections.append(
+        "<p class=\"lead\">The report collapses raw <code>clinvar_sig</code> values into conservative plotting classes.</p>"
+    )
+    sections.append(table_html(clinvar_class_mapping_table(), classes="table table-sm table-striped"))
+    sections.append("</details>")
+    sections.append("<details><summary>ClinVar review stars</summary>")
+    sections.append(
+        "<p class=\"lead\">Review-star plots use the normalized star value written during annotation from ClinVar review status.</p>"
+    )
+    sections.append(table_html(clinvar_review_star_mapping_table(), classes="table table-sm table-striped"))
+    sections.append("</details>")
     sections.append("<details><summary>gnomAD consequence grouping</summary>")
     sections.append(
         "<p class=\"lead\">The External Evidence consequence plots group raw values from the "
         "<code>gnomad_csq</code> annotation column as follows.</p>"
     )
     sections.append(table_html(consequence_grouping_table(), classes="table table-sm table-striped"))
+    sections.append("</details>")
+    sections.append("<details><summary>ClinVar validation denominator and statistics</summary>")
+    sections.append(
+        "<p class=\"lead\">The Validation tab intentionally uses a stricter ClinVar subset than External Evidence hit-rate plots.</p>"
+    )
+    sections.append(table_html(validation_method_table(), classes="table table-sm table-striped"))
+    sections.append("</details>")
+    sections.append("<details><summary>Feature coverage formulas</summary>")
+    sections.append(
+        "<p class=\"lead\">Feature Coverage uses the normalized feature-level table emitted by the alignment stage.</p>"
+    )
+    sections.append(table_html(feature_coverage_formula_table(), classes="table table-sm table-striped"))
     sections.append("</details>")
     if validation is not None:
         validation_files = [
