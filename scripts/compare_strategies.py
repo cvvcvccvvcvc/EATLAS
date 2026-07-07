@@ -23,6 +23,12 @@ warnings.filterwarnings("ignore", r"Mean of empty slice")
 FEATURE_ORDER = ["gene", "exon", "cds", "utr", "intron"]
 DISJOINT_FEATURE_ORDER = ["cds", "utr", "intron"]
 CLINVAR_ORDER = ["P/LP", "B/LB", "VUS", "Other", "Not Found"]
+CLINVAR_COLORS = {
+    "B/LB": "#2ca25f",
+    "P/LP": "#de2d26",
+    "VUS": "#f1c40f",
+    "Other": "#8c8c8c",
+}
 STRATEGY_LABELS = {
     "bwa_pseudoreads": "BWA pseudo",
     "bwa_pseudoreads_varscan": "BWA VarScan",
@@ -500,7 +506,7 @@ def gnomad_found_counts(long: pd.DataFrame) -> pd.DataFrame:
     return counts
 
 
-def binned_gnomad_af(long: pd.DataFrame, bin_count: int = 80) -> pd.DataFrame:
+def binned_gnomad_af(long: pd.DataFrame, bin_count: int = 200) -> pd.DataFrame:
     gnomad = long[long["gnomad_af"].notna() & (long["gnomad_af"] > 0)][["strategy", "gnomad_af"]].copy()
     if gnomad.empty:
         return pd.DataFrame(columns=["strategy", "bin_mid", "Variant_Count", "Density"])
@@ -550,6 +556,20 @@ def fig_html(fig, include_plotlyjs: bool = False) -> str:
     return fig.to_html(full_html=False, include_plotlyjs="cdn" if include_plotlyjs else False)
 
 
+def compact_figure(fig, height: int = 340, show_x_title: bool = False):
+    fig.update_layout(
+        height=height,
+        margin={"l": 55, "r": 20, "t": 52, "b": 58},
+        template="plotly_white",
+        legend_title_text="",
+    )
+    fig.update_xaxes(automargin=True)
+    fig.update_yaxes(automargin=True)
+    if not show_x_title:
+        fig.update_xaxes(title_text=None)
+    return fig
+
+
 def table_html(df: pd.DataFrame, classes: str = "table table-striped table-bordered", max_rows: int | None = None) -> str:
     shown = df if max_rows is None else df.head(max_rows)
     shown = format_table_dataframe(shown)
@@ -591,7 +611,7 @@ def build_overview(
         ("Genes", format_int(variants["gene_id"].nunique())),
         ("Found in ClinVar", f"{format_int(clinvar_found)} ({format_percent(clinvar_found / unique_variant_count)})"),
         (
-            "Classified in ClinVar",
+            "ClinVar with CLNSIG",
             f"{format_int(clinvar_classified)} ({format_percent(clinvar_classified / unique_variant_count)})",
         ),
         ("Found in gnomAD", f"{format_int(gnomad_found)} ({format_percent(gnomad_found / unique_variant_count)})"),
@@ -617,9 +637,10 @@ def build_variant_sections(
         title="Unique candidate variants by strategy",
         category_orders={"Strategy": variant_volume["Strategy"].tolist()},
     )
+    compact_figure(fig_volume)
     sections.append(fig_html(fig_volume, include_plotlyjs=include_plotly))
 
-    titv = sort_by_metric(strategy_stats[["Strategy", "Ti/Tv"]], "Ti/Tv", ascending=True)
+    titv = sort_by_metric(strategy_stats[["Strategy", "Ti/Tv"]], "Ti/Tv")
     fig_titv = px.bar(
         titv,
         x="Strategy",
@@ -627,6 +648,7 @@ def build_variant_sections(
         title="Ti/Tv by strategy",
         category_orders={"Strategy": titv["Strategy"].tolist()},
     )
+    compact_figure(fig_titv)
     sections.append(fig_html(fig_titv))
 
     unique_contrib = unique_contribution_table(long)
@@ -638,12 +660,19 @@ def build_variant_sections(
         title="Variants found only by one strategy",
         category_orders={"Strategy": unique_contrib_plot["Strategy"].tolist()},
     )
+    compact_figure(fig_unique)
     sections.append(fig_html(fig_unique))
 
     counts = event_type_counts(long)
     totals = counts.groupby("strategy", observed=True)["Variant_Count"].transform("sum")
     counts["Fraction"] = counts["Variant_Count"] / totals.replace(0, np.nan)
-    order = variant_volume["Strategy"].tolist()
+    snv_order = (
+        counts[counts["event_type"].astype(str).str.lower() == "snv"]
+        .sort_values("Fraction", ascending=False)
+        ["strategy"]
+        .tolist()
+    )
+    order = snv_order + [strategy for strategy in variant_volume["Strategy"].tolist() if strategy not in snv_order]
     fig_events = px.bar(
         counts,
         x="strategy",
@@ -652,8 +681,10 @@ def build_variant_sections(
         barmode="stack",
         title="Variant type composition by strategy",
         category_orders={"strategy": order},
+        labels={"strategy": "", "Fraction": "Variant fraction", "event_type": "Variant type"},
     )
     fig_events.update_layout(yaxis_tickformat=".0%")
+    compact_figure(fig_events, height=360)
     sections.append(fig_html(fig_events))
     return sections
 
@@ -665,15 +696,12 @@ def build_clinvar_gnomad_sections(
     include_plotly: bool,
 ) -> list[str]:
     sections = ["<h2>External Evidence</h2>"]
-    variant_clinvar_found = variants["clinvar_category"].astype(str) != "Not Found"
-    strategy_clinvar_found = long["clinvar_category"].astype(str) != "Not Found"
     sections.append(
         metric_cards(
             [
                 ("Found in ClinVar", format_int(variants["clinvar_found"].sum())),
-                ("Classified in ClinVar", format_int(variant_clinvar_found.sum())),
+                ("ClinVar with CLNSIG", format_int(variants["clinvar_classified"].sum())),
                 ("Found in gnomAD", format_int(variants["gnomad_af"].notna().sum())),
-                ("Strategy-supported ClinVar hits", format_int(strategy_clinvar_found.sum())),
             ]
         )
     )
@@ -687,6 +715,7 @@ def build_clinvar_gnomad_sections(
         category_orders={"Strategy": clinvar_rate["Strategy"].tolist()},
     )
     fig_clin_rate.update_layout(yaxis_tickformat=".2%")
+    compact_figure(fig_clin_rate)
     sections.append(fig_html(fig_clin_rate, include_plotlyjs=include_plotly))
 
     gnomad_rate = sort_by_metric(strategy_stats[["Strategy", "gnomAD found %"]], "gnomAD found %")
@@ -698,13 +727,20 @@ def build_clinvar_gnomad_sections(
         category_orders={"Strategy": gnomad_rate["Strategy"].tolist()},
     )
     fig_gnomad_rate.update_layout(yaxis_tickformat=".1%")
+    compact_figure(fig_gnomad_rate)
     sections.append(fig_html(fig_gnomad_rate))
 
     clin_counts = clinvar_counts(long)
     clin_plot = clin_counts[clin_counts["clinvar_category"].astype(str) != "Not Found"].copy()
     totals = clin_plot.groupby("strategy", observed=True)["Variant_Count"].transform("sum")
     clin_plot["Fraction"] = clin_plot["Variant_Count"] / totals.replace(0, np.nan)
-    clin_order = clinvar_rate["Strategy"].tolist()
+    clin_order = (
+        clin_plot[clin_plot["clinvar_category"].astype(str) == "B/LB"]
+        .sort_values("Fraction", ascending=False)
+        ["strategy"]
+        .tolist()
+    )
+    clin_order += [strategy for strategy in clinvar_rate["Strategy"].tolist() if strategy not in clin_order]
     fig_clin = px.bar(
         clin_plot,
         x="strategy",
@@ -713,8 +749,11 @@ def build_clinvar_gnomad_sections(
         barmode="stack",
         title="ClinVar classification mix among classified variants",
         category_orders={"strategy": clin_order, "clinvar_category": CLINVAR_ORDER},
+        color_discrete_map=CLINVAR_COLORS,
+        labels={"strategy": "", "Fraction": "ClinVar class fraction", "clinvar_category": "ClinVar class"},
     )
     fig_clin.update_layout(yaxis_tickformat=".0%")
+    compact_figure(fig_clin, height=360)
     sections.append(fig_html(fig_clin))
 
     gnomad_bins = binned_gnomad_af(long)
@@ -727,9 +766,11 @@ def build_clinvar_gnomad_sections(
             barmode="overlay",
             opacity=0.65,
             title="gnomAD AF Distribution by Strategy",
+            labels={"bin_mid": "log10 gnomAD AF", "Density": "Within-strategy density", "strategy": ""},
         )
         fig_af.update_layout(yaxis_title="Within-strategy density", xaxis_title="log10 gnomAD AF")
         fig_af.update_traces(marker_line_width=0)
+        compact_figure(fig_af, height=380, show_x_title=True)
         sections.append("<h3>gnomAD AF Distribution</h3>")
         sections.append(fig_html(fig_af))
     else:
@@ -773,36 +814,14 @@ def build_feature_sections(cov: pd.DataFrame, include_plotly: bool) -> list[str]
         barmode="group",
         title="Weighted mean ortholog depth by target feature",
         category_orders={"strategy": strategy_order, "feature_type": DISJOINT_FEATURE_ORDER},
+        labels={
+            "strategy": "",
+            "Mean_Depth_Weighted": "Weighted mean ortholog depth",
+            "feature_type": "Feature",
+        },
     )
+    compact_figure(fig_depth, height=360)
     sections.append(fig_html(fig_depth, include_plotlyjs=include_plotly))
-
-    depth_matrix = disjoint_summary.pivot(index="strategy", columns="feature_type", values="Mean_Depth_Weighted")
-    depth_matrix = depth_matrix.reindex(strategy_order)
-    depth_matrix = depth_matrix[[column for column in DISJOINT_FEATURE_ORDER if column in depth_matrix.columns]]
-    heatmap_rows = depth_matrix.reset_index().melt(id_vars="strategy", var_name="feature_type", value_name="Mean_Depth_Weighted")
-    fig_heatmap = px.density_heatmap(
-        heatmap_rows,
-        x="feature_type",
-        y="strategy",
-        z="Mean_Depth_Weighted",
-        histfunc="avg",
-        title="Depth heatmap",
-        category_orders={"strategy": strategy_order, "feature_type": DISJOINT_FEATURE_ORDER},
-        color_continuous_scale="Viridis",
-    )
-    fig_heatmap.update_layout(xaxis_title="Feature", yaxis_title="Strategy")
-    sections.append(fig_html(fig_heatmap))
-
-    depth_table = depth_matrix.reset_index().rename(
-        columns={
-            "strategy": "Strategy",
-            "cds": "CDS mean depth",
-            "utr": "UTR mean depth",
-            "intron": "Intron mean depth",
-        }
-    )
-    sections.append("<h3>Weighted Mean Depth</h3>")
-    sections.append(table_html(depth_table, classes="table table-sm table-striped"))
     return sections
 
 
@@ -907,14 +926,14 @@ def render_html(sections: list[tuple[str, str, list[str]]]) -> str:
                 color: #1f2933;
             }}
             h1 {{ margin-bottom: 4px; }}
-            h2 {{ margin-top: 28px; border-bottom: 1px solid #d5d9df; padding-bottom: 8px; }}
-            h3 {{ margin-top: 22px; }}
+            h2 {{ margin-top: 22px; border-bottom: 1px solid #d5d9df; padding-bottom: 6px; }}
+            h3 {{ margin-top: 16px; }}
             .lead {{ margin-top: 0; color: #52606d; }}
             .tab-bar {{
                 display: flex;
                 flex-wrap: wrap;
                 gap: 8px;
-                margin: 20px 0;
+                margin: 16px 0;
                 border-bottom: 1px solid #d5d9df;
             }}
             .tab-button {{
@@ -936,8 +955,8 @@ def render_html(sections: list[tuple[str, str, list[str]]]) -> str:
             .metric-grid {{
                 display: grid;
                 grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-                gap: 12px;
-                margin: 16px 0 24px 0;
+                gap: 10px;
+                margin: 12px 0 18px 0;
             }}
             .metric-card {{
                 border: 1px solid #d5d9df;
@@ -965,7 +984,7 @@ def render_html(sections: list[tuple[str, str, list[str]]]) -> str:
                 background: #fbfcfd;
             }}
             summary {{ cursor: pointer; font-weight: 600; }}
-            .plotly-graph-div {{ min-height: 420px; }}
+            .plotly-graph-div {{ min-height: 300px; }}
         </style>
     </head>
     <body>
