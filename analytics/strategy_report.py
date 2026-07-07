@@ -14,6 +14,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import plotly.express as px
+import plotly.graph_objects as go
 
 
 warnings.filterwarnings("ignore", r"All-NaN (slice|axis) encountered")
@@ -477,6 +478,70 @@ def event_type_counts(long: pd.DataFrame) -> pd.DataFrame:
     return counts
 
 
+def strategy_overlap_figure(long: pd.DataFrame):
+    strategy_values = long["strategy"].astype(str)
+    variant_values = long["variant_id"].astype(str)
+    strategies = (
+        long.groupby("strategy", observed=True)["variant_id"]
+        .nunique()
+        .sort_values(ascending=False)
+        .index.astype(str)
+        .tolist()
+    )
+    if len(strategies) < 2:
+        return None
+
+    variant_sets = {
+        strategy: set(variant_values[strategy_values == strategy])
+        for strategy in strategies
+    }
+    labels = [strategy_label(strategy) for strategy in strategies]
+    size = len(strategies)
+    intersections = np.zeros((size, size), dtype=np.int64)
+    unions = np.zeros((size, size), dtype=np.int64)
+    jaccard = np.zeros((size, size), dtype=float)
+
+    for row_index, row_strategy in enumerate(strategies):
+        row_set = variant_sets[row_strategy]
+        for col_index, col_strategy in enumerate(strategies):
+            col_set = variant_sets[col_strategy]
+            shared = len(row_set & col_set)
+            union = len(row_set | col_set)
+            intersections[row_index, col_index] = shared
+            unions[row_index, col_index] = union
+            jaccard[row_index, col_index] = shared / union if union else 0.0
+
+    fig = go.Figure(
+        data=go.Heatmap(
+            z=jaccard,
+            x=labels,
+            y=labels,
+            text=np.vectorize(lambda value: f"{value:.0%}")(jaccard),
+            customdata=np.dstack([intersections, unions]),
+            colorscale="Blues",
+            zmin=0,
+            zmax=1,
+            colorbar={"title": "Jaccard"},
+            hovertemplate=(
+                "%{y} vs %{x}<br>"
+                "Jaccard: %{z:.1%}<br>"
+                "Shared variants: %{customdata[0]:,}<br>"
+                "Union variants: %{customdata[1]:,}<extra></extra>"
+            ),
+        )
+    )
+    fig.update_traces(texttemplate="%{text}", textfont_size=12)
+    fig.update_layout(
+        title="Pairwise strategy overlap",
+        height=520,
+        margin={"l": 135, "r": 30, "t": 95, "b": 35},
+        template="plotly_white",
+    )
+    fig.update_xaxes(side="top", tickangle=-35, title_text=None, automargin=True)
+    fig.update_yaxes(title_text=None, automargin=True)
+    return fig
+
+
 def clinvar_counts(long: pd.DataFrame) -> pd.DataFrame:
     if long.empty:
         return pd.DataFrame(columns=["strategy", "clinvar_category", "Variant_Count"])
@@ -506,7 +571,7 @@ def gnomad_found_counts(long: pd.DataFrame) -> pd.DataFrame:
     return counts
 
 
-def binned_gnomad_af(long: pd.DataFrame, bin_count: int = 200) -> pd.DataFrame:
+def binned_gnomad_af(long: pd.DataFrame, bin_count: int = 10) -> pd.DataFrame:
     gnomad = long[long["gnomad_af"].notna() & (long["gnomad_af"] > 0)][["strategy", "gnomad_af"]].copy()
     if gnomad.empty:
         return pd.DataFrame(columns=["strategy", "bin_mid", "Variant_Count", "Density"])
@@ -662,6 +727,11 @@ def build_variant_sections(
     )
     compact_figure(fig_unique)
     sections.append(fig_html(fig_unique))
+
+    fig_overlap = strategy_overlap_figure(long)
+    if fig_overlap is not None:
+        sections.append("<h3>Strategy Overlap</h3>")
+        sections.append(fig_html(fig_overlap))
 
     counts = event_type_counts(long)
     totals = counts.groupby("strategy", observed=True)["Variant_Count"].transform("sum")
@@ -918,7 +988,7 @@ def render_html(sections: list[tuple[str, str, list[str]]]) -> str:
     <html>
     <head>
         <meta charset="utf-8">
-        <title>Alignment Strategies Report</title>
+        <title>GAPH Variant Analytics Report</title>
         <style>
             body {{
                 padding: 20px;
@@ -988,8 +1058,8 @@ def render_html(sections: list[tuple[str, str, list[str]]]) -> str:
         </style>
     </head>
     <body>
-        <h1>Alignment Strategies Report</h1>
-        <p class="lead">A compact comparison of alignment support, candidate variant profiles, external evidence, and target-feature coverage.</p>
+        <h1>GAPH Variant Analytics Report</h1>
+        <p class="lead">Run-level analytics for candidate variant support, strategy overlap, external evidence, and target-feature coverage.</p>
         {render_tabs(sections)}
     </body>
     </html>

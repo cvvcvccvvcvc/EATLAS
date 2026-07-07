@@ -71,13 +71,15 @@ python3 experiments/precomputed_alignments/scripts/rest_alignment_to_gaph_tables
   --species-set-group mammals
 ```
 
-Run the existing strategy report on the produced events:
+Run the main analytics report on a completed annotated GAPH run:
 
 ```bash
-python3 scripts/compare_strategies.py \
-  --events-tsv experiments/precomputed_alignments/outputs/epo_region_4/alignment_events.tsv.gz \
-  --out-html experiments/precomputed_alignments/outputs/epo_region_4/compare_report.html
+.venv/bin/python -m analytics.strategy_report \
+  --run-dir results/run_all_strategies_20260703_135905
 ```
+
+The current analytics report expects a full run directory with annotation
+outputs, not only a standalone prototype `alignment_events.tsv.gz` file.
 
 The prototype writes `data/` and `outputs/` as ignored scratch directories.
 
