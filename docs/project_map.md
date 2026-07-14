@@ -98,7 +98,11 @@ Runtime environments:
 - `bin/annotate_events.py`
   - normalizes alignment events to VCF-style keys using target context
   - annotates events with ClinVar when a VCF is configured
-  - streams event rows and fetches gnomAD regions through the live API for one run
+  - streams event rows and fetches gnomAD regions within one bounded partition
+
+- `bin/finalize_annotation_partitions.py`
+  - streams partition annotations into the canonical Stage 3 outputs
+  - aggregates partition manifests without loading variant rows into memory
 
 ## Output Boundary
 

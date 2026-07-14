@@ -117,6 +117,7 @@ def parse_args():
     parser.add_argument("--target-sequences-dir", required=False, type=Path)
     parser.add_argument("--clinvar-vcf", required=True, type=Path)
     parser.add_argument("--outdir", required=True, type=Path)
+    parser.add_argument("--partition-id", default="")
     return parser.parse_args()
 
 def _refseq_accession_to_gnomad_chrom(chr_acc: str) -> str | None:
@@ -786,6 +787,7 @@ def main():
     failure_count = write_tsv_gz(failures_tsv, FAILURE_FIELDS, failures)
     manifest = {
         "output_mode": "unique_variant_context",
+        "partition_id": args.partition_id,
         "event_row_count": input_row_count,
         "variant_context_count": len(variant_aggregates),
         "annotated_variant_context_count": output_row_count,

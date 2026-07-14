@@ -129,6 +129,8 @@ include { BUILD_ENSEMBL_COMPARA_MAF_CHUNK_TASKS } from './modules/local/build_en
 include { ALIGN_ENSEMBL_COMPARA_MAF_CHUNK } from './modules/local/align_ensembl_compara_maf_chunk.nf'
 include { MERGE_ENSEMBL_COMPARA_MAF_GENE } from './modules/local/merge_ensembl_compara_maf_gene.nf'
 include { ANNOTATE_EVENTS } from './modules/local/annotate_events.nf'
+include { ANNOTATE_EVENTS_PARTITION } from './modules/local/annotate_events_partition.nf'
+include { FINALIZE_ANNOTATION } from './modules/local/finalize_annotation.nf'
 
 workflow FETCH_STAGE {
     take:
@@ -217,6 +219,14 @@ workflow ALIGNMENT_STAGE {
         .map { gene_id, dir, partition_id -> tuple(gene_id, partition_id, dir) }
     target_fastas_by_gene = sequences.flatMap { seq_dir -> fastaFilesByGene(seq_dir, 'targets') }
     ortholog_fastas_by_gene = sequences.flatMap { seq_dir -> fastaFilesByGene(seq_dir, 'orthologs') }
+    partition_genes = BUILD_ALIGNMENT_TASKS.out.partition_genes.flatten().map { path ->
+        tuple(path.baseName.replaceFirst(/\.tsv$/, ''), path)
+    }
+    target_fastas_by_partition = task_dirs_by_gene
+        .map { gene_id, partition_id, dir -> tuple(gene_id, partition_id) }
+        .join(target_fastas_by_gene)
+        .map { gene_id, partition_id, fasta -> tuple(partition_id, fasta) }
+        .groupTuple()
     alignment_inputs = task_dirs_by_gene
         .join(target_fastas_by_gene)
         .join(ortholog_fastas_by_gene)
@@ -354,6 +364,9 @@ workflow ALIGNMENT_STAGE {
     feature_coverage = MERGE_ALIGNMENT.out.feature_coverage
     events = MERGE_ALIGNMENT.out.events
     failures = MERGE_ALIGNMENT.out.failures
+    partitions = MERGE_ALIGNMENT_PARTITION.out.partition_dirs
+    partition_genes = partition_genes
+    partition_target_fastas = target_fastas_by_partition
 }
 
 workflow ALIGNMENT_STAGE_FROM_DIR {
@@ -394,6 +407,41 @@ workflow ANNOTATION_STAGE {
     failures = ANNOTATE_EVENTS.out.failures
 }
 
+workflow PARTITIONED_ANNOTATION_STAGE {
+    take:
+    alignment_partitions
+    partition_genes
+    partition_target_fastas
+    clinvar_vcf
+    clinvar_vcf_tbi
+
+    main:
+    annotate_script = file("${projectDir}/bin/annotate_events.py")
+    finalize_script = file("${projectDir}/bin/finalize_annotation_partitions.py")
+    annotation_inputs = alignment_partitions
+        .map { meta, dir -> tuple(meta.partition_id as String, meta, dir) }
+        .join(partition_genes)
+        .join(partition_target_fastas)
+        .map { partition_id, meta, alignment_partition, genes_tsv, target_fastas ->
+            tuple(meta, alignment_partition, genes_tsv, target_fastas)
+        }
+    ANNOTATE_EVENTS_PARTITION(
+        annotation_inputs,
+        annotate_script,
+        clinvar_vcf,
+        clinvar_vcf_tbi
+    )
+    FINALIZE_ANNOTATION(
+        ANNOTATE_EVENTS_PARTITION.out.partition_dirs.map { meta, dir -> dir }.collect(),
+        finalize_script
+    )
+
+    emit:
+    variant_annotations = FINALIZE_ANNOTATION.out.variant_annotations
+    manifest = FINALIZE_ANNOTATION.out.manifest
+    failures = FINALIZE_ANNOTATION.out.failures
+}
+
 workflow {
     runtime_check_script = file("${projectDir}/bin/check_runtime.py")
     CHECK_RUNTIME(runtime_check_script, params.stage, SELECTED_ALIGNMENT_STRATEGIES.join(','))
@@ -409,10 +457,10 @@ workflow {
             FETCH_STAGE.out.orthologs_selected,
             FETCH_STAGE.out.sequences
         )
-        ANNOTATION_STAGE(
-            ALIGNMENT_STAGE.out.events,
-            FETCH_STAGE.out.genes,
-            FETCH_STAGE.out.sequences,
+        PARTITIONED_ANNOTATION_STAGE(
+            ALIGNMENT_STAGE.out.partitions,
+            ALIGNMENT_STAGE.out.partition_genes,
+            ALIGNMENT_STAGE.out.partition_target_fastas,
             clinvar_inputs.vcf,
             clinvar_inputs.tbi
         )

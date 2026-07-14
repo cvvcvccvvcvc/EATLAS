@@ -127,6 +127,12 @@
                     "default": false,
                     "description": "Write final alignment_events.tsv.gz as unique event support rows instead of raw per-ortholog/per-strategy event rows. Raw remains the default."
                 },
+                "annotation_max_forks": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "default": 2,
+                    "description": "Maximum concurrent annotation partition tasks. Each task also performs bounded parallel gnomAD requests."
+                },
                 "keep_native_alignments": {
                     "type": "boolean",
                     "default": false

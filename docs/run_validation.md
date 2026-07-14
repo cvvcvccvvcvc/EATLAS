@@ -16,7 +16,8 @@ nextflow run . \
 The default `--stage all` runs every stage. Use the `conda` profile for normal
 local runs so tasks use `envs/*.yml` instead of the active shell environment.
 Annotation fetches gnomAD data from the live API for clustered event regions and
-uses an in-memory cache within that single run.
+uses an in-memory cache bounded to each genomic partition. End-to-end runs may
+process up to `--annotation_max_forks` partitions concurrently (default: 2).
 
 If command-line tools are not on `PATH`, pass them explicitly:
 
@@ -192,6 +193,8 @@ Alignment expected properties:
 Annotation expected properties:
 - `annotation/variant_annotations.tsv.gz` exists for end-to-end runs.
 - `annotation/manifest.json` records event and unique variant-context row counts, source metadata, and annotation counters.
+- End-to-end annotation records `partition_count`; partition outputs are merged
+  by streaming and are not published as duplicate durable tables.
 - `annotation/failures.tsv.gz` records non-fatal external lookup failures.
 - `clinvar_*` columns are present and populated when matching ClinVar records exist;
   `clinvar_review_stars` is derived from the raw `clinvar_revstat` value.

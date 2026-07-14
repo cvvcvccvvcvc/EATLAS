@@ -170,6 +170,28 @@ def partition_ids(genes: dict[str, dict[str, str]], partition_size: int) -> dict
     }
 
 
+def write_partition_genes(
+    genes: dict[str, dict[str, str]],
+    gene_partitions: dict[str, str],
+    output_dir: Path,
+) -> None:
+    rows_by_partition: dict[str, list[dict[str, str]]] = defaultdict(list)
+    for gene_id, partition_id in gene_partitions.items():
+        rows_by_partition[partition_id].append(genes[gene_id])
+
+    fields = list(next(iter(genes.values()))) if genes else []
+    for partition_id, rows in rows_by_partition.items():
+        rows.sort(
+            key=lambda row: (
+                chromosome_sort_key(row.get("chromosome", "")),
+                min(int(row["begin"]), int(row["end"])),
+                max(int(row["begin"]), int(row["end"])),
+                row["gene_id"],
+            )
+        )
+        write_tsv_gz(output_dir / f"{partition_id}.tsv.gz", fields, rows)
+
+
 def reconstructed_ortholog_header(row: dict[str, str]) -> str:
     taxname = row.get("taxname", "").replace(" ", "_")
     return (
@@ -300,6 +322,7 @@ def main() -> None:
 
     genes = {row["gene_id"]: row for row in read_tsv_gz(args.genes_tsv)}
     gene_partitions = partition_ids(genes, args.partition_size)
+    write_partition_genes(genes, gene_partitions, args.outdir / "partition_genes")
     fetch_manifest = json.loads(args.fetch_manifest.read_text())
     grouped_orthologs = fetch_manifest.get("orthologs_selected_grouped_by_query_gene_id") is True
     taxonomy = load_taxonomy(args.taxonomy_presets)

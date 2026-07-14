@@ -13,6 +13,7 @@ process BUILD_ALIGNMENT_TASKS {
     output:
     path "alignment_tasks.tsv.gz", emit: alignment_tasks
     path "tasks/task_*", emit: task_dirs
+    path "partition_genes/*.tsv.gz", emit: partition_genes
 
     script:
     """
