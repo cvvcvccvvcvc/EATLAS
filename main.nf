@@ -118,6 +118,7 @@ include { BUILD_ENSEMBL_COMPARA_MAF_MANIFEST } from './modules/local/build_ensem
 include { ALIGN_ENSEMBL_COMPARA_MAF } from './modules/local/align_ensembl_compara_maf.nf'
 include { BUILD_ENSEMBL_COMPARA_MAF_CHUNK_TASKS } from './modules/local/build_ensembl_compara_maf_chunk_tasks.nf'
 include { ALIGN_ENSEMBL_COMPARA_MAF_CHUNK } from './modules/local/align_ensembl_compara_maf_chunk.nf'
+include { MERGE_ENSEMBL_COMPARA_MAF_GENE } from './modules/local/merge_ensembl_compara_maf_gene.nf'
 include { ANNOTATE_EVENTS } from './modules/local/annotate_events.nf'
 
 workflow FETCH_STAGE {
@@ -176,6 +177,7 @@ workflow ALIGNMENT_STAGE {
     ensembl_compara_maf_script = file("${projectDir}/bin/run_ensembl_compara_maf_alignment.py")
     ensembl_compara_maf_chunk_tasks_script = file("${projectDir}/bin/prepare_ensembl_compara_maf_chunk_tasks.py")
     ensembl_compara_maf_chunk_script = file("${projectDir}/bin/run_ensembl_compara_maf_chunk_alignment.py")
+    ensembl_compara_maf_gene_merge_script = file("${projectDir}/bin/merge_ensembl_compara_maf_gene.py")
     merge_script = file("${projectDir}/bin/merge_alignment_results.py")
 
     FETCH_TAXONOMY_PRESETS(orthologs_selected, taxonomy_script, taxonomy_classes)
@@ -247,7 +249,7 @@ workflow ALIGNMENT_STAGE {
             maf_manifest = BUILD_ENSEMBL_COMPARA_MAF_MANIFEST.out.maf_manifest
         }
         BUILD_ENSEMBL_COMPARA_MAF_CHUNK_TASKS(
-            task_dirs.map { meta, dir -> dir }.collect(),
+            genes,
             maf_manifest,
             ensembl_compara_maf_chunk_tasks_script
         )
@@ -256,10 +258,26 @@ workflow ALIGNMENT_STAGE {
         }
         ALIGN_ENSEMBL_COMPARA_MAF_CHUNK(
             maf_chunk_task_dirs,
-            ensembl_compara_maf_chunk_script,
-            target_features
+            ensembl_compara_maf_chunk_script
         )
-        alignment_result_dirs = alignment_result_dirs.mix(ALIGN_ENSEMBL_COMPARA_MAF_CHUNK.out.ensembl_compara_maf_result_dirs.map { meta, dir -> dir })
+        maf_fragments_by_gene = ALIGN_ENSEMBL_COMPARA_MAF_CHUNK.out.ensembl_compara_maf_gene_fragments
+            .flatMap { meta, dirs ->
+                def fragmentDirs = dirs instanceof List ? dirs : [dirs]
+                fragmentDirs.collect { dir ->
+                    def geneId = dir.baseName.replaceFirst(/^gene_/, '').replaceFirst(/__chunk_.*$/, '')
+                    tuple(geneId, dir)
+                }
+            }
+            .groupTuple()
+        maf_gene_merge_inputs = task_dirs_by_gene
+            .join(maf_fragments_by_gene)
+            .map { gene_id, task_dir, fragment_dirs ->
+                tuple([id: "task_${gene_id}", gene_id: gene_id], task_dir, fragment_dirs)
+            }
+        MERGE_ENSEMBL_COMPARA_MAF_GENE(maf_gene_merge_inputs, ensembl_compara_maf_gene_merge_script)
+        alignment_result_dirs = alignment_result_dirs.mix(
+            MERGE_ENSEMBL_COMPARA_MAF_GENE.out.gene_result_dirs.map { meta, dir -> dir }
+        )
     }
 
     MERGE_ALIGNMENT(

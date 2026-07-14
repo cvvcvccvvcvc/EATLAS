@@ -28,7 +28,6 @@ CHUNK_TASK_FIELDS = [
 
 GENE_FIELDS = [
     "gene_id",
-    "task_dir",
     "human_src",
     "genomic_accession",
     "target_origin1",
@@ -45,7 +44,7 @@ FAILURE_GENE_FIELDS = [
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--task-dir", action="append", required=True, type=Path)
+    parser.add_argument("--genes-tsv", required=True, type=Path)
     parser.add_argument("--maf-manifest", required=True, type=Path)
     parser.add_argument("--outdir", required=True, type=Path)
     parser.add_argument("--strategy", default="precomputed_ensembl_92_mammals_epo_extended")
@@ -55,11 +54,6 @@ def parse_args() -> argparse.Namespace:
 
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
-
-
-def read_tsv(path: Path) -> list[dict[str, str]]:
-    with path.open(newline="") as handle:
-        return [dict(row) for row in csv.DictReader(handle, delimiter="\t")]
 
 
 def read_tsv_gz(path: Path) -> list[dict[str, str]]:
@@ -97,24 +91,12 @@ def chunk_id_for(row: dict[str, str]) -> str:
 
 
 def target_bounds(target_meta: dict[str, str]) -> tuple[int, int]:
-    values = [int(target_meta["genomic_begin"]), int(target_meta["genomic_end"])]
+    values = [int(target_meta["begin"]), int(target_meta["end"])]
     return min(values), max(values)
 
 
-def build_gene_row(task_dir: Path) -> tuple[dict[str, object] | None, dict[str, object] | None]:
-    task = json.loads((task_dir / "task.json").read_text())
-    gene_id = str(task["gene_id"])
-    target_meta = dict(task.get("target") or {})
-    if not target_meta:
-        target_metadata_path = task_dir / str(task.get("target_metadata", "target.metadata.tsv"))
-        if target_metadata_path.exists():
-            target_meta = read_tsv(target_metadata_path)[0]
-    if not target_meta:
-        return None, {
-            "gene_id": gene_id,
-            "failure_type": "missing_target_metadata",
-            "message": f"No target metadata found in {task_dir / 'task.json'}",
-        }
+def build_gene_row(target_meta: dict[str, str]) -> tuple[dict[str, object] | None, dict[str, object] | None]:
+    gene_id = str(target_meta["gene_id"])
     genomic_accession = target_meta.get("genomic_accession", "")
     seq_region = refseq_to_ensembl_seq_region(genomic_accession)
     if not seq_region:
@@ -128,7 +110,6 @@ def build_gene_row(task_dir: Path) -> tuple[dict[str, object] | None, dict[str, 
     target_length = int(target_meta.get("sequence_length") or target_end1 - target_origin1 + 1)
     return {
         "gene_id": gene_id,
-        "task_dir": str(task_dir),
         "human_src": f"homo_sapiens.{seq_region}",
         "seq_region": seq_region,
         "genomic_accession": genomic_accession,
@@ -149,8 +130,8 @@ def main() -> None:
     failures: list[dict[str, object]] = []
     gene_count = 0
 
-    for task_dir in sorted(args.task_dir, key=lambda path: path.name):
-        gene_row, failure = build_gene_row(task_dir)
+    for target_meta in read_tsv_gz(args.genes_tsv):
+        gene_row, failure = build_gene_row(target_meta)
         if failure:
             failures.append(failure)
             continue

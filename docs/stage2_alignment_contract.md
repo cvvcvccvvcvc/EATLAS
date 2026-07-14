@@ -133,14 +133,16 @@ For Ensembl Compara MAF:
 precomputed whole-genome MSA blocks overlapping the human target gene interval
 ```
 
-The workflow first builds a small run-specific MAF chunk manifest for the human
-chromosomes present in `genes.tsv.gz`. One alignment task then streams the
-candidate MAF chunks for one gene and clips evidence to the target interval
-before writing normalized Stage 2 tables. Transient network and truncated-gzip
-read failures are retried with block-level resume: already committed MAF blocks
-are skipped on the next attempt. If a source still cannot be fully read after
-all attempts, the task records a failure row and continues with the remaining
-sources so one unstable remote chunk does not abort the whole workflow. Full MAF
+The workflow first builds a small run-specific MAF chunk manifest directly from
+`genes.tsv.gz`. One alignment task streams each required source chunk once for
+all overlapping target genes and routes normalized rows into gene fragments.
+All fragments for a gene are then consolidated before the normal alignment
+merge; target intervals are unioned and feature coverage is recomputed from the
+complete gene evidence. Transient network and truncated-gzip read failures are
+retried with block-level resume: already committed MAF blocks are skipped on the
+next attempt. If a source still cannot be fully read after all attempts, the
+task records gene-level failure rows. Unexpected process failures terminate the
+workflow rather than silently producing incomplete gene evidence. Full MAF
 chunks are not published as durable outputs.
 
 The MAF chunk manifest can be supplied with `--ensembl_compara_maf_manifest` or
@@ -152,6 +154,13 @@ This strategy is not based on NCBI ortholog GeneIDs. Its support unit is the
 species row in the precomputed MSA. Consequently, `ortholog_gene_id` contains
 the species name for this strategy, and support-count reports should interpret
 it as species support.
+
+When one gene spans multiple MAF source chunks, Stage 2 consolidates those
+fragments before downstream merge. Target coverage is calculated from the union
+of target intervals. A species-level MSA does not provide one meaningful query
+length denominator across all blocks, so consolidated MAF rows leave
+`query_length` and `query_coverage` empty and add
+`maf_query_coverage_not_applicable`; `aligned_query_bp` remains available.
 
 ## Durable Outputs
 

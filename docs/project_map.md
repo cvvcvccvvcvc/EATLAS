@@ -83,6 +83,10 @@ Runtime environments:
   - writes the same normalized alignment evidence schema with species as the
     support unit
 
+- `bin/merge_ensembl_compara_maf_gene.py`
+  - consolidates all source-chunk fragments for one gene
+  - recomputes union-based MAF summaries and gene-local feature coverage
+
 - `bin/merge_alignment_results.py`
   - merges per-gene/per-strategy alignment evidence tables
   - intersects target features with alignment segments for coverage/depth summaries

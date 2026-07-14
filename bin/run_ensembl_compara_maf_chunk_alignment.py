@@ -10,10 +10,10 @@ import gzip
 import json
 import sys
 import time
+from collections import OrderedDict, defaultdict
 from dataclasses import dataclass
 from pathlib import Path
 
-from feature_coverage import summarize_feature_coverage
 from run_ensembl_compara_maf_alignment import (
     EVENT_FIELDS,
     FAILURE_FIELDS,
@@ -21,7 +21,6 @@ from run_ensembl_compara_maf_alignment import (
     SEGMENT_FIELDS,
     SUMMARY_FIELDS,
     TOOL_NAME,
-    TsvGzWriter,
     convert_pair,
     empty_summary,
     finalize_summary,
@@ -46,7 +45,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--release", default="116")
     parser.add_argument("--species-set", default="92_mammals.epo_extended")
     parser.add_argument("--method", default="EPO_EXTENDED")
-    parser.add_argument("--target-features", type=Path)
     parser.add_argument("--timeout", type=float, default=120.0)
     parser.add_argument("--retries", type=int, default=3)
     parser.add_argument("--retry-base-seconds", type=float, default=2.0)
@@ -84,28 +82,121 @@ class GeneIntervalIndex:
         return [gene for gene in genes[:limit] if int(gene["target_end1"]) >= start1]
 
 
-def empty_outputs(args: argparse.Namespace, failures: list[dict[str, object]]) -> dict[str, object]:
-    segment_writer = TsvGzWriter(args.outdir / "alignment_segments.tsv.gz", SEGMENT_FIELDS)
-    event_writer = TsvGzWriter(args.outdir / "alignment_events.tsv.gz", EVENT_FIELDS)
+class PartitionedTsvGzWriter:
+    """Route rows to bounded-open gzip writers keyed by gene_id."""
+
+    def __init__(
+        self,
+        root: Path,
+        filename: str,
+        fields: list[str],
+        chunk_id: str,
+        max_open: int = 32,
+    ) -> None:
+        self.root = root
+        self.filename = filename
+        self.fields = fields
+        self.chunk_id = chunk_id
+        self.max_open = max_open
+        self.handles: OrderedDict[str, tuple[object, csv.DictWriter]] = OrderedDict()
+        self.created: set[str] = set()
+        self.counts: dict[str, int] = defaultdict(int)
+        self.count = 0
+
+    def path_for(self, gene_id: str) -> Path:
+        return self.root / fragment_dir_name(gene_id, self.chunk_id) / self.filename
+
+    def _writer(self, gene_id: str) -> csv.DictWriter:
+        if gene_id in self.handles:
+            handle, writer = self.handles.pop(gene_id)
+            self.handles[gene_id] = (handle, writer)
+            return writer
+        if len(self.handles) >= self.max_open:
+            _, (handle, _) = self.handles.popitem(last=False)
+            handle.close()
+        path = self.path_for(gene_id)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        mode = "at" if gene_id in self.created else "wt"
+        handle = gzip.open(path, mode, newline="", compresslevel=OUTPUT_GZIP_COMPRESSLEVEL)
+        writer = csv.DictWriter(handle, fieldnames=self.fields, delimiter="\t", extrasaction="ignore")
+        if gene_id not in self.created:
+            writer.writeheader()
+            self.created.add(gene_id)
+        self.handles[gene_id] = (handle, writer)
+        return writer
+
+    def write(self, row: dict[str, object]) -> None:
+        gene_id = str(row.get("gene_id") or "")
+        if not gene_id:
+            raise ValueError(f"Cannot partition {self.filename} row without gene_id")
+        writer = self._writer(gene_id)
+        writer.writerow({field: row.get(field, "") for field in self.fields})
+        self.counts[gene_id] += 1
+        self.count += 1
+
+    def ensure_gene(self, gene_id: str) -> None:
+        self._writer(gene_id)
+
+    def close(self) -> None:
+        for handle, _ in self.handles.values():
+            handle.close()
+        self.handles.clear()
+
+
+def write_gene_fragment_outputs(
+    args: argparse.Namespace,
+    chunk_manifest: dict,
+    gene_ids: list[str],
+    summary_rows: list[dict[str, object]],
+    failures: list[dict[str, object]],
+    segment_writer: PartitionedTsvGzWriter,
+    event_writer: PartitionedTsvGzWriter,
+) -> None:
+    summaries_by_gene: dict[str, list[dict[str, object]]] = defaultdict(list)
+    failures_by_gene: dict[str, list[dict[str, object]]] = defaultdict(list)
+    for row in summary_rows:
+        summaries_by_gene[str(row.get("gene_id") or "")].append(row)
+    for row in failures:
+        failures_by_gene[str(row.get("gene_id") or "")].append(row)
+
+    result_root = args.outdir / "gene_results"
+    for gene_id in gene_ids:
+        segment_writer.ensure_gene(gene_id)
+        event_writer.ensure_gene(gene_id)
     segment_writer.close()
     event_writer.close()
-    write_tsv_gz(args.outdir / "ortholog_alignment_summary.tsv.gz", SUMMARY_FIELDS, [])
-    write_tsv_gz(args.outdir / "failures.tsv.gz", FAILURE_FIELDS, failures)
-    feature_coverage_count = None
-    if args.target_features:
-        feature_coverage_count = summarize_feature_coverage(
-            args.target_features,
-            args.outdir / "ortholog_alignment_summary.tsv.gz",
-            args.outdir / "alignment_segments.tsv.gz",
-            args.outdir / "feature_coverage.tsv.gz",
-        )
-    return {
-        "summary_count": 0,
-        "segment_count": 0,
-        "event_count": 0,
-        "feature_coverage_count": feature_coverage_count,
-        "failure_count": len(failures),
-    }
+
+    for gene_id in gene_ids:
+        gene_dir = result_root / fragment_dir_name(gene_id, str(chunk_manifest["chunk_id"]))
+        gene_summaries = summaries_by_gene.get(gene_id, [])
+        gene_failures = failures_by_gene.get(gene_id, [])
+        write_tsv_gz(gene_dir / "ortholog_alignment_summary.tsv.gz", SUMMARY_FIELDS, gene_summaries)
+        write_tsv_gz(gene_dir / "failures.tsv.gz", FAILURE_FIELDS, gene_failures)
+        manifest = {
+            "task_type": "maf_gene_fragment",
+            "chunk_id": chunk_manifest["chunk_id"],
+            "gene_id": gene_id,
+            "gene_ids": [gene_id],
+            "strategy": args.strategy,
+            "strategies": [args.strategy],
+            "tool": TOOL_NAME,
+            "release": args.release,
+            "species_set": args.species_set,
+            "method": args.method,
+            "source": chunk_manifest.get("source", ""),
+            "seq_region": chunk_manifest.get("seq_region", ""),
+            "chunk_order": chunk_manifest.get("chunk_order", ""),
+            "output_gzip_compresslevel": OUTPUT_GZIP_COMPRESSLEVEL,
+            "summary_count": len(gene_summaries),
+            "segment_count": segment_writer.counts.get(gene_id, 0),
+            "event_count": event_writer.counts.get(gene_id, 0),
+            "failure_count": len(gene_failures),
+        }
+        (gene_dir / "manifest.json").write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
+
+
+def fragment_dir_name(gene_id: str, chunk_id: str) -> str:
+    return f"gene_{gene_id}__{chunk_id}"
 
 
 def scan_chunk_source(
@@ -240,6 +331,20 @@ def main() -> None:
     chunk_manifest = json.loads((args.chunk_task_dir / "chunk.json").read_text())
     task_type = chunk_manifest.get("task_type", "maf_chunk")
     genes_path = args.chunk_task_dir / str(chunk_manifest["genes_tsv"])
+    result_root = args.outdir / "gene_results"
+    chunk_id = str(chunk_manifest["chunk_id"])
+    segment_writer = PartitionedTsvGzWriter(
+        result_root,
+        "alignment_segments.tsv.gz",
+        SEGMENT_FIELDS,
+        chunk_id,
+    )
+    event_writer = PartitionedTsvGzWriter(
+        result_root,
+        "alignment_events.tsv.gz",
+        EVENT_FIELDS,
+        chunk_id,
+    )
 
     if task_type == "failures":
         failures = [
@@ -253,14 +358,31 @@ def main() -> None:
             }
             for row in read_tsv(genes_path)
         ]
-        counts = empty_outputs(args, failures)
+        gene_ids = sorted(
+            {str(row["gene_id"]) for row in failures if row.get("gene_id")},
+            key=lambda value: int(value) if value.isdigit() else value,
+        )
+        write_gene_fragment_outputs(
+            args,
+            chunk_manifest,
+            gene_ids,
+            [],
+            failures,
+            segment_writer,
+            event_writer,
+        )
         manifest = {
             "chunk_id": chunk_manifest["chunk_id"],
             "strategy": args.strategy,
             "tool": TOOL_NAME,
             "task_type": task_type,
             "output_gzip_compresslevel": OUTPUT_GZIP_COMPRESSLEVEL,
-            **counts,
+            "gene_count": len(gene_ids),
+            "gene_ids": gene_ids,
+            "summary_count": 0,
+            "segment_count": 0,
+            "event_count": 0,
+            "failure_count": len(failures),
         }
         (args.outdir / "manifest.json").write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
         return
@@ -270,8 +392,6 @@ def main() -> None:
     gene_ids = sorted({row["gene_id"] for row in genes}, key=lambda value: int(value) if value.isdigit() else value)
     summaries: dict[tuple[str, str], dict[str, object]] = {}
     failures: list[dict[str, object]] = []
-    segment_writer = TsvGzWriter(args.outdir / "alignment_segments.tsv.gz", SEGMENT_FIELDS)
-    event_writer = TsvGzWriter(args.outdir / "alignment_events.tsv.gz", EVENT_FIELDS)
     used_block_count = 0
     alignment_row_count = 0
 
@@ -316,16 +436,15 @@ def main() -> None:
             ),
         )
     ]
-    write_tsv_gz(args.outdir / "ortholog_alignment_summary.tsv.gz", SUMMARY_FIELDS, summary_rows)
-    write_tsv_gz(args.outdir / "failures.tsv.gz", FAILURE_FIELDS, failures)
-    feature_coverage_count = None
-    if args.target_features:
-        feature_coverage_count = summarize_feature_coverage(
-            args.target_features,
-            args.outdir / "ortholog_alignment_summary.tsv.gz",
-            args.outdir / "alignment_segments.tsv.gz",
-            args.outdir / "feature_coverage.tsv.gz",
-        )
+    write_gene_fragment_outputs(
+        args,
+        chunk_manifest,
+        gene_ids,
+        summary_rows,
+        failures,
+        segment_writer,
+        event_writer,
+    )
 
     manifest = {
         "chunk_id": chunk_manifest["chunk_id"],
@@ -346,7 +465,6 @@ def main() -> None:
         "summary_count": len(summary_rows),
         "segment_count": segment_writer.count,
         "event_count": event_writer.count,
-        "feature_coverage_count": feature_coverage_count,
         "failure_count": len(failures),
     }
     (args.outdir / "manifest.json").write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
