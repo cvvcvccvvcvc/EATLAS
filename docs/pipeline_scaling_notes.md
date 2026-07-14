@@ -33,13 +33,15 @@ raw event tables only behind an explicit debug flag such as
 
 ## Partitioned Alignment Outputs
 
-The current final merge process creates one global set of alignment TSV files.
-That is simple and convenient for smoke runs, but it does not scale cleanly to
-thousands of genes because one process owns all final raw rows.
+Alignment merging is internally partitioned by genomic-order target groups. A
+partition is released as soon as all expected strategy results for its genes are
+ready, and compact-event aggregation is bounded to that partition. The final
+merge streams partition files and still publishes one global set of alignment
+TSVs for compatibility with current downstream tools.
 
-Future direction:
+Remaining future direction:
 
-- write durable alignment outputs partitioned by gene chunk or gene ID;
+- publish durable alignment outputs as partitions instead of one global table;
 - write a small manifest/index that lists partitions and row counts;
 - build compact support tables through chunk-level aggregation followed by a
   final aggregation step;

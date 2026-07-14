@@ -88,7 +88,8 @@ Runtime environments:
   - recomputes union-based MAF summaries and gene-local feature coverage
 
 - `bin/merge_alignment_results.py`
-  - merges per-gene/per-strategy alignment evidence tables
+  - merges per-gene/per-strategy evidence into bounded genomic partitions
+  - streams disjoint partitions into the final Stage 2 tables
   - intersects target features with alignment segments for coverage/depth summaries
   - writes a canonical small per-strategy summary for downstream reports
   - can write compact event support rows when `--compact_alignment_events true`

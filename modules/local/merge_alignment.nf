@@ -6,7 +6,7 @@ process MERGE_ALIGNMENT {
     path taxonomy_presets
     path taxonomy_failures
     path target_features
-    path result_dirs
+    path result_dirs, stageAs: 'partitions/*'
     path merge_script
 
     output:
@@ -23,17 +23,17 @@ process MERGE_ALIGNMENT {
     path "native", optional: true, emit: native_outputs
 
     script:
-    def resultDirList = result_dirs instanceof List ? result_dirs : [result_dirs]
-    def resultDirArgs = resultDirList.collect { "--result-dir \"${it}\"" }.join(' ')
     def compactEventsArg = params.compact_alignment_events ? "--compact-events" : ""
+    def precompactedEventsArg = params.compact_alignment_events ? "--events-already-compacted" : ""
     """
     python3 "${merge_script}" \\
         --alignment-tasks "${alignment_tasks}" \\
         --taxonomy-presets "${taxonomy_presets}" \\
         --taxonomy-failures "${taxonomy_failures}" \\
         --target-features "${target_features}" \\
+        --result-root partitions \\
         --outdir . \\
         ${compactEventsArg} \\
-        ${resultDirArgs}
+        ${precompactedEventsArg}
     """
 }

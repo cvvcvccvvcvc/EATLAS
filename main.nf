@@ -35,6 +35,13 @@ def parseAlignmentStrategies(rawValue) {
     return selected
 }
 
+
+def alignmentResultProcessCount(selectedStrategies) {
+    def bwaStrategies = ['bwa_pseudoreads', 'bwa_pseudoreads_varscan']
+    def independentCount = selectedStrategies.count { !bwaStrategies.contains(it) }
+    return independentCount + (selectedStrategies.any { bwaStrategies.contains(it) } ? 1 : 0)
+}
+
 def geneIdFromFastaPath(value) {
     def name = value instanceof java.nio.file.Path ? value.getFileName().toString() : new File(value.toString()).name
     return name
@@ -101,6 +108,7 @@ if (params.stage == 'annotate' && !params.fetch_dir) {
 }
 
 SELECTED_ALIGNMENT_STRATEGIES = parseAlignmentStrategies(params.alignment_strategies)
+ALIGNMENT_RESULT_PROCESS_COUNT = alignmentResultProcessCount(SELECTED_ALIGNMENT_STRATEGIES)
 
 include { VALIDATE_IDS } from './modules/local/validate_ids.nf'
 include { CHECK_RUNTIME } from './modules/local/check_runtime.nf'
@@ -112,6 +120,7 @@ include { ALIGN_MINIMAP2_ASM10 } from './modules/local/align_minimap2_asm10.nf'
 include { ALIGN_MINIMAP2_ASM20 } from './modules/local/align_minimap2_asm20.nf'
 include { ALIGN_MINIMAP2_ADAPTIVE } from './modules/local/align_minimap2_adaptive.nf'
 include { MERGE_ALIGNMENT } from './modules/local/merge_alignment.nf'
+include { MERGE_ALIGNMENT_PARTITION } from './modules/local/merge_alignment_partition.nf'
 include { ALIGN_NUCMER_COMPARATOR } from './modules/local/align_nucmer_comparator.nf'
 include { ALIGN_BWA_PSEUDOREADS } from './modules/local/align_bwa_pseudoreads.nf'
 include { BUILD_ENSEMBL_COMPARA_MAF_MANIFEST } from './modules/local/build_ensembl_compara_maf_manifest.nf'
@@ -199,6 +208,10 @@ workflow ALIGNMENT_STAGE {
         .splitCsv(header: true, sep: '\t', decompress: true)
         .filter { row -> row.status == 'ready' }
         .map { row -> tuple(row.gene_id as String, row.partition_id as String) }
+    partition_gene_counts = task_partitions
+        .map { gene_id, partition_id -> tuple(partition_id, gene_id) }
+        .groupTuple()
+        .map { partition_id, gene_ids -> tuple(partition_id, gene_ids.size()) }
     task_dirs_by_gene = task_dirs_by_gene_unpartitioned
         .join(task_partitions)
         .map { gene_id, dir, partition_id -> tuple(gene_id, partition_id, dir) }
@@ -222,22 +235,22 @@ workflow ALIGNMENT_STAGE {
 
     if (SELECTED_ALIGNMENT_STRATEGIES.contains('minimap2_asm10')) {
         ALIGN_MINIMAP2_ASM10(alignment_inputs, minimap2_script)
-        alignment_result_dirs = alignment_result_dirs.mix(ALIGN_MINIMAP2_ASM10.out.asm10_result_dirs.map { meta, dir -> dir })
+        alignment_result_dirs = alignment_result_dirs.mix(ALIGN_MINIMAP2_ASM10.out.asm10_result_dirs)
     }
 
     if (SELECTED_ALIGNMENT_STRATEGIES.contains('minimap2_asm20')) {
         ALIGN_MINIMAP2_ASM20(alignment_inputs, minimap2_script)
-        alignment_result_dirs = alignment_result_dirs.mix(ALIGN_MINIMAP2_ASM20.out.asm20_result_dirs.map { meta, dir -> dir })
+        alignment_result_dirs = alignment_result_dirs.mix(ALIGN_MINIMAP2_ASM20.out.asm20_result_dirs)
     }
 
     if (SELECTED_ALIGNMENT_STRATEGIES.contains('minimap2_taxonomy_adaptive')) {
         ALIGN_MINIMAP2_ADAPTIVE(alignment_inputs, minimap2_script)
-        alignment_result_dirs = alignment_result_dirs.mix(ALIGN_MINIMAP2_ADAPTIVE.out.adaptive_result_dirs.map { meta, dir -> dir })
+        alignment_result_dirs = alignment_result_dirs.mix(ALIGN_MINIMAP2_ADAPTIVE.out.adaptive_result_dirs)
     }
 
     if (SELECTED_ALIGNMENT_STRATEGIES.contains('nucmer')) {
         ALIGN_NUCMER_COMPARATOR(alignment_inputs, nucmer_script)
-        alignment_result_dirs = alignment_result_dirs.mix(ALIGN_NUCMER_COMPARATOR.out.nucmer_result_dirs.map { meta, dir -> dir })
+        alignment_result_dirs = alignment_result_dirs.mix(ALIGN_NUCMER_COMPARATOR.out.nucmer_result_dirs)
     }
 
     selected_bwa_strategies = SELECTED_ALIGNMENT_STRATEGIES.findAll {
@@ -245,7 +258,7 @@ workflow ALIGNMENT_STAGE {
     }
     if (selected_bwa_strategies) {
         ALIGN_BWA_PSEUDOREADS(alignment_inputs, bwa_script, bam_filtering_script, selected_bwa_strategies.join(','))
-        alignment_result_dirs = alignment_result_dirs.mix(ALIGN_BWA_PSEUDOREADS.out.bwa_result_dirs.map { meta, dir -> dir })
+        alignment_result_dirs = alignment_result_dirs.mix(ALIGN_BWA_PSEUDOREADS.out.bwa_result_dirs)
     }
 
     if (SELECTED_ALIGNMENT_STRATEGIES.contains('precomputed_ensembl_92_mammals_epo_extended')) {
@@ -294,16 +307,39 @@ workflow ALIGNMENT_STAGE {
             }
         MERGE_ENSEMBL_COMPARA_MAF_GENE(maf_gene_merge_inputs, ensembl_compara_maf_gene_merge_script)
         alignment_result_dirs = alignment_result_dirs.mix(
-            MERGE_ENSEMBL_COMPARA_MAF_GENE.out.gene_result_dirs.map { meta, dir -> dir }
+            MERGE_ENSEMBL_COMPARA_MAF_GENE.out.gene_result_dirs
         )
     }
+
+    gene_result_dirs = alignment_result_dirs
+        .map { meta, dir ->
+            def key = tuple(meta.partition_id as String, meta.gene_id as String)
+            tuple(groupKey(key, ALIGNMENT_RESULT_PROCESS_COUNT), dir)
+        }
+        .groupTuple()
+        .map { key, dirs ->
+            def partition_id = key.getGroupTarget()[0]
+            tuple(partition_id, dirs)
+        }
+    partition_merge_inputs = gene_result_dirs
+        .join(partition_gene_counts)
+        .map { partition_id, dirs, gene_count -> tuple(groupKey(partition_id, gene_count), dirs) }
+        .groupTuple()
+        .map { key, dirs_by_gene ->
+            def partition_id = key.getGroupTarget()
+            tuple([id: partition_id, partition_id: partition_id], dirs_by_gene.flatten())
+        }
+    MERGE_ALIGNMENT_PARTITION(
+        partition_merge_inputs,
+        merge_script
+    )
 
     MERGE_ALIGNMENT(
         BUILD_ALIGNMENT_TASKS.out.alignment_tasks,
         FETCH_TAXONOMY_PRESETS.out.taxonomy_presets,
         FETCH_TAXONOMY_PRESETS.out.taxonomy_failures,
         target_features,
-        alignment_result_dirs.collect(),
+        MERGE_ALIGNMENT_PARTITION.out.partition_dirs.map { meta, dir -> dir }.collect(),
         merge_script
     )
 

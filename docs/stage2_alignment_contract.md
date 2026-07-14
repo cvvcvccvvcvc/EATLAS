@@ -250,6 +250,13 @@ maximum number of target genes in each partition (default: 50). The identifier
 is carried in task metadata for bounded downstream merge and annotation; it does
 not change gene-level alignment behavior.
 
+Alignment results are merged in two bounded levels. Each partition merges at
+most `--alignment_partition_size` genes and, when compact events are requested,
+performs support aggregation only inside that partition. The final merge then
+streams those disjoint partitions through one staged directory. This avoids one
+global event database and avoids placing every gene/strategy result path on a
+single command line while preserving the existing Stage 2 output tables.
+
 Durable output is limited to compressed normalized TSV files so large runs do
 not duplicate sequence data and native aligner output in `results/`.
 

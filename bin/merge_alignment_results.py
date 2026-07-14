@@ -17,13 +17,16 @@ from feature_coverage import summarize_feature_coverage
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--alignment-tasks", required=True, type=Path)
-    parser.add_argument("--taxonomy-presets", required=True, type=Path)
-    parser.add_argument("--taxonomy-failures", required=True, type=Path)
-    parser.add_argument("--target-features", required=True, type=Path)
+    parser.add_argument("--alignment-tasks", type=Path)
+    parser.add_argument("--taxonomy-presets", type=Path)
+    parser.add_argument("--taxonomy-failures", type=Path)
+    parser.add_argument("--target-features", type=Path)
     parser.add_argument("--outdir", required=True, type=Path)
-    parser.add_argument("--result-dir", action="append", required=True, type=Path)
+    parser.add_argument("--result-dir", action="append", default=[], type=Path)
+    parser.add_argument("--result-root", type=Path)
+    parser.add_argument("--partition-id")
     parser.add_argument("--compact-events", action="store_true")
+    parser.add_argument("--events-already-compacted", action="store_true")
     return parser.parse_args()
 
 
@@ -103,6 +106,15 @@ def validate_result_dirs(paths: list[Path]) -> list[Path]:
     if missing_manifest:
         raise FileNotFoundError("Alignment result dir(s) missing manifest.json: " + ", ".join(missing_manifest))
     return sorted(result_dirs, key=lambda path: path.name)
+
+
+def resolve_result_dirs(explicit: list[Path], root: Path | None) -> list[Path]:
+    paths = list(explicit)
+    if root:
+        if not root.is_dir():
+            raise NotADirectoryError(f"Alignment result root is not a directory: {root}")
+        paths.extend(path for path in root.iterdir() if path.is_dir())
+    return validate_result_dirs(paths)
 
 
 def merge_tsv_gz(paths: list[Path], output: Path) -> int:
@@ -419,12 +431,21 @@ def manifest_gene_ids(manifests: list[dict]) -> list[str]:
 
 def main() -> None:
     args = parse_args()
+    if args.events_already_compacted and not args.compact_events:
+        raise ValueError("--events-already-compacted requires --compact-events")
     args.outdir.mkdir(parents=True, exist_ok=True)
-    result_dirs = validate_result_dirs(args.result_dir)
+    result_dirs = resolve_result_dirs(args.result_dir, args.result_root)
 
-    copy_or_keep(args.alignment_tasks, args.outdir / "alignment_tasks.tsv.gz")
-    copy_or_keep(args.taxonomy_presets, args.outdir / "taxonomy_presets.tsv.gz")
-    copy_or_keep(args.taxonomy_failures, args.outdir / "taxonomy_failures.tsv.gz")
+    global_inputs = [args.alignment_tasks, args.taxonomy_presets, args.taxonomy_failures, args.target_features]
+    if not args.partition_id and any(path is None for path in global_inputs):
+        raise ValueError(
+            "Final alignment merge requires --alignment-tasks, --taxonomy-presets, "
+            "--taxonomy-failures, and --target-features"
+        )
+    if not args.partition_id:
+        copy_or_keep(args.alignment_tasks, args.outdir / "alignment_tasks.tsv.gz")
+        copy_or_keep(args.taxonomy_presets, args.outdir / "taxonomy_presets.tsv.gz")
+        copy_or_keep(args.taxonomy_failures, args.outdir / "taxonomy_failures.tsv.gz")
 
     manifests = load_manifests(result_dirs)
     strategies = manifest_strategies(manifests)
@@ -446,6 +467,11 @@ def main() -> None:
     feature_coverage_inputs = [path / "feature_coverage.tsv.gz" for path in result_dirs]
     missing_feature_coverage = [str(path.parent) for path in feature_coverage_inputs if not path.exists()]
     if missing_feature_coverage:
+        if args.partition_id:
+            raise FileNotFoundError(
+                "Alignment partition inputs missing feature_coverage.tsv.gz: "
+                + ", ".join(missing_feature_coverage)
+            )
         feature_coverage_mode = "global_fallback"
         feature_coverage_count = summarize_feature_coverage(
             args.target_features,
@@ -460,7 +486,7 @@ def main() -> None:
             args.outdir / "feature_coverage.tsv.gz",
         )
     event_inputs = [path / "alignment_events.tsv.gz" for path in result_dirs]
-    if args.compact_events:
+    if args.compact_events and not args.events_already_compacted:
         event_count, raw_event_count = write_compact_events(
             event_inputs,
             args.outdir / "alignment_events.tsv.gz",
@@ -471,6 +497,11 @@ def main() -> None:
             args.outdir / "alignment_events.tsv.gz",
         )
         raw_event_count = event_count
+        if args.events_already_compacted:
+            raw_event_count = sum(
+                int(manifest.get("raw_alignment_event_count") or manifest.get("alignment_event_count") or 0)
+                for manifest in manifests
+            )
     failure_count = merge_tsv_gz(
         [path / "failures.tsv.gz" for path in result_dirs],
         args.outdir / "failures.tsv.gz",
@@ -479,12 +510,13 @@ def main() -> None:
     manifest = {
         "created_at": utc_now(),
         "stage": "alignment",
+        "partition_id": args.partition_id or "",
         "strategy_count": len(strategies),
         "strategies": strategies,
         "gene_count": len(gene_ids),
-        "alignment_task_count": count_tsv_gz_rows(args.alignment_tasks),
-        "taxonomy_tax_id_count": count_tsv_gz_rows(args.taxonomy_presets),
-        "taxonomy_failure_count": count_tsv_gz_rows(args.taxonomy_failures),
+        "alignment_task_count": count_tsv_gz_rows(args.alignment_tasks) if args.alignment_tasks else len(gene_ids),
+        "taxonomy_tax_id_count": count_tsv_gz_rows(args.taxonomy_presets) if args.taxonomy_presets else 0,
+        "taxonomy_failure_count": count_tsv_gz_rows(args.taxonomy_failures) if args.taxonomy_failures else 0,
         "ortholog_alignment_summary_count": summary_count,
         "strategy_summary_count": strategy_summary_count,
         "alignment_segment_count": segment_count,
