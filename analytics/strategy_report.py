@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import csv
 import gzip
 import json
 import re
@@ -133,7 +134,8 @@ class RunInputs:
     annotation_failures_tsv: Path
     feature_coverage_tsv: Path
     alignment_manifest_json: Path
-    strategy_quick_summary_tsv: Path
+    strategy_summary_tsv: Path
+    ortholog_alignment_summary_tsv: Path
 
 
 @dataclass(frozen=True)
@@ -204,7 +206,8 @@ def resolve_run_inputs(run_dir: Path) -> RunInputs:
         annotation_failures_tsv=run_dir / "annotation" / "failures.tsv.gz",
         feature_coverage_tsv=run_dir / "alignment" / "feature_coverage.tsv.gz",
         alignment_manifest_json=run_dir / "alignment" / "manifest.json",
-        strategy_quick_summary_tsv=run_dir / "reports" / "strategy_quick_summary.tsv",
+        strategy_summary_tsv=run_dir / "alignment" / "strategy_summary.tsv.gz",
+        ortholog_alignment_summary_tsv=run_dir / "alignment" / "ortholog_alignment_summary.tsv.gz",
     )
     if not inputs.variant_annotations_tsv.exists():
         raise FileNotFoundError(
@@ -449,15 +452,62 @@ def read_feature_coverage(path: Path) -> pd.DataFrame:
     return cov
 
 
-def read_strategy_quick_summary(path: Path) -> pd.DataFrame:
-    if not path.exists():
-        return pd.DataFrame()
-    print(f"Reading {path}...")
-    quick = pd.read_csv(path, sep="\t", low_memory=False)
-    for column in quick.columns:
+def summarize_alignment_rows(path: Path) -> pd.DataFrame:
+    aggregates: dict[str, dict] = {}
+    with gzip.open(path, "rt", newline="") as handle:
+        reader = csv.DictReader(handle, delimiter="\t")
+        required = {"gene_id", "strategy", "status", "event_count", "aligned_target_bp"}
+        missing = required - set(reader.fieldnames or [])
+        if missing:
+            raise ValueError(
+                f"Alignment summary {path} missing required columns: {', '.join(sorted(missing))}"
+            )
+        for row in reader:
+            strategy = row["strategy"]
+            aggregate = aggregates.setdefault(
+                strategy,
+                {
+                    "strategy": strategy,
+                    "summary_row_count": 0,
+                    "gene_ids": set(),
+                    "aligned_summary_row_count": 0,
+                    "event_count": 0,
+                    "aligned_target_bp": 0,
+                },
+            )
+            aggregate["summary_row_count"] += 1
+            aggregate["gene_ids"].add(row["gene_id"])
+            aggregate["aligned_summary_row_count"] += int(row["status"] == "aligned")
+            aggregate["event_count"] += int(row["event_count"] or 0)
+            aggregate["aligned_target_bp"] += int(row["aligned_target_bp"] or 0)
+    rows = []
+    for aggregate in aggregates.values():
+        row = dict(aggregate)
+        row["gene_count"] = len(row.pop("gene_ids"))
+        rows.append(row)
+    return pd.DataFrame(rows)
+
+
+def read_strategy_summary(path: Path, alignment_summary_path: Path) -> pd.DataFrame:
+    if path.exists():
+        print(f"Reading {path}...")
+        summary = pd.read_csv(path, sep="\t", compression="gzip", low_memory=False)
+    elif alignment_summary_path.exists():
+        print(f"Deriving strategy summary from {alignment_summary_path}...")
+        summary = summarize_alignment_rows(alignment_summary_path)
+    else:
+        raise FileNotFoundError(
+            "Missing alignment/strategy_summary.tsv.gz and "
+            "alignment/ortholog_alignment_summary.tsv.gz under --run-dir."
+        )
+    required = {"strategy", "summary_row_count", "aligned_summary_row_count", "event_count"}
+    missing = required - set(summary.columns)
+    if missing:
+        raise ValueError(f"Strategy summary missing required columns: {', '.join(sorted(missing))}")
+    for column in summary.columns:
         if column != "strategy":
-            quick[column] = pd.to_numeric(quick[column], errors="coerce")
-    return quick
+            summary[column] = pd.to_numeric(summary[column], errors="coerce")
+    return summary
 
 
 def read_failures(path: Path) -> pd.DataFrame:
@@ -559,25 +609,25 @@ def summarize_strategy_variants(long: pd.DataFrame, count_label: str = "Unique V
     return summary[ordered].sort_values("Strategy")
 
 
-def quick_summary_for_report(quick: pd.DataFrame) -> pd.DataFrame:
-    if quick.empty:
+def alignment_summary_for_report(summary: pd.DataFrame) -> pd.DataFrame:
+    if summary.empty:
         return pd.DataFrame()
-    report = pd.DataFrame({"Strategy": quick["strategy"].map(strategy_label)})
-    if {"aligned_rows", "rows"} <= set(quick.columns):
-        report["Aligned orthologs %"] = quick["aligned_rows"] / quick["rows"].replace(0, np.nan)
-        report["Aligned orthologs"] = quick["aligned_rows"]
-    if "total_event_count" in quick.columns:
-        report["Raw support events"] = quick["total_event_count"]
-    if "aligned_target_bp" in quick.columns:
-        report["Aligned target bp"] = quick["aligned_target_bp"]
+    report = pd.DataFrame({"Strategy": summary["strategy"].map(strategy_label)})
+    report["Aligned support records %"] = (
+        summary["aligned_summary_row_count"] / summary["summary_row_count"].replace(0, np.nan)
+    )
+    report["Aligned support records"] = summary["aligned_summary_row_count"]
+    report["Raw support events"] = summary["event_count"]
+    if "aligned_target_bp" in summary.columns:
+        report["Aligned target bp"] = summary["aligned_target_bp"]
     return report
 
 
-def merge_quick_summary(strategy_stats: pd.DataFrame, quick: pd.DataFrame) -> pd.DataFrame:
-    quick_report = quick_summary_for_report(quick)
-    if quick_report.empty:
+def merge_alignment_summary(strategy_stats: pd.DataFrame, summary: pd.DataFrame) -> pd.DataFrame:
+    report_summary = alignment_summary_for_report(summary)
+    if report_summary.empty:
         return strategy_stats
-    return strategy_stats.merge(quick_report, on="Strategy", how="left")
+    return strategy_stats.merge(report_summary, on="Strategy", how="left")
 
 
 def unique_contribution_table(long: pd.DataFrame) -> pd.DataFrame:
@@ -1879,7 +1929,8 @@ def build_methods_sections(
         ("Variant Annotations", inputs.variant_annotations_tsv),
         ("Target Sequences", inputs.target_sequences_dir),
         ("Feature Coverage", inputs.feature_coverage_tsv),
-        ("Strategy Quick Summary", inputs.strategy_quick_summary_tsv),
+        ("Strategy Summary", inputs.strategy_summary_tsv),
+        ("Ortholog Alignment Summary", inputs.ortholog_alignment_summary_tsv),
         ("Annotation Manifest", inputs.annotation_manifest_json),
         ("Alignment Manifest", inputs.alignment_manifest_json),
         ("Output HTML", out_html),
@@ -2136,13 +2187,16 @@ def main() -> None:
     variants = read_variant_annotations(inputs.variant_annotations_tsv)
     long = explode_strategy_variants(variants)
     cov = read_feature_coverage(inputs.feature_coverage_tsv)
-    quick = read_strategy_quick_summary(inputs.strategy_quick_summary_tsv)
+    alignment_summary = read_strategy_summary(
+        inputs.strategy_summary_tsv,
+        inputs.ortholog_alignment_summary_tsv,
+    )
     failures = read_failures(inputs.annotation_failures_tsv)
     annotation_manifest = read_json(inputs.annotation_manifest_json)
     alignment_manifest = read_json(inputs.alignment_manifest_json)
 
     print("Computing strategy metrics...")
-    strategy_stats_full = merge_quick_summary(summarize_strategy_variants(long), quick)
+    strategy_stats_full = merge_alignment_summary(summarize_strategy_variants(long), alignment_summary)
     summary_columns = [
         "Strategy",
         "Unique Variants",
@@ -2151,7 +2205,7 @@ def main() -> None:
         "ClinVar found %",
         "gnomAD Found",
         "gnomAD found %",
-        "Aligned orthologs %",
+        "Aligned support records %",
         "Raw support events",
     ]
     strategy_stats = strategy_stats_full[[column for column in summary_columns if column in strategy_stats_full.columns]]

@@ -48,6 +48,15 @@ COMPACT_EVENT_FIELDS = [
     "qc_flags",
 ]
 
+STRATEGY_SUMMARY_FIELDS = [
+    "strategy",
+    "summary_row_count",
+    "gene_count",
+    "aligned_summary_row_count",
+    "event_count",
+    "aligned_target_bp",
+]
+
 
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
@@ -129,6 +138,71 @@ def merge_tsv_gz(paths: list[Path], output: Path) -> int:
         with gzip.open(output, "wt", newline="") as out_handle:
             out_handle.write("")
     return count
+
+
+def write_strategy_summary(
+    summaries_path: Path,
+    output: Path,
+    expected_strategies: list[str],
+) -> int:
+    """Write small per-strategy aggregates from the canonical summary table."""
+    aggregates: dict[str, dict[str, int | set[str]]] = {}
+    with gzip.open(summaries_path, "rt", newline="") as handle:
+        reader = csv.DictReader(handle, delimiter="\t")
+        required = {"gene_id", "strategy", "status", "event_count", "aligned_target_bp"}
+        missing = required - set(reader.fieldnames or [])
+        if missing:
+            raise ValueError(
+                f"Alignment summary {summaries_path} missing required columns: "
+                + ", ".join(sorted(missing))
+            )
+        for row in reader:
+            strategy = row["strategy"]
+            aggregate = aggregates.setdefault(
+                strategy,
+                {
+                    "summary_row_count": 0,
+                    "gene_ids": set(),
+                    "aligned_summary_row_count": 0,
+                    "event_count": 0,
+                    "aligned_target_bp": 0,
+                },
+            )
+            aggregate["summary_row_count"] += 1
+            aggregate["gene_ids"].add(row["gene_id"])
+            aggregate["aligned_summary_row_count"] += int(row["status"] == "aligned")
+            aggregate["event_count"] += int(row["event_count"] or 0)
+            aggregate["aligned_target_bp"] += int(row["aligned_target_bp"] or 0)
+
+    for strategy in expected_strategies:
+        aggregates.setdefault(
+            strategy,
+            {
+                "summary_row_count": 0,
+                "gene_ids": set(),
+                "aligned_summary_row_count": 0,
+                "event_count": 0,
+                "aligned_target_bp": 0,
+            },
+        )
+
+    output.parent.mkdir(parents=True, exist_ok=True)
+    with gzip.open(output, "wt", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=STRATEGY_SUMMARY_FIELDS, delimiter="\t")
+        writer.writeheader()
+        for strategy in sorted(aggregates):
+            aggregate = aggregates[strategy]
+            writer.writerow(
+                {
+                    "strategy": strategy,
+                    "summary_row_count": aggregate["summary_row_count"],
+                    "gene_count": len(aggregate["gene_ids"]),
+                    "aligned_summary_row_count": aggregate["aligned_summary_row_count"],
+                    "event_count": aggregate["event_count"],
+                    "aligned_target_bp": aggregate["aligned_target_bp"],
+                }
+            )
+    return len(aggregates)
 
 
 def create_compact_event_table(conn: sqlite3.Connection) -> None:
@@ -352,9 +426,18 @@ def main() -> None:
     copy_or_keep(args.taxonomy_presets, args.outdir / "taxonomy_presets.tsv.gz")
     copy_or_keep(args.taxonomy_failures, args.outdir / "taxonomy_failures.tsv.gz")
 
+    manifests = load_manifests(result_dirs)
+    strategies = manifest_strategies(manifests)
+    gene_ids = manifest_gene_ids(manifests)
+
     summary_count = merge_tsv_gz(
         [path / "ortholog_alignment_summary.tsv.gz" for path in result_dirs],
         args.outdir / "ortholog_alignment_summary.tsv.gz",
+    )
+    strategy_summary_count = write_strategy_summary(
+        args.outdir / "ortholog_alignment_summary.tsv.gz",
+        args.outdir / "strategy_summary.tsv.gz",
+        strategies,
     )
     segment_count = merge_tsv_gz(
         [path / "alignment_segments.tsv.gz" for path in result_dirs],
@@ -393,10 +476,6 @@ def main() -> None:
         args.outdir / "failures.tsv.gz",
     )
     native_file_count = copy_native(result_dirs, args.outdir)
-    manifests = load_manifests(result_dirs)
-    strategies = manifest_strategies(manifests)
-    gene_ids = manifest_gene_ids(manifests)
-
     manifest = {
         "created_at": utc_now(),
         "stage": "alignment",
@@ -407,6 +486,7 @@ def main() -> None:
         "taxonomy_tax_id_count": count_tsv_gz_rows(args.taxonomy_presets),
         "taxonomy_failure_count": count_tsv_gz_rows(args.taxonomy_failures),
         "ortholog_alignment_summary_count": summary_count,
+        "strategy_summary_count": strategy_summary_count,
         "alignment_segment_count": segment_count,
         "feature_coverage_mode": feature_coverage_mode,
         "feature_coverage_missing_result_count": len(missing_feature_coverage),

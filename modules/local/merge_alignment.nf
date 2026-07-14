@@ -15,6 +15,7 @@ process MERGE_ALIGNMENT {
     path "taxonomy_presets.tsv.gz", emit: taxonomy_presets
     path "taxonomy_failures.tsv.gz", emit: taxonomy_failures
     path "ortholog_alignment_summary.tsv.gz", emit: summaries
+    path "strategy_summary.tsv.gz", emit: strategy_summary
     path "alignment_segments.tsv.gz", emit: segments
     path "feature_coverage.tsv.gz", emit: feature_coverage
     path "alignment_events.tsv.gz", emit: events

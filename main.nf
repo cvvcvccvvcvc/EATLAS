@@ -274,6 +274,7 @@ workflow ALIGNMENT_STAGE {
     taxonomy_presets = MERGE_ALIGNMENT.out.taxonomy_presets
     taxonomy_failures = MERGE_ALIGNMENT.out.taxonomy_failures
     summaries = MERGE_ALIGNMENT.out.summaries
+    strategy_summary = MERGE_ALIGNMENT.out.strategy_summary
     segments = MERGE_ALIGNMENT.out.segments
     feature_coverage = MERGE_ALIGNMENT.out.feature_coverage
     events = MERGE_ALIGNMENT.out.events

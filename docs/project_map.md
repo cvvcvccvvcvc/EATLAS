@@ -81,6 +81,7 @@ runs.
 - `bin/merge_alignment_results.py`
   - merges per-gene/per-strategy alignment evidence tables
   - intersects target features with alignment segments for coverage/depth summaries
+  - writes a canonical small per-strategy summary for downstream reports
   - can write compact event support rows when `--compact_alignment_events true`
   - copies optional native outputs only when enabled
 

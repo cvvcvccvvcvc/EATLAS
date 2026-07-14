@@ -164,6 +164,7 @@ Stage 2 publishes:
 | `taxonomy_presets.tsv.gz` | Compact tax_id-to-preset mapping. |
 | `taxonomy_failures.tsv.gz` | Taxonomy lookup warnings/failures. |
 | `ortholog_alignment_summary.tsv.gz` | One row per gene/ortholog/output strategy when that strategy emits summary evidence. |
+| `strategy_summary.tsv.gz` | Small canonical per-strategy aggregate derived from `ortholog_alignment_summary.tsv.gz` for reports and run inspection. |
 | `alignment_segments.tsv.gz` | Normalized alignment intervals. |
 | `feature_coverage.tsv.gz` | Per-gene, per-strategy coverage and depth over target structural intervals. |
 | `alignment_events.tsv.gz` | Raw mismatch/indel events normalized to target coordinates by default; unique event support rows when `--compact_alignment_events true`. |
@@ -171,6 +172,11 @@ Stage 2 publishes:
 | `native/` | Optional raw PAF/delta/coords/snps files when enabled. |
 
 Native outputs are disabled by default.
+
+`strategy_summary.tsv.gz` contains `summary_row_count`, `gene_count`,
+`aligned_summary_row_count`, `event_count`, and `aligned_target_bp` for each
+enabled strategy. Reports must read this alignment-owned table, not mutable
+files from `reports/`.
 
 ## Why Segments And Events Are Separate
 
