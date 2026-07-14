@@ -57,7 +57,7 @@ DEFAULT_TRACKS = {
     ),
 }
 DEFAULT_TRACK_NAMES = ",".join(DEFAULT_TRACKS)
-CACHE_VERSION = 1
+CACHE_VERSION = 2
 CONSERVATION_FIELDS = ["variant_key", "chrom", "pos"]
 
 
@@ -88,25 +88,44 @@ def build_conservation_annotations(
         "retry_sleep_seconds": retry_sleep_seconds,
         "precision": precision,
     }
+    previous_manifest = None
     if annotations_path.exists() and manifest_path.exists():
-        manifest = json.loads(manifest_path.read_text())
-        if manifest.get("inputs") == expected_inputs:
-            annotations = read_annotations(annotations_path, score_columns)
-            return ConservationAnnotations(annotations_path, manifest_path, annotations, manifest, score_columns)
+        candidate = json.loads(manifest_path.read_text())
+        if candidate.get("inputs") == expected_inputs:
+            if candidate.get("complete") is True:
+                annotations = read_annotations(annotations_path, score_columns)
+                return ConservationAnnotations(annotations_path, manifest_path, annotations, candidate, score_columns)
+            previous_manifest = candidate
 
-    rows = snv_universe_rows(universe)
+    rows = (
+        read_annotation_rows(annotations_path, score_columns)
+        if previous_manifest is not None
+        else snv_universe_rows(universe)
+    )
+    previous_summaries = {
+        str(summary.get("track")): summary
+        for summary in (previous_manifest or {}).get("tracks", [])
+    }
     summaries = []
     for track in tracks:
+        previous_summary = previous_summaries.get(track.name)
+        if previous_summary and previous_summary.get("status") == "complete":
+            summaries.append(previous_summary)
+            continue
         print(f"Annotating ClinVar SNVs with {track.name}: {track.url}", file=sys.stderr)
-        summary = annotate_track(
-            rows=rows,
-            track=track,
-            max_block_bp=max_block_bp,
-            max_gap_bp=max_gap_bp,
-            remote_retries=remote_retries,
-            retry_sleep_seconds=retry_sleep_seconds,
-            precision=precision,
-        )
+        try:
+            summary = annotate_track(
+                rows=rows,
+                track=track,
+                max_block_bp=max_block_bp,
+                max_gap_bp=max_gap_bp,
+                remote_retries=remote_retries,
+                retry_sleep_seconds=retry_sleep_seconds,
+                precision=precision,
+            )
+        except RuntimeError as exc:
+            summary = failed_track_summary(rows, track, str(exc), remote_retries)
+            print(f"warning: {track.name}: {exc}", file=sys.stderr)
         summaries.append(summary)
         print(
             f"{track.name}: {summary['annotated_positions']}/{summary['unique_positions']} "
@@ -118,6 +137,7 @@ def build_conservation_annotations(
     write_annotations(annotations_path, rows, score_columns)
     manifest = {
         "inputs": expected_inputs,
+        "complete": all(summary.get("status") == "complete" for summary in summaries),
         "row_count": len(rows),
         "score_columns": score_columns,
         "tracks": summaries,
@@ -166,6 +186,16 @@ def read_annotations(path: Path, score_columns: list[str]) -> pd.DataFrame:
             annotations[column] = ""
         annotations[column] = pd.to_numeric(annotations[column], errors="coerce")
     return annotations
+
+
+def read_annotation_rows(path: Path, score_columns: list[str]) -> list[dict[str, str]]:
+    fields = [*CONSERVATION_FIELDS, *score_columns]
+    with open_text(path) as handle:
+        reader = csv.DictReader(handle, delimiter="\t")
+        missing = set(fields) - set(reader.fieldnames or [])
+        if missing:
+            raise ValueError(f"Conservation cache missing columns: {', '.join(sorted(missing))}")
+        return [{field: row.get(field, "") for field in fields} for row in reader]
 
 
 def write_annotations(path: Path, rows: list[dict[str, str]], score_columns: list[str]) -> None:
@@ -245,6 +275,8 @@ def annotate_track(
     missing_positions = 0
     read_seconds = 0.0
     read_retry_count = 0
+    failed_block_count = 0
+    first_error = ""
 
     for chrom in sorted(positions_by_chrom):
         if chrom not in chrom_sizes:
@@ -266,6 +298,9 @@ def annotate_track(
             except RuntimeError as exc:
                 print(f"warning: {track.name}: failed {chrom}:{start0}-{end0}: {exc}", file=sys.stderr)
                 missing_positions += len(block_positions)
+                failed_block_count += 1
+                if not first_error:
+                    first_error = str(exc)
                 continue
             read_seconds += time.perf_counter() - read_start
             read_retry_count += read_attempts - 1
@@ -284,6 +319,8 @@ def annotate_track(
     bw.close()
     return {
         "track": track.name,
+        "status": "complete" if failed_block_count == 0 else "partial",
+        "error": first_error,
         "url": track.url,
         "chrom_style": track.chrom_style,
         "open_seconds": round(open_seconds, 3),
@@ -291,9 +328,38 @@ def annotate_track(
         "read_seconds": round(read_seconds, 3),
         "read_retry_count": read_retry_count,
         "block_count": block_count,
+        "failed_block_count": failed_block_count,
         "unique_positions": sum(len(items) for items in positions_by_chrom.values()),
         "annotated_positions": annotated_positions,
         "missing_positions": missing_positions,
+    }
+
+
+def failed_track_summary(
+    rows: list[dict[str, str]],
+    track: Track,
+    error: str,
+    open_attempts: int,
+) -> dict[str, object]:
+    positions_by_chrom, _row_indices = build_position_index(rows, track)
+    unique_positions = sum(len(items) for items in positions_by_chrom.values())
+    for row in rows:
+        row[track.name] = ""
+    return {
+        "track": track.name,
+        "status": "failed",
+        "error": error,
+        "url": track.url,
+        "chrom_style": track.chrom_style,
+        "open_seconds": 0.0,
+        "open_attempts": open_attempts,
+        "read_seconds": 0.0,
+        "read_retry_count": 0,
+        "block_count": 0,
+        "failed_block_count": 0,
+        "unique_positions": unique_positions,
+        "annotated_positions": 0,
+        "missing_positions": unique_positions,
     }
 
 

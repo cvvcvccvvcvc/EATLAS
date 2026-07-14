@@ -54,7 +54,9 @@ conservation-stratified block also writes:
 ```
 
 The conservation cache is SNV-only and is reused on later report runs when the
-ClinVar universe and requested tracks are unchanged.
+ClinVar universe and requested tracks are unchanged. Successful track columns
+are retained when another remote track fails; later runs retry only failed or
+partial tracks until the cache is complete.
 
 Raw p-values remain visible in the report. ClinVar Fisher tests use
 Benjamini-Hochberg correction separately within the SNV and INDEL families.

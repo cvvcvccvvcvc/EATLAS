@@ -1719,11 +1719,14 @@ def build_methods_sections(
         track_rows = [
             {
                 "Track": item.get("track", ""),
+                "Status": item.get("status", ""),
                 "Annotated positions": item.get("annotated_positions", ""),
                 "Unique positions": item.get("unique_positions", ""),
                 "Blocks": item.get("block_count", ""),
+                "Failed blocks": item.get("failed_block_count", ""),
                 "Open seconds": item.get("open_seconds", ""),
                 "Read seconds": item.get("read_seconds", ""),
+                "Error": item.get("error", ""),
                 "URL": item.get("url", ""),
             }
             for item in conservation_analysis.manifest.get("tracks", [])
