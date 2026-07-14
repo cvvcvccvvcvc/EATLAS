@@ -1,0 +1,13 @@
+name: gaph-v2-analytics
+channels:
+  - conda-forge
+  - bioconda
+dependencies:
+  - python=3.11
+  - numpy
+  - pandas
+  - scipy
+  - statsmodels=0.14
+  - plotly
+  - pybigwig
+  - htslib

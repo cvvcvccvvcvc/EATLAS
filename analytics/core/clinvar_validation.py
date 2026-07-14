@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from .stats import enrichment_result
+from .stats import benjamini_hochberg, enrichment_result
 from .variant_keys import (
     build_context_index,
     contexts_for_variant,
@@ -468,7 +468,13 @@ def compute_strategy_results(
                     "fisher_p": result.fisher_p,
                 }
             )
-    return pd.DataFrame(rows, columns=result_columns())
+    if not rows:
+        return pd.DataFrame(columns=result_columns())
+    results = pd.DataFrame(rows)
+    results["fisher_q"] = float("nan")
+    for _variant_kind, indices in results.groupby("variant_type", sort=False).groups.items():
+        results.loc[indices, "fisher_q"] = benjamini_hochberg(results.loc[indices, "fisher_p"].tolist())
+    return results[result_columns()]
 
 
 def result_columns() -> list[str]:
@@ -483,6 +489,7 @@ def result_columns() -> list[str]:
         "ci_low",
         "ci_high",
         "fisher_p",
+        "fisher_q",
     ]
 
 

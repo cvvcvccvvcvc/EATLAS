@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import math
+import warnings
 from dataclasses import dataclass
+
+from statsmodels.stats.contingency_tables import StratifiedTable
 
 
 @dataclass(frozen=True)
@@ -82,71 +85,61 @@ def enrichment_result(name: str, a: int, b: int, c: int, d: int) -> EnrichmentRe
 
 def mantel_haenszel_adjusted(results: list[EnrichmentResult]) -> AdjustedResult | None:
     """Return a pooled stratified OR and CMH p-value across 2x2 strata."""
+    tables = [
+        [
+            [result.benign_observed, result.pathogenic_observed],
+            [result.benign_not_observed, result.pathogenic_not_observed],
+        ]
+        for result in results
+        if (
+            result.benign_observed
+            + result.pathogenic_observed
+            + result.benign_not_observed
+            + result.pathogenic_not_observed
+        )
+        > 1
+    ]
+    if not tables:
+        return None
 
-    numerator = 0.0
-    denominator = 0.0
-    observed_minus_expected = 0.0
-    variance_sum = 0.0
-    weighted_log_or = 0.0
-    weight_sum = 0.0
+    table = StratifiedTable(tables, shift_zeros=False)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", RuntimeWarning)
+        odds_ratio_mh = float(table.oddsratio_pooled)
+        if math.isfinite(odds_ratio_mh) and odds_ratio_mh > 0:
+            ci_low, ci_high = map(float, table.oddsratio_pooled_confint(alpha=0.05))
+        else:
+            ci_low, ci_high = float("nan"), float("nan")
+        cmh = table.test_null_odds(correction=False)
+    return AdjustedResult(
+        odds_ratio_mh,
+        ci_low,
+        ci_high,
+        float(cmh.statistic),
+        float(cmh.pvalue),
+    )
 
-    for result in results:
-        a = result.benign_observed
-        b = result.pathogenic_observed
-        c = result.benign_not_observed
-        d = result.pathogenic_not_observed
-        n = a + b + c + d
-        if n <= 1:
-            continue
 
-        numerator += (a * d) / n
-        denominator += (b * c) / n
+def benjamini_hochberg(pvalues: list[float]) -> list[float]:
+    """Return Benjamini-Hochberg adjusted p-values, preserving NaNs."""
+    adjusted = [float("nan")] * len(pvalues)
+    valid = [
+        (index, float(value))
+        for index, value in enumerate(pvalues)
+        if value is not None and math.isfinite(float(value)) and 0 <= float(value) <= 1
+    ]
+    if not valid:
+        return adjusted
 
-        alt_total = a + b
-        no_alt_total = c + d
-        benign_total = a + c
-        pathogenic_total = b + d
-        expected_a = alt_total * benign_total / n
-        variance_a = alt_total * no_alt_total * benign_total * pathogenic_total / (n * n * (n - 1))
-        observed_minus_expected += a - expected_a
-        variance_sum += variance_a
-
-        aa, bb, cc, dd = float(a), float(b), float(c), float(d)
-        if min(aa, bb, cc, dd) == 0.0:
-            aa += 0.5
-            bb += 0.5
-            cc += 0.5
-            dd += 0.5
-        var_log_or = (1.0 / aa) + (1.0 / bb) + (1.0 / cc) + (1.0 / dd)
-        if var_log_or > 0:
-            weight = 1.0 / var_log_or
-            weighted_log_or += weight * math.log((aa * dd) / (bb * cc))
-            weight_sum += weight
-
-    if numerator == 0.0 and denominator == 0.0:
-        odds_ratio_mh = float("nan")
-    elif denominator == 0.0:
-        odds_ratio_mh = float("inf")
-    else:
-        odds_ratio_mh = numerator / denominator
-
-    if weight_sum > 0:
-        pooled_log_or = weighted_log_or / weight_sum
-        se = math.sqrt(1.0 / weight_sum)
-        ci_low = math.exp(pooled_log_or - 1.96 * se)
-        ci_high = math.exp(pooled_log_or + 1.96 * se)
-    else:
-        ci_low = float("nan")
-        ci_high = float("nan")
-
-    if variance_sum > 0:
-        cmh_chi2 = (observed_minus_expected * observed_minus_expected) / variance_sum
-        cmh_p = math.erfc(math.sqrt(cmh_chi2 / 2.0))
-    else:
-        cmh_chi2 = float("nan")
-        cmh_p = float("nan")
-
-    return AdjustedResult(odds_ratio_mh, ci_low, ci_high, cmh_chi2, cmh_p)
+    ordered = sorted(valid, key=lambda item: item[1])
+    count = len(ordered)
+    running_minimum = 1.0
+    for rank_index in range(count - 1, -1, -1):
+        original_index, pvalue = ordered[rank_index]
+        rank = rank_index + 1
+        running_minimum = min(running_minimum, pvalue * count / rank)
+        adjusted[original_index] = min(1.0, running_minimum)
+    return adjusted
 
 
 def _log_comb(n: int, k: int) -> float:

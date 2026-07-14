@@ -570,7 +570,7 @@ def validation_method_table() -> pd.DataFrame:
                 "Step": "Statistics",
                 "Definition": (
                     "Raw odds ratio, approximate 95% CI on log(OR) with Haldane 0.5 correction for zero cells, "
-                    "and two-sided Fisher exact p-value."
+                    "two-sided Fisher exact p-value, and Benjamini-Hochberg FDR within each SNV or INDEL family."
                 ),
             },
         ]
@@ -594,11 +594,30 @@ def conservation_stratified_method_table() -> pd.DataFrame:
             },
             {
                 "Step": "Within-bin test",
-                "Definition": "For every strategy and bin, the same B/LB-vs-P/LP ALT-observed 2x2 enrichment table is computed.",
+                "Definition": (
+                    "For every strategy and bin, the same B/LB-vs-P/LP ALT-observed 2x2 enrichment table is computed; "
+                    "Fisher p-values receive Benjamini-Hochberg correction across all reported bin tests."
+                ),
             },
             {
                 "Step": "Adjusted summary",
-                "Definition": "A Mantel-Haenszel common odds ratio and Cochran-Mantel-Haenszel p-value summarize the effect across bins.",
+                "Definition": (
+                    "A Mantel-Haenszel common odds ratio with Robins-Breslow-Greenland 95% CI and a "
+                    "Cochran-Mantel-Haenszel test without continuity correction summarize the effect across bins."
+                ),
+            },
+            {
+                "Step": "Sparse strata",
+                "Definition": (
+                    "No 0.5 continuity correction is applied to the pooled estimate. An infinite MH OR remains "
+                    "infinite; its normal-approximation RBG confidence interval is reported as not estimable."
+                ),
+            },
+            {
+                "Step": "Adjusted-summary multiplicity",
+                "Definition": (
+                    "CMH p-values receive Benjamini-Hochberg correction across all reported score-by-strategy tests."
+                ),
             },
             {
                 "Step": "Scope",
@@ -1196,7 +1215,8 @@ def build_validation_kind_sections(results: pd.DataFrame, variant_kind: str, inc
                     "%{y}<br>OR: %{x:.3g}<br>"
                     "Raw OR: %{customdata[0]}<br>"
                     "95% CI: %{customdata[1]:.3g}-%{customdata[2]:.3g}<br>"
-                    "Fisher p: %{customdata[3]:.3g}<extra></extra>"
+                    "Fisher p: %{customdata[3]:.3g}<br>"
+                    "BH q: %{customdata[4]:.3g}<extra></extra>"
                 ),
                 customdata=np.stack(
                     [
@@ -1204,6 +1224,7 @@ def build_validation_kind_sections(results: pd.DataFrame, variant_kind: str, inc
                         plot_df["ci_low"],
                         plot_df["ci_high"],
                         plot_df["fisher_p"],
+                        plot_df["fisher_q"],
                     ],
                     axis=-1,
                 ),
@@ -1239,6 +1260,7 @@ def build_validation_kind_sections(results: pd.DataFrame, variant_kind: str, inc
     table["Odds Ratio"] = table["odds_ratio"].map(format_ratio)
     table["95% CI"] = table.apply(lambda row: f"{format_ratio(row['ci_low'])}-{format_ratio(row['ci_high'])}", axis=1)
     table["Fisher p"] = table["fisher_p"].map(format_pvalue)
+    table["BH q"] = table["fisher_q"].map(format_pvalue)
     table = table.rename(
         columns={
             "benign_observed": "B/LB observed",
@@ -1260,6 +1282,7 @@ def build_validation_kind_sections(results: pd.DataFrame, variant_kind: str, inc
                     "Odds Ratio",
                     "95% CI",
                     "Fisher p",
+                    "BH q",
                 ]
             ],
             classes="table table-sm table-striped",
@@ -1345,6 +1368,13 @@ def build_conservation_stratified_sections(
         if fig_adjusted is not None:
             sections.append(fig_html(fig_adjusted, include_plotlyjs=include_js))
             include_js = False
+        infinite_count = int(np.isposinf(adjusted["odds_ratio_mh"]).sum())
+        if infinite_count:
+            sections.append(
+                f"<p class=\"lead\">{format_int(infinite_count)} infinite MH OR estimate(s) have no estimable "
+                "normal-approximation RBG confidence interval and are listed in the table but omitted from the "
+                "forest plot.</p>"
+            )
 
         fig_heatmap = conservation_bin_heatmap(bins, adjusted, score)
         if fig_heatmap is not None:
@@ -1390,7 +1420,8 @@ def conservation_adjusted_figure(adjusted: pd.DataFrame, score: str):
             hovertemplate=(
                 "%{y}<br>MH OR: %{customdata[0]}<br>"
                 "95% CI: %{customdata[1]:.3g}-%{customdata[2]:.3g}<br>"
-                "CMH p: %{customdata[3]:.3g}<extra></extra>"
+                "CMH p: %{customdata[3]:.3g}<br>"
+                "BH q: %{customdata[4]:.3g}<extra></extra>"
             ),
             customdata=np.stack(
                 [
@@ -1398,6 +1429,7 @@ def conservation_adjusted_figure(adjusted: pd.DataFrame, score: str):
                     plot_df["ci_low"],
                     plot_df["ci_high"],
                     plot_df["cmh_p"],
+                    plot_df["cmh_q"],
                 ],
                 axis=-1,
             ),
@@ -1443,6 +1475,7 @@ def conservation_bin_heatmap(bins: pd.DataFrame, adjusted: pd.DataFrame, score: 
     pivot = work.pivot_table(index="Strategy", columns="Bin", values="log2_or", aggfunc="first")
     text = work.pivot_table(index="Strategy", columns="Bin", values="odds_ratio", aggfunc="first")
     pvalues = work.pivot_table(index="Strategy", columns="Bin", values="fisher_p", aggfunc="first")
+    qvalues = work.pivot_table(index="Strategy", columns="Bin", values="fisher_q", aggfunc="first")
     counts = work.pivot_table(index="Strategy", columns="Bin", values="row_count", aggfunc="first")
     ranges = work.pivot_table(
         index="Strategy",
@@ -1454,6 +1487,7 @@ def conservation_bin_heatmap(bins: pd.DataFrame, adjusted: pd.DataFrame, score: 
     pivot = pivot.reindex(index=strategy_order, columns=bin_order)
     text = text.reindex(index=strategy_order, columns=bin_order)
     pvalues = pvalues.reindex(index=strategy_order, columns=bin_order)
+    qvalues = qvalues.reindex(index=strategy_order, columns=bin_order)
     counts = counts.reindex(index=strategy_order, columns=bin_order)
     text_values = text.apply(lambda column: column.map(format_ratio)).to_numpy()
     if ranges is not None:
@@ -1461,7 +1495,9 @@ def conservation_bin_heatmap(bins: pd.DataFrame, adjusted: pd.DataFrame, score: 
         range_values = ranges.fillna("").to_numpy()
     else:
         range_values = np.full(text_values.shape, "", dtype=object)
-    customdata = np.dstack([text_values, pvalues.to_numpy(), counts.to_numpy(), range_values])
+    customdata = np.dstack(
+        [text_values, pvalues.to_numpy(), qvalues.to_numpy(), counts.to_numpy(), range_values]
+    )
     fig = go.Figure(
         data=go.Heatmap(
             z=pivot.to_numpy(),
@@ -1476,10 +1512,11 @@ def conservation_bin_heatmap(bins: pd.DataFrame, adjusted: pd.DataFrame, score: 
             colorbar={"title": "log2 OR"},
             hovertemplate=(
                 "%{y}, %{x}<br>"
-                "Range: %{customdata[3]}<br>"
+                "Range: %{customdata[4]}<br>"
                 "OR: %{customdata[0]}<br>"
                 "Fisher p: %{customdata[1]:.3g}<br>"
-                "N: %{customdata[2]:.0f}<extra></extra>"
+                "BH q: %{customdata[2]:.3g}<br>"
+                "N: %{customdata[3]:.0f}<extra></extra>"
             ),
         )
     )
@@ -1501,8 +1538,9 @@ def conservation_adjusted_table(adjusted: pd.DataFrame) -> pd.DataFrame:
     table["MH adjusted OR"] = table["odds_ratio_mh"].map(format_ratio)
     table["95% CI"] = table.apply(lambda row: f"{format_ratio(row['ci_low'])}-{format_ratio(row['ci_high'])}", axis=1)
     table["CMH p"] = table["cmh_p"].map(format_pvalue)
+    table["BH q"] = table["cmh_q"].map(format_pvalue)
     table = table.rename(columns={"usable_rows": "Usable SNVs", "bin_count": "Bins"})
-    return table[["Strategy", "Usable SNVs", "Bins", "MH adjusted OR", "95% CI", "CMH p"]]
+    return table[["Strategy", "Usable SNVs", "Bins", "MH adjusted OR", "95% CI", "CMH p", "BH q"]]
 
 
 def conservation_bin_detail_table(bins: pd.DataFrame) -> pd.DataFrame:
@@ -1513,6 +1551,7 @@ def conservation_bin_detail_table(bins: pd.DataFrame) -> pd.DataFrame:
     table["OR"] = table["odds_ratio"].map(format_ratio)
     table["95% CI"] = table.apply(lambda row: f"{format_ratio(row['ci_low'])}-{format_ratio(row['ci_high'])}", axis=1)
     table["Fisher p"] = table["fisher_p"].map(format_pvalue)
+    table["BH q"] = table["fisher_q"].map(format_pvalue)
     return table[
         [
             "Strategy",
@@ -1526,6 +1565,7 @@ def conservation_bin_detail_table(bins: pd.DataFrame) -> pd.DataFrame:
             "OR",
             "95% CI",
             "Fisher p",
+            "BH q",
         ]
     ].rename(
         columns={

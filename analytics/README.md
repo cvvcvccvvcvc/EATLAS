@@ -3,12 +3,18 @@
 This package contains analysis and reporting entrypoints for completed GAPH
 runs.
 
+Create the reproducible analytics environment once with:
+
+```bash
+micromamba create -f envs/analytics.yml
+```
+
 Primary report:
 
 ```bash
 RUN="results/run_all_strategies_20260703_135905"
 
-.venv/bin/python -m analytics.strategy_report \
+micromamba run -n gaph-v2-analytics python -m analytics.strategy_report \
   --run-dir "$RUN"
 ```
 
@@ -16,7 +22,7 @@ The report computes ClinVar enrichment and conservation-stratified validation
 by default. Conservation tracks and quantile bins can be adjusted with:
 
 ```bash
-.venv/bin/python -m analytics.strategy_report \
+micromamba run -n gaph-v2-analytics python -m analytics.strategy_report \
   --run-dir "$RUN" \
   --conservation-tracks phyloP100way,phastCons100way,GERP_RS_92mammals \
   --conservation-bins 4
@@ -49,3 +55,9 @@ conservation-stratified block also writes:
 
 The conservation cache is SNV-only and is reused on later report runs when the
 ClinVar universe and requested tracks are unchanged.
+
+Raw p-values remain visible in the report. ClinVar Fisher tests use
+Benjamini-Hochberg correction separately within the SNV and INDEL families.
+Conservation bin-level Fisher tests and score-by-strategy CMH tests are corrected
+as two separate analysis families. Mantel-Haenszel confidence intervals use the
+Robins-Breslow-Greenland variance implemented by `statsmodels.StratifiedTable`.

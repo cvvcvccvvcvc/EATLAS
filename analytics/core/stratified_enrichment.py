@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pandas as pd
 
-from .stats import enrichment_result, mantel_haenszel_adjusted
+from .stats import benjamini_hochberg, enrichment_result, mantel_haenszel_adjusted
 
 
 def compute_conservation_stratified_enrichment(
@@ -89,9 +89,15 @@ def compute_conservation_stratified_enrichment(
                 }
             )
 
+    bin_results = pd.DataFrame(bin_rows)
+    adjusted_results = pd.DataFrame(adjusted_rows)
+    if not bin_results.empty:
+        bin_results["fisher_q"] = benjamini_hochberg(bin_results["fisher_p"].tolist())
+    if not adjusted_results.empty:
+        adjusted_results["cmh_q"] = benjamini_hochberg(adjusted_results["cmh_p"].tolist())
     return (
-        pd.DataFrame(bin_rows, columns=bin_result_columns()),
-        pd.DataFrame(adjusted_rows, columns=adjusted_result_columns()),
+        bin_results.reindex(columns=bin_result_columns()),
+        adjusted_results.reindex(columns=adjusted_result_columns()),
     )
 
 
@@ -125,6 +131,7 @@ def bin_result_columns() -> list[str]:
         "ci_low",
         "ci_high",
         "fisher_p",
+        "fisher_q",
     ]
 
 
@@ -139,4 +146,5 @@ def adjusted_result_columns() -> list[str]:
         "ci_high",
         "cmh_chi2",
         "cmh_p",
+        "cmh_q",
     ]
