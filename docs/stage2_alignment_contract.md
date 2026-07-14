@@ -230,6 +230,11 @@ memory. Older ungrouped fetch outputs remain supported through a compatibility
 path that loads that legacy table in memory; regenerate large legacy fetch
 datasets before cluster-scale alignment.
 
+The same preparation step partitions `target_features.tsv.gz` into one compact
+`target_features.tsv.gz` inside each ready gene task. Alignment jobs read only
+that gene-local feature file when computing coverage; the global feature table
+is not staged into every aligner job.
+
 Durable output is limited to compressed normalized TSV files so large runs do
 not duplicate sequence data and native aligner output in `results/`.
 

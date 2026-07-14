@@ -5,6 +5,7 @@ process BUILD_ALIGNMENT_TASKS {
     path genes_tsv
     path orthologs_tsv
     path fetch_manifest
+    path target_features
     path sequences_dir, stageAs: 'sequences'
     path taxonomy_presets
     path prepare_script
@@ -19,6 +20,7 @@ process BUILD_ALIGNMENT_TASKS {
         --genes-tsv "${genes_tsv}" \\
         --orthologs-tsv "${orthologs_tsv}" \\
         --fetch-manifest "${fetch_manifest}" \\
+        --target-features "${target_features}" \\
         --taxonomy-presets "${taxonomy_presets}" \\
         --outdir . \\
         --sequences-dir sequences

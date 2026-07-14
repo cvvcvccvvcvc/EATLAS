@@ -21,6 +21,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--genes-tsv", required=True, type=Path)
     parser.add_argument("--orthologs-tsv", required=True, type=Path)
     parser.add_argument("--fetch-manifest", required=True, type=Path)
+    parser.add_argument("--target-features", required=True, type=Path)
     parser.add_argument("--taxonomy-presets", required=True, type=Path)
     parser.add_argument("--outdir", required=True, type=Path)
     parser.add_argument("--sequences-dir", required=True, type=Path)
@@ -90,6 +91,23 @@ def fasta_paths_by_gene(directory: Path) -> dict[str, Path]:
                 raise ValueError(f"Multiple FASTA files found for gene {gene_id} in {directory}")
             paths[gene_id] = path
     return paths
+
+
+def partition_target_features(path: Path, output_dir: Path) -> dict[str, Path]:
+    output_dir.mkdir(parents=True, exist_ok=True)
+    partitions: dict[str, Path] = {}
+    with gzip.open(path, "rt", newline="") as handle:
+        reader = csv.DictReader(handle, delimiter="\t")
+        fields = reader.fieldnames or []
+        if "gene_id" not in fields:
+            raise ValueError(f"Target features table missing gene_id column: {path}")
+        for gene_id, rows in groupby(reader, key=lambda row: row["gene_id"]):
+            if gene_id in partitions:
+                raise ValueError(f"Target features are not grouped by gene_id in {path}: {gene_id}")
+            partition = output_dir / f"{gene_id}.tsv.gz"
+            write_tsv_gz(partition, fields, rows)
+            partitions[gene_id] = partition
+    return partitions
 
 
 def iter_ortholog_groups(
@@ -169,6 +187,7 @@ def prepare_gene_task(
     taxonomy: dict[str, dict[str, str]],
     target_path: Path | None,
     ortholog_path: Path | None,
+    target_features_path: Path | None,
 ) -> dict[str, object]:
     ortholog_meta_by_id = {row["ortholog_gene_id"]: row for row in source_orthologs}
     task_row = {
@@ -190,9 +209,13 @@ def prepare_gene_task(
     if not ortholog_meta_by_id:
         task_row.update({"status": "no_ortholog_metadata", "message": "No ortholog metadata rows for gene"})
         return task_row
+    if target_features_path is None:
+        task_row.update({"status": "missing_target_features", "message": "No target features for gene"})
+        return task_row
 
     task_dir = tasks_dir / f"task_{gene_id}"
     task_dir.mkdir(parents=True, exist_ok=True)
+    target_features_path.replace(task_dir / "target_features.tsv.gz")
     target_id = f"target_{gene_id}"
     ortholog_meta_rows = [
         ortholog_metadata_row(gene_id, source_meta, taxonomy)
@@ -227,6 +250,7 @@ def prepare_gene_task(
         "target": target_metadata(gene_id, gene, target_id),
         "ortholog_count": len(ortholog_meta_rows),
         "ortholog_metadata": "orthologs.metadata.tsv",
+        "target_features": "target_features.tsv.gz",
     }
     (task_dir / "task.json").write_text(json.dumps(manifest, indent=2) + "\n")
     task_row.update(
@@ -251,6 +275,7 @@ def main() -> None:
     taxonomy = load_taxonomy(args.taxonomy_presets)
     target_fastas = fasta_paths_by_gene(args.sequences_dir / "targets")
     ortholog_fastas = fasta_paths_by_gene(args.sequences_dir / "orthologs")
+    target_features = partition_target_features(args.target_features, args.outdir / "target_feature_parts")
 
     task_rows: list[dict[str, object]] = []
     processed_gene_ids: set[str] = set()
@@ -266,6 +291,7 @@ def main() -> None:
                 taxonomy,
                 target_fastas.get(gene_id),
                 ortholog_fastas.get(gene_id),
+                target_features.get(gene_id),
             )
         )
         processed_gene_ids.add(gene_id)
@@ -280,6 +306,7 @@ def main() -> None:
                 taxonomy,
                 target_fastas.get(gene_id),
                 ortholog_fastas.get(gene_id),
+                target_features.get(gene_id),
             )
         )
 

@@ -559,6 +559,7 @@ def main() -> None:
         "target_sequence_files": target_files,
         "ortholog_sequence_files": ortholog_files,
         "target_feature_count": target_feature_count,
+        "target_features_grouped_by_gene_id": True,
         "target_assembly_accession": args.target_assembly_accession,
         "target_assembly_name": args.target_assembly_name,
         "target_tax_id": args.target_tax_id,
