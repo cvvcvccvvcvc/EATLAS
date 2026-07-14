@@ -719,7 +719,14 @@ def candidate_rows(records: list[FastaMeta], target_tax_id: str) -> Iterable[dic
 
 
 def selected_ortholog_rows(records: list[FastaMeta], checksums: dict[int, str]) -> Iterable[dict[str, object]]:
-    selected = [record for record in records if record.selection_role == "ortholog" and record.selected]
+    selected = sorted(
+        (record for record in records if record.selection_role == "ortholog" and record.selected),
+        key=lambda record: (
+            (0, int(record.query_gene_id))
+            if record.query_gene_id.isdigit()
+            else (1, record.query_gene_id)
+        ),
+    )
     for record in selected:
         yield {
             "query_gene_id": record.query_gene_id,

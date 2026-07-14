@@ -99,6 +99,11 @@ Optional operational parameters:
 | `sequences/targets/<gene_id>.fa.gz` | Target human genomic sequence. |
 | `sequences/orthologs/<gene_id>.fa.gz` | Selected ortholog genomic sequences. |
 
+`orthologs.selected.tsv.gz` is grouped by `query_gene_id`. This ordering is part
+of the Stage 1 contract: Stage 2 can prepare one gene at a time without loading
+all ortholog metadata into memory. `manifest.json` records this guarantee as
+`orthologs_selected_grouped_by_query_gene_id=true`.
+
 ## Strand Convention
 
 Target FASTA is written in plus genomic orientation. For genes annotated on the

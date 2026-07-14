@@ -223,6 +223,13 @@ files. Sequence-based strategies receive the needed per-gene FASTA files as
 explicit Nextflow inputs and materialize uncompressed aligner input FASTA files
 inside their scratch workspace.
 
+Task preparation receives the Stage 1 sequence directory as one staged input,
+not one command-line argument per FASTA. For current Stage 1 outputs it streams
+the `query_gene_id`-grouped ortholog table and keeps only one gene's metadata in
+memory. Older ungrouped fetch outputs remain supported through a compatibility
+path that loads that legacy table in memory; regenerate large legacy fetch
+datasets before cluster-scale alignment.
+
 Durable output is limited to compressed normalized TSV files so large runs do
 not duplicate sequence data and native aligner output in `results/`.
 

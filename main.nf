@@ -158,6 +158,7 @@ workflow FETCH_STAGE {
 
 workflow ALIGNMENT_STAGE {
     take:
+    fetch_manifest
     genes
     target_features
     orthologs_selected
@@ -181,7 +182,8 @@ workflow ALIGNMENT_STAGE {
     BUILD_ALIGNMENT_TASKS(
         genes,
         orthologs_selected,
-        sequences.collect(),
+        fetch_manifest,
+        sequences,
         FETCH_TAXONOMY_PRESETS.out.taxonomy_presets,
         prepare_script
     )
@@ -289,6 +291,7 @@ workflow ALIGNMENT_STAGE_FROM_DIR {
     orthologs_selected = Channel.value(file("${fetch_dir}/orthologs.selected.tsv.gz"))
     sequences = Channel.value(file("${fetch_dir}/sequences"))
     ALIGNMENT_STAGE(
+        Channel.value(file("${fetch_dir}/manifest.json")),
         genes,
         target_features,
         orthologs_selected,
@@ -327,6 +330,7 @@ workflow {
         log.info "Using ClinVar VCF: ${clinvar_inputs.path}"
         FETCH_STAGE(file(params.ids_file))
         ALIGNMENT_STAGE(
+            FETCH_STAGE.out.manifest,
             FETCH_STAGE.out.genes,
             FETCH_STAGE.out.target_features,
             FETCH_STAGE.out.orthologs_selected,

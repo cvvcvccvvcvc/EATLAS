@@ -4,7 +4,7 @@ process BUILD_FETCH_DATASET {
     input:
     path ids_tsv
     path chunks_tsv
-    path chunk_dirs
+    path chunk_dirs, stageAs: 'fetch_chunks/*'
     path target_annotation_gff3
     path build_fetch_dataset_script
 
@@ -21,7 +21,6 @@ process BUILD_FETCH_DATASET {
     path "sequences", optional: true, emit: sequences
 
     script:
-    def chunkArgs = chunk_dirs.collect { "--chunk-dir \"${it}\"" }.join(' ')
     """
     python3 "${build_fetch_dataset_script}" \\
         --ids-tsv "${ids_tsv}" \\
@@ -31,6 +30,6 @@ process BUILD_FETCH_DATASET {
         --target-assembly-name "${params.target_assembly_name}" \\
         --target-tax-id "${params.target_tax_id}" \\
         --target-annotation-gff3 "${target_annotation_gff3}" \\
-        ${chunkArgs}
+        --chunk-root fetch_chunks
     """
 }

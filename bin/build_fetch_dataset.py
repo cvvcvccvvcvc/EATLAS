@@ -26,8 +26,25 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--target-assembly-name", required=True)
     parser.add_argument("--target-tax-id", required=True)
     parser.add_argument("--target-annotation-gff3", required=True, type=Path)
-    parser.add_argument("--chunk-dir", action="append", required=True, type=Path)
+    parser.add_argument("--chunk-dir", action="append", default=[], type=Path)
+    parser.add_argument(
+        "--chunk-root",
+        type=Path,
+        help="Directory containing staged per-chunk result directories.",
+    )
     return parser.parse_args()
+
+
+def resolve_chunk_dirs(explicit: list[Path], root: Path | None) -> list[Path]:
+    chunk_dirs = list(explicit)
+    if root:
+        if not root.is_dir():
+            raise NotADirectoryError(f"Chunk root is not a directory: {root}")
+        chunk_dirs.extend(path for path in root.iterdir() if path.is_dir())
+    resolved = sorted(set(chunk_dirs), key=lambda path: path.name)
+    if not resolved:
+        raise ValueError("Provide at least one --chunk-dir or a non-empty --chunk-root")
+    return resolved
 
 
 TARGET_FEATURE_FIELDS = [
@@ -484,6 +501,7 @@ def chunk_metric_rows(chunk_manifests: list[dict]) -> list[dict[str, object]]:
 
 def main() -> None:
     args = parse_args()
+    chunk_dirs = resolve_chunk_dirs(args.chunk_dir, args.chunk_root)
     outdir = args.outdir
     outdir.mkdir(parents=True, exist_ok=True)
 
@@ -491,15 +509,15 @@ def main() -> None:
     copy_or_keep(args.chunks_tsv, outdir / "chunks.tsv")
 
     table_inputs = {
-        "genes.tsv.gz": [chunk / "genes.tsv.gz" for chunk in args.chunk_dir],
-        "orthologs.selected.tsv.gz": [chunk / "orthologs.selected.tsv.gz" for chunk in args.chunk_dir],
-        "orthologs.candidates.tsv.gz": [chunk / "orthologs.candidates.tsv.gz" for chunk in args.chunk_dir],
-        "failures.tsv.gz": [chunk / "failures.tsv.gz" for chunk in args.chunk_dir],
+        "genes.tsv.gz": [chunk / "genes.tsv.gz" for chunk in chunk_dirs],
+        "orthologs.selected.tsv.gz": [chunk / "orthologs.selected.tsv.gz" for chunk in chunk_dirs],
+        "orthologs.candidates.tsv.gz": [chunk / "orthologs.candidates.tsv.gz" for chunk in chunk_dirs],
+        "failures.tsv.gz": [chunk / "failures.tsv.gz" for chunk in chunk_dirs],
     }
     table_counts = {
         name: merge_tsv_gz(paths, outdir / name) for name, paths in table_inputs.items()
     }
-    target_files, ortholog_files = copy_sequences(args.chunk_dir, outdir)
+    target_files, ortholog_files = copy_sequences(chunk_dirs, outdir)
     gff3_path = args.target_annotation_gff3.expanduser()
     if not gff3_path.exists():
         raise FileNotFoundError(f"Target annotation GFF3 does not exist: {gff3_path}")
@@ -516,7 +534,7 @@ def main() -> None:
     )
 
     input_total, input_unique = read_input_counts(args.ids_tsv)
-    chunk_manifests = load_chunk_manifests(args.chunk_dir)
+    chunk_manifests = load_chunk_manifests(chunk_dirs)
     chunk_metric_count = write_tsv_gz(
         outdir / "chunk_metrics.tsv.gz",
         CHUNK_METRIC_FIELDS,
@@ -531,10 +549,11 @@ def main() -> None:
         "stage": "fetch",
         "input_record_count": input_total,
         "unique_gene_count": input_unique,
-        "chunk_count": len(args.chunk_dir),
+        "chunk_count": len(chunk_dirs),
         "chunk_metric_count": chunk_metric_count,
         "target_gene_count": table_counts["genes.tsv.gz"],
         "selected_ortholog_count": table_counts["orthologs.selected.tsv.gz"],
+        "orthologs_selected_grouped_by_query_gene_id": True,
         "candidate_record_count": table_counts["orthologs.candidates.tsv.gz"],
         "failure_count": table_counts["failures.tsv.gz"],
         "target_sequence_files": target_files,
