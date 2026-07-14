@@ -20,6 +20,7 @@ import plotly.graph_objects as go
 from analytics.core.clinvar_validation import build_validation
 from analytics.core.conservation import DEFAULT_TRACK_NAMES, build_conservation_annotations
 from analytics.core.stratified_enrichment import compute_conservation_stratified_enrichment
+from analytics.core.variant_summary import StrategyOverlap, VariantSummary, build_variant_summary
 
 
 warnings.filterwarnings("ignore", r"All-NaN (slice|axis) encountered")
@@ -88,41 +89,6 @@ STRATEGY_LABELS = {
     "nucmer": "nucmer",
     "precomputed_ensembl_92_mammals_epo_extended": "Ensembl EPO",
 }
-
-VARIANT_USECOLS = [
-    "variant_key",
-    "gene_id",
-    "event_type",
-    "ref",
-    "alt",
-    "lookup_ref",
-    "lookup_alt",
-    "strategies",
-    "support_row_count",
-    "support_ortholog_count",
-    "support_strategy_count",
-    "clinvar_id",
-    "clinvar_allele_id",
-    "clinvar_sig",
-    "clinvar_revstat",
-    "clinvar_review_stars",
-    "clinvar_review_stars_status",
-    "clinvar_sig_conflict",
-    "clinvar_scv_count",
-    "clinvar_hgvs",
-    "clinvar_geneinfo",
-    "clinvar_disease",
-    "clinvar_variant_type",
-    "clinvar_origin",
-    "clinvar_rs",
-    "gnomad_af",
-    "gnomad_af_source",
-    "gnomad_csq",
-    "gnomad_hgvsc",
-    "gnomad_hgvsp",
-]
-VARIANT_REQUIRED = {"variant_key", "gene_id", "event_type", "strategies"}
-
 
 @dataclass(frozen=True)
 class RunInputs:
@@ -233,16 +199,6 @@ def resolve_out_html(args: argparse.Namespace, run_dir: Path) -> Path:
     return report_dir / "strategy_compare.html"
 
 
-def open_text(path: Path):
-    return gzip.open(path, "rt", newline="") if str(path).endswith(".gz") else path.open(newline="")
-
-
-def tsv_header(path: Path) -> list[str]:
-    with open_text(path) as handle:
-        header = handle.readline().rstrip("\n")
-    return header.split("\t") if header else []
-
-
 def file_size_label(path: Path) -> str:
     if not path.exists():
         return ""
@@ -331,107 +287,6 @@ def read_json(path: Path) -> dict:
     return json.loads(path.read_text())
 
 
-def categorize_clinvar_series(values: pd.Series) -> pd.Series:
-    text = values.fillna("").astype(str).str.lower()
-    category = pd.Series("Other", index=values.index, dtype="object")
-    category[text.eq("")] = "Not Found"
-    conflicting = text.str.contains("conflicting", na=False)
-    uncertain = text.str.contains("uncertain|vus", regex=True, na=False)
-    benign = text.str.contains("benign", na=False)
-    pathogenic = text.str.contains("pathogenic", na=False)
-    category[conflicting] = "Other"
-    category[uncertain & ~conflicting] = "VUS"
-    category[pathogenic & ~benign & ~uncertain & ~conflicting] = "P/LP"
-    category[benign & ~pathogenic & ~uncertain & ~conflicting] = "B/LB"
-    return pd.Categorical(category, categories=CLINVAR_ORDER, ordered=True)
-
-
-def add_titv_kind(df: pd.DataFrame) -> None:
-    ref = df["lookup_ref"].where(df["lookup_ref"].astype(str) != "", df["ref"]).astype(str).str.upper()
-    alt = df["lookup_alt"].where(df["lookup_alt"].astype(str) != "", df["alt"]).astype(str).str.upper()
-    event_type = df["event_type"].astype(str)
-    valid = event_type.eq("snv") & ref.str.len().eq(1) & alt.str.len().eq(1)
-    transitions = ref.str.cat(alt, sep=">").isin(["A>G", "G>A", "C>T", "T>C"])
-    kind = pd.Series("", index=df.index, dtype="object")
-    kind[valid & transitions] = "ti"
-    kind[valid & ~transitions] = "tv"
-    df["titv_kind"] = pd.Categorical(kind, categories=["", "ti", "tv"], ordered=False)
-
-
-def read_variant_annotations(path: Path) -> pd.DataFrame:
-    print(f"Reading {path}...")
-    header = tsv_header(path)
-    missing = VARIANT_REQUIRED - set(header)
-    if missing:
-        raise ValueError(f"Variant annotations missing required columns: {', '.join(sorted(missing))}")
-
-    usecols = [column for column in VARIANT_USECOLS if column in header]
-    df = pd.read_csv(
-        path,
-        sep="\t",
-        compression="gzip",
-        usecols=usecols,
-        keep_default_na=False,
-        low_memory=False,
-    )
-    for column in VARIANT_USECOLS:
-        if column not in df.columns:
-            df[column] = ""
-
-    df["variant_id"] = df["variant_key"].astype(str)
-    if df["variant_id"].eq("").any():
-        missing_key = df["variant_id"].eq("")
-        fallback = (
-            df.loc[missing_key, "gene_id"].astype(str)
-            + ":"
-            + df.loc[missing_key, "event_type"].astype(str)
-            + ":"
-            + df.loc[missing_key, "ref"].astype(str)
-            + ">"
-            + df.loc[missing_key, "alt"].astype(str)
-        )
-        df.loc[missing_key, "variant_id"] = fallback
-
-    df["gnomad_af"] = pd.to_numeric(df["gnomad_af"], errors="coerce")
-    df["support_row_count"] = pd.to_numeric(df["support_row_count"], errors="coerce").fillna(0).astype("int64")
-    df["support_ortholog_count"] = (
-        pd.to_numeric(df["support_ortholog_count"], errors="coerce").fillna(0).astype("int64")
-    )
-    df["support_strategy_count"] = (
-        pd.to_numeric(df["support_strategy_count"], errors="coerce").fillna(0).astype("int64")
-    )
-    df["clinvar_scv_count"] = pd.to_numeric(df["clinvar_scv_count"], errors="coerce").fillna(0).astype("int64")
-    df["clinvar_found"] = df["clinvar_id"].astype(str) != ""
-    df["clinvar_classified"] = df["clinvar_sig"].astype(str) != ""
-    df["clinvar_category"] = categorize_clinvar_series(df["clinvar_sig"])
-    add_titv_kind(df)
-    return df
-
-
-def explode_strategy_variants(variants: pd.DataFrame) -> pd.DataFrame:
-    columns = [
-        "variant_id",
-        "gene_id",
-        "event_type",
-        "strategies",
-        "clinvar_found",
-        "clinvar_classified",
-        "clinvar_category",
-        "gnomad_af",
-        "titv_kind",
-    ]
-    long = variants[columns].copy()
-    long["strategy"] = long["strategies"].astype(str).str.split(",")
-    long = long.explode("strategy")
-    long["strategy"] = long["strategy"].fillna("").astype(str).str.strip()
-    long = long[long["strategy"] != ""].drop(columns=["strategies"])
-    long = long.drop_duplicates(["strategy", "variant_id"])
-    long = long.reset_index(drop=True)
-    for column in ["strategy", "event_type", "gene_id"]:
-        long[column] = long[column].astype("category")
-    return long
-
-
 def read_feature_coverage(path: Path) -> pd.DataFrame:
     if not path.exists():
         return pd.DataFrame()
@@ -517,98 +372,6 @@ def read_failures(path: Path) -> pd.DataFrame:
     return failures
 
 
-def calc_titv_ratio(ti: int, tv: int) -> float:
-    if tv == 0:
-        return np.nan if ti == 0 else float("inf")
-    return round(ti / tv, 3)
-
-
-def titv_by_strategy(df: pd.DataFrame) -> pd.Series:
-    counts = (
-        df[df["titv_kind"].isin(["ti", "tv"])]
-        .groupby(["strategy", "titv_kind"], observed=True)
-        .size()
-        .unstack(fill_value=0)
-    )
-    values = {}
-    for strategy in df["strategy"].cat.categories if hasattr(df["strategy"], "cat") else sorted(df["strategy"].unique()):
-        if strategy not in counts.index:
-            values[strategy] = np.nan
-            continue
-        ti = int(counts.loc[strategy].get("ti", 0))
-        tv = int(counts.loc[strategy].get("tv", 0))
-        values[strategy] = calc_titv_ratio(ti, tv)
-    return pd.Series(values, name="Ti/Tv")
-
-
-def summarize_strategy_variants(long: pd.DataFrame, count_label: str = "Unique Variants") -> pd.DataFrame:
-    if long.empty:
-        return pd.DataFrame(
-            columns=[
-                "Strategy",
-                count_label,
-                "Ti/Tv",
-                "Found in ClinVar",
-                "ClinVar found %",
-                "ClinVar classified",
-                "ClinVar classified %",
-                "gnomAD Found",
-                "gnomAD found %",
-                "P/LP",
-                "B/LB",
-                "VUS",
-                "Other ClinVar",
-                "Median gnomAD AF",
-            ]
-        )
-
-    work = long.copy()
-    work["gnomad_found"] = work["gnomad_af"].notna()
-    grouped = work.groupby("strategy", observed=True)
-    summary = grouped.agg(
-        **{
-            count_label: ("variant_id", "count"),
-            "Genes": ("gene_id", "nunique"),
-            "Found in ClinVar": ("clinvar_found", "sum"),
-            "ClinVar classified": ("clinvar_classified", "sum"),
-            "gnomAD Found": ("gnomad_found", "sum"),
-            "Median gnomAD AF": ("gnomad_af", "median"),
-        }
-    )
-    clinvar_counts = pd.crosstab(work["strategy"], work["clinvar_category"])
-    for category in CLINVAR_ORDER:
-        if category not in clinvar_counts.columns:
-            clinvar_counts[category] = 0
-    summary["Ti/Tv"] = titv_by_strategy(work)
-    summary["P/LP"] = clinvar_counts["P/LP"]
-    summary["B/LB"] = clinvar_counts["B/LB"]
-    summary["VUS"] = clinvar_counts["VUS"]
-    summary["Other ClinVar"] = clinvar_counts["Other"]
-    summary["ClinVar found %"] = summary["Found in ClinVar"] / summary[count_label].replace(0, np.nan)
-    summary["ClinVar classified %"] = summary["ClinVar classified"] / summary[count_label].replace(0, np.nan)
-    summary["gnomAD found %"] = summary["gnomAD Found"] / summary[count_label].replace(0, np.nan)
-    summary = summary.reset_index().rename(columns={"strategy": "Strategy"})
-    summary["Strategy"] = summary["Strategy"].map(strategy_label)
-    ordered = [
-        "Strategy",
-        count_label,
-        "Genes",
-        "Ti/Tv",
-        "Found in ClinVar",
-        "ClinVar found %",
-        "ClinVar classified",
-        "ClinVar classified %",
-        "gnomAD Found",
-        "gnomAD found %",
-        "P/LP",
-        "B/LB",
-        "VUS",
-        "Other ClinVar",
-        "Median gnomAD AF",
-    ]
-    return summary[ordered].sort_values("Strategy")
-
-
 def alignment_summary_for_report(summary: pd.DataFrame) -> pd.DataFrame:
     if summary.empty:
         return pd.DataFrame()
@@ -630,74 +393,18 @@ def merge_alignment_summary(strategy_stats: pd.DataFrame, summary: pd.DataFrame)
     return strategy_stats.merge(report_summary, on="Strategy", how="left")
 
 
-def unique_contribution_table(long: pd.DataFrame) -> pd.DataFrame:
-    if long.empty:
-        return summarize_strategy_variants(long, count_label="Unique To Strategy")
-    all_strategies = pd.DataFrame({"Strategy": sorted(long["strategy"].astype(str).unique())})
-    all_strategies["Strategy"] = all_strategies["Strategy"].map(strategy_label)
-    strategy_counts = long.groupby("variant_id", sort=False)["strategy"].transform("nunique")
-    unique_long = long[strategy_counts == 1]
-    summary = summarize_strategy_variants(unique_long, count_label="Unique To Strategy")
-    merged = all_strategies.merge(summary, on="Strategy", how="left")
-    for column in merged.columns:
-        if column != "Strategy":
-            merged[column] = merged[column].fillna(0)
-    return merged
-
-
-def event_type_counts(long: pd.DataFrame) -> pd.DataFrame:
-    if long.empty:
-        return pd.DataFrame(columns=["strategy", "event_type", "Variant_Count"])
-    counts = (
-        long.groupby(["strategy", "event_type"], observed=True)
-        .size()
-        .reset_index(name="Variant_Count")
-        .sort_values(["strategy", "event_type"])
-    )
-    counts["strategy"] = counts["strategy"].astype(str).map(strategy_label)
-    return counts
-
-
-def strategy_overlap_figure(long: pd.DataFrame):
-    strategy_values = long["strategy"].astype(str)
-    variant_values = long["variant_id"].astype(str)
-    strategies = (
-        long.groupby("strategy", observed=True)["variant_id"]
-        .nunique()
-        .sort_values(ascending=False)
-        .index.astype(str)
-        .tolist()
-    )
-    if len(strategies) < 2:
+def strategy_overlap_figure(overlap: StrategyOverlap | None):
+    if overlap is None:
         return None
-
-    variant_sets = {
-        strategy: set(variant_values[strategy_values == strategy])
-        for strategy in strategies
-    }
-    labels = [strategy_label(strategy) for strategy in strategies]
-    size = len(strategies)
-    intersections = np.zeros((size, size), dtype=np.int64)
-    unions = np.zeros((size, size), dtype=np.int64)
-    jaccard = np.zeros((size, size), dtype=float)
-
-    for row_index, row_strategy in enumerate(strategies):
-        row_set = variant_sets[row_strategy]
-        for col_index, col_strategy in enumerate(strategies):
-            col_set = variant_sets[col_strategy]
-            shared = len(row_set & col_set)
-            union = len(row_set | col_set)
-            intersections[row_index, col_index] = shared
-            unions[row_index, col_index] = union
-            jaccard[row_index, col_index] = shared / union if union else 0.0
+    labels = [strategy_label(strategy) for strategy in overlap.strategies]
 
     fig = go.Figure(
         data=go.Heatmap(
-            z=jaccard,
+            z=overlap.jaccard,
             x=labels,
             y=labels,
-            text=np.vectorize(lambda value: f"{value:.0%}")(jaccard),
-            customdata=np.dstack([intersections, unions]),
+            text=np.vectorize(lambda value: f"{value:.0%}")(overlap.jaccard),
+            customdata=np.dstack([overlap.intersections, overlap.unions]),
             colorscale="Blues",
             zmin=0,
             zmax=1,
@@ -722,90 +429,11 @@ def strategy_overlap_figure(long: pd.DataFrame):
     return fig
 
 
-def clinvar_counts(long: pd.DataFrame) -> pd.DataFrame:
-    if long.empty:
-        return pd.DataFrame(columns=["strategy", "clinvar_category", "Variant_Count"])
-    counts = (
-        long.groupby(["strategy", "clinvar_category"], observed=False)
-        .size()
-        .reset_index(name="Variant_Count")
-    )
-    counts["clinvar_category"] = pd.Categorical(
-        counts["clinvar_category"], categories=CLINVAR_ORDER, ordered=True
-    )
-    counts["strategy"] = counts["strategy"].astype(str).map(strategy_label)
-    return counts.sort_values(["strategy", "clinvar_category"])
-
-
-def gnomad_found_counts(long: pd.DataFrame) -> pd.DataFrame:
-    if long.empty:
-        return pd.DataFrame(columns=["strategy", "gnomad_found", "Variant_Count"])
-    counts = (
-        long.assign(gnomad_found=long["gnomad_af"].notna())
-        .groupby(["strategy", "gnomad_found"], observed=True)
-        .size()
-        .reset_index(name="Variant_Count")
-    )
-    counts["gnomad_found"] = counts["gnomad_found"].map({True: "Found", False: "Not Found"})
-    counts["strategy"] = counts["strategy"].astype(str).map(strategy_label)
-    return counts
-
-
-def binned_gnomad_af(long: pd.DataFrame, bin_count: int = 10) -> pd.DataFrame:
-    gnomad = long[long["gnomad_af"].notna() & (long["gnomad_af"] > 0)][["strategy", "gnomad_af"]].copy()
-    if gnomad.empty:
-        return pd.DataFrame(columns=["strategy", "bin_mid", "Variant_Count", "Density"])
-
-    gnomad["log10_gnomad_af"] = np.log10(gnomad["gnomad_af"])
-    min_value = float(gnomad["log10_gnomad_af"].min())
-    max_value = float(gnomad["log10_gnomad_af"].max())
-    if min_value == max_value:
-        min_value -= 0.5
-        max_value += 0.5
-    bins = np.linspace(min_value, max_value, bin_count + 1)
-    gnomad["bin"] = pd.cut(gnomad["log10_gnomad_af"], bins=bins, include_lowest=True)
-    counts = gnomad.groupby(["strategy", "bin"], observed=True).size().reset_index(name="Variant_Count")
-    counts["bin_mid"] = counts["bin"].apply(lambda value: value.mid).astype(float)
-    totals = counts.groupby("strategy", observed=True)["Variant_Count"].transform("sum")
-    counts["Density"] = counts["Variant_Count"] / totals.replace(0, np.nan)
-    counts["strategy"] = counts["strategy"].astype(str).map(strategy_label)
-    return counts[["strategy", "bin_mid", "Variant_Count", "Density"]]
-
-
-def explode_variant_subset(variants: pd.DataFrame, columns: list[str]) -> pd.DataFrame:
-    if variants.empty:
-        return pd.DataFrame(columns=["variant_id", "strategy", "Strategy", *columns])
-    usecols = ["variant_id", "strategies", *columns]
-    work = variants[[column for column in usecols if column in variants.columns]].copy()
-    for column in columns:
-        if column not in work.columns:
-            work[column] = ""
-    work["strategy"] = work["strategies"].astype(str).str.split(",")
-    work = work.explode("strategy")
-    work["strategy"] = work["strategy"].fillna("").astype(str).str.strip()
-    work = work[work["strategy"] != ""].drop(columns=["strategies"])
-    work = work.drop_duplicates(["strategy", "variant_id"])
-    work["Strategy"] = work["strategy"].map(strategy_label)
-    return work.reset_index(drop=True)
-
-
 def review_star_category(row: pd.Series) -> str:
     stars = str(row.get("clinvar_review_stars", "") or "").strip()
     if stars in {"0", "1", "2", "3", "4"}:
         return stars
     return "Unmapped"
-
-
-def pathogenic_star_counts(variants: pd.DataFrame) -> pd.DataFrame:
-    pathogenic = variants[variants["clinvar_category"].astype(str) == "P/LP"].copy()
-    rows = explode_variant_subset(pathogenic, ["clinvar_review_stars", "clinvar_review_stars_status"])
-    if rows.empty:
-        return pd.DataFrame(columns=["Strategy", "Review stars", "Variant_Count"])
-    rows["Review stars"] = rows.apply(review_star_category, axis=1)
-    counts = rows.groupby(["Strategy", "Review stars"], observed=True).size().reset_index(name="Variant_Count")
-    present = [star for star in REVIEW_STAR_ORDER if star in set(counts["Review stars"])]
-    counts["Review stars"] = pd.Categorical(counts["Review stars"], categories=present, ordered=True)
-    return counts.sort_values(["Strategy", "Review stars"])
 
 
 def consequence_group(value: str) -> str:
@@ -1017,16 +645,16 @@ def feature_coverage_formula_table() -> pd.DataFrame:
     )
 
 
-def consequence_counts_by_strategy(variants: pd.DataFrame, pathogenic_only: bool = False) -> pd.DataFrame:
-    work = variants[variants["gnomad_af"].notna()].copy()
-    if pathogenic_only:
-        work = work[work["clinvar_category"].astype(str) == "P/LP"].copy()
-    if work.empty:
+def group_consequence_counts(raw_counts: pd.DataFrame) -> pd.DataFrame:
+    if raw_counts.empty:
         return pd.DataFrame(columns=["Strategy", "Consequence group", "Variant_Count", "Fraction"])
-
-    rows = explode_variant_subset(work, ["gnomad_csq"])
-    rows["Consequence group"] = rows["gnomad_csq"].map(consequence_group)
-    counts = rows.groupby(["Strategy", "Consequence group"], observed=True).size().reset_index(name="Variant_Count")
+    counts = raw_counts.rename(columns={"strategy": "Strategy"}).copy()
+    counts["Consequence group"] = counts["value"].map(consequence_group)
+    counts = (
+        counts.groupby(["Strategy", "Consequence group"], observed=True)["Variant_Count"]
+        .sum()
+        .reset_index()
+    )
     totals = counts.groupby("Strategy", observed=True)["Variant_Count"].transform("sum")
     counts["Fraction"] = counts["Variant_Count"] / totals.replace(0, np.nan)
     counts["Consequence group"] = pd.Categorical(
@@ -1172,24 +800,23 @@ def metric_cards(items: list[tuple[str, object]]) -> str:
 
 
 def build_overview(
-    variants: pd.DataFrame,
-    long: pd.DataFrame,
+    variant_summary: VariantSummary,
     cov: pd.DataFrame,
     strategy_stats: pd.DataFrame,
     annotation_manifest: dict,
     alignment_manifest: dict,
 ) -> list[str]:
-    unique_variant_count = variants["variant_id"].nunique()
+    unique_variant_count = variant_summary.unique_variant_count
     event_row_count = annotation_manifest.get("event_row_count") or alignment_manifest.get("raw_alignment_event_count") or ""
-    clinvar_found = int(variants["clinvar_found"].sum())
-    clinvar_classified = int(variants["clinvar_classified"].sum())
-    gnomad_found = int(variants["gnomad_af"].notna().sum())
+    clinvar_found = variant_summary.clinvar_found
+    clinvar_classified = variant_summary.clinvar_classified
+    gnomad_found = variant_summary.gnomad_found
     annotation_warnings = int(annotation_manifest.get("failure_count", 0) or 0)
     cards = [
         ("Raw support events", format_int(event_row_count) if event_row_count != "" else "n/a"),
         ("Unique candidate variants", format_int(unique_variant_count)),
-        ("Strategies", format_int(long["strategy"].nunique())),
-        ("Genes", format_int(variants["gene_id"].nunique())),
+        ("Strategies", format_int(len(variant_summary.strategies))),
+        ("Genes", format_int(variant_summary.gene_count)),
         ("Found in ClinVar", f"{format_int(clinvar_found)} ({format_percent(clinvar_found / unique_variant_count)})"),
         (
             "ClinVar with CLNSIG",
@@ -1205,7 +832,7 @@ def build_overview(
 
 
 def build_variant_sections(
-    long: pd.DataFrame,
+    variant_summary: VariantSummary,
     strategy_stats: pd.DataFrame,
     include_plotly: bool,
 ) -> list[str]:
@@ -1232,7 +859,7 @@ def build_variant_sections(
     compact_figure(fig_titv)
     sections.append(fig_html(fig_titv))
 
-    unique_contrib = unique_contribution_table(long)
+    unique_contrib = variant_summary.unique_contribution
     unique_contrib_plot = sort_by_metric(unique_contrib[["Strategy", "Unique To Strategy"]], "Unique To Strategy")
     fig_unique = px.bar(
         unique_contrib_plot,
@@ -1244,12 +871,12 @@ def build_variant_sections(
     compact_figure(fig_unique)
     sections.append(fig_html(fig_unique))
 
-    fig_overlap = strategy_overlap_figure(long)
+    fig_overlap = strategy_overlap_figure(variant_summary.overlap)
     if fig_overlap is not None:
         sections.append("<h3>Strategy Overlap</h3>")
         sections.append(fig_html(fig_overlap))
 
-    counts = event_type_counts(long)
+    counts = variant_summary.event_counts.copy()
     totals = counts.groupby("strategy", observed=True)["Variant_Count"].transform("sum")
     counts["Fraction"] = counts["Variant_Count"] / totals.replace(0, np.nan)
     snv_order = (
@@ -1276,8 +903,7 @@ def build_variant_sections(
 
 
 def build_clinvar_gnomad_sections(
-    variants: pd.DataFrame,
-    long: pd.DataFrame,
+    variant_summary: VariantSummary,
     strategy_stats: pd.DataFrame,
     include_plotly: bool,
 ) -> list[str]:
@@ -1285,9 +911,9 @@ def build_clinvar_gnomad_sections(
     sections.append(
         metric_cards(
             [
-                ("Found in ClinVar", format_int(variants["clinvar_found"].sum())),
-                ("ClinVar with CLNSIG", format_int(variants["clinvar_classified"].sum())),
-                ("Found in gnomAD", format_int(variants["gnomad_af"].notna().sum())),
+                ("Found in ClinVar", format_int(variant_summary.clinvar_found)),
+                ("ClinVar with CLNSIG", format_int(variant_summary.clinvar_classified)),
+                ("Found in gnomAD", format_int(variant_summary.gnomad_found)),
             ]
         )
     )
@@ -1316,7 +942,7 @@ def build_clinvar_gnomad_sections(
     compact_figure(fig_gnomad_rate)
     sections.append(fig_html(fig_gnomad_rate))
 
-    clin_counts = clinvar_counts(long)
+    clin_counts = variant_summary.clinvar_counts.copy()
     clin_plot = clin_counts[clin_counts["clinvar_category"].astype(str) != "Not Found"].copy()
     totals = clin_plot.groupby("strategy", observed=True)["Variant_Count"].transform("sum")
     clin_plot["Fraction"] = clin_plot["Variant_Count"] / totals.replace(0, np.nan)
@@ -1342,7 +968,7 @@ def build_clinvar_gnomad_sections(
     compact_figure(fig_clin, height=360)
     sections.append(fig_html(fig_clin))
 
-    gnomad_bins = binned_gnomad_af(long)
+    gnomad_bins = variant_summary.gnomad_bins
     if not gnomad_bins.empty:
         fig_af = px.bar(
             gnomad_bins,
@@ -1362,7 +988,7 @@ def build_clinvar_gnomad_sections(
     else:
         sections.append("<p>No non-zero gnomAD AF values were found.</p>")
 
-    star_counts = pathogenic_star_counts(variants)
+    star_counts = variant_summary.pathogenic_star_counts.copy()
     if not star_counts.empty:
         present_stars = [star for star in REVIEW_STAR_ORDER if star in set(star_counts["Review stars"].astype(str))]
         totals = star_counts.groupby("Strategy", observed=True)["Variant_Count"].sum()
@@ -1392,7 +1018,7 @@ def build_clinvar_gnomad_sections(
         sections.append("<h3>Pathogenic ClinVar Evidence</h3>")
         sections.append("<p>No P/LP ClinVar variants were found in the candidate set.</p>")
 
-    consequence_counts = consequence_counts_by_strategy(variants)
+    consequence_counts = group_consequence_counts(variant_summary.consequence_counts)
     if not consequence_counts.empty:
         order = consequence_strategy_order(consequence_counts)
         fig_conseq = px.bar(
@@ -1413,7 +1039,7 @@ def build_clinvar_gnomad_sections(
     else:
         sections.append("<p>No gnomAD consequences were found.</p>")
 
-    pathogenic_consequence_counts = consequence_counts_by_strategy(variants, pathogenic_only=True)
+    pathogenic_consequence_counts = group_consequence_counts(variant_summary.pathogenic_consequence_counts)
     if not pathogenic_consequence_counts.empty:
         pathogenic_order = (
             pathogenic_consequence_counts.groupby("Strategy", observed=True)["Variant_Count"]
@@ -1435,7 +1061,7 @@ def build_clinvar_gnomad_sections(
         compact_figure(fig_path_conseq, height=320)
         sections.append(fig_html(fig_path_conseq))
 
-    pathogenic_table = pathogenic_variant_table(variants)
+    pathogenic_table = pathogenic_variant_table(variant_summary.pathogenic_rows)
     if not pathogenic_table.empty:
         sections.append("<h3>Pathogenic ClinVar Variants Found</h3>")
         sections.append(table_html(pathogenic_table, classes="table table-sm table-striped", max_rows=100))
@@ -1915,8 +1541,7 @@ def conservation_bin_detail_table(bins: pd.DataFrame) -> pd.DataFrame:
 def build_methods_sections(
     inputs: RunInputs,
     out_html: Path,
-    variants: pd.DataFrame,
-    long: pd.DataFrame,
+    variant_summary: VariantSummary,
     cov: pd.DataFrame,
     failures: pd.DataFrame,
     annotation_manifest: dict,
@@ -1964,8 +1589,9 @@ def build_methods_sections(
         table_html(
             pd.DataFrame(
                 [
-                    {"Metric": "Unique candidate variants loaded", "Value": len(variants)},
-                    {"Metric": "Strategy-supported variant records loaded", "Value": len(long)},
+                    {"Metric": "Variant-context rows read", "Value": variant_summary.input_row_count},
+                    {"Metric": "Unique candidate variants", "Value": variant_summary.unique_variant_count},
+                    {"Metric": "Strategy-supported variant records", "Value": variant_summary.strategy_record_count},
                     {"Metric": "Feature coverage rows loaded", "Value": len(cov)},
                     {"Metric": "Annotation failure rows", "Value": len(failures)},
                     {"Metric": "Alignment event mode", "Value": alignment_manifest.get("alignment_event_mode", "")},
@@ -2184,8 +1810,12 @@ def main() -> None:
     inputs = resolve_run_inputs(args.run_dir)
     out_html = resolve_out_html(args, inputs.run_dir)
 
-    variants = read_variant_annotations(inputs.variant_annotations_tsv)
-    long = explode_strategy_variants(variants)
+    print(f"Streaming {inputs.variant_annotations_tsv}...")
+    variant_summary = build_variant_summary(
+        inputs.variant_annotations_tsv,
+        inputs.run_dir / "analytics",
+        strategy_label,
+    )
     cov = read_feature_coverage(inputs.feature_coverage_tsv)
     alignment_summary = read_strategy_summary(
         inputs.strategy_summary_tsv,
@@ -2196,7 +1826,7 @@ def main() -> None:
     alignment_manifest = read_json(inputs.alignment_manifest_json)
 
     print("Computing strategy metrics...")
-    strategy_stats_full = merge_alignment_summary(summarize_strategy_variants(long), alignment_summary)
+    strategy_stats_full = merge_alignment_summary(variant_summary.strategy_stats, alignment_summary)
     summary_columns = [
         "Strategy",
         "Unique Variants",
@@ -2209,7 +1839,7 @@ def main() -> None:
         "Raw support events",
     ]
     strategy_stats = strategy_stats_full[[column for column in summary_columns if column in strategy_stats_full.columns]]
-    strategies = sorted(long["strategy"].astype(str).unique())
+    strategies = variant_summary.strategies
 
     print("Computing ClinVar enrichment...")
     validation = build_validation(
@@ -2231,12 +1861,12 @@ def main() -> None:
     )
 
     sections = [
-        ("overview", "Overview", build_overview(variants, long, cov, strategy_stats, annotation_manifest, alignment_manifest)),
-        ("variants", "Variant Profile", build_variant_sections(long, strategy_stats, include_plotly=True)),
+        ("overview", "Overview", build_overview(variant_summary, cov, strategy_stats, annotation_manifest, alignment_manifest)),
+        ("variants", "Variant Profile", build_variant_sections(variant_summary, strategy_stats, include_plotly=True)),
         (
             "external-evidence",
             "External Evidence",
-            build_clinvar_gnomad_sections(variants, long, strategy_stats_full, include_plotly=True),
+            build_clinvar_gnomad_sections(variant_summary, strategy_stats_full, include_plotly=True),
         ),
         ("coverage", "Feature Coverage", build_feature_sections(cov, include_plotly=True)),
         ("clinvar-enrichment", "ClinVar Enrichment", build_validation_sections(validation, include_plotly=True)),
@@ -2251,8 +1881,7 @@ def main() -> None:
             build_methods_sections(
                 inputs,
                 out_html,
-                variants,
-                long,
+                variant_summary,
                 cov,
                 failures,
                 annotation_manifest,

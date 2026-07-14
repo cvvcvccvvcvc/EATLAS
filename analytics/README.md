@@ -26,6 +26,11 @@ When an analysis needs durable intermediate tables, write them under
 `<run-dir>/analytics/`. The source tree does not keep a default scratch/work
 directory.
 
+The report reads `annotation/variant_annotations.tsv.gz` in chunks. It uses a
+temporary SQLite file under `<run-dir>/analytics/` to deduplicate
+variant-strategy records without loading the full annotation table into memory;
+the file is removed when aggregation finishes or fails.
+
 The strategy report writes its ClinVar validation universe under:
 
 ```text
