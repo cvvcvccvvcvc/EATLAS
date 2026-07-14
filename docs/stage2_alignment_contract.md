@@ -244,6 +244,12 @@ The same preparation step partitions `target_features.tsv.gz` into one compact
 that gene-local feature file when computing coverage; the global feature table
 is not staged into every aligner job.
 
+Task preparation also assigns a stable `partition_id` after sorting target genes
+by chromosome and genomic interval. `--alignment_partition_size` controls the
+maximum number of target genes in each partition (default: 50). The identifier
+is carried in task metadata for bounded downstream merge and annotation; it does
+not change gene-level alignment behavior.
+
 Durable output is limited to compressed normalized TSV files so large runs do
 not duplicate sequence data and native aligner output in `results/`.
 

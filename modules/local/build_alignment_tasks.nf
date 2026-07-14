@@ -22,6 +22,7 @@ process BUILD_ALIGNMENT_TASKS {
         --fetch-manifest "${fetch_manifest}" \\
         --target-features "${target_features}" \\
         --taxonomy-presets "${taxonomy_presets}" \\
+        --partition-size "${params.alignment_partition_size}" \\
         --outdir . \\
         --sequences-dir sequences
     """

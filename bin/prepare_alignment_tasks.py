@@ -25,6 +25,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--taxonomy-presets", required=True, type=Path)
     parser.add_argument("--outdir", required=True, type=Path)
     parser.add_argument("--sequences-dir", required=True, type=Path)
+    parser.add_argument("--partition-size", required=True, type=int)
     return parser.parse_args()
 
 
@@ -144,6 +145,31 @@ def target_metadata(gene_id: str, gene: dict[str, str], target_id: str) -> dict[
     }
 
 
+def chromosome_sort_key(value: str) -> tuple[int, str]:
+    chromosome = str(value or "").removeprefix("chr")
+    if chromosome.isdigit():
+        return int(chromosome), chromosome
+    return {"X": 23, "Y": 24, "M": 25, "MT": 25}.get(chromosome, 10**6), chromosome
+
+
+def partition_ids(genes: dict[str, dict[str, str]], partition_size: int) -> dict[str, str]:
+    if partition_size <= 0:
+        raise ValueError("--partition-size must be a positive integer")
+
+    def genomic_key(gene_id: str) -> tuple[tuple[int, str], int, int, tuple[int, str]]:
+        gene = genes[gene_id]
+        begin = int(gene.get("begin") or 0)
+        end = int(gene.get("end") or 0)
+        gene_key = (0, gene_id.zfill(20)) if gene_id.isdigit() else (1, gene_id)
+        return chromosome_sort_key(gene.get("chromosome", "")), min(begin, end), max(begin, end), gene_key
+
+    ordered_gene_ids = sorted(genes, key=genomic_key)
+    return {
+        gene_id: f"partition_{index // partition_size + 1:06d}"
+        for index, gene_id in enumerate(ordered_gene_ids)
+    }
+
+
 def reconstructed_ortholog_header(row: dict[str, str]) -> str:
     taxname = row.get("taxname", "").replace(" ", "_")
     return (
@@ -188,10 +214,12 @@ def prepare_gene_task(
     target_path: Path | None,
     ortholog_path: Path | None,
     target_features_path: Path | None,
+    partition_id: str,
 ) -> dict[str, object]:
     ortholog_meta_by_id = {row["ortholog_gene_id"]: row for row in source_orthologs}
     task_row = {
         "gene_id": gene_id,
+        "partition_id": partition_id,
         "symbol": gene.get("symbol", ""),
         "target_fasta": str(target_path or ""),
         "ortholog_fasta": str(ortholog_path or ""),
@@ -244,6 +272,7 @@ def prepare_gene_task(
     write_tsv(task_dir / "orthologs.metadata.tsv", ortholog_fields, ortholog_meta_rows)
     manifest = {
         "gene_id": gene_id,
+        "partition_id": partition_id,
         "symbol": gene.get("symbol", ""),
         "target_id": target_id,
         "target_length": gene.get("sequence_length", ""),
@@ -270,6 +299,7 @@ def main() -> None:
     tasks_dir.mkdir(parents=True, exist_ok=True)
 
     genes = {row["gene_id"]: row for row in read_tsv_gz(args.genes_tsv)}
+    gene_partitions = partition_ids(genes, args.partition_size)
     fetch_manifest = json.loads(args.fetch_manifest.read_text())
     grouped_orthologs = fetch_manifest.get("orthologs_selected_grouped_by_query_gene_id") is True
     taxonomy = load_taxonomy(args.taxonomy_presets)
@@ -292,6 +322,7 @@ def main() -> None:
                 target_fastas.get(gene_id),
                 ortholog_fastas.get(gene_id),
                 target_features.get(gene_id),
+                gene_partitions[gene_id],
             )
         )
         processed_gene_ids.add(gene_id)
@@ -307,6 +338,7 @@ def main() -> None:
                 target_fastas.get(gene_id),
                 ortholog_fastas.get(gene_id),
                 target_features.get(gene_id),
+                gene_partitions[gene_id],
             )
         )
 
@@ -320,6 +352,7 @@ def main() -> None:
 
     task_fields = [
         "gene_id",
+        "partition_id",
         "symbol",
         "target_fasta",
         "ortholog_fasta",

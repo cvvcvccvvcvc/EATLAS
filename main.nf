@@ -191,19 +191,33 @@ workflow ALIGNMENT_STAGE {
         prepare_script
     )
 
-    task_dirs_by_gene = BUILD_ALIGNMENT_TASKS.out.task_dirs.flatten().map { dir ->
+    task_dirs_by_gene_unpartitioned = BUILD_ALIGNMENT_TASKS.out.task_dirs.flatten().map { dir ->
         gene_id = dir.baseName.replaceFirst(/^task_/, '')
         tuple(gene_id, dir)
     }
+    task_partitions = BUILD_ALIGNMENT_TASKS.out.alignment_tasks
+        .splitCsv(header: true, sep: '\t', decompress: true)
+        .filter { row -> row.status == 'ready' }
+        .map { row -> tuple(row.gene_id as String, row.partition_id as String) }
+    task_dirs_by_gene = task_dirs_by_gene_unpartitioned
+        .join(task_partitions)
+        .map { gene_id, dir, partition_id -> tuple(gene_id, partition_id, dir) }
     target_fastas_by_gene = sequences.flatMap { seq_dir -> fastaFilesByGene(seq_dir, 'targets') }
     ortholog_fastas_by_gene = sequences.flatMap { seq_dir -> fastaFilesByGene(seq_dir, 'orthologs') }
     alignment_inputs = task_dirs_by_gene
         .join(target_fastas_by_gene)
         .join(ortholog_fastas_by_gene)
-        .map { gene_id, task_dir, source_target_fasta, source_ortholog_fasta ->
-            tuple([id: "task_${gene_id}", gene_id: gene_id], task_dir, source_target_fasta, source_ortholog_fasta)
+        .map { gene_id, partition_id, task_dir, source_target_fasta, source_ortholog_fasta ->
+            tuple(
+                [id: "task_${gene_id}", gene_id: gene_id, partition_id: partition_id],
+                task_dir,
+                source_target_fasta,
+                source_ortholog_fasta
+            )
         }
-    task_dirs = task_dirs_by_gene.map { gene_id, dir -> tuple([id: "task_${gene_id}", gene_id: gene_id], dir) }
+    task_dirs = task_dirs_by_gene.map { gene_id, partition_id, dir ->
+        tuple([id: "task_${gene_id}", gene_id: gene_id, partition_id: partition_id], dir)
+    }
     alignment_result_dirs = Channel.empty()
 
     if (SELECTED_ALIGNMENT_STRATEGIES.contains('minimap2_asm10')) {
@@ -271,8 +285,12 @@ workflow ALIGNMENT_STAGE {
             .groupTuple()
         maf_gene_merge_inputs = task_dirs_by_gene
             .join(maf_fragments_by_gene)
-            .map { gene_id, task_dir, fragment_dirs ->
-                tuple([id: "task_${gene_id}", gene_id: gene_id], task_dir, fragment_dirs)
+            .map { gene_id, partition_id, task_dir, fragment_dirs ->
+                tuple(
+                    [id: "task_${gene_id}", gene_id: gene_id, partition_id: partition_id],
+                    task_dir,
+                    fragment_dirs
+                )
             }
         MERGE_ENSEMBL_COMPARA_MAF_GENE(maf_gene_merge_inputs, ensembl_compara_maf_gene_merge_script)
         alignment_result_dirs = alignment_result_dirs.mix(
