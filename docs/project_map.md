@@ -25,6 +25,11 @@ runs.
 - Local run profile: `-profile local`
 - Cluster run profile: `-profile slurm`
 
+Runtime environments:
+- `envs/controller.yml` - Nextflow, Java, and Micromamba for the login/controller host.
+- `envs/fetch.yml` - Stage 1 task dependencies.
+- `envs/alignment.yml` - alignment and annotation task dependencies.
+
 ## Core Modules
 
 - `bin/normalize_ids.py`

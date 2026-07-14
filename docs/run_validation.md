@@ -58,16 +58,51 @@ Use `.env.example` as the template for `ENTREZ_EMAIL` and `ENTREZ_API_KEY`.
 
 ## Cluster Run
 
-Use the same workflow and put `work/` on scratch storage:
+The `slurm` profile enables the declared `envs/*.yml` environments through
+Micromamba. Every Python process has an explicit environment; compute nodes do
+not depend on their system Python.
+
+For a new account, keep reusable environments and run data in the assigned
+scratch area. From the repository, create the controller environment once:
 
 ```bash
-nextflow run . \
-  -profile slurm,conda \
-  --ids_file /path/to/gene_ids.txt \
-  --outdir /scratch/$USER/gaph_v2/results/run_001 \
-  -work-dir /scratch/$USER/gaph_v2/work/run_001 \
-  -resume
+export GAPH_ROOT="/mnt/tank/scratch/$USER/gaph_v2"
+mkdir -p "$GAPH_ROOT"/{envs,work,conda,results}
+
+conda env create --prefix "$GAPH_ROOT/envs/controller" -f envs/controller.yml
+conda activate "$GAPH_ROOT/envs/controller"
+nextflow -version
+java -version
+micromamba --version
 ```
+
+Both Nextflow work and its Conda cache must be on storage shared by the Slurm
+controller and compute nodes. For the ITMO CT cluster, use the assigned scratch
+directory rather than the home quota:
+
+```bash
+export GAPH_ROOT="/mnt/tank/scratch/$USER/gaph_v2"
+export GAPH_WORK_DIR="$GAPH_ROOT/work"
+export NXF_CONDA_CACHEDIR="$GAPH_ROOT/conda"
+
+RUN="$GAPH_ROOT/results/run_001"
+nextflow run . \
+  -profile slurm,low_storage \
+  --ids_file /path/to/gene_ids.txt \
+  --outdir "$RUN"
+```
+
+`GAPH_WORK_DIR` supplies the default Nextflow work path. An explicit
+`-work-dir "$GAPH_ROOT/work/run_001"` is also valid and takes precedence.
+`NXF_CONDA_CACHEDIR` is intentionally outside the run directory so environments
+are built once and reused across runs. Do not place either path in node-local
+`/tmp`.
+
+On the ITMO CT cluster, submit Nextflow from `sphinx`; do not run calculations
+there directly. The documented `main` partition is the default, and the cluster
+instructions do not require a Slurm account or QOS for ordinary jobs, so the
+profile does not invent `account`, `queue`, or `clusterOptions` values. Add a QOS
+only when the administrators explicitly grant and request one.
 
 Conservative starting parameters:
 
@@ -86,7 +121,7 @@ In the `slurm` profile, `executor.queueSize` limits how many jobs Nextflow keeps
 submitted to Slurm at once. It does not affect local runs, task CPU count, or
 threads inside an aligner process.
 
-Use `-profile low_storage` only when preserving the published outputs matters
+Combine `slurm` with `low_storage` when preserving the published outputs matters
 more than preserving the execution cache. It disables process caching and cleans
 the work directory after a successful run, so do not expect `-resume` to reuse
 completed tasks from that run.

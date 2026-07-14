@@ -1,0 +1,8 @@
+name: gaph-v2-controller
+channels:
+  - conda-forge
+  - bioconda
+dependencies:
+  - nextflow=25.10.4
+  - openjdk=17
+  - micromamba
