@@ -30,7 +30,7 @@ results/run_001/
 
 `annotation/` contains:
 
-- annotated event tables
+- the compressed unique variant-context annotation table
 - annotation manifest and diagnostic failure table
 
 This layer should be kept.
