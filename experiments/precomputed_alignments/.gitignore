@@ -1,0 +1,12 @@
+data/
+outputs/
+__pycache__/
+*.maf
+*.maf.gz
+*.emf
+*.emf.gz
+*.hal
+*.json
+*.tsv
+*.tsv.gz
+*.html

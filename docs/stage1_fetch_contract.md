@@ -21,8 +21,24 @@ Required:
 Optional operational parameters:
 - `--outdir`: final output directory.
 - `--chunk_size`: accepted IDs per NCBI package request.
-- `--fetch_max_forks`: max concurrent NCBI fetch/parse tasks.
-- `--datasets_bin`: path/name for the NCBI Datasets CLI.
+- `--fetch_max_forks`: max concurrent NCBI fetch/parse tasks. Default is 2.
+- `--fetch_request_stagger_seconds`: minimum spacing between starts of NCBI
+  Datasets download requests across concurrent local fetch tasks. Default is
+  5 seconds.
+- `--fetch_download_retries`: in-process retries for transient NCBI Datasets
+  download failures. Default is 4.
+- `--fetch_download_retry_base_seconds`: base exponential backoff interval for
+  NCBI Datasets download retries. Default is 30 seconds.
+- `--datasets_bin`: path/name for the NCBI Datasets CLI. Defaults to
+  `DATASETS_BIN`, then `tools/bin/datasets` when present, otherwise `datasets`
+  on `PATH`.
+- `ENTREZ_API_KEY` or `NCBI_API_KEY`: optional NCBI API key passed to
+  `datasets download` as `--api-key`.
+- `ENTREZ_EMAIL` or `NCBI_EMAIL`: optional contact email recorded as configured
+  metadata; NCBI Datasets CLI does not expose an email flag for this command.
+- `--target_annotation_gff3`: local NCBI RefSeq GFF3 for
+  `GCF_000001405.40`; defaults to `GAPH_TARGET_ANNOTATION_GFF3`, then
+  `assets/reference/ncbi/refseq/GCF_000001405.40_GRCh38.p14/genomic.gff.gz`.
 
 ## Processing Steps
 
@@ -42,6 +58,7 @@ Optional operational parameters:
    - Uses `data_report.jsonl` to map every ortholog GeneID back to the requested
      query GeneID via `geneGroups[].id`.
    - Uses `gene.fna` as the source of genomic gene sequences.
+   - Writes per-chunk timings into chunk `manifest.json`.
 
 3. Target selection
    - Selects the requested human GeneID.
@@ -59,9 +76,12 @@ Optional operational parameters:
      4. lexical accession/range tie-break
    - Writes rejected candidates as metadata rows only, without sequences.
 
-5. `MERGE_FETCH_RESULTS`
+5. `BUILD_FETCH_DATASET`
    - Merges chunk tables.
    - Copies final per-gene FASTA files.
+   - Builds compact target structural features from the configured local target assembly GFF3.
+   - Writes `chunk_metrics.tsv.gz` with durable per-chunk timing and package-size
+     metrics.
    - Writes final `manifest.json`.
 
 ## Final Output Files
@@ -72,11 +92,17 @@ Optional operational parameters:
 | `input.ids.tsv` | All input rows, accepted status, duplicate mapping. |
 | `chunks.tsv` | Chunk IDs and accepted Gene IDs assigned to each chunk. |
 | `genes.tsv.gz` | Target human gene metadata and sequence checksum. |
+| `target_features.tsv.gz` | Collapsed target-local structural intervals: gene, exon, CDS, UTR, intron. |
 | `orthologs.selected.tsv.gz` | Metadata for selected ortholog sequences. |
 | `orthologs.candidates.tsv.gz` | Non-human ortholog candidate records and reject reasons. |
 | `failures.tsv.gz` | Gene-level failures. |
 | `sequences/targets/<gene_id>.fa.gz` | Target human genomic sequence. |
 | `sequences/orthologs/<gene_id>.fa.gz` | Selected ortholog genomic sequences. |
+
+`orthologs.selected.tsv.gz` is grouped by `query_gene_id`. This ordering is part
+of the Stage 1 contract: Stage 2 can prepare one gene at a time without loading
+all ortholog metadata into memory. `manifest.json` records this guarantee as
+`orthologs_selected_grouped_by_query_gene_id=true`.
 
 ## Strand Convention
 
@@ -93,3 +119,10 @@ coordinate system while retaining gene-strand information for interpretation.
 
 Ortholog FASTA records are currently written as provided by NCBI Datasets.
 Downstream alignment is expected to handle forward/reverse mapping.
+
+## Target Features
+
+`target_features.tsv.gz` uses target-local 0-based half-open coordinates plus
+GRCh38 1-based inclusive coordinates. Exon, CDS, and UTR intervals are collapsed
+across transcripts to avoid alternative-transcript double counting. Introns are
+the gene body minus the collapsed exon union.

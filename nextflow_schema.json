@@ -18,7 +18,7 @@
                     "type": "string",
                     "default": "all",
                     "enum": ["all", "fetch", "align", "annotate"],
-                    "description": "Pipeline stage to run"
+                    "description": "Pipeline stage to run. 'all' runs fetch, alignment, and annotation; 'align' runs alignment only from an existing fetch directory."
                 },
                 "ids_file": {
                     "type": "string",
@@ -26,7 +26,7 @@
                 },
                 "fetch_dir": {
                     "type": "string",
-                    "description": "Directory containing fetched sequences (required if stage is 'align')"
+                    "description": "Directory containing fetched sequences and target context. Required if stage is 'align' or 'annotate'."
                 },
                 "events_tsv": {
                     "type": "string",
@@ -45,10 +45,18 @@
                     "type": "string",
                     "description": "Output directory specifically for alignment stage results"
                 },
+                "annotation_outdir": {
+                    "type": "string",
+                    "description": "Output directory specifically for annotation stage results"
+                },
+                "alignment_strategies": {
+                    "type": "string",
+                    "default": "all",
+                    "description": "Comma-separated alignment strategies to run, or 'all' for every strategy registered in the workflow"
+                },
                 "clinvar_vcf": {
                     "type": "string",
-                    "default": "/Users/cvv/code/Bioinformatics/course-work/course-work-code/data/clinvar.vcf.gz",
-                    "description": "Path to ClinVar VCF file for annotation (or NO_CLINVAR to skip)"
+                    "description": "Path to ClinVar VCF file for annotation. Defaults to CLINVAR_VCF, then assets/reference/clinvar/clinvar.vcf.gz when present. ClinVar is required for annotation."
                 }
             }
         },
@@ -73,12 +81,9 @@
                     "type": "string",
                     "default": "9606"
                 },
-                "taxonomy_batch_size": {
-                    "type": "integer",
-                    "default": 200
-                },
-                "taxonomy_file": {
-                    "type": "string"
+                "target_annotation_gff3": {
+                    "type": "string",
+                    "description": "Local NCBI RefSeq GFF3 for the target assembly. Defaults to GAPH_TARGET_ANNOTATION_GFF3, then assets/reference/ncbi/refseq/GCF_000001405.40_GRCh38.p14/genomic.gff.gz."
                 }
             }
         },
@@ -88,15 +93,134 @@
             "properties": {
                 "fetch_max_forks": {
                     "type": "integer",
-                    "default": 1
+                    "default": 2,
+                    "description": "Maximum concurrent NCBI fetch/parse tasks."
+                },
+                "fetch_request_stagger_seconds": {
+                    "type": "integer",
+                    "default": 5,
+                    "description": "Minimum spacing between starts of NCBI Datasets download requests across concurrent local fetch tasks."
+                },
+                "fetch_download_retries": {
+                    "type": "integer",
+                    "default": 4,
+                    "description": "Number of in-process retries for transient NCBI Datasets download failures before the fetch chunk fails."
+                },
+                "fetch_download_retry_base_seconds": {
+                    "type": "integer",
+                    "default": 30,
+                    "description": "Base exponential backoff interval in seconds for NCBI Datasets download retries."
                 },
                 "alignment_max_forks": {
                     "type": "integer",
-                    "default": 2
+                    "default": 2,
+                    "description": "Maximum concurrent tasks per alignment strategy process. With multiple strategies selected, total alignment concurrency can be higher and is also bounded by executor CPU/queue limits."
+                },
+                "alignment_partition_size": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "default": 50,
+                    "description": "Maximum target genes per bounded alignment and annotation output partition."
+                },
+                "compact_alignment_events": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Write final alignment_events.tsv.gz as unique event support rows instead of raw per-ortholog/per-strategy event rows. Raw remains the default."
+                },
+                "annotation_max_forks": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "default": 2,
+                    "description": "Maximum concurrent annotation partition tasks. Each task also performs bounded parallel gnomAD requests."
                 },
                 "keep_native_alignments": {
                     "type": "boolean",
                     "default": false
+                },
+                "bwa_pseudoread_len": {
+                    "type": "integer",
+                    "default": 75,
+                    "description": "Pseudo-read length used by the BWA pseudoread strategies."
+                },
+                "bwa_pseudoread_step": {
+                    "type": "integer",
+                    "default": 35,
+                    "description": "Step size between generated pseudo-read starts for the BWA pseudoread strategies."
+                },
+                "bwa_pseudoread_phred": {
+                    "type": "integer",
+                    "default": 30,
+                    "description": "Synthetic PHRED quality assigned to generated BWA pseudo-reads."
+                },
+                "bwa_varscan_min_coverage": {
+                    "type": "integer",
+                    "default": 2,
+                    "description": "VarScan --min-coverage value used by the bwa_pseudoreads_varscan strategy."
+                },
+                "bwa_varscan_min_reads2": {
+                    "type": "integer",
+                    "default": 1,
+                    "description": "VarScan --min-reads2 value used by the bwa_pseudoreads_varscan strategy."
+                },
+                "bwa_varscan_min_var_freq": {
+                    "type": "number",
+                    "default": 0.01,
+                    "description": "VarScan --min-var-freq value used by the bwa_pseudoreads_varscan strategy."
+                },
+                "ensembl_compara_maf_max_forks": {
+                    "type": "integer",
+                    "default": 3,
+                    "description": "Maximum concurrent Ensembl Compara MAF alignment tasks."
+                },
+                "ensembl_compara_maf_timeout_seconds": {
+                    "type": "integer",
+                    "default": 120,
+                    "description": "HTTP timeout in seconds for each Ensembl Compara MAF chunk request."
+                },
+                "ensembl_compara_maf_retries": {
+                    "type": "integer",
+                    "default": 3,
+                    "description": "Number of retries for transient Ensembl Compara MAF stream failures."
+                },
+                "ensembl_compara_maf_retry_base_seconds": {
+                    "type": "number",
+                    "default": 2.0,
+                    "description": "Initial retry backoff in seconds for transient Ensembl Compara MAF stream failures."
+                },
+                "ensembl_compara_maf_retry_max_seconds": {
+                    "type": "number",
+                    "default": 30.0,
+                    "description": "Maximum retry backoff in seconds for transient Ensembl Compara MAF stream failures."
+                }
+            }
+        },
+        "precomputed_alignment_options": {
+            "title": "Precomputed Alignment Options",
+            "type": "object",
+            "properties": {
+                "ensembl_compara_maf_release": {
+                    "type": "string",
+                    "default": "116",
+                    "description": "Ensembl release label for the precomputed Compara MAF strategy."
+                },
+                "ensembl_compara_maf_species_set": {
+                    "type": "string",
+                    "default": "92_mammals.epo_extended",
+                    "description": "Ensembl Compara MAF species set directory/name."
+                },
+                "ensembl_compara_maf_method": {
+                    "type": "string",
+                    "default": "EPO_EXTENDED",
+                    "description": "Compara method label written to alignment output metadata."
+                },
+                "ensembl_compara_maf_manifest": {
+                    "type": "string",
+                    "description": "Optional precomputed Ensembl Compara MAF chunk manifest. Defaults to ENSEMBL_COMPARA_MAF_MANIFEST when set, then assets/reference/ensembl/compara/release-<release>/<species_set>/ensembl_compara_maf_manifest.tsv.gz when present; otherwise the manifest is built during the run."
+                },
+                "ensembl_compara_maf_base_url": {
+                    "type": "string",
+                    "default": "https://ftp.ensembl.org/pub/release-116/maf/ensembl-compara/multiple_alignments/92_mammals.epo_extended",
+                    "description": "HTTP(S) URL or local directory containing the selected Ensembl Compara MAF files."
                 }
             }
         },
@@ -104,7 +228,10 @@
             "title": "Binary Paths",
             "type": "object",
             "properties": {
-                "datasets_bin": { "type": "string" },
+                "datasets_bin": {
+                    "type": "string",
+                    "description": "Path/name for the NCBI Datasets CLI. Defaults to DATASETS_BIN, then tools/bin/datasets when present, otherwise datasets on PATH."
+                },
                 "minimap2_bin": { "type": "string" },
                 "nucmer_bin": { "type": "string" },
                 "show_coords_bin": { "type": "string" },
@@ -124,6 +251,9 @@
         },
         {
             "$ref": "#/definitions/execution_options"
+        },
+        {
+            "$ref": "#/definitions/precomputed_alignment_options"
         },
         {
             "$ref": "#/definitions/binary_paths"

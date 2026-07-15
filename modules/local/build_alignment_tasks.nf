@@ -4,24 +4,27 @@ process BUILD_ALIGNMENT_TASKS {
     input:
     path genes_tsv
     path orthologs_tsv
-    path "sequences/*", stageAs: 'sequences/*'
+    path fetch_manifest
+    path target_features
+    path sequences_dir, stageAs: 'sequences'
     path taxonomy_presets
     path prepare_script
 
     output:
     path "alignment_tasks.tsv.gz", emit: alignment_tasks
     path "tasks/task_*", emit: task_dirs
+    path "partition_genes/*.tsv.gz", emit: partition_genes
 
     script:
     """
-    targetArgs=\$(find sequences/*/targets -name "*.fa.gz" | sed 's/^/--target-fasta /' | tr '\\n' ' ')
-    orthologArgs=\$(find sequences/*/orthologs -name "*.fa.gz" | sed 's/^/--ortholog-fasta /' | tr '\\n' ' ')
     python3 "${prepare_script}" \\
         --genes-tsv "${genes_tsv}" \\
         --orthologs-tsv "${orthologs_tsv}" \\
+        --fetch-manifest "${fetch_manifest}" \\
+        --target-features "${target_features}" \\
         --taxonomy-presets "${taxonomy_presets}" \\
+        --partition-size "${params.alignment_partition_size}" \\
         --outdir . \\
-        \$targetArgs \\
-        \$orthologArgs
+        --sequences-dir sequences
     """
 }

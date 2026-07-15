@@ -1,0 +1,31 @@
+{
+    "Should normalize test_5_genes.txt - snapshot test": {
+        "content": [
+            {
+                "0": [
+                    "input.ids.tsv:md5,7728db03b275cf9d32fa8895f58cc74c"
+                ],
+                "1": [
+                    "chunks.tsv:md5,99a3b427ce2914d3e5554bb98f421c1e"
+                ],
+                "2": [
+                    "chunk_000001.ids.txt:md5,60f8d4a2cc88c7caf3a5ecec8522b7a4"
+                ],
+                "chunk_files": [
+                    "chunk_000001.ids.txt:md5,60f8d4a2cc88c7caf3a5ecec8522b7a4"
+                ],
+                "chunks_tsv": [
+                    "chunks.tsv:md5,99a3b427ce2914d3e5554bb98f421c1e"
+                ],
+                "ids_tsv": [
+                    "input.ids.tsv:md5,7728db03b275cf9d32fa8895f58cc74c"
+                ]
+            }
+        ],
+        "meta": {
+            "nf-test": "0.9.1",
+            "nextflow": "25.10.4"
+        },
+        "timestamp": "2026-06-28T18:56:46.024049"
+    }
+}

@@ -1,22 +1,26 @@
 process ANNOTATE_EVENTS {
     tag "annotate"
-    publishDir "${params.outdir}", mode: 'copy'
 
     input:
     path events_tsv
+    path genes_tsv
+    path sequences_dir
     path annotate_script
     path clinvar_vcf
     path clinvar_vcf_tbi
 
     output:
-    path "alignment_events_annotated.tsv.gz", emit: annotated_events
+    path "variant_annotations.tsv.gz", emit: variant_annotations
+    path "manifest.json", emit: manifest
+    path "failures.tsv.gz", emit: failures
 
     script:
-    def clinvarArg = clinvar_vcf.name != 'NO_CLINVAR' ? "--clinvar-vcf \"${clinvar_vcf}\"" : ""
     """
     python3 "${annotate_script}" \\
         --events-tsv "${events_tsv}" \\
+        --genes-tsv "${genes_tsv}" \\
+        --target-sequences-dir "${sequences_dir}/targets" \\
         --outdir . \\
-        ${clinvarArg}
+        --clinvar-vcf "${clinvar_vcf}"
     """
 }

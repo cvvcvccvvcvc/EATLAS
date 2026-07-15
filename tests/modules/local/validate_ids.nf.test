@@ -9,7 +9,7 @@ nextflow_process {
         when {
             process {
                 """
-                input[0] = file("${projectDir}/test_5_genes.txt")
+                input[0] = file("${projectDir}/tests/fixtures/ids/test_5_genes.txt")
                 input[1] = file("${projectDir}/bin/normalize_ids.py")
                 """
             }

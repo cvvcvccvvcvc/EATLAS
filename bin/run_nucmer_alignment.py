@@ -9,8 +9,12 @@ import gzip
 import json
 import shutil
 import subprocess
+import tempfile
 from pathlib import Path
 from typing import Iterable
+
+from alignment_task_io import load_task_context, materialize_task_fastas
+from feature_coverage import summarize_feature_coverage
 
 
 TSV_NULL = ""
@@ -95,21 +99,19 @@ FAILURE_FIELDS = ["gene_id", "ortholog_gene_id", "strategy", "tool", "failure_ty
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--task-dir", required=True, type=Path)
+    parser.add_argument("--source-target-fasta", required=True, type=Path)
+    parser.add_argument("--source-ortholog-fasta", required=True, type=Path)
     parser.add_argument("--outdir", required=True, type=Path)
     parser.add_argument("--nucmer-bin", required=True)
     parser.add_argument("--show-coords-bin", required=True)
     parser.add_argument("--show-snps-bin", required=True)
+    parser.add_argument("--target-features", type=Path)
     parser.add_argument("--keep-native", default="false")
     return parser.parse_args()
 
 
 def truthy(value: str) -> bool:
     return str(value).lower() in {"1", "true", "yes", "y"}
-
-
-def read_tsv(path: Path) -> list[dict[str, str]]:
-    with path.open(newline="") as handle:
-        return [dict(row) for row in csv.DictReader(handle, delimiter="\t")]
 
 
 def write_tsv_gz(path: Path, fields: list[str], rows: Iterable[dict[str, object]]) -> int:
@@ -384,10 +386,8 @@ def main() -> None:
     args.outdir.mkdir(parents=True, exist_ok=True)
     keep_native = truthy(args.keep_native)
 
-    task = json.loads((args.task_dir / "task.json").read_text())
+    task, target_meta, ortholog_meta = load_task_context(args.task_dir)
     gene_id = task["gene_id"]
-    target_meta = read_tsv(args.task_dir / "target.metadata.tsv")[0]
-    ortholog_meta = read_tsv(args.task_dir / "orthologs.metadata.tsv")
     meta_by_sequence = {row["sequence_id"]: row for row in ortholog_meta}
     target_length = int(target_meta.get("sequence_length") or task.get("target_length") or 0)
     summaries = {
@@ -395,66 +395,79 @@ def main() -> None:
         for sequence_id, meta in meta_by_sequence.items()
     }
 
-    prefix = "nucmer"
-    delta_path = Path(f"{prefix}.delta")
-    coords_path = Path(f"{prefix}.coords")
-    snps_path = Path(f"{prefix}.snps")
     failures: list[dict[str, object]] = []
     commands: list[str] = []
 
-    try:
-        commands.append(
-            run_command(
-                [
-                    args.nucmer_bin,
-                    "--prefix",
-                    prefix,
-                    str(args.task_dir / "target.fa"),
-                    str(args.task_dir / "orthologs.fa"),
-                ]
+    with tempfile.TemporaryDirectory(prefix="nucmer_", dir=args.outdir) as tmp_name:
+        work_dir = Path(tmp_name)
+        target_fasta, orthologs_fasta = materialize_task_fastas(
+            args.source_target_fasta,
+            args.source_ortholog_fasta,
+            task,
+            ortholog_meta,
+            work_dir,
+        )
+        prefix = str(work_dir / "nucmer")
+        delta_path = work_dir / "nucmer.delta"
+        coords_path = work_dir / "nucmer.coords"
+        snps_path = work_dir / "nucmer.snps"
+
+        try:
+            commands.append(
+                run_command(
+                    [
+                        args.nucmer_bin,
+                        "--prefix",
+                        prefix,
+                        str(target_fasta),
+                        str(orthologs_fasta),
+                    ]
+                )
             )
-        )
-        commands.append(
-            run_command(
-                [args.show_coords_bin, "-THrcl", str(delta_path)],
-                stdout_path=coords_path,
+            commands.append(
+                run_command(
+                    [args.show_coords_bin, "-THrcl", str(delta_path)],
+                    stdout_path=coords_path,
+                )
             )
-        )
-        commands.append(
-            run_command(
-                [args.show_snps_bin, "-THrl", str(delta_path)],
-                stdout_path=snps_path,
+            commands.append(
+                run_command(
+                    [args.show_snps_bin, "-THrl", str(delta_path)],
+                    stdout_path=snps_path,
+                )
             )
-        )
-        segments, segments_by_query = parse_coords(coords_path, gene_id, target_meta, meta_by_sequence, summaries)
-        events = parse_snps(snps_path, gene_id, target_meta, meta_by_sequence, segments_by_query, summaries)
-        if keep_native:
-            gzip_copy(delta_path, args.outdir / "native" / f"{gene_id}.delta.gz")
-            gzip_copy(coords_path, args.outdir / "native" / f"{gene_id}.coords.gz")
-            gzip_copy(snps_path, args.outdir / "native" / f"{gene_id}.snps.gz")
-    except Exception as exc:
-        failures.append(
-            {
-                "gene_id": gene_id,
-                "ortholog_gene_id": "",
-                "strategy": "nucmer",
-                "tool": "nucmer",
-                "failure_type": "nucmer_failed",
-                "message": str(exc),
-            }
-        )
-        raise
-    finally:
-        if not keep_native:
-            for path in [delta_path, coords_path, snps_path]:
-                if path.exists():
-                    path.unlink()
+            segments, segments_by_query = parse_coords(coords_path, gene_id, target_meta, meta_by_sequence, summaries)
+            events = parse_snps(snps_path, gene_id, target_meta, meta_by_sequence, segments_by_query, summaries)
+            if keep_native:
+                gzip_copy(delta_path, args.outdir / "native" / f"{gene_id}.delta.gz")
+                gzip_copy(coords_path, args.outdir / "native" / f"{gene_id}.coords.gz")
+                gzip_copy(snps_path, args.outdir / "native" / f"{gene_id}.snps.gz")
+        except Exception as exc:
+            failures.append(
+                {
+                    "gene_id": gene_id,
+                    "ortholog_gene_id": "",
+                    "strategy": "nucmer",
+                    "tool": "nucmer",
+                    "failure_type": "nucmer_failed",
+                    "message": str(exc),
+                }
+            )
+            raise
 
     summary_rows = [finalize_summary(row) for row in summaries.values()]
     write_tsv_gz(args.outdir / "alignment_segments.tsv.gz", SEGMENT_FIELDS, segments)
     write_tsv_gz(args.outdir / "alignment_events.tsv.gz", EVENT_FIELDS, events)
     write_tsv_gz(args.outdir / "ortholog_alignment_summary.tsv.gz", SUMMARY_FIELDS, summary_rows)
     write_tsv_gz(args.outdir / "failures.tsv.gz", FAILURE_FIELDS, failures)
+    feature_coverage_count = None
+    if args.target_features:
+        feature_coverage_count = summarize_feature_coverage(
+            args.target_features,
+            args.outdir / "ortholog_alignment_summary.tsv.gz",
+            args.outdir / "alignment_segments.tsv.gz",
+            args.outdir / "feature_coverage.tsv.gz",
+        )
     manifest = {
         "gene_id": gene_id,
         "strategy": "nucmer",
@@ -462,6 +475,7 @@ def main() -> None:
         "commands": commands,
         "segment_count": len(segments),
         "event_count": len(events),
+        "feature_coverage_count": feature_coverage_count,
         "ortholog_count": len(ortholog_meta),
         "keep_native": keep_native,
         "filtering": "no global delta-filter; downstream parser evaluates records per ortholog",

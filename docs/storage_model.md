@@ -10,6 +10,7 @@ For the default end-to-end run, `params.outdir` is a run root:
 results/run_001/
   fetch/
   alignment/
+  annotation/
 ```
 
 `fetch/` contains the normalized data layer for downstream pipeline stages:
@@ -27,11 +28,18 @@ results/run_001/
 - compact taxonomy preset metadata
 - `manifest.json`
 
+`annotation/` contains:
+
+- the compressed unique variant-context annotation table
+- annotation manifest and diagnostic failure table
+
 This layer should be kept.
 
 ## Execution Cache
 
-Nextflow `work/` is a resume cache. It can contain:
+Nextflow `work/` is a resume cache. By default this repository puts it under
+`$GAPH_WORK_DIR` when set, otherwise under the system temporary directory. It can
+contain:
 
 - task scripts and logs
 - per-chunk intermediate outputs
@@ -39,6 +47,17 @@ Nextflow `work/` is a resume cache. It can contain:
 
 It is useful while developing or recovering a failed run with `-resume`, but it
 is not the data product.
+
+The `low_storage` profile is for runs where the published result layer is more
+important than resume. It disables process caching, enables Nextflow successful
+run cleanup, and moves terminal annotation outputs into the published annotation
+directory instead of keeping a second copy in `work/`. Do not rely on `-resume`
+with this profile after a successful run.
+
+Alignment task directories are metadata-only. They do not duplicate Stage 1
+target or ortholog FASTA files. Sequence-based aligner processes receive the
+needed per-gene Stage 1 FASTA files as explicit Nextflow inputs and materialize
+uncompressed FASTA files inside their own local task workspace.
 
 ## Raw NCBI Data
 
@@ -60,15 +79,26 @@ Control peak disk with:
 - smaller `--chunk_size`
 - lower `--fetch_max_forks`
 - `-work-dir` on scratch storage
-- `scratch = true` for fetch/parse tasks
+- `GAPH_WORK_DIR=/path/to/scratch/gaph_v2_work`
+- `NXF_CONDA_CACHEDIR=/path/to/shared/scratch/gaph_v2_conda`
+- `-profile low_storage` when resume is not required after successful completion
+
+On Slurm, both paths must be visible from the controller and every compute node.
+The Conda cache is reusable infrastructure and should remain outside individual
+run directories; `low_storage` cleanup applies to task work, not that cache.
+The repository's `slurm` profile disables task-local scratch so staged task data
+stays under the assigned shared work allocation. Local execution retains
+task-local scratch for fetch and alignment processes.
 
 Recommended starting point for large runs:
 
 ```bash
---chunk_size 10 --fetch_max_forks 1
+--chunk_size 10 --fetch_max_forks 2 --fetch_request_stagger_seconds 5
 ```
 
-Increase only after measuring on the target cluster.
+Lower `--fetch_max_forks` if the target cluster, network, scratch filesystem, or
+NCBI behavior becomes unstable. Increase only after measuring on the target
+cluster.
 
 ## What To Keep
 
@@ -92,5 +122,6 @@ Raw aligner outputs are also not retained by default:
 - nucmer `.delta`
 - `show-coords`
 - `show-snps`
+- Ensembl Compara MAF chunks used by precomputed alignment strategies
 
 Set `--keep_native_alignments true` only for targeted debug/benchmark runs.

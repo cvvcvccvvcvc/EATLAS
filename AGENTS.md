@@ -8,6 +8,7 @@ GAPH v2 is a structured rewrite of a gene-level variant discovery pipeline.
 The current implemented scope is:
 - stage 1: fetch normalized input data for Entrez Gene IDs
 - stage 2: align selected ortholog gene sequences to fixed human target loci
+- stage 3: annotate alignment events with ClinVar and gnomAD evidence
 
 Stage 1 produces:
 - human target gene sequences on GRCh38.p14 (`GCF_000001405.40`)
@@ -21,6 +22,9 @@ Stage 2 produces:
 - normalized raw alignment events
 - per-ortholog alignment summaries for downstream variant-support logic
 
+Stage 3 produces:
+- annotated event tables in a separate annotation output layer
+
 ## WHAT
 
 Core files:
@@ -28,21 +32,22 @@ Core files:
 - `nextflow.config` - local/slurm profiles and process resource policy.
 - `bin/normalize_ids.py` - input ID normalization and chunking.
 - `bin/fetch_parse_chunk.py` - NCBI Datasets fetch + package parsing.
-- `bin/merge_fetch_results.py` - final table/FASTA merge.
+- `bin/build_fetch_dataset.py` - final fetch dataset assembly.
 - `bin/fetch_taxonomy_presets.py` - compact taxonomy-to-preset table.
 - `bin/prepare_alignment_tasks.py` - per-gene alignment task preparation.
 - `bin/run_minimap2_alignment.py` - minimap2 execution and PAF parsing.
 - `bin/run_nucmer_alignment.py` - nucmer execution and comparator parsing.
 - `bin/merge_alignment_results.py` - final alignment evidence merge.
+- `bin/annotate_events.py` - event key normalization and ClinVar/gnomAD annotation.
 - `envs/fetch.yml` - minimal conda environment for stage 1.
 - `envs/alignment.yml` - CLI dependencies for stage 2.
 
 ## HOW
 
-Default local run:
+Default local run for all stages:
 
 ```bash
-nextflow run . -profile local --ids_file gene_ids.txt --outdir results/run_001 -resume
+nextflow run . -profile local,conda --ids_file assets/inputs/gene_ids/smoke_5_genes.txt --outdir results/run_001 -resume
 ```
 
 Cluster run:
@@ -63,6 +68,38 @@ Agent workflow rules:
 6. Stage 2 native aligner outputs are debug artifacts; do not publish them by
    default.
 7. Prefer small, focused changes and validate with a small local Nextflow smoke run.
+   Use `-profile local,conda` for normal local pipeline runs so tasks use the
+   declared `envs/*.yml` environments instead of the caller's active shell env.
+8. Keep the repository root clean: no ad hoc scripts, reports, downloaded tools,
+   or smoke outputs in production paths. Use `/tmp`, `/private/tmp`, `work/`,
+   or documented test fixtures.
+9. Preserve modular boundaries: Nextflow owns orchestration and process wiring;
+   Python owns deterministic parsing/merging/report generation.
+10. Prefer registry/config-driven feature selection over scattered booleans.
+    Defaults such as alignment strategy selection should mean "all registered"
+    rather than a duplicated literal list.
+11. Make contracts explicit in schema/docs/tests when changing user-facing
+    parameters or output table shapes.
+12. Do not silently accept missing inputs, mismatched table headers, or empty
+    outputs caused by wiring bugs; fail with a concrete message.
+13. Keep commits atomic: each commit should contain one coherent behavior,
+    contract, or documentation change and exclude unrelated workspace noise.
+14. Commit finished, narrow, verified changes directly once their scope is
+    closed. Stage only the relevant files and use a message that names the
+    user-facing purpose.
+15. Before committing a fix, manually run the narrowest realistic check that
+    exercises the changed behavior and verify it behaves as intended, not only
+    that it exits successfully. Report any skipped check in the final status.
+16. Do not auto-commit broad, exploratory, cross-cutting, or partially
+    validated work. Leave it uncommitted with a clear status summary, or ask
+    before committing when the boundary is unclear.
+17. Keep alignment and annotation as separate stages; `--stage align` must not
+    trigger annotation.
+18. Put standalone experiments that build on the pipeline or its data under
+    `experiments/<experiment_name>/` (create `experiments/` when needed). Keep
+    each experiment's code, data, scratch files, reports, and generated outputs
+    isolated inside that experiment directory unless an external scratch path is
+    explicitly documented.
 
 ## Progressive Disclosure
 
@@ -73,3 +110,4 @@ Read these only when relevant:
 - `docs/stage2_alignment_contract.md` - stage-2 alignment model, outputs, and rationale.
 - `docs/run_validation.md` - commands for local/slurm runs and verification.
 - `docs/storage_model.md` - Nextflow cache, result layout, and disk-space policy.
+- `docs/itmo_cluster.md` - verified ITMO Slurm setup, paths, transfer, and smoke tests.

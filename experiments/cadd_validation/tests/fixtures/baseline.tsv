@@ -1,0 +1,4 @@
+variant_id	CADD_RAW	CADD_PHRED	phyloP	label
+var_alt	2.0	20.0	1.2	pathogenic
+var_ref	-0.2	4.0	0.1	benign
+

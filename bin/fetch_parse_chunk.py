@@ -4,15 +4,19 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import csv
+import fcntl
 import gzip
 import hashlib
 import json
 import os
+import random
 import re
 import shutil
 import subprocess
 import sys
+import time
 import zipfile
 from collections import defaultdict
 from dataclasses import dataclass, field
@@ -29,12 +33,15 @@ HEADER_LOC_RE = re.compile(r"^(?P<acc>[^:\s]+):(?P<complement>c?)(?P<a>\d+)-(?P<
 TSV_NULL = ""
 FASTA_WIDTH = 80
 TARGET_SEQUENCE_ORIENTATION = "plus"
+SEQUENCE_GZIP_COMPRESSLEVEL = 3
 
 
 @dataclass
 class FastaMeta:
     record_index: int
     header: str
+    record_start_offset: int
+    record_end_offset: int
     accession: str
     range_text: str
     begin: int | None
@@ -65,11 +72,55 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--target-assembly-accession", required=True)
     parser.add_argument("--target-assembly-name", required=True)
     parser.add_argument("--target-tax-id", required=True)
+    parser.add_argument("--request-stagger-seconds", type=float, default=0.0)
+    parser.add_argument("--request-throttle-dir", type=Path)
+    parser.add_argument("--download-retries", type=int, default=4)
+    parser.add_argument("--download-retry-base-seconds", type=float, default=30.0)
     return parser.parse_args()
 
 
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+@contextlib.contextmanager
+def time_step(timings: dict[str, float], name: str):
+    start = time.perf_counter()
+    try:
+        yield
+    finally:
+        timings[name] = round(time.perf_counter() - start, 3)
+
+
+def env_configured(*names: str) -> bool:
+    return any(bool(os.environ.get(name)) for name in names)
+
+
+def throttle_ncbi_request(throttle_dir: Path | None, stagger_seconds: float) -> float:
+    if throttle_dir is None or stagger_seconds <= 0:
+        return 0.0
+
+    throttle_dir.mkdir(parents=True, exist_ok=True)
+    lock_path = throttle_dir / "request_schedule.lock"
+    state_path = throttle_dir / "next_request_epoch.txt"
+
+    with lock_path.open("a+") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        now = time.time()
+        next_allowed = 0.0
+        if state_path.exists():
+            try:
+                next_allowed = float(state_path.read_text().strip())
+            except ValueError:
+                next_allowed = 0.0
+        start_at = max(now, next_allowed)
+        state_path.write_text(f"{start_at + stagger_seconds:.6f}\n")
+        fcntl.flock(lock, fcntl.LOCK_UN)
+
+    wait_seconds = max(0.0, start_at - time.time())
+    if wait_seconds > 0:
+        time.sleep(wait_seconds)
+    return round(wait_seconds, 3)
 
 
 def read_ids(path: Path) -> list[str]:
@@ -128,7 +179,7 @@ def datasets_version(datasets_bin: str) -> str:
     return (result.stdout or result.stderr).strip()
 
 
-def download_package(datasets_bin: str, ids_file: Path, zip_path: Path) -> None:
+def run_datasets_download(datasets_bin: str, ids_file: Path, zip_path: Path) -> subprocess.CompletedProcess:
     cmd = [
         datasets_bin,
         "download",
@@ -148,13 +199,48 @@ def download_package(datasets_bin: str, ids_file: Path, zip_path: Path) -> None:
     if api_key:
         cmd.extend(["--api-key", api_key])
 
-    result = subprocess.run(cmd, text=True, capture_output=True)
-    if result.returncode != 0:
+    return subprocess.run(cmd, text=True, capture_output=True)
+
+
+def download_package(
+    datasets_bin: str,
+    ids_file: Path,
+    zip_path: Path,
+    retries: int,
+    retry_base_seconds: float,
+) -> None:
+    attempts = max(1, retries + 1)
+    last_result: subprocess.CompletedProcess | None = None
+    for attempt in range(1, attempts + 1):
+        if zip_path.exists():
+            zip_path.unlink()
+        result = run_datasets_download(datasets_bin, ids_file, zip_path)
+        last_result = result
+        if result.returncode == 0:
+            return
+
         if result.stdout:
             print(result.stdout, file=sys.stderr)
         if result.stderr:
             print(result.stderr, file=sys.stderr)
-        raise RuntimeError(f"datasets download failed with exit code {result.returncode}")
+        if attempt >= attempts:
+            break
+
+        wait_seconds = retry_base_seconds * (2 ** (attempt - 1))
+        wait_seconds += random.uniform(0, retry_base_seconds * 0.25)
+        print(
+            f"datasets download failed with exit code {result.returncode}; "
+            f"retrying attempt {attempt + 1}/{attempts} after {wait_seconds:.1f}s",
+            file=sys.stderr,
+            flush=True,
+        )
+        time.sleep(wait_seconds)
+
+    result = last_result
+    if result is None:
+        raise RuntimeError("datasets download did not run")
+    if result.returncode != 0:
+        raise RuntimeError(f"datasets download failed after {attempts} attempts with exit code {result.returncode}")
 
 
 def extract_package(zip_path: Path, extract_dir: Path) -> tuple[Path, Path, Path | None]:
@@ -262,23 +348,29 @@ def parse_header(header: str) -> dict[str, object]:
     }
 
 
-def iter_fasta_lengths(path: Path):
+def iter_fasta_slices(path: Path):
     header = None
     length = 0
     record_index = 0
-    with path.open() as handle:
-        for line in handle:
-            line = line.rstrip("\n")
-            if line.startswith(">"):
+    record_start_offset = 0
+    with path.open("rb") as handle:
+        while True:
+            line_start = handle.tell()
+            line = handle.readline()
+            if not line:
+                break
+            text = line.decode("utf-8").rstrip("\r\n")
+            if text.startswith(">"):
                 if header is not None:
-                    yield record_index, header, length
+                    yield record_index, header, length, record_start_offset, line_start
                 record_index += 1
-                header = line[1:]
+                header = text[1:]
                 length = 0
+                record_start_offset = line_start
             elif header is not None:
-                length += len(line.strip())
+                length += len(text.strip())
         if header is not None:
-            yield record_index, header, length
+            yield record_index, header, length, record_start_offset, handle.tell()
 
 
 def accession_rank(accession: str) -> int:
@@ -299,7 +391,7 @@ def build_fasta_metadata(
     }
     records: list[FastaMeta] = []
 
-    for record_index, header, length in iter_fasta_lengths(gene_fna):
+    for record_index, header, length, record_start_offset, record_end_offset in iter_fasta_slices(gene_fna):
         parsed = parse_header(header)
         gene_id = str(parsed["gene_id"])
         report = report_by_gene_id.get(gene_id, {})
@@ -323,6 +415,8 @@ def build_fasta_metadata(
             FastaMeta(
                 record_index=record_index,
                 header=header,
+                record_start_offset=record_start_offset,
+                record_end_offset=record_end_offset,
                 accession=accession,
                 range_text=str(parsed["range_text"]),
                 begin=begin,
@@ -453,23 +547,20 @@ def failure_row(gene_id: str, failure_type: str, message: str) -> dict[str, obje
     }
 
 
-def iter_fasta_sequences(path: Path):
+def read_fasta_sequence_slice(path: Path, start_offset: int, end_offset: int) -> str:
     header = None
     seq_parts: list[str] = []
-    record_index = 0
-    with path.open() as handle:
-        for line in handle:
-            line = line.rstrip("\n")
+    with path.open("rb") as handle:
+        handle.seek(start_offset)
+        data = handle.read(end_offset - start_offset).decode("utf-8").splitlines()
+        for line in data:
             if line.startswith(">"):
-                if header is not None:
-                    yield record_index, header, "".join(seq_parts)
-                record_index += 1
                 header = line[1:]
-                seq_parts = []
             elif header is not None:
                 seq_parts.append(line.strip())
-        if header is not None:
-            yield record_index, header, "".join(seq_parts)
+    if header is None:
+        raise ValueError(f"No FASTA header found at byte offset {start_offset} in {path}")
+    return "".join(seq_parts)
 
 
 def reverse_complement(seq: str) -> str:
@@ -518,7 +609,9 @@ def write_sequences(
     ortholog_handles: dict[str, gzip.GzipFile] = {}
 
     try:
-        for record_index, _header, seq in iter_fasta_sequences(gene_fna):
+        for record_index in sorted(set(target_by_index) | set(ortholog_by_index)):
+            record = target_by_index.get(record_index) or ortholog_by_index[record_index]
+            seq = read_fasta_sequence_slice(gene_fna, record.record_start_offset, record.record_end_offset)
             if record_index in target_by_index:
                 record = target_by_index[record_index]
                 output_seq = reverse_complement(seq) if record.is_complement else seq
@@ -527,7 +620,7 @@ def write_sequences(
                 if handle is None:
                     path = outdir / "sequences" / "targets" / f"{record.gene_id}.fa.gz"
                     path.parent.mkdir(parents=True, exist_ok=True)
-                    handle = gzip.open(path, "wt")
+                    handle = gzip.open(path, "wt", compresslevel=SEQUENCE_GZIP_COMPRESSLEVEL)
                     target_handles[record.gene_id] = handle
                 row = report_by_gene_id.get(record.gene_id, {})
                 handle.write(f">{fasta_header_target(record, row, target_assembly_accession, target_assembly_name)}\n")
@@ -540,7 +633,7 @@ def write_sequences(
                 if handle is None:
                     path = outdir / "sequences" / "orthologs" / f"{record.query_gene_id}.fa.gz"
                     path.parent.mkdir(parents=True, exist_ok=True)
-                    handle = gzip.open(path, "wt")
+                    handle = gzip.open(path, "wt", compresslevel=SEQUENCE_GZIP_COMPRESSLEVEL)
                     ortholog_handles[record.query_gene_id] = handle
                 handle.write(f">{fasta_header_ortholog(record)}\n")
                 handle.write(wrap_fasta(seq))
@@ -626,7 +719,14 @@ def candidate_rows(records: list[FastaMeta], target_tax_id: str) -> Iterable[dic
 
 
 def selected_ortholog_rows(records: list[FastaMeta], checksums: dict[int, str]) -> Iterable[dict[str, object]]:
-    selected = [record for record in records if record.selection_role == "ortholog" and record.selected]
+    selected = sorted(
+        (record for record in records if record.selection_role == "ortholog" and record.selected),
+        key=lambda record: (
+            (0, int(record.query_gene_id))
+            if record.query_gene_id.isdigit()
+            else (1, record.query_gene_id)
+        ),
+    )
     for record in selected:
         yield {
             "query_gene_id": record.query_gene_id,
@@ -648,37 +748,59 @@ def selected_ortholog_rows(records: list[FastaMeta], checksums: dict[int, str]) 
 
 
 def main() -> None:
+    total_start = time.perf_counter()
+    timings: dict[str, float] = {}
     args = parse_args()
-    requested_ids = read_ids(args.ids_file)
+    with time_step(timings, "read_ids"):
+        requested_ids = read_ids(args.ids_file)
     requested_set = set(requested_ids)
     outdir = args.outdir
     outdir.mkdir(parents=True, exist_ok=True)
 
-    datasets_bin = resolve_datasets_bin(args.datasets_bin)
-    version = datasets_version(datasets_bin)
+    with time_step(timings, "resolve_datasets_bin"):
+        datasets_bin = resolve_datasets_bin(args.datasets_bin)
+    with time_step(timings, "datasets_version"):
+        version = datasets_version(datasets_bin)
 
     zip_path = Path("ncbi_dataset.zip")
     extract_dir = Path("ncbi_dataset_unpacked")
-    download_package(datasets_bin, args.ids_file, zip_path)
-    report_path, gene_fna, catalog_path = extract_package(zip_path, extract_dir)
+    with time_step(timings, "ncbi_request_stagger"):
+        ncbi_request_wait_seconds = throttle_ncbi_request(
+            args.request_throttle_dir,
+            args.request_stagger_seconds,
+        )
+    with time_step(timings, "download_package"):
+        download_package(
+            datasets_bin,
+            args.ids_file,
+            zip_path,
+            retries=args.download_retries,
+            retry_base_seconds=args.download_retry_base_seconds,
+        )
+    with time_step(timings, "extract_package"):
+        report_path, gene_fna, catalog_path = extract_package(zip_path, extract_dir)
 
-    report_by_gene_id, gene_to_query = load_report(report_path, requested_set)
-    fasta_records = build_fasta_metadata(gene_fna, report_by_gene_id, gene_to_query)
-    failures = select_records(
-        fasta_records,
-        requested_ids,
-        report_by_gene_id,
-        args.target_assembly_accession,
-        args.target_tax_id,
-    )
-    target_checksums, ortholog_checksums = write_sequences(
-        gene_fna,
-        fasta_records,
-        report_by_gene_id,
-        outdir,
-        args.target_assembly_accession,
-        args.target_assembly_name,
-    )
+    with time_step(timings, "load_report"):
+        report_by_gene_id, gene_to_query = load_report(report_path, requested_set)
+    with time_step(timings, "scan_fasta"):
+        fasta_records = build_fasta_metadata(gene_fna, report_by_gene_id, gene_to_query)
+    with time_step(timings, "select_records"):
+        failures = select_records(
+            fasta_records,
+            requested_ids,
+            report_by_gene_id,
+            args.target_assembly_accession,
+            args.target_tax_id,
+        )
+    with time_step(timings, "write_sequences"):
+        target_checksums, ortholog_checksums = write_sequences(
+            gene_fna,
+            fasta_records,
+            report_by_gene_id,
+            outdir,
+            args.target_assembly_accession,
+            args.target_assembly_name,
+        )
 
     gene_fields = [
         "gene_id",
@@ -743,50 +865,79 @@ def main() -> None:
     ]
     failure_fields = ["gene_id", "failure_type", "message"]
 
-    genes_count = write_tsv_gz(
-        outdir / "genes.tsv.gz",
-        gene_fields,
-        genes_rows(
-            requested_ids,
-            report_by_gene_id,
-            fasta_records,
-            target_checksums,
-            args.target_assembly_accession,
-            args.target_assembly_name,
-        ),
-    )
-    selected_count = write_tsv_gz(
-        outdir / "orthologs.selected.tsv.gz",
-        selected_fields,
-        selected_ortholog_rows(fasta_records, ortholog_checksums),
-    )
-    candidate_count = write_tsv_gz(
-        outdir / "orthologs.candidates.tsv.gz",
-        candidate_fields,
-        candidate_rows(fasta_records, args.target_tax_id),
-    )
-    failure_count = write_tsv_gz(outdir / "failures.tsv.gz", failure_fields, failures)
+    with time_step(timings, "write_tables"):
+        genes_count = write_tsv_gz(
+            outdir / "genes.tsv.gz",
+            gene_fields,
+            genes_rows(
+                requested_ids,
+                report_by_gene_id,
+                fasta_records,
+                target_checksums,
+                args.target_assembly_accession,
+                args.target_assembly_name,
+            ),
+        )
+        selected_count = write_tsv_gz(
+            outdir / "orthologs.selected.tsv.gz",
+            selected_fields,
+            selected_ortholog_rows(fasta_records, ortholog_checksums),
+        )
+        candidate_count = write_tsv_gz(
+            outdir / "orthologs.candidates.tsv.gz",
+            candidate_fields,
+            candidate_rows(fasta_records, args.target_tax_id),
+        )
+        failure_count = write_tsv_gz(outdir / "failures.tsv.gz", failure_fields, failures)
 
     catalog = {}
     if catalog_path and catalog_path.exists():
-        catalog = json.loads(catalog_path.read_text())
+        with time_step(timings, "load_dataset_catalog"):
+            catalog = json.loads(catalog_path.read_text())
 
+    catalog_files = {
+        item.get("filePath"): item
+        for item in (catalog.get("genes", {}).get("files", []) if catalog else [])
+    }
+    gene_fna_uncompressed_bytes = catalog_files.get("gene.fna", {}).get("uncompressedLengthBytes", "")
+    report_uncompressed_bytes = catalog_files.get("data_report.jsonl", {}).get("uncompressedLengthBytes", "")
+
+    with time_step(timings, "package_sha256"):
+        package_sha256 = sha256_file(zip_path)
     manifest = {
         "created_at": utc_now(),
+        "chunk_id": outdir.name.removeprefix("fetch_"),
         "requested_gene_count": len(requested_ids),
         "target_gene_count": genes_count,
         "selected_ortholog_count": selected_count,
         "candidate_record_count": candidate_count,
         "failure_count": failure_count,
+        "gene_fna_uncompressed_bytes": gene_fna_uncompressed_bytes,
+        "data_report_uncompressed_bytes": report_uncompressed_bytes,
         "target_assembly_accession": args.target_assembly_accession,
         "target_assembly_name": args.target_assembly_name,
         "ortholog_scope": "all",
         "datasets_bin": datasets_bin,
         "datasets_version": version,
-        "package_sha256": sha256_file(zip_path),
+        "ncbi_api_key_configured": env_configured("NCBI_API_KEY", "ENTREZ_API_KEY"),
+        "ncbi_contact_email_configured": env_configured("NCBI_EMAIL", "ENTREZ_EMAIL"),
+        "request_stagger_seconds": args.request_stagger_seconds,
+        "request_stagger_wait_seconds": ncbi_request_wait_seconds,
+        "download_retries": args.download_retries,
+        "download_retry_base_seconds": args.download_retry_base_seconds,
+        "sequence_gzip_compresslevel": SEQUENCE_GZIP_COMPRESSLEVEL,
+        "package_sha256": package_sha256,
         "dataset_catalog": catalog,
     }
-    (outdir / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
+    manifest_path = outdir / "manifest.json"
+    manifest["step_timings_seconds"] = timings
+    manifest_text = json.dumps(manifest, indent=2) + "\n"
+    write_start = time.perf_counter()
+    manifest_path.write_text(manifest_text)
+    timings["write_manifest"] = round(time.perf_counter() - write_start, 3)
+    timings["total_seconds"] = round(time.perf_counter() - total_start, 3)
+    manifest["step_timings_seconds"] = timings
+    manifest_path.write_text(json.dumps(manifest, indent=2) + "\n")
 
 
 if __name__ == "__main__":
