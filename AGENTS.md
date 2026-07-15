@@ -110,3 +110,4 @@ Read these only when relevant:
 - `docs/stage2_alignment_contract.md` - stage-2 alignment model, outputs, and rationale.
 - `docs/run_validation.md` - commands for local/slurm runs and verification.
 - `docs/storage_model.md` - Nextflow cache, result layout, and disk-space policy.
+- `docs/itmo_cluster.md` - verified ITMO Slurm setup, paths, transfer, and smoke tests.

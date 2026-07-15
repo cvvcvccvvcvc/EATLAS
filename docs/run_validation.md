@@ -68,7 +68,11 @@ scratch area. From the repository, create the controller environment once:
 
 ```bash
 export GAPH_ROOT="/mnt/tank/scratch/$USER/gaph_v2"
-mkdir -p "$GAPH_ROOT"/{envs,work,conda,results}
+mkdir -p "$GAPH_ROOT"/{envs,work,conda,results,micromamba,nextflow}
+
+export CONDA_PKGS_DIRS="$GAPH_ROOT/conda/controller-pkgs"
+export MAMBA_ROOT_PREFIX="$GAPH_ROOT/micromamba"
+export NXF_HOME="$GAPH_ROOT/nextflow"
 
 conda env create --prefix "$GAPH_ROOT/envs/controller" -f envs/controller.yml
 conda activate "$GAPH_ROOT/envs/controller"
@@ -84,7 +88,9 @@ directory rather than the home quota:
 ```bash
 export GAPH_ROOT="/mnt/tank/scratch/$USER/gaph_v2"
 export GAPH_WORK_DIR="$GAPH_ROOT/work"
-export NXF_CONDA_CACHEDIR="$GAPH_ROOT/conda"
+export NXF_CONDA_CACHEDIR="$GAPH_ROOT/conda/envs"
+export MAMBA_ROOT_PREFIX="$GAPH_ROOT/micromamba"
+export NXF_HOME="$GAPH_ROOT/nextflow"
 
 RUN="$GAPH_ROOT/results/run_001"
 nextflow run . \
@@ -96,14 +102,24 @@ nextflow run . \
 `GAPH_WORK_DIR` supplies the default Nextflow work path. An explicit
 `-work-dir "$GAPH_ROOT/work/run_001"` is also valid and takes precedence.
 `NXF_CONDA_CACHEDIR` is intentionally outside the run directory so environments
-are built once and reused across runs. Do not place either path in node-local
-`/tmp`.
+are built once and reused across runs. `MAMBA_ROOT_PREFIX` keeps downloaded
+package and repodata caches out of the home quota. `NXF_HOME` does the same for
+Nextflow runtime and plugin files.
+
+The `slurm` profile disables the process-level `scratch` directive. Tasks run in
+the shared Nextflow work directory under `GAPH_WORK_DIR` instead of staging
+large inputs and outputs through compute-node `/tmp`. This keeps pipeline data
+inside the assigned `/mnt/tank/scratch/$USER` allocation. Local profiles retain
+their existing task-scratch behavior.
 
 On the ITMO CT cluster, submit Nextflow from `sphinx`; do not run calculations
 there directly. The documented `main` partition is the default, and the cluster
 instructions do not require a Slurm account or QOS for ordinary jobs, so the
 profile does not invent `account`, `queue`, or `clusterOptions` values. Add a QOS
 only when the administrators explicitly grant and request one.
+
+See `docs/itmo_cluster.md` for the verified host layout, environment bootstrap,
+reference transfer, preflight checks, and staged smoke-test procedure.
 
 Conservative starting parameters:
 
