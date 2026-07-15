@@ -81,12 +81,14 @@ Control peak disk with:
 - `-work-dir` on scratch storage
 - `GAPH_WORK_DIR=/path/to/scratch/gaph_v2_work`
 - `NXF_CONDA_CACHEDIR=/path/to/shared/scratch/gaph_v2_conda`
-- `scratch = true` for fetch/parse tasks
 - `-profile low_storage` when resume is not required after successful completion
 
 On Slurm, both paths must be visible from the controller and every compute node.
 The Conda cache is reusable infrastructure and should remain outside individual
 run directories; `low_storage` cleanup applies to task work, not that cache.
+The repository's `slurm` profile disables task-local scratch so staged task data
+stays under the assigned shared work allocation. Local execution retains
+task-local scratch for fetch and alignment processes.
 
 Recommended starting point for large runs:
 
