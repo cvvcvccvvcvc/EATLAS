@@ -16,11 +16,14 @@ publishes normalized compressed FASTA/TSV outputs.
 Default local execution runs every stage in one command:
 
 ```bash
+RUN="results/run_all_strategies_$(date +%Y%m%d_%H%M%S)"
+
 nextflow run . \
-  -profile local,conda \
-  --ids_file assets/inputs/gene_ids/smoke_5_genes.txt \
-  --outdir results/run_test \
-  -resume
+  -profile local,conda,low_storage \
+  --stage all \
+  --ids_file assets/inputs/gene_ids/panel_10_genes.txt \
+  --outdir "$RUN" \
+  --alignment_strategies all
 ```
 
 Use the `conda` profile for normal runs so tasks use `envs/*.yml` through
@@ -57,16 +60,22 @@ If `--clinvar_vcf` and `CLINVAR_VCF` are unset, annotation uses
 ClinVar VCF and matching `.tbi`; the workflow fails early when neither the
 parameter, environment variable, nor default asset is available.
 
-For Slurm, use the same workflow with the `slurm` profile and put `work/` on
-scratch storage:
+For Slurm, combine the `slurm` and `low_storage` profiles and put `work/`,
+results, and environment caches under the assigned shared scratch allocation.
+The ITMO-specific bootstrap and validation procedure is documented in
+`docs/itmo_cluster.md`.
 
 ```bash
+export GAPH_ROOT="/mnt/tank/scratch/$USER/gaph_v2"
+export GAPH_WORK_DIR="$GAPH_ROOT/work"
+export NXF_CONDA_CACHEDIR="$GAPH_ROOT/conda/envs"
+export MAMBA_ROOT_PREFIX="$GAPH_ROOT/micromamba"
+export NXF_HOME="$GAPH_ROOT/nextflow"
+
 nextflow run . \
-  -profile slurm,conda \
+  -profile slurm,low_storage \
   --ids_file /path/to/gene_ids.txt \
-  --outdir /scratch/$USER/gaph_v2/results/run_001 \
-  -work-dir /scratch/$USER/gaph_v2/work/run_001 \
-  -resume
+  --outdir "$GAPH_ROOT/results/run_001"
 ```
 
 Alignment-only debug mode can reuse an existing fetch result:
