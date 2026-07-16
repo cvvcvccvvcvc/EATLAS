@@ -332,7 +332,7 @@ workflow ALIGNMENT_STAGE {
             tuple(partition_id, dirs)
         }
     partition_merge_inputs = gene_result_dirs
-        .join(partition_gene_counts)
+        .combine(partition_gene_counts, by: 0)
         .map { partition_id, dirs, gene_count -> tuple(groupKey(partition_id, gene_count), dirs) }
         .groupTuple()
         .map { key, dirs_by_gene ->
