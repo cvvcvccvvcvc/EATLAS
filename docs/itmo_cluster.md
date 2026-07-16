@@ -6,7 +6,7 @@ cluster. Do not store passwords, API keys, or private SSH keys here.
 
 ## Verified Cluster Layout
 
-Verified on 2026-07-15:
+Verified through 2026-07-16:
 
 - external login host: `ctlab.itmo.ru`
 - Slurm controller: `sphinx`; do not run pipeline computations directly there
@@ -18,11 +18,24 @@ Verified on 2026-07-15:
 - a test allocation ran on `meduza-1`
 - compute-node outbound DNS/TLS connectivity was present
 - system Java on `sphinx` was OpenJDK 11
+- `normal` QOS permits up to 64 CPU, 512 GB RAM, and 2 GPU per user
+- `high_mem` is not authorized for this account; ordinary jobs use `normal`
+- 1 CPU / 3 GB and 2 CPU / 8 GB test allocations started successfully
+- Micromamba 2.8.1 is installed under the assigned work allocation
+- the controller environment provides Nextflow 25.10.4 and OpenJDK 17
+- the controller environment occupies about 608 MB and its package cache about
+  445 MB
 
 The user association did not report explicit `MaxSubmitJobs` or `MaxJobs`
-limits. The ordinary `main` partition did not require an explicit QOS, account,
-or partition setting in the Nextflow profile. Do not request a high-resource
-QOS unless the cluster administrator explicitly authorizes it.
+limits. A historical observation that only four jobs run concurrently has not
+yet been reproduced and must not be treated as a scheduler contract. The
+ordinary `main` partition does not require an explicit account or partition
+setting in the Nextflow profile.
+
+Before a run, inspect `squeue -u "$USER"` for obsolete jobs in
+`launch failed requeued held`. Four stale 8 GB jobs from an older pipeline
+exhausted the user's accounted memory and caused a new 3 GB task to remain
+pending with `QOSMaxMemoryPerUser`. Cancel only jobs confirmed to be obsolete.
 
 The connectivity probe `curl -I https://api.ncbi.nlm.nih.gov` returned HTTP
 403. That confirms routing, DNS, and TLS to the host, but not successful access
@@ -35,8 +48,31 @@ Useful scheduler inspection commands:
 squeue -u "$USER"
 scontrol show partition main
 sacctmgr show user "$USER" withassoc format=User,Account,Partition,MaxSubmitJobs,MaxJobs
-sacctmgr show qos format=Name%20,MaxJobsPU,MaxWall
+sacctmgr show qos normal format=Name%20,MaxTRESPU%100,MaxJobsPU,MaxSubmitJobsPU
 ```
+
+## Resource Model
+
+Nextflow submits one Slurm job for each process task:
+
+- `cpus` reserves CPUs for that task; the command must explicitly use threads
+  to benefit from them
+- `memory` is a task limit/reservation, not a performance accelerator
+- `maxForks` limits concurrent instances of one process name, not the whole
+  workflow; the same value on several alignment processes can yield more jobs
+  in total
+- `executor.queueSize` limits submitted jobs, including pending jobs; Slurm
+  still decides how many actually run
+
+The current alignment processes request two CPUs, but their wrappers do not yet
+pass `task.cpus` to Minimap2, BWA/Samtools, or Nucmer. Minimap2 therefore uses
+its own default thread count, while BWA/Samtools and the current Nucmer command
+do not consume the reserved CPUs consistently. Do not increase CPU requests
+until thread counts are wired through and benchmarked.
+
+Current memory requests are conservative initial bounds. Tune them from
+Nextflow trace `peak_rss` after representative cluster runs. Requesting the
+account maximum for every task wastes capacity and can increase queue time.
 
 ## Storage Policy
 
@@ -84,11 +120,11 @@ host are visible from `sphinx` and compute nodes.
 
 ## Repository And References
 
-Clone the repository into home after its Git remote is available:
+Clone the repository into home:
 
 ```bash
 cd /nfs/home/$USER
-git clone <repository-url> gaph_v2
+git clone https://github.com/cvvcvccvvcvc/EATLAS.git gaph_v2
 cd gaph_v2
 git switch main
 ```
@@ -132,28 +168,37 @@ sha256sum \
 The hashes must match line by line. Do not transfer local `results/`, `work/`,
 `.nextflow/`, Conda environments, or the ignored `tools/bin/datasets` symlink.
 
+Expected SHA-256 values for the files transferred on 2026-07-16:
+
+```text
+0ac3f9e8084b43ad09d367a20b54ada4cc9e592846f471a7c2d698e6dbf7b71a  clinvar.vcf.gz
+4af776bf0c7ca2cb613fd62a64aae550f0d48fc7fdfb11d95c43e403092020c6  clinvar.vcf.gz.tbi
+4920f0eae7e2197c50b67a201e06d657387137b49dd60f474b4f1d5b29334051  genomic.gff.gz
+```
+
 ## Controller Environment
 
-Conda is user-managed on this cluster. From the repository on `sphinx`, keep
-both the controller environment and all package caches in `/mnt/tank/scratch`:
+Bootstrap Micromamba on `sphinx` and keep the controller environment and all
+package caches in `/mnt/tank/scratch`:
 
 ```bash
-export GAPH_CODE="/nfs/home/$USER/gaph_v2"
 export GAPH_ROOT="/mnt/tank/scratch/$USER/gaph_v2"
+mkdir -p "$GAPH_ROOT"/{bin,conda,envs,micromamba,nextflow,results,work}
 
-mkdir -p "$GAPH_ROOT"/{conda,envs,micromamba,nextflow,results,work}
+curl -Ls https://micro.mamba.pm/api/micromamba/linux-64/latest \
+  | tar -xvj -C "$GAPH_ROOT" bin/micromamba
 
-export CONDA_PKGS_DIRS="$GAPH_ROOT/conda/controller-pkgs"
+export PATH="$GAPH_ROOT/bin:$PATH"
 export MAMBA_ROOT_PREFIX="$GAPH_ROOT/micromamba"
 export NXF_HOME="$GAPH_ROOT/nextflow"
 
-cd "$GAPH_CODE"
-conda env create --prefix "$GAPH_ROOT/envs/controller" -f envs/controller.yml
-conda activate "$GAPH_ROOT/envs/controller"
+cd /nfs/home/$USER/gaph_v2
+micromamba create --yes \
+  --prefix "$GAPH_ROOT/envs/controller" \
+  --file envs/controller.yml
 
-nextflow -version
-java -version
-micromamba --version
+micromamba run -p "$GAPH_ROOT/envs/controller" nextflow -version
+micromamba run -p "$GAPH_ROOT/envs/controller" java -version
 micromamba info
 ```
 
@@ -169,8 +214,16 @@ export GAPH_ROOT="/mnt/tank/scratch/$USER/gaph_v2"
 export GAPH_WORK_DIR="$GAPH_ROOT/work"
 export NXF_CONDA_CACHEDIR="$GAPH_ROOT/conda/envs"
 export MAMBA_ROOT_PREFIX="$GAPH_ROOT/micromamba"
+export CONDA_PKGS_DIRS="$MAMBA_ROOT_PREFIX/pkgs"
 export NXF_HOME="$GAPH_ROOT/nextflow"
+export PATH="$GAPH_ROOT/bin:$PATH"
 ```
+
+These exports are stored in `$HOME/.gaph_v2_cluster_env.sh` on the cluster. Run
+`source "$HOME/.gaph_v2_cluster_env.sh"` after each login. As of the initial
+smoke test, no NCBI `.env` credentials were configured; one-gene validation can
+run without them, but production fetch concurrency should not be increased
+until API credentials and NCBI behavior are verified.
 
 If NCBI credentials are used, place them in the ignored `$GAPH_CODE/.env`, set
 permissions to `600`, and never commit the file.
@@ -211,7 +264,7 @@ First run one strategy with all concurrency set to one:
 cd "$GAPH_CODE"
 RUN="$GAPH_ROOT/results/slurm_smoke_1gene_asm20_$(date +%Y%m%d_%H%M%S)"
 
-nextflow run . \
+micromamba run -p "$GAPH_ROOT/envs/controller" nextflow run . \
   -profile slurm,low_storage \
   --stage all \
   --ids_file "$GAPH_ROOT/inputs/smoke_1_gene.ids" \
