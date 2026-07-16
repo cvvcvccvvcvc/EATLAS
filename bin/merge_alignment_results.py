@@ -80,6 +80,26 @@ def count_tsv_gz_rows(path: Path) -> int:
         return sum(1 for _ in handle)
 
 
+def summarize_alignment_tasks(path: Path) -> tuple[int, int]:
+    """Return total task rows and distinct genes ready for alignment."""
+    task_count = 0
+    ready_gene_ids: set[str] = set()
+    with gzip.open(path, "rt", newline="") as handle:
+        reader = csv.DictReader(handle, delimiter="\t")
+        required = {"gene_id", "status"}
+        missing = required - set(reader.fieldnames or [])
+        if missing:
+            raise ValueError(
+                f"Alignment tasks {path} missing required columns: "
+                + ", ".join(sorted(missing))
+            )
+        for row in reader:
+            task_count += 1
+            if row["status"] == "ready" and row["gene_id"]:
+                ready_gene_ids.add(row["gene_id"])
+    return task_count, len(ready_gene_ids)
+
+
 def unique_paths(paths: list[Path]) -> list[Path]:
     seen: set[Path] = set()
     unique: list[Path] = []
@@ -450,6 +470,11 @@ def main() -> None:
     manifests = load_manifests(result_dirs)
     strategies = manifest_strategies(manifests)
     gene_ids = manifest_gene_ids(manifests)
+    if args.alignment_tasks:
+        alignment_task_count, gene_count = summarize_alignment_tasks(args.alignment_tasks)
+    else:
+        alignment_task_count = len(gene_ids)
+        gene_count = len(gene_ids)
 
     summary_count = merge_tsv_gz(
         [path / "ortholog_alignment_summary.tsv.gz" for path in result_dirs],
@@ -513,8 +538,8 @@ def main() -> None:
         "partition_id": args.partition_id or "",
         "strategy_count": len(strategies),
         "strategies": strategies,
-        "gene_count": len(gene_ids),
-        "alignment_task_count": count_tsv_gz_rows(args.alignment_tasks) if args.alignment_tasks else len(gene_ids),
+        "gene_count": gene_count,
+        "alignment_task_count": alignment_task_count,
         "taxonomy_tax_id_count": count_tsv_gz_rows(args.taxonomy_presets) if args.taxonomy_presets else 0,
         "taxonomy_failure_count": count_tsv_gz_rows(args.taxonomy_failures) if args.taxonomy_failures else 0,
         "ortholog_alignment_summary_count": summary_count,
