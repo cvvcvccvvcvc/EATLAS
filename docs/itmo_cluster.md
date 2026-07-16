@@ -27,10 +27,10 @@ Verified through 2026-07-16:
   445 MB
 
 The user association did not report explicit `MaxSubmitJobs` or `MaxJobs`
-limits. A historical observation that only four jobs run concurrently has not
-yet been reproduced and must not be treated as a scheduler contract. The
-ordinary `main` partition does not require an explicit account or partition
-setting in the Nextflow profile.
+limits. A controlled test submitted five independent 1 CPU / 1 GB jobs and all
+five ran concurrently on `meduza-1`; the historical four-job observation is not
+a current scheduler limit. The ordinary `main` partition does not require an
+explicit account or partition setting in the Nextflow profile.
 
 Before a run, inspect `squeue -u "$USER"` for obsolete jobs in
 `launch failed requeued held`. Four stale 8 GB jobs from an older pipeline
