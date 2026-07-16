@@ -73,11 +73,19 @@ Nextflow submits one Slurm job for each process task:
 - `executor.queueSize` limits submitted jobs, including pending jobs; Slurm
   still decides how many actually run
 
-The current alignment processes request two CPUs, but their wrappers do not yet
-pass `task.cpus` to Minimap2, BWA/Samtools, or Nucmer. Minimap2 therefore uses
-its own default thread count, while BWA/Samtools and the current Nucmer command
-do not consume the reserved CPUs consistently. Do not increase CPU requests
-until thread counts are wired through and benchmarked.
+Minimap2 and Nucmer receive `task.cpus` explicitly. A two-gene benchmark using
+AFDN (GeneID 4301) and BRCA1 (GeneID 672) compared two, three, and four CPUs per
+task. Three CPUs reduced individual alignment time by about 31-36% relative to
+two CPUs and was only 4-6% slower than four CPUs. Across the four measured
+tasks, two and three CPUs consumed approximately the same reserved CPU-seconds,
+whereas four CPUs consumed about 27% more than three. Minimap2 and Nucmer
+therefore request three CPUs by default. BWA and the other strategies were not
+changed by this benchmark.
+
+The two- and three-CPU outputs had identical summaries, feature coverage, and
+canonical segment/event evidence. Minimap2 initially differed only in
+line-order-derived provenance identifiers; those identifiers are now derived
+from PAF content and remain stable across thread counts.
 
 Current memory requests are conservative initial bounds. Tune them from
 Nextflow trace `peak_rss` after representative cluster runs. Requesting the
@@ -229,10 +237,9 @@ export PATH="$GAPH_ROOT/bin:$PATH"
 ```
 
 These exports are stored in `$HOME/.gaph_v2_cluster_env.sh` on the cluster. Run
-`source "$HOME/.gaph_v2_cluster_env.sh"` after each login. As of the initial
-smoke test, no NCBI `.env` credentials were configured; one-gene validation can
-run without them, but production fetch concurrency should not be increased
-until API credentials and NCBI behavior are verified.
+`source "$HOME/.gaph_v2_cluster_env.sh"` after each login. NCBI credentials are
+configured in the ignored `$GAPH_CODE/.env`; the file was verified with mode
+`600`. Never print its values into logs or commit the file.
 
 If NCBI credentials are used, place them in the ignored `$GAPH_CODE/.env`, set
 permissions to `600`, and never commit the file.
@@ -304,6 +311,12 @@ Then validate in this order:
 Do not start with 20,000 genes. The local tests validate pipeline behavior, but
 the Slurm scheduler, cluster network, shared filesystem, and external services
 must be measured together before production scaling.
+
+A two-gene align-only regression exposed and verified a multi-gene partition
+merge fix. Both genes now reach `MERGE_ALIGNMENT_PARTITION` and
+`MERGE_ALIGNMENT`; the AFDN/BRCA1 Minimap2 ASM20 plus Nucmer run produced
+1,411,399 raw events, 2,750 ortholog-strategy summaries, no failures, and a
+24 MB durable alignment dataset.
 
 ## Monitoring And Analytics
 
