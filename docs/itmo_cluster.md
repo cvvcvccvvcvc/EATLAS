@@ -318,6 +318,13 @@ merge fix. Both genes now reach `MERGE_ALIGNMENT_PARTITION` and
 1,411,399 raw events, 2,750 ortholog-strategy summaries, no failures, and a
 24 MB durable alignment dataset.
 
+Annotation of the two-gene, seven-strategy AFDN/BRCA1 dataset collapsed
+4,379,013 support rows to 470,359 variant contexts in 2m54s and used 3.3 GB
+peak RSS. Annotation tasks therefore request 8 GB and partitioned annotation
+retries OOM-like failures with a larger allocation. Representative scaling
+runs should keep partitions small until memory scaling has been measured on a
+larger panel.
+
 ## Monitoring And Analytics
 
 Monitor orchestration from `sphinx` without running analysis there:
