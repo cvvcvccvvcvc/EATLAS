@@ -182,6 +182,12 @@ Stage 2 publishes:
 
 Native outputs are disabled by default.
 
+For Minimap2 rows, `native_record_id` is derived from the PAF record content
+rather than its output line number. `event_id` combines the strategy, that
+stable record identifier, and the event ordinal within the PAF `cs` tag. These
+identifiers therefore remain stable when Minimap2 emits identical records in a
+different order at another thread count.
+
 `strategy_summary.tsv.gz` contains `summary_row_count`, `gene_count`,
 `aligned_summary_row_count`, `event_count`, and `aligned_target_bp` for each
 enabled strategy. Reports must read this alignment-owned table, not mutable

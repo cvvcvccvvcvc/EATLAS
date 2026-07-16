@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import csv
 import gzip
+import hashlib
 import json
 import re
 import shutil
@@ -216,16 +217,24 @@ def genomic_coords(target_meta: dict[str, str], start0: int, end0: int) -> tuple
     return str(genomic_start), str(genomic_end)
 
 
+def paf_record_digest(line: str) -> str:
+    return hashlib.sha256(line.encode("utf-8")).hexdigest()[:32]
+
+
+def stable_paf_record_id(record_digest: str, occurrence: int) -> str:
+    return f"paf:{record_digest}:{occurrence}"
+
+
 def cs_events(
     cs: str,
     target_start0: int,
     record: dict[str, object],
     target_meta: dict[str, str],
-    event_start_index: int,
+    event_id_prefix: str,
 ) -> list[dict[str, object]]:
     events: list[dict[str, object]] = []
     target_pos = target_start0
-    event_index = event_start_index
+    event_index = 1
 
     for match in CS_OP_RE.finditer(cs):
         op = match.group(0)
@@ -240,7 +249,7 @@ def cs_events(
             events.append(
                 {
                     **record,
-                    "event_id": event_index,
+                    "event_id": f"{event_id_prefix}:{event_index}",
                     "event_type": "snv",
                     "target_start0": target_pos,
                     "target_end0": target_pos + 1,
@@ -259,7 +268,7 @@ def cs_events(
             events.append(
                 {
                     **record,
-                    "event_id": event_index,
+                    "event_id": f"{event_id_prefix}:{event_index}",
                     "event_type": "ins",
                     "target_start0": target_pos,
                     "target_end0": target_pos,
@@ -277,7 +286,7 @@ def cs_events(
             events.append(
                 {
                     **record,
-                    "event_id": event_index,
+                    "event_id": f"{event_id_prefix}:{event_index}",
                     "event_type": "del",
                     "target_start0": target_pos,
                     "target_end0": target_pos + len(ref),
@@ -337,9 +346,10 @@ def parse_paf(
     segments: list[dict[str, object]] = []
     events: list[dict[str, object]] = []
     event_index = event_start_index
+    record_occurrences: dict[str, int] = defaultdict(int)
 
     with paf_path.open() as handle:
-        for line_index, line in enumerate(handle, start=1):
+        for line in handle:
             line = line.rstrip("\n")
             if not line:
                 continue
@@ -370,6 +380,9 @@ def parse_paf(
             mapq = int(fields[11])
             tags = parse_tags(fields)
             primary = is_primary(tags)
+            record_digest = paf_record_digest(line)
+            record_occurrences[record_digest] += 1
+            native_record_id = stable_paf_record_id(record_digest, record_occurrences[record_digest])
             identity = matches / block_length if block_length else 0.0
             flags = []
             if not primary:
@@ -400,7 +413,7 @@ def parse_paf(
                 "is_primary": str(primary).lower(),
                 "divergence": tags.get("dv", ""),
                 "gap_compressed_divergence": tags.get("de", ""),
-                "native_record_id": line_index,
+                "native_record_id": native_record_id,
                 "qc_flags": ",".join(flags),
             }
             segments.append(segment)
@@ -431,10 +444,16 @@ def parse_paf(
                     "preset": preset,
                     "query_id": qname,
                     "strand": strand,
-                    "native_record_id": line_index,
+                    "native_record_id": native_record_id,
                     "qc_flags": ",".join(flags),
                 }
-                new_events = cs_events(cs, target_start, event_record, target_meta, event_index)
+                new_events = cs_events(
+                    cs,
+                    target_start,
+                    event_record,
+                    target_meta,
+                    f"{strategy}:{native_record_id}",
+                )
                 event_index += len(new_events)
                 summary["event_count"] += len(new_events)
                 events.extend(new_events)
