@@ -33,9 +33,18 @@ a current scheduler limit. The ordinary `main` partition does not require an
 explicit account or partition setting in the Nextflow profile.
 
 Before a run, inspect `squeue -u "$USER"` for obsolete jobs in
-`launch failed requeued held`. Four stale 8 GB jobs from an older pipeline
-exhausted the user's accounted memory and caused a new 3 GB task to remain
-pending with `QOSMaxMemoryPerUser`. Cancel only jobs confirmed to be obsolete.
+`launch failed requeued held`; cancel only jobs confirmed to be obsolete. Four
+such 8 GB jobs from an older pipeline were found and removed during setup, but
+they were not the root cause of the first smoke-test failure.
+
+The `main` partition reports `DefMemPerNode=UNLIMITED`. A task submitted without
+an explicit memory request can therefore inherit hundreds of gigabytes and be
+held with `QOSMaxMemoryPerUser`. This happened when partial `withName` blocks in
+composed profiles replaced the base process resource configuration. Scratch
+policy now uses the `task_scratch` label instead, so the `slurm` profile can
+disable task-local scratch without removing CPU, memory, time, retry, or Conda
+directives. When changing profiles, verify the effective configuration rather
+than assuming repeated selector blocks merge field by field.
 
 The connectivity probe `curl -I https://api.ncbi.nlm.nih.gov` returned HTTP
 403. That confirms routing, DNS, and TLS to the host, but not successful access
