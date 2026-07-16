@@ -1,4 +1,5 @@
 process ALIGN_MINIMAP2_ASM20 {
+    label 'task_scratch'
     tag { meta.id }
 
     input:

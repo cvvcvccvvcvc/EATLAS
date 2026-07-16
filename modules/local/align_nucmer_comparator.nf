@@ -1,4 +1,5 @@
 process ALIGN_NUCMER_COMPARATOR {
+    label 'task_scratch'
     tag { meta.id }
 
     input:

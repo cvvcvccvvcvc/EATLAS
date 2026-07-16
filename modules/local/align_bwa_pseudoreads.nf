@@ -1,4 +1,5 @@
 process ALIGN_BWA_PSEUDOREADS {
+    label 'task_scratch'
     tag { meta.id }
 
     input:

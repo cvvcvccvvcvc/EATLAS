@@ -1,4 +1,5 @@
 process ALIGN_ENSEMBL_COMPARA_MAF_CHUNK {
+    label 'task_scratch'
     tag { meta.id }
 
     input:

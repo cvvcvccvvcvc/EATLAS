@@ -1,4 +1,5 @@
 process FETCH_PARSE_CHUNK {
+    label 'task_scratch'
     tag { meta.id }
 
     input:

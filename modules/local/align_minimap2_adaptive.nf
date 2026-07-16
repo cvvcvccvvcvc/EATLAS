@@ -1,4 +1,5 @@
 process ALIGN_MINIMAP2_ADAPTIVE {
+    label 'task_scratch'
     tag { meta.id }
 
     input:
