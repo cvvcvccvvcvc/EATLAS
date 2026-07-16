@@ -110,6 +110,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--mode", choices=["fixed", "adaptive"], required=True)
     parser.add_argument("--fixed-preset", default="asm10")
     parser.add_argument("--minimap2-bin", required=True)
+    parser.add_argument("--threads", default=1, type=int)
     parser.add_argument("--target-features", type=Path)
     parser.add_argument("--keep-native", default="false")
     return parser.parse_args()
@@ -296,9 +297,18 @@ def cs_events(
     return events
 
 
-def run_minimap2(minimap2_bin: str, preset: str, target_fa: Path, query_fa: Path, paf_path: Path) -> str:
+def run_minimap2(
+    minimap2_bin: str,
+    preset: str,
+    target_fa: Path,
+    query_fa: Path,
+    paf_path: Path,
+    threads: int,
+) -> str:
     cmd = [
         minimap2_bin,
+        "-t",
+        str(threads),
         "-x",
         preset,
         "-c",
@@ -489,6 +499,8 @@ def gzip_copy(src: Path, dst: Path) -> None:
 
 def main() -> None:
     args = parse_args()
+    if args.threads < 1:
+        raise ValueError("--threads must be at least 1")
     args.outdir.mkdir(parents=True, exist_ok=True)
     keep_native = truthy(args.keep_native)
 
@@ -532,7 +544,14 @@ def main() -> None:
         for preset, query_fa in sorted(groups.items()):
             paf_path = Path(f"{args.strategy}.{preset}.paf")
             try:
-                command = run_minimap2(args.minimap2_bin, preset, target_fasta, query_fa, paf_path)
+                command = run_minimap2(
+                    args.minimap2_bin,
+                    preset,
+                    target_fasta,
+                    query_fa,
+                    paf_path,
+                    args.threads,
+                )
                 commands.append(command)
                 segments, events, event_index = parse_paf(
                     paf_path,

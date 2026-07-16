@@ -20,6 +20,7 @@ process ALIGN_NUCMER_COMPARATOR {
         --nucmer-bin "${params.nucmer_bin}" \\
         --show-coords-bin "${params.show_coords_bin}" \\
         --show-snps-bin "${params.show_snps_bin}" \\
+        --threads "${task.cpus}" \\
         --target-features "${task_dir}/target_features.tsv.gz" \\
         --keep-native "${params.keep_native_alignments}"
     """

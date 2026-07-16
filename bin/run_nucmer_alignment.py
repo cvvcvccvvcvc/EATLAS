@@ -105,6 +105,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--nucmer-bin", required=True)
     parser.add_argument("--show-coords-bin", required=True)
     parser.add_argument("--show-snps-bin", required=True)
+    parser.add_argument("--threads", default=1, type=int)
     parser.add_argument("--target-features", type=Path)
     parser.add_argument("--keep-native", default="false")
     return parser.parse_args()
@@ -383,6 +384,8 @@ def gzip_copy(src: Path, dst: Path) -> None:
 
 def main() -> None:
     args = parse_args()
+    if args.threads < 1:
+        raise ValueError("--threads must be at least 1")
     args.outdir.mkdir(parents=True, exist_ok=True)
     keep_native = truthy(args.keep_native)
 
@@ -417,6 +420,8 @@ def main() -> None:
                 run_command(
                     [
                         args.nucmer_bin,
+                        "--threads",
+                        str(args.threads),
                         "--prefix",
                         prefix,
                         str(target_fasta),
