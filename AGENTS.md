@@ -100,6 +100,10 @@ Agent workflow rules:
     each experiment's code, data, scratch files, reports, and generated outputs
     isolated inside that experiment directory unless an external scratch path is
     explicitly documented.
+19. Before changing scientific hypotheses, validation statistics, or analytics
+   report content, read `docs/article_narrative.md`. Keep the main argument,
+   supporting analyses, and unresolved design decisions consistent with it;
+   update the document when the research design changes materially.
 
 ## Progressive Disclosure
 
@@ -111,3 +115,5 @@ Read these only when relevant:
 - `docs/run_validation.md` - commands for local/slurm runs and verification.
 - `docs/storage_model.md` - Nextflow cache, result layout, and disk-space policy.
 - `docs/itmo_cluster.md` - verified ITMO Slurm setup, paths, transfer, and smoke tests.
+- `docs/article_narrative.md` - mandatory scientific narrative for validation
+  analyses and analytics report development.
