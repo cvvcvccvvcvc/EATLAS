@@ -111,3 +111,45 @@ def test_bwa_pipeline_rejects_single_cpu_budget(tmp_path: Path) -> None:
             tmp_path / "sorted.bam",
             threads=1,
         )
+
+
+def test_scan_bam_deduplicates_event_support_by_ortholog(tmp_path: Path) -> None:
+    bam_path = tmp_path / "reads.bam"
+    header = {"HD": {"VN": "1.6", "SO": "coordinate"}, "SQ": [{"SN": "target", "LN": 100}]}
+
+    def make_read(name: str) -> bwa_runner.pysam.AlignedSegment:
+        read = bwa_runner.pysam.AlignedSegment()
+        read.query_name = name
+        read.query_sequence = "A" * 20 + "G" + "A" * 9
+        read.flag = 0
+        read.reference_id = 0
+        read.reference_start = 0
+        read.mapping_quality = 60
+        read.cigar = ((0, 30),)
+        read.query_qualities = bwa_runner.pysam.qualitystring_to_array("I" * 30)
+        read.set_tag("NM", 1)
+        return read
+
+    with bwa_runner.pysam.AlignmentFile(bam_path, "wb", header=header) as bam:
+        bam.write(make_read("ortholog_101_pseudo_2_1-30"))
+        bam.write(make_read("ortholog_101_pseudo_1_1-30"))
+        bam.write(make_read("ortholog_102_pseudo_1_1-30"))
+    bwa_runner.pysam.index(str(bam_path))
+
+    _segments, event_support = bwa_runner.scan_bam(bam_path, "A" * 100)
+    support = event_support[("snv", 20, 21, "A", "G")]
+    rows = bwa_runner.make_bwa_event_rows(
+        event_support,
+        gene_id="1",
+        target_meta={"genomic_begin": "100"},
+        target_acc="NC_1",
+        ortholog_meta_by_id={
+            "101": {"tax_id": "1"},
+            "102": {"tax_id": "2"},
+        },
+    )
+
+    assert sorted(support) == ["101", "102"]
+    assert support["101"]["native_record_id"] == "ortholog_101_pseudo_1_1-30"
+    assert len(rows) == 2
+    assert len({row["event_id"] for row in rows}) == 2

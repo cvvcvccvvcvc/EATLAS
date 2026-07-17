@@ -98,6 +98,9 @@ SUMMARY_FIELDS = [
 
 FAILURE_FIELDS = ["gene_id", "ortholog_gene_id", "strategy", "tool", "failure_type", "message"]
 
+EventKey = tuple[str, int, int, str, str]
+EventSupport = dict[EventKey, dict[str, dict[str, object]]]
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
@@ -298,13 +301,35 @@ def identity_from_read(read: pysam.AlignedSegment) -> tuple[int, int, str]:
     return matches, block_length, fmt_fraction(matches, block_length)
 
 
+def add_event_support(
+    event_support: EventSupport,
+    key: EventKey,
+    ortholog_id: str,
+    strand: str,
+    native_record_id: str,
+) -> None:
+    support = {
+        "ortholog_gene_id": ortholog_id,
+        "strand": strand,
+        "native_record_id": native_record_id,
+    }
+    current = event_support[key].get(ortholog_id)
+    if current is None or (
+        str(support["native_record_id"]),
+        str(support["strand"]),
+    ) < (
+        str(current["native_record_id"]),
+        str(current["strand"]),
+    ):
+        event_support[key][ortholog_id] = support
+
+
 def scan_bam(
     bam_path: Path,
     target_seq: str,
-) -> tuple[list[dict[str, object]], dict[tuple[str, int, int, str, str], list[dict[str, object]]]]:
+) -> tuple[list[dict[str, object]], EventSupport]:
     segments: list[dict[str, object]] = []
-    event_support: dict[tuple[str, int, int, str, str], list[dict[str, object]]] = defaultdict(list)
-    seen_events: set[tuple[tuple[str, int, int, str, str], str, str]] = set()
+    event_support: EventSupport = defaultdict(dict)
 
     with pysam.AlignmentFile(bam_path, "rb") as bam:
         for read in bam.fetch():
@@ -352,34 +377,37 @@ def scan_bam(
                         if ref == alt:
                             continue
                         key = ("snv", ref_index, ref_index + 1, ref, alt)
-                        support_key = (key, ortholog_id, read.query_name)
-                        if support_key not in seen_events:
-                            event_support[key].append(
-                                {"ortholog_gene_id": ortholog_id, "strand": strand, "native_record_id": read.query_name}
-                            )
-                            seen_events.add(support_key)
+                        add_event_support(
+                            event_support,
+                            key,
+                            ortholog_id,
+                            strand,
+                            read.query_name,
+                        )
                     r_pos += length
                     q_pos += length
                 elif op == 1:
                     alt = q_seq[q_pos : q_pos + length].upper()
                     key = ("ins", r_pos, r_pos, "", alt)
-                    support_key = (key, ortholog_id, read.query_name)
-                    if support_key not in seen_events:
-                        event_support[key].append(
-                            {"ortholog_gene_id": ortholog_id, "strand": strand, "native_record_id": read.query_name}
-                        )
-                        seen_events.add(support_key)
+                    add_event_support(
+                        event_support,
+                        key,
+                        ortholog_id,
+                        strand,
+                        read.query_name,
+                    )
                     q_pos += length
                 elif op in {2, 3}:
                     if op == 2:
                         ref = target_seq[r_pos : r_pos + length].upper()
                         key = ("del", r_pos, r_pos + length, ref, "")
-                        support_key = (key, ortholog_id, read.query_name)
-                        if support_key not in seen_events:
-                            event_support[key].append(
-                                {"ortholog_gene_id": ortholog_id, "strand": strand, "native_record_id": read.query_name}
-                            )
-                            seen_events.add(support_key)
+                        add_event_support(
+                            event_support,
+                            key,
+                            ortholog_id,
+                            strand,
+                            read.query_name,
+                        )
                     r_pos += length
                 elif op == 4:
                     q_pos += length
@@ -458,15 +486,16 @@ def make_event_row(
 
 
 def make_bwa_event_rows(
-    event_support: dict[tuple[str, int, int, str, str], list[dict[str, object]]],
+    event_support: EventSupport,
     gene_id: str,
     target_meta: dict[str, str],
     target_acc: str,
     ortholog_meta_by_id: dict[str, dict[str, str]],
 ) -> list[dict[str, object]]:
     rows: list[dict[str, object]] = []
-    for (event_type, start0, end0, ref, alt), support_rows in sorted(event_support.items()):
-        for support in support_rows:
+    for (event_type, start0, end0, ref, alt), support_by_ortholog in sorted(event_support.items()):
+        for ortholog_id in sorted(support_by_ortholog, key=int):
+            support = support_by_ortholog[ortholog_id]
             rows.append(
                 make_event_row(
                     gene_id=gene_id,
