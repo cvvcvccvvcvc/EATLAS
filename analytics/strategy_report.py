@@ -82,7 +82,6 @@ CONSEQUENCE_GROUP_TERMS = {
 }
 STRATEGY_LABELS = {
     "bwa_pseudoreads": "BWA pseudo",
-    "bwa_pseudoreads_varscan": "BWA VarScan",
     "minimap2_asm10": "minimap2 asm10",
     "minimap2_asm20": "minimap2 asm20",
     "minimap2_taxonomy_adaptive": "minimap2 adaptive",

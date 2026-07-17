@@ -51,19 +51,16 @@ This keeps memory bounded and avoids a single huge `alignment_events.tsv.gz`.
 
 ## BWA Pseudoreads
 
-The BWA pseudoread strategies still do more compute work than the other local
-aligners because they generate synthetic reads, build a per-gene BWA index, run
-BWA, sort/index BAM, and apply the LIS BAM filter.
+The BWA pseudoread strategy still does more compute work than the other local
+aligners because it generates synthetic reads, builds a per-gene BWA index, runs
+BWA, sorts and indexes BAM, and applies the LIS BAM filter.
 
 Current behavior:
 
-- `bwa_pseudoreads` and `bwa_pseudoreads_varscan` are separate selectable
-  strategies;
-- VarScan is required only when `bwa_pseudoreads_varscan` is selected;
+- `bwa_pseudoreads` extracts BAM/CIGAR-supported events with `pysam`;
 - `bwa mem` is streamed through `samtools view` and `samtools sort`, avoiding
   durable SAM and unsorted BAM intermediates;
-- native BAM, mpileup, and VCF files are kept only with
-  `--keep_native_alignments true`;
+- native BAM files are kept only with `--keep_native_alignments true`;
 - normalized segments, summaries, events, failures, and manifest files are
   emitted like the other aligner strategies.
 

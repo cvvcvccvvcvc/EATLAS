@@ -152,21 +152,6 @@
                     "default": 30,
                     "description": "Synthetic PHRED quality assigned to generated BWA pseudo-reads."
                 },
-                "bwa_varscan_min_coverage": {
-                    "type": "integer",
-                    "default": 2,
-                    "description": "VarScan --min-coverage value used by the bwa_pseudoreads_varscan strategy."
-                },
-                "bwa_varscan_min_reads2": {
-                    "type": "integer",
-                    "default": 1,
-                    "description": "VarScan --min-reads2 value used by the bwa_pseudoreads_varscan strategy."
-                },
-                "bwa_varscan_min_var_freq": {
-                    "type": "number",
-                    "default": 0.01,
-                    "description": "VarScan --min-var-freq value used by the bwa_pseudoreads_varscan strategy."
-                },
                 "ensembl_compara_maf_max_forks": {
                     "type": "integer",
                     "default": 3,
@@ -237,8 +222,7 @@
                 "show_coords_bin": { "type": "string" },
                 "show_snps_bin": { "type": "string" },
                 "bwa_bin": { "type": "string" },
-                "samtools_bin": { "type": "string" },
-                "varscan_jar": { "type": "string" }
+                "samtools_bin": { "type": "string" }
             }
         }
     },

@@ -22,7 +22,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--show-snps-bin", required=True)
     parser.add_argument("--bwa-bin", required=True)
     parser.add_argument("--samtools-bin", required=True)
-    parser.add_argument("--varscan-jar", required=True)
     parser.add_argument("--out-json", required=True, type=Path)
     return parser.parse_args()
 
@@ -48,18 +47,6 @@ def require_python_module(name: str, errors: list[str]) -> None:
         errors.append(f"Python module not importable in task environment: {name}")
 
 
-def require_varscan(raw: str, errors: list[str]) -> None:
-    if raw == "varscan":
-        require_executable("varscan", raw, errors)
-        return
-    jar = Path(raw)
-    if jar.exists():
-        require_executable("java", "java", errors)
-        return
-    if shutil.which("varscan") is None:
-        errors.append(f"VarScan jar not found and varscan is not on PATH: {raw}")
-
-
 def main() -> None:
     args = parse_args()
     strategies = split_strategies(args.alignment_strategies)
@@ -75,13 +62,11 @@ def main() -> None:
             require_executable("nucmer", args.nucmer_bin, errors)
             require_executable("show-coords", args.show_coords_bin, errors)
             require_executable("show-snps", args.show_snps_bin, errors)
-        if strategies & {"bwa_pseudoreads", "bwa_pseudoreads_varscan"}:
+        if "bwa_pseudoreads" in strategies:
             require_python_module("pysam", errors)
             require_python_module("bam_filtering_v1", errors)
             require_executable("bwa", args.bwa_bin, errors)
             require_executable("samtools", args.samtools_bin, errors)
-        if "bwa_pseudoreads_varscan" in strategies:
-            require_varscan(args.varscan_jar, errors)
 
     if args.stage in {"all", "annotate"}:
         require_python_module("pysam", errors)

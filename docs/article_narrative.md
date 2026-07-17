@@ -123,16 +123,14 @@ stories:
 
 ## Strategy Development
 
-The current alignment strategies are method-development candidates, not seven
-final algorithms. Report them all while comparing behavior, but do not choose a
+The current alignment strategies are method-development candidates, not final
+algorithms. Report them all while comparing behavior, but do not choose a
 winner from p-values alone. The final method should use the smallest strategy
 set that provides stable callability, nonredundant allele evidence, acceptable
 runtime, and reproducible validation.
 
 If ClinVar results influence strategy selection, the selected strategy must be
-confirmed on data not used for that selection. `bwa_pseudoreads_varscan` is a
-provisional filtered derivative and is not assumed to belong in the final
-method.
+confirmed on data not used for that selection.
 
 ## Open Decisions
 

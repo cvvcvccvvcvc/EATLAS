@@ -21,7 +21,6 @@ process CHECK_RUNTIME {
         --show-snps-bin "${params.show_snps_bin}" \\
         --bwa-bin "${params.bwa_bin}" \\
         --samtools-bin "${params.samtools_bin}" \\
-        --varscan-jar "${params.varscan_jar}" \\
         --out-json runtime_check.json
     """
 }

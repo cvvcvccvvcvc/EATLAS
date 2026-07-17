@@ -10,5 +10,3 @@ dependencies:
   - mummer4
   - bwa
   - samtools
-  - varscan
-  - openjdk

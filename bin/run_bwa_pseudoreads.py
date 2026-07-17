@@ -21,8 +21,6 @@ import bam_filtering_v1
 
 
 BWA_STRATEGY = "bwa_pseudoreads"
-BWA_VARSCAN_STRATEGY = "bwa_pseudoreads_varscan"
-BWA_STRATEGIES = {BWA_STRATEGY, BWA_VARSCAN_STRATEGY}
 
 SEGMENT_FIELDS = [
     "gene_id",
@@ -107,29 +105,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--source-target-fasta", required=True, type=Path)
     parser.add_argument("--source-ortholog-fasta", required=True, type=Path)
     parser.add_argument("--outdir", required=True, type=Path)
-    parser.add_argument("--strategies", required=True, help="Comma-separated BWA strategy names to emit.")
     parser.add_argument("--bwa-bin", default="bwa")
     parser.add_argument("--samtools-bin", default="samtools")
-    parser.add_argument("--varscan-jar", default="VarScan.v2.4.6.jar")
-    parser.add_argument("--varscan-min-coverage", default=2, type=int)
-    parser.add_argument("--varscan-min-reads2", default=1, type=int)
-    parser.add_argument("--varscan-min-var-freq", default=0.01, type=float)
     parser.add_argument("--pseudoread-len", default=75, type=int)
     parser.add_argument("--pseudoread-step", default=35, type=int)
     parser.add_argument("--pseudoread-phred", default=30, type=int)
     parser.add_argument("--target-features", type=Path)
     parser.add_argument("--keep-native", default="false")
     return parser.parse_args()
-
-
-def parse_strategies(raw: str) -> list[str]:
-    selected = [item.strip() for item in raw.split(",") if item.strip()]
-    unknown = sorted(set(selected) - BWA_STRATEGIES)
-    if unknown:
-        raise ValueError(f"Unknown BWA strategy value(s): {', '.join(unknown)}")
-    if not selected:
-        raise ValueError("At least one BWA strategy is required")
-    return selected
 
 
 def truthy(raw: str | bool) -> bool:
@@ -392,29 +375,27 @@ def scan_bam(
 
 def make_segment_rows(
     base_segments: list[dict[str, object]],
-    selected_strategies: list[str],
     gene_id: str,
     target_id: str,
     ortholog_meta_by_id: dict[str, dict[str, str]],
 ) -> list[dict[str, object]]:
     rows: list[dict[str, object]] = []
-    for strategy in selected_strategies:
-        for segment in base_segments:
-            ortholog_id = str(segment["ortholog_gene_id"])
-            meta = ortholog_meta_by_id.get(ortholog_id, {})
-            row = {
-                "gene_id": gene_id,
-                "tax_id": meta.get("tax_id", ""),
-                "taxname": meta.get("taxname", ""),
-                "strategy": strategy,
-                "tool": "bwa",
-                "preset": "pseudo",
-                "target_id": target_id,
-                "divergence": "",
-                "gap_compressed_divergence": "",
-            }
-            row.update(segment)
-            rows.append(row)
+    for segment in base_segments:
+        ortholog_id = str(segment["ortholog_gene_id"])
+        meta = ortholog_meta_by_id.get(ortholog_id, {})
+        row = {
+            "gene_id": gene_id,
+            "tax_id": meta.get("tax_id", ""),
+            "taxname": meta.get("taxname", ""),
+            "strategy": BWA_STRATEGY,
+            "tool": "bwa",
+            "preset": "pseudo",
+            "target_id": target_id,
+            "divergence": "",
+            "gap_compressed_divergence": "",
+        }
+        row.update(segment)
+        rows.append(row)
     return rows
 
 
@@ -490,121 +471,7 @@ def make_bwa_event_rows(
     return rows
 
 
-def varscan_command(varscan_jar: str) -> list[str]:
-    if varscan_jar == "varscan":
-        return ["varscan"]
-    jar = Path(varscan_jar)
-    if jar.exists():
-        return ["java", "-jar", str(jar)]
-    if shutil.which("varscan"):
-        return ["varscan"]
-    return ["java", "-jar", varscan_jar]
-
-
-def run_varscan(
-    samtools_bin: str,
-    varscan_jar: str,
-    target_fasta: Path,
-    filtered_bam: Path,
-    work_dir: Path,
-    min_coverage: int,
-    min_reads2: int,
-    min_var_freq: float,
-) -> list[Path]:
-    pileup = work_dir / "gene.mpileup"
-    snps_vcf = work_dir / "gene_snps.vcf"
-    indels_vcf = work_dir / "gene_indels.vcf"
-    run_checked([samtools_bin, "faidx", str(target_fasta)])
-    with pileup.open("w") as out:
-        run_checked([samtools_bin, "mpileup", "-f", str(target_fasta), str(filtered_bam)], stdout=out)
-
-    base_cmd = varscan_command(varscan_jar)
-    common_args = [
-        str(pileup),
-        "--min-coverage",
-        str(min_coverage),
-        "--min-reads2",
-        str(min_reads2),
-        "--min-var-freq",
-        str(min_var_freq),
-        "--output-vcf",
-        "1",
-    ]
-    with snps_vcf.open("w") as out:
-        run_checked([*base_cmd, "mpileup2snp", *common_args], stdout=out)
-    with indels_vcf.open("w") as out:
-        run_checked([*base_cmd, "mpileup2indel", *common_args], stdout=out)
-    return [snps_vcf, indels_vcf]
-
-
-def normalize_vcf_variant(pos1: int, ref: str, alt: str) -> tuple[str, int, int, str, str]:
-    pos0 = pos1 - 1
-    if len(ref) == 1 and len(alt) > 1 and alt.startswith(ref):
-        inserted = alt[1:]
-        start0 = pos0 + 1
-        return "ins", start0, start0, "", inserted
-    if len(alt) == 1 and len(ref) > 1 and ref.startswith(alt):
-        deleted = ref[1:]
-        start0 = pos0 + 1
-        return "del", start0, start0 + len(deleted), deleted, ""
-    if len(ref) == 1 and len(alt) == 1:
-        return "snv", pos0, pos0 + 1, ref, alt
-    return "complex", pos0, pos0 + len(ref), ref, alt
-
-
-def iter_varscan_vcf_events(vcf_paths: list[Path]):
-    for vcf_path in vcf_paths:
-        with vcf_path.open() as handle:
-            for line in handle:
-                if not line.strip() or line.startswith("#"):
-                    continue
-                parts = line.rstrip("\n").split("\t")
-                if len(parts) < 5:
-                    continue
-                pos1 = int(parts[1])
-                ref = parts[3].upper()
-                for alt in parts[4].upper().split(","):
-                    yield normalize_vcf_variant(pos1, ref, alt)
-
-
-def make_varscan_event_rows(
-    vcf_paths: list[Path],
-    event_support: dict[tuple[str, int, int, str, str], list[dict[str, object]]],
-    gene_id: str,
-    target_meta: dict[str, str],
-    target_acc: str,
-    ortholog_meta_by_id: dict[str, dict[str, str]],
-) -> tuple[list[dict[str, object]], int]:
-    rows: list[dict[str, object]] = []
-    unassigned = 0
-    for key in iter_varscan_vcf_events(vcf_paths):
-        support_rows = event_support.get(key, [])
-        if not support_rows:
-            unassigned += 1
-            continue
-        event_type, start0, end0, ref, alt = key
-        for support in support_rows:
-            rows.append(
-                make_event_row(
-                    gene_id=gene_id,
-                    target_meta=target_meta,
-                    target_acc=target_acc,
-                    ortholog_meta_by_id=ortholog_meta_by_id,
-                    strategy=BWA_VARSCAN_STRATEGY,
-                    event_type=event_type,
-                    start0=start0,
-                    end0=end0,
-                    ref=ref,
-                    alt=alt,
-                    support=support,
-                    qc_flags="varscan_call_with_bam_read_support",
-                )
-            )
-    return rows, unassigned
-
-
 def make_summary_rows(
-    selected_strategies: list[str],
     gene_id: str,
     target_length: int,
     ortholog_meta: list[dict[str, str]],
@@ -620,44 +487,43 @@ def make_summary_rows(
         event_counts[(str(row["strategy"]), str(row["ortholog_gene_id"]))] += 1
 
     summaries: list[dict[str, object]] = []
-    for strategy in selected_strategies:
-        for meta in ortholog_meta:
-            ortholog_id = meta["ortholog_gene_id"]
-            segments = segments_by_key.get((strategy, ortholog_id), [])
-            target_intervals = [(int(row["target_start0"]), int(row["target_end0"])) for row in segments]
-            query_intervals = [(int(row["query_start0"]), int(row["query_end0"])) for row in segments]
-            identities = [float(row["identity"]) for row in segments if row.get("identity") not in {"", None}]
-            primary_count = sum(1 for row in segments if str(row.get("is_primary", "")).lower() == "true")
-            secondary_count = len(segments) - primary_count
-            aligned_target_bp = interval_union_length(target_intervals)
-            query_length = int(query_lengths.get(ortholog_id) or meta.get("sequence_length") or 0)
-            aligned_query_bp = interval_union_length(query_intervals)
-            event_count = event_counts.get((strategy, ortholog_id), 0)
-            summaries.append(
-                {
-                    "gene_id": gene_id,
-                    "ortholog_gene_id": ortholog_id,
-                    "tax_id": meta.get("tax_id", ""),
-                    "taxname": meta.get("taxname", ""),
-                    "strategy": strategy,
-                    "tool": "bwa",
-                    "preset": "pseudo",
-                    "status": "aligned" if segments else "no_alignment",
-                    "target_length": target_length,
-                    "query_length": query_length,
-                    "segment_count": len(segments),
-                    "primary_segment_count": primary_count,
-                    "secondary_segment_count": secondary_count,
-                    "aligned_target_bp": aligned_target_bp,
-                    "aligned_query_bp": aligned_query_bp,
-                    "target_coverage": fmt_fraction(aligned_target_bp, target_length),
-                    "query_coverage": fmt_fraction(aligned_query_bp, query_length),
-                    "best_identity": f"{max(identities):.6f}" if identities else "0.000000",
-                    "mean_identity": f"{sum(identities) / len(identities):.6f}" if identities else "0.000000",
-                    "event_count": event_count,
-                    "qc_flags": "pseudoread_bam_segments" if segments else "no_filtered_pseudoread_segments",
-                }
-            )
+    for meta in ortholog_meta:
+        ortholog_id = meta["ortholog_gene_id"]
+        segments = segments_by_key.get((BWA_STRATEGY, ortholog_id), [])
+        target_intervals = [(int(row["target_start0"]), int(row["target_end0"])) for row in segments]
+        query_intervals = [(int(row["query_start0"]), int(row["query_end0"])) for row in segments]
+        identities = [float(row["identity"]) for row in segments if row.get("identity") not in {"", None}]
+        primary_count = sum(1 for row in segments if str(row.get("is_primary", "")).lower() == "true")
+        secondary_count = len(segments) - primary_count
+        aligned_target_bp = interval_union_length(target_intervals)
+        query_length = int(query_lengths.get(ortholog_id) or meta.get("sequence_length") or 0)
+        aligned_query_bp = interval_union_length(query_intervals)
+        event_count = event_counts.get((BWA_STRATEGY, ortholog_id), 0)
+        summaries.append(
+            {
+                "gene_id": gene_id,
+                "ortholog_gene_id": ortholog_id,
+                "tax_id": meta.get("tax_id", ""),
+                "taxname": meta.get("taxname", ""),
+                "strategy": BWA_STRATEGY,
+                "tool": "bwa",
+                "preset": "pseudo",
+                "status": "aligned" if segments else "no_alignment",
+                "target_length": target_length,
+                "query_length": query_length,
+                "segment_count": len(segments),
+                "primary_segment_count": primary_count,
+                "secondary_segment_count": secondary_count,
+                "aligned_target_bp": aligned_target_bp,
+                "aligned_query_bp": aligned_query_bp,
+                "target_coverage": fmt_fraction(aligned_target_bp, target_length),
+                "query_coverage": fmt_fraction(aligned_query_bp, query_length),
+                "best_identity": f"{max(identities):.6f}" if identities else "0.000000",
+                "mean_identity": f"{sum(identities) / len(identities):.6f}" if identities else "0.000000",
+                "event_count": event_count,
+                "qc_flags": "pseudoread_bam_segments" if segments else "no_filtered_pseudoread_segments",
+            }
+        )
     return summaries
 
 
@@ -672,9 +538,6 @@ def keep_native_outputs(work_dir: Path, outdir: Path) -> None:
         "aln.filtered.lis.bam.bai",
         "bam_filtering_stats.json",
         "bam_filtering_overall.json",
-        "gene.mpileup",
-        "gene_snps.vcf",
-        "gene_indels.vcf",
     ]:
         src = work_dir / name
         if src.exists():
@@ -683,7 +546,6 @@ def keep_native_outputs(work_dir: Path, outdir: Path) -> None:
 
 def main() -> None:
     args = parse_args()
-    selected_strategies = parse_strategies(args.strategies)
     keep_native = truthy(args.keep_native)
     task_dir = args.task_dir
     outdir = args.outdir
@@ -738,39 +600,20 @@ def main() -> None:
         base_segments, event_support = scan_bam(filtered_bam, target_seq)
         segment_rows = make_segment_rows(
             base_segments,
-            selected_strategies,
             gene_id,
             target_id,
             ortholog_meta_by_id,
         )
 
-        event_rows: list[dict[str, object]] = []
-        varscan_unassigned = 0
-        if BWA_STRATEGY in selected_strategies:
-            event_rows.extend(make_bwa_event_rows(event_support, gene_id, target_meta, target_acc, ortholog_meta_by_id))
-        if BWA_VARSCAN_STRATEGY in selected_strategies:
-            vcf_paths = run_varscan(
-                args.samtools_bin,
-                args.varscan_jar,
-                local_target_fasta,
-                filtered_bam,
-                work_dir,
-                min_coverage=args.varscan_min_coverage,
-                min_reads2=args.varscan_min_reads2,
-                min_var_freq=args.varscan_min_var_freq,
-            )
-            varscan_rows, varscan_unassigned = make_varscan_event_rows(
-                vcf_paths,
-                event_support,
-                gene_id,
-                target_meta,
-                target_acc,
-                ortholog_meta_by_id,
-            )
-            event_rows.extend(varscan_rows)
+        event_rows = make_bwa_event_rows(
+            event_support,
+            gene_id,
+            target_meta,
+            target_acc,
+            ortholog_meta_by_id,
+        )
 
         summary_rows = make_summary_rows(
-            selected_strategies,
             gene_id,
             len(target_seq),
             ortholog_meta,
@@ -797,8 +640,8 @@ def main() -> None:
 
         manifest_out = {
             "gene_id": gene_id,
-            "strategy": "bwa_pseudoreads",
-            "strategies": selected_strategies,
+            "strategy": BWA_STRATEGY,
+            "strategies": [BWA_STRATEGY],
             "tool": "bwa",
             "segment_count": len(segment_rows),
             "event_count": len(event_rows),
@@ -806,13 +649,9 @@ def main() -> None:
             "ortholog_count": len(ortholog_meta),
             "pseudoread_count": pseudoread_count,
             "keep_native": keep_native,
-            "varscan_unassigned_event_count": varscan_unassigned,
             "pseudoread_len": args.pseudoread_len,
             "pseudoread_step": args.pseudoread_step,
             "pseudoread_phred": args.pseudoread_phred,
-            "varscan_min_coverage": args.varscan_min_coverage,
-            "varscan_min_reads2": args.varscan_min_reads2,
-            "varscan_min_var_freq": args.varscan_min_var_freq,
         }
         (outdir / "manifest.json").write_text(json.dumps(manifest_out, indent=2, sort_keys=True) + "\n")
 
