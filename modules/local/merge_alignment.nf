@@ -2,10 +2,10 @@ process MERGE_ALIGNMENT {
     tag "merge_alignment"
 
     input:
-    path alignment_tasks
-    path taxonomy_presets
-    path taxonomy_failures
-    path target_features
+    path alignment_tasks, stageAs: "source/alignment_tasks.tsv.gz"
+    path taxonomy_presets, stageAs: "source/taxonomy_presets.tsv.gz"
+    path taxonomy_failures, stageAs: "source/taxonomy_failures.tsv.gz"
+    path target_features, stageAs: "source/target_features.tsv.gz"
     path result_dirs, stageAs: 'partitions/*'
     val expected_strategies
     path merge_script
