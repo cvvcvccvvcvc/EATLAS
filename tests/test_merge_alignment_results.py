@@ -21,7 +21,17 @@ TABLE_HEADERS = {
     ],
     "alignment_segments.tsv.gz": ["gene_id"],
     "feature_coverage.tsv.gz": ["gene_id"],
-    "alignment_events.tsv.gz": ["gene_id"],
+    "alignment_events.tsv.gz": [
+        "gene_id",
+        "event_type",
+        "target_start0",
+        "target_end0",
+        "genomic_accession",
+        "genomic_start1",
+        "genomic_end1",
+        "ref",
+        "alt",
+    ],
     "failures.tsv.gz": ["gene_id"],
 }
 
@@ -187,6 +197,31 @@ def test_partition_merge_rejects_missing_strategy(tmp_path: Path) -> None:
 
     assert completed.returncode != 0
     assert "missing=1:s2" in completed.stderr
+
+
+def test_partition_merge_supports_compact_events(tmp_path: Path) -> None:
+    result_dirs = [
+        write_result_dir(
+            tmp_path,
+            f"gene_1_{strategy}",
+            {"gene_id": "1", "strategy": strategy},
+        )
+        for strategy in ["s1", "s2"]
+    ]
+    arguments = partition_arguments(
+        result_dirs,
+        tmp_path / "merged",
+        gene_ids="1",
+        strategies="s1,s2",
+    )
+    arguments.append("--compact-events")
+
+    completed = run_merge(arguments)
+
+    assert completed.returncode == 0, completed.stderr
+    manifest = json.loads((tmp_path / "merged" / "manifest.json").read_text())
+    assert manifest["alignment_event_mode"] == "compact_support"
+    assert manifest["alignment_event_count"] == 0
 
 
 def test_partition_merge_rejects_duplicate_gene_strategy(tmp_path: Path) -> None:
