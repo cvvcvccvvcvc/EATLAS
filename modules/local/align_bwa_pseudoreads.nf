@@ -21,6 +21,7 @@ process ALIGN_BWA_PSEUDOREADS {
         --outdir "${resultDir}" \\
         --bwa-bin "${params.bwa_bin}" \\
         --samtools-bin "${params.samtools_bin}" \\
+        --threads "${task.cpus}" \\
         --pseudoread-len "${params.bwa_pseudoread_len}" \\
         --pseudoread-step "${params.bwa_pseudoread_step}" \\
         --pseudoread-phred "${params.bwa_pseudoread_phred}" \\

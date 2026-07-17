@@ -1,13 +1,17 @@
 from __future__ import annotations
 
 import sys
+import subprocess
 from pathlib import Path
+
+import pytest
 
 
 BIN_DIR = Path(__file__).resolve().parents[1] / "bin"
 sys.path.insert(0, str(BIN_DIR))
 
 from bam_filtering_v1 import expected_pseudoreads, pseudoread_starts  # noqa: E402
+import run_bwa_pseudoreads as bwa_runner  # noqa: E402
 from run_bwa_pseudoreads import generate_pseudoreads  # noqa: E402
 
 
@@ -42,3 +46,68 @@ def test_generate_pseudoreads_uses_endpoint_inclusive_starts(tmp_path: Path) -> 
         "@ortholog_1_pseudo_1_1-75",
         "@ortholog_1_pseudo_2_35-109",
     ]
+
+
+def test_bwa_pipeline_uses_declared_cpu_budget_without_samtools_view(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    popen_calls: list[list[str]] = []
+    checked_calls: list[list[str]] = []
+
+    class FakeStdout:
+        def close(self) -> None:
+            pass
+
+    class FakeProcess:
+        def __init__(self, cmd, **kwargs):
+            popen_calls.append(cmd)
+            self.stdout = FakeStdout() if kwargs.get("stdout") == subprocess.PIPE else None
+
+        def wait(self) -> int:
+            return 0
+
+    monkeypatch.setattr(bwa_runner.subprocess, "Popen", FakeProcess)
+    monkeypatch.setattr(
+        bwa_runner,
+        "run_checked",
+        lambda cmd, **_kwargs: checked_calls.append(cmd),
+    )
+
+    bwa_threads = bwa_runner.run_bwa_mem_pipeline(
+        "bwa",
+        "samtools",
+        tmp_path / "target.fa",
+        tmp_path / "reads.fastq",
+        tmp_path / "sorted.bam",
+        threads=3,
+    )
+
+    assert bwa_threads == 2
+    assert popen_calls == [
+        [
+            "bwa",
+            "mem",
+            "-t",
+            "2",
+            str(tmp_path / "target.fa"),
+            str(tmp_path / "reads.fastq"),
+        ],
+        ["samtools", "sort", "-o", str(tmp_path / "sorted.bam"), "-"],
+    ]
+    assert checked_calls == [
+        ["bwa", "index", str(tmp_path / "target.fa")],
+        ["samtools", "index", str(tmp_path / "sorted.bam")],
+    ]
+
+
+def test_bwa_pipeline_rejects_single_cpu_budget(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="at least 2"):
+        bwa_runner.run_bwa_mem_pipeline(
+            "bwa",
+            "samtools",
+            tmp_path / "target.fa",
+            tmp_path / "reads.fastq",
+            tmp_path / "sorted.bam",
+            threads=1,
+        )

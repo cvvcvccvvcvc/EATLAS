@@ -107,6 +107,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--outdir", required=True, type=Path)
     parser.add_argument("--bwa-bin", default="bwa")
     parser.add_argument("--samtools-bin", default="samtools")
+    parser.add_argument("--threads", default=2, type=int)
     parser.add_argument("--pseudoread-len", default=75, type=int)
     parser.add_argument("--pseudoread-step", default=35, type=int)
     parser.add_argument("--pseudoread-phred", default=30, type=int)
@@ -126,37 +127,53 @@ def run_checked(cmd: list[str], *, stdout=None) -> None:
     subprocess.run(cmd, check=True, stdout=stdout)
 
 
-def run_bwa_mem_pipeline(bwa_bin: str, samtools_bin: str, target_fasta: Path, fastq: Path, sorted_bam: Path) -> None:
+def run_bwa_mem_pipeline(
+    bwa_bin: str,
+    samtools_bin: str,
+    target_fasta: Path,
+    fastq: Path,
+    sorted_bam: Path,
+    threads: int,
+) -> int:
+    if threads < 2:
+        raise ValueError("--threads must be at least 2 for concurrent BWA and samtools")
+
+    bwa_threads = threads - 1
+    bwa_cmd = [
+        bwa_bin,
+        "mem",
+        "-t",
+        str(bwa_threads),
+        str(target_fasta),
+        str(fastq),
+    ]
+    sort_cmd = [samtools_bin, "sort", "-o", str(sorted_bam), "-"]
+
     run_checked([bwa_bin, "index", str(target_fasta)])
     print(
         "Running: "
-        + " ".join([bwa_bin, "mem", str(target_fasta), str(fastq)])
+        + " ".join(bwa_cmd)
         + " | "
-        + " ".join([samtools_bin, "view", "-bS", "-"])
-        + " | "
-        + " ".join([samtools_bin, "sort", "-o", str(sorted_bam), "-"]),
+        + " ".join(sort_cmd),
         flush=True,
     )
-    bwa_proc = subprocess.Popen([bwa_bin, "mem", str(target_fasta), str(fastq)], stdout=subprocess.PIPE)
+    bwa_proc = subprocess.Popen(bwa_cmd, stdout=subprocess.PIPE)
     assert bwa_proc.stdout is not None
-    view_proc = subprocess.Popen([samtools_bin, "view", "-bS", "-"], stdin=bwa_proc.stdout, stdout=subprocess.PIPE)
+    sort_proc = subprocess.Popen(sort_cmd, stdin=bwa_proc.stdout)
     bwa_proc.stdout.close()
-    assert view_proc.stdout is not None
-    sort_proc = subprocess.Popen([samtools_bin, "sort", "-o", str(sorted_bam), "-"], stdin=view_proc.stdout)
-    view_proc.stdout.close()
 
     sort_code = sort_proc.wait()
-    view_code = view_proc.wait()
     bwa_code = bwa_proc.wait()
     failed = [
         (name, code)
-        for name, code in [("bwa mem", bwa_code), ("samtools view", view_code), ("samtools sort", sort_code)]
+        for name, code in [("bwa mem", bwa_code), ("samtools sort", sort_code)]
         if code != 0
     ]
     if failed:
         details = ", ".join(f"{name} exit {code}" for name, code in failed)
         raise subprocess.CalledProcessError(failed[0][1], details)
     run_checked([samtools_bin, "index", str(sorted_bam)])
+    return bwa_threads
 
 
 def iter_fasta(path: Path):
@@ -577,7 +594,14 @@ def main() -> None:
         )
 
         sorted_bam = work_dir / "aln.sorted.bam"
-        run_bwa_mem_pipeline(args.bwa_bin, args.samtools_bin, local_target_fasta, pseudoreads_fastq, sorted_bam)
+        bwa_threads = run_bwa_mem_pipeline(
+            args.bwa_bin,
+            args.samtools_bin,
+            local_target_fasta,
+            pseudoreads_fastq,
+            sorted_bam,
+            args.threads,
+        )
 
         filter_cfg = {
             "wrong_strand": True,
@@ -647,6 +671,8 @@ def main() -> None:
             "ortholog_count": len(ortholog_meta),
             "pseudoread_count": pseudoread_count,
             "keep_native": keep_native,
+            "task_cpus": args.threads,
+            "bwa_threads": bwa_threads,
             "pseudoread_len": args.pseudoread_len,
             "pseudoread_step": args.pseudoread_step,
             "pseudoread_phred": args.pseudoread_phred,
