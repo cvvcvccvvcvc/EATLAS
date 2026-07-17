@@ -204,10 +204,8 @@ def generate_pseudoreads(
         for header, seq in iter_fasta(orthologs_fa):
             ortholog_id = header.split()[0]
             read_index = 1
-            for start in range(0, max(1, len(seq) - read_len + 1), step):
+            for start in bam_filtering_v1.pseudoread_starts(len(seq), read_len, step):
                 read_seq = seq[start : start + read_len]
-                if len(read_seq) < 20:
-                    continue
                 qual = phred_char * len(read_seq)
                 end = start + len(read_seq)
                 out.write(f"@{ortholog_id}_pseudo_{read_index}_{start + 1}-{end}\n{read_seq}\n+\n{qual}\n")

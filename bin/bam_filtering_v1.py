@@ -278,11 +278,30 @@ def _filter_homologue_reads(
     return keep_keys, stats
 
 
+def pseudoread_starts(
+    seq_len: int,
+    read_len: int,
+    step: int,
+    min_read_len: int = 20,
+) -> list[int]:
+    """Return sliding-window starts, including the sequence's final window."""
+    if step <= 0:
+        raise ValueError("Pseudoread step must be positive")
+    if seq_len < min_read_len or read_len < min_read_len:
+        return []
+    if seq_len <= read_len:
+        return [0]
+
+    final_start = seq_len - read_len
+    starts = list(range(0, final_start + 1, step))
+    if starts[-1] != final_start:
+        starts.append(final_start)
+    return starts
+
+
 def expected_pseudoreads(seq_len: int, read_len: int, step: int) -> int:
-    """Count sliding-window pseudoreads for one sequence."""
-    if seq_len < read_len:
-        return 0
-    return 1 + (seq_len - read_len) // step
+    """Count pseudoreads produced for one sequence."""
+    return len(pseudoread_starts(seq_len, read_len, step))
 
 
 def _generated_from_genes_fastq(path: Path, read_len: int, step: int) -> Dict[str, int]:
