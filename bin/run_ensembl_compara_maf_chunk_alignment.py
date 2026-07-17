@@ -31,6 +31,7 @@ from run_ensembl_compara_maf_alignment import (
     overlaps,
     retry_sleep_seconds,
     retryable_maf_error,
+    resolve_maf_dots,
     source_read_failure,
     to_alignment_row,
     write_tsv_gz,
@@ -265,6 +266,7 @@ def scan_chunk_source(
                                 query_row = to_alignment_row(maf_row, flip_orientation)
                                 if is_ancestral(query_row):
                                     continue
+                                query_row = resolve_maf_dots(human_row, query_row)
                                 summary_key = (gene_id, query_row.species)
                                 summary = summaries.setdefault(
                                     summary_key,

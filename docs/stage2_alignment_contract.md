@@ -144,6 +144,13 @@ task records gene-level failure rows. Unexpected process failures terminate the
 workflow rather than silently producing incomplete gene evidence. Full MAF
 chunks are not published as durable outputs.
 
+Before coordinates and events are derived, dot placeholders in non-reference
+MAF rows are resolved against the human alignment row. A dot opposite a human
+base is treated as that matching base; a dot opposite a human gap is treated as
+a gap. This prevents placeholders from becoming artificial insertions or
+advancing query coordinates. Indels containing other non-ACGT symbols are kept
+out of `alignment_events.tsv.gz` and marked in the ortholog summary QC flags.
+
 The MAF chunk manifest can be supplied with `--ensembl_compara_maf_manifest` or
 `ENSEMBL_COMPARA_MAF_MANIFEST`. If neither is set, the workflow checks
 `assets/reference/ensembl/compara/release-<release>/<species_set>/ensembl_compara_maf_manifest.tsv.gz`;

@@ -13,7 +13,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Iterable, TextIO
 
@@ -358,6 +358,21 @@ def to_alignment_row(row: MafSequence, flip_orientation: bool) -> AlignmentRow:
     )
 
 
+def resolve_maf_dots(reference_row: AlignmentRow, query_row: AlignmentRow) -> AlignmentRow:
+    """Resolve Ensembl MAF dot placeholders against the reference row."""
+    if len(reference_row.seq) != len(query_row.seq):
+        raise ValueError(f"MSA row length mismatch for {query_row.species}")
+    if "." in reference_row.seq:
+        raise ValueError(f"Unexpected dot placeholder in reference MAF row {reference_row.description}")
+    if "." not in query_row.seq:
+        return query_row
+    resolved = "".join(
+        reference_base if query_base == "." else query_base
+        for reference_base, query_base in zip(reference_row.seq, query_row.seq)
+    )
+    return replace(query_row, seq=resolved)
+
+
 def is_ancestral(row: AlignmentRow) -> bool:
     return (
         "[" in row.species
@@ -547,6 +562,11 @@ def emit_pending_indel(
 ) -> int:
     if not pending:
         return event_id
+    qc_flags = set(pending.get("qc_flags") or set())
+    if "ambiguous_base" in qc_flags:
+        summary["status"] = "aligned"
+        summary["qc_flags"].update(qc_flags)
+        return event_id
     append_event(
         event_writer,
         event_id,
@@ -561,7 +581,7 @@ def emit_pending_indel(
         str(pending.get("ref") or ""),
         str(pending.get("alt") or ""),
         native_record_id,
-        set(pending.get("qc_flags") or set()),
+        qc_flags,
     )
     summary["status"] = "aligned"
     summary["event_count"] += 1
@@ -586,6 +606,8 @@ def convert_pair(
     query_seq = query_row.seq.upper()
     if len(human_seq) != len(query_seq):
         raise ValueError(f"MSA row length mismatch for {query_row.species}")
+    if "." in human_seq or "." in query_seq:
+        raise ValueError(f"Unresolved MAF dot placeholder for {query_row.species}")
 
     target_length = target_end1 - target_origin1 + 1
     human_pos = row_first_pos(human_row)
@@ -686,6 +708,8 @@ def convert_pair(
             if pending_indel and pending_indel["event_type"] == "del" and pending_indel["target_end0"] == target0:
                 pending_indel["target_end0"] = target0 + 1
                 pending_indel["ref"] += human_base
+                if human_base not in DNA_BASES:
+                    pending_indel["qc_flags"].add("ambiguous_base")
             else:
                 close_indel()
                 pending_indel = {
@@ -694,13 +718,15 @@ def convert_pair(
                     "target_end0": target0 + 1,
                     "ref": human_base,
                     "alt": "",
-                    "qc_flags": set(),
+                    "qc_flags": set() if human_base in DNA_BASES else {"ambiguous_base"},
                 }
 
         elif not human_has_base and query_has_base:
             close_segment()
             if pending_indel and pending_indel["event_type"] == "ins" and pending_indel["target_start0"] == target0:
                 pending_indel["alt"] += query_base
+                if query_base not in DNA_BASES:
+                    pending_indel["qc_flags"].add("ambiguous_base")
             else:
                 close_indel()
                 pending_indel = {
@@ -709,7 +735,7 @@ def convert_pair(
                     "target_end0": target0,
                     "ref": "",
                     "alt": query_base,
-                    "qc_flags": set(),
+                    "qc_flags": set() if query_base in DNA_BASES else {"ambiguous_base"},
                 }
         else:
             close_segment()
@@ -812,6 +838,7 @@ def scan_source(
                         query_row = to_alignment_row(maf_row, flip_orientation)
                         if is_ancestral(query_row):
                             continue
+                        query_row = resolve_maf_dots(human_row, query_row)
                         summary = summaries.setdefault(
                             query_row.species,
                             empty_summary(args, query_row, target_end1 - target_origin1 + 1),
