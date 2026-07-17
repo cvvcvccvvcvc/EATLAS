@@ -168,7 +168,7 @@ Stage 2 publishes:
 
 | Path | Meaning |
 | --- | --- |
-| `manifest.json` | Alignment run counts, enabled output strategies, and output counts. |
+| `manifest.json` | Exact ready `gene_ids`, enabled output strategies, and output counts. |
 | `alignment_tasks.tsv.gz` | Per-gene task manifest and readiness checks. |
 | `taxonomy_presets.tsv.gz` | Compact tax_id-to-preset mapping. |
 | `taxonomy_failures.tsv.gz` | Taxonomy lookup warnings/failures. |
@@ -262,6 +262,13 @@ performs support aggregation only inside that partition. The final merge then
 streams those disjoint partitions through one staged directory. This avoids one
 global event database and avoids placing every gene/strategy result path on a
 single command line while preserving the existing Stage 2 output tables.
+
+Both merge levels fail closed. A partition must contain exactly one result for
+every expected gene/strategy pair, required TSV inputs must exist with valid
+headers, and genes cannot occur in multiple partitions. The final merge compares
+the union of partition `gene_ids` with the ready genes in
+`alignment_tasks.tsv.gz`; incomplete output is an error rather than a smaller
+successful dataset.
 
 Durable output is limited to compressed normalized TSV files so large runs do
 not duplicate sequence data and native aligner output in `results/`.

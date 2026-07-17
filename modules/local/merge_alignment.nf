@@ -7,6 +7,7 @@ process MERGE_ALIGNMENT {
     path taxonomy_failures
     path target_features
     path result_dirs, stageAs: 'partitions/*'
+    val expected_strategies
     path merge_script
 
     output:
@@ -32,6 +33,7 @@ process MERGE_ALIGNMENT {
         --taxonomy-failures "${taxonomy_failures}" \\
         --target-features "${target_features}" \\
         --result-root partitions \\
+        --expected-strategies "${expected_strategies}" \\
         --outdir . \\
         ${compactEventsArg} \\
         ${precompactedEventsArg}

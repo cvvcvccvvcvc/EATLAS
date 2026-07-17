@@ -25,6 +25,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--result-dir", action="append", default=[], type=Path)
     parser.add_argument("--result-root", type=Path)
     parser.add_argument("--partition-id")
+    parser.add_argument("--expected-strategies", required=True)
+    parser.add_argument("--expected-gene-ids")
     parser.add_argument("--compact-events", action="store_true")
     parser.add_argument("--events-already-compacted", action="store_true")
     return parser.parse_args()
@@ -80,7 +82,24 @@ def count_tsv_gz_rows(path: Path) -> int:
         return sum(1 for _ in handle)
 
 
-def summarize_alignment_tasks(path: Path) -> tuple[int, int]:
+def gene_sort_key(value: str) -> tuple[int, int | str]:
+    return (0, int(value)) if value.isdigit() else (1, value)
+
+
+def sorted_gene_ids(values: set[str]) -> list[str]:
+    return sorted(values, key=gene_sort_key)
+
+
+def parse_expected_values(raw: str | None, label: str) -> list[str]:
+    values = [value.strip() for value in (raw or "").split(",") if value.strip()]
+    if not values:
+        raise ValueError(f"{label} must contain at least one value")
+    if len(values) != len(set(values)):
+        raise ValueError(f"{label} contains duplicate values")
+    return values
+
+
+def summarize_alignment_tasks(path: Path) -> tuple[int, list[str]]:
     """Return total task rows and distinct genes ready for alignment."""
     task_count = 0
     ready_gene_ids: set[str] = set()
@@ -97,7 +116,7 @@ def summarize_alignment_tasks(path: Path) -> tuple[int, int]:
             task_count += 1
             if row["status"] == "ready" and row["gene_id"]:
                 ready_gene_ids.add(row["gene_id"])
-    return task_count, len(ready_gene_ids)
+    return task_count, sorted_gene_ids(ready_gene_ids)
 
 
 def unique_paths(paths: list[Path]) -> list[Path]:
@@ -146,12 +165,12 @@ def merge_tsv_gz(paths: list[Path], output: Path) -> int:
         writer = None
         for path in paths:
             if not path.exists():
-                continue
+                raise FileNotFoundError(f"Missing required alignment table: {path}")
             with gzip.open(path, "rt", newline="") as in_handle:
                 reader = csv.reader(in_handle, delimiter="\t")
                 header = next(reader, None)
                 if header is None:
-                    continue
+                    raise ValueError(f"Alignment table has no TSV header: {path}")
                 if expected_header is None:
                     expected_header = header
                 elif header != expected_header:
@@ -264,7 +283,7 @@ def create_compact_event_table(conn: sqlite3.Connection) -> None:
 
 def insert_event_rows(conn: sqlite3.Connection, path: Path, batch_size: int = 10000) -> int:
     if not path.exists():
-        return 0
+        raise FileNotFoundError(f"Missing required alignment table: {path}")
     fields = [
         "gene_id",
         "event_type",
@@ -446,13 +465,149 @@ def manifest_gene_ids(manifests: list[dict]) -> list[str]:
         for gene_id in manifest.get("gene_ids", []) or []:
             if gene_id:
                 gene_ids.add(str(gene_id))
-    return sorted(gene_ids, key=lambda value: int(value) if value.isdigit() else value)
+    return sorted_gene_ids(gene_ids)
+
+
+def require_alignment_tables(result_dirs: list[Path], require_feature_coverage: bool) -> None:
+    filenames = [
+        "ortholog_alignment_summary.tsv.gz",
+        "alignment_segments.tsv.gz",
+        "alignment_events.tsv.gz",
+        "failures.tsv.gz",
+    ]
+    if require_feature_coverage:
+        filenames.append("feature_coverage.tsv.gz")
+    missing = [
+        str(result_dir / filename)
+        for result_dir in result_dirs
+        for filename in filenames
+        if not (result_dir / filename).exists()
+    ]
+    if missing:
+        raise FileNotFoundError("Missing required alignment table(s): " + ", ".join(missing))
+
+
+def preview_pairs(pairs: set[tuple[str, str]], limit: int = 10) -> str:
+    values = [f"{gene_id}:{strategy}" for gene_id, strategy in sorted(pairs)]
+    if len(values) > limit:
+        values = values[:limit] + [f"... ({len(pairs) - limit} more)"]
+    return ", ".join(values)
+
+
+def validate_partition_manifests(
+    result_dirs: list[Path],
+    manifests: list[dict],
+    expected_gene_ids: list[str],
+    expected_strategies: list[str],
+) -> tuple[list[str], list[str]]:
+    expected_pairs = {
+        (gene_id, strategy)
+        for gene_id in expected_gene_ids
+        for strategy in expected_strategies
+    }
+    pair_owners: dict[tuple[str, str], Path] = {}
+    duplicates: list[str] = []
+
+    for result_dir, manifest in zip(result_dirs, manifests):
+        gene_ids = manifest_gene_ids([manifest])
+        if len(gene_ids) != 1:
+            raise ValueError(
+                f"Per-gene alignment result {result_dir} must declare exactly one gene_id; "
+                f"observed {gene_ids}"
+            )
+        strategies = manifest_strategies([manifest])
+        if not strategies:
+            raise ValueError(f"Alignment result {result_dir} does not declare a strategy")
+        gene_id = gene_ids[0]
+        for strategy in strategies:
+            pair = (gene_id, strategy)
+            if pair in pair_owners:
+                duplicates.append(f"{gene_id}:{strategy} ({pair_owners[pair].name}, {result_dir.name})")
+            else:
+                pair_owners[pair] = result_dir
+
+    if duplicates:
+        raise ValueError("Duplicate gene-strategy alignment result(s): " + ", ".join(duplicates))
+
+    observed_pairs = set(pair_owners)
+    missing_pairs = expected_pairs - observed_pairs
+    unexpected_pairs = observed_pairs - expected_pairs
+    if missing_pairs or unexpected_pairs:
+        details = []
+        if missing_pairs:
+            details.append("missing=" + preview_pairs(missing_pairs))
+        if unexpected_pairs:
+            details.append("unexpected=" + preview_pairs(unexpected_pairs))
+        raise ValueError("Partition alignment coverage mismatch: " + "; ".join(details))
+
+    return sorted_gene_ids(set(expected_gene_ids)), sorted(expected_strategies)
+
+
+def validate_final_manifests(
+    result_dirs: list[Path],
+    manifests: list[dict],
+    expected_gene_ids: list[str],
+    expected_strategies: list[str],
+) -> tuple[list[str], list[str]]:
+    expected_strategy_set = set(expected_strategies)
+    gene_owners: dict[str, str] = {}
+    partition_ids: set[str] = set()
+
+    for result_dir, manifest in zip(result_dirs, manifests):
+        partition_id = str(manifest.get("partition_id") or "")
+        if not partition_id:
+            raise ValueError(f"Alignment partition {result_dir} does not declare partition_id")
+        if partition_id in partition_ids:
+            raise ValueError(f"Duplicate alignment partition_id: {partition_id}")
+        partition_ids.add(partition_id)
+
+        gene_ids = manifest_gene_ids([manifest])
+        if not gene_ids:
+            raise ValueError(f"Alignment partition {partition_id} does not declare gene_ids")
+        declared_gene_count = int(manifest.get("gene_count") or 0)
+        if declared_gene_count != len(gene_ids):
+            raise ValueError(
+                f"Alignment partition {partition_id} gene_count mismatch: "
+                f"declared {declared_gene_count}, observed {len(gene_ids)} gene_ids"
+            )
+
+        strategies = set(manifest_strategies([manifest]))
+        if strategies != expected_strategy_set:
+            missing = sorted(expected_strategy_set - strategies)
+            unexpected = sorted(strategies - expected_strategy_set)
+            raise ValueError(
+                f"Alignment partition {partition_id} strategy mismatch: "
+                f"missing={missing}; unexpected={unexpected}"
+            )
+
+        for gene_id in gene_ids:
+            if gene_id in gene_owners:
+                raise ValueError(
+                    f"Gene {gene_id} occurs in multiple alignment partitions: "
+                    f"{gene_owners[gene_id]} and {partition_id}"
+                )
+            gene_owners[gene_id] = partition_id
+
+    expected_gene_set = set(expected_gene_ids)
+    observed_gene_set = set(gene_owners)
+    if observed_gene_set != expected_gene_set:
+        missing = sorted_gene_ids(expected_gene_set - observed_gene_set)
+        unexpected = sorted_gene_ids(observed_gene_set - expected_gene_set)
+        raise ValueError(
+            "Final alignment gene coverage mismatch: "
+            f"missing={missing}; unexpected={unexpected}"
+        )
+
+    return sorted_gene_ids(observed_gene_set), sorted(expected_strategies)
 
 
 def main() -> None:
     args = parse_args()
     if args.events_already_compacted and not args.compact_events:
         raise ValueError("--events-already-compacted requires --compact-events")
+    expected_strategies = sorted(
+        parse_expected_values(args.expected_strategies, "--expected-strategies")
+    )
     args.outdir.mkdir(parents=True, exist_ok=True)
     result_dirs = resolve_result_dirs(args.result_dir, args.result_root)
 
@@ -462,19 +617,32 @@ def main() -> None:
             "Final alignment merge requires --alignment-tasks, --taxonomy-presets, "
             "--taxonomy-failures, and --target-features"
         )
-    if not args.partition_id:
+
+    manifests = load_manifests(result_dirs)
+    require_alignment_tables(result_dirs, require_feature_coverage=bool(args.partition_id))
+    if args.partition_id:
+        expected_gene_ids = parse_expected_values(args.expected_gene_ids, "--expected-gene-ids")
+        gene_ids, strategies = validate_partition_manifests(
+            result_dirs,
+            manifests,
+            expected_gene_ids,
+            expected_strategies,
+        )
+        alignment_task_count = len(gene_ids)
+    else:
+        alignment_task_count, expected_gene_ids = summarize_alignment_tasks(args.alignment_tasks)
+        if not expected_gene_ids:
+            raise ValueError(f"Alignment tasks {args.alignment_tasks} contain no ready genes")
+        gene_ids, strategies = validate_final_manifests(
+            result_dirs,
+            manifests,
+            expected_gene_ids,
+            expected_strategies,
+        )
         copy_or_keep(args.alignment_tasks, args.outdir / "alignment_tasks.tsv.gz")
         copy_or_keep(args.taxonomy_presets, args.outdir / "taxonomy_presets.tsv.gz")
         copy_or_keep(args.taxonomy_failures, args.outdir / "taxonomy_failures.tsv.gz")
-
-    manifests = load_manifests(result_dirs)
-    strategies = manifest_strategies(manifests)
-    gene_ids = manifest_gene_ids(manifests)
-    if args.alignment_tasks:
-        alignment_task_count, gene_count = summarize_alignment_tasks(args.alignment_tasks)
-    else:
-        alignment_task_count = len(gene_ids)
-        gene_count = len(gene_ids)
+    gene_count = len(gene_ids)
 
     summary_count = merge_tsv_gz(
         [path / "ortholog_alignment_summary.tsv.gz" for path in result_dirs],
@@ -539,6 +707,7 @@ def main() -> None:
         "strategy_count": len(strategies),
         "strategies": strategies,
         "gene_count": gene_count,
+        "gene_ids": gene_ids,
         "alignment_task_count": alignment_task_count,
         "taxonomy_tax_id_count": count_tsv_gz_rows(args.taxonomy_presets) if args.taxonomy_presets else 0,
         "taxonomy_failure_count": count_tsv_gz_rows(args.taxonomy_failures) if args.taxonomy_failures else 0,

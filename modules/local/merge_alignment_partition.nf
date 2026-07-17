@@ -3,6 +3,7 @@ process MERGE_ALIGNMENT_PARTITION {
 
     input:
     tuple val(meta), path(result_dirs, stageAs: 'results/*')
+    val expected_strategies
     path merge_script
 
     output:
@@ -14,6 +15,8 @@ process MERGE_ALIGNMENT_PARTITION {
     python3 "${merge_script}" \\
         --result-root results \\
         --partition-id "${meta.partition_id}" \\
+        --expected-gene-ids "${meta.gene_ids.join(',')}" \\
+        --expected-strategies "${expected_strategies}" \\
         --outdir "${meta.partition_id}" \\
         ${compactEventsArg}
     """

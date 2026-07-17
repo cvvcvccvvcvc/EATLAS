@@ -371,6 +371,7 @@ workflow ALIGNMENT_STAGE {
         }
     MERGE_ALIGNMENT_PARTITION(
         partition_merge_inputs,
+        SELECTED_ALIGNMENT_STRATEGIES.join(','),
         merge_script
     )
 
@@ -380,6 +381,7 @@ workflow ALIGNMENT_STAGE {
         FETCH_TAXONOMY_PRESETS.out.taxonomy_failures,
         target_features,
         MERGE_ALIGNMENT_PARTITION.out.partition_dirs.map { meta, dir -> dir }.collect(),
+        SELECTED_ALIGNMENT_STRATEGIES.join(','),
         merge_script
     )
 
