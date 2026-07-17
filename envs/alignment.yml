@@ -10,3 +10,4 @@ dependencies:
   - mummer4
   - bwa
   - samtools
+  - bedtools=2.31.1

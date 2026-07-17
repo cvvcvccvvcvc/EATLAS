@@ -229,7 +229,9 @@ This is why Stage 2 stores both interval evidence and event evidence.
 `feature_coverage.tsv.gz` intersects `alignment_segments.tsv.gz` with
 `target_features.tsv.gz`. Depth is summed after merging overlapping segments
 within each ortholog, so overlapping records from the same ortholog do not
-inflate the per-base depth.
+inflate the per-base depth. The implementation uses `bedtools merge`,
+`bedtools coverage`, and `bedtools intersect`; intermediate BED files are
+task-local temporary data and are removed after the summary is written.
 
 ## Coordinate Convention
 
