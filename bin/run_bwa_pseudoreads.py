@@ -17,7 +17,7 @@ from pathlib import Path
 import pysam
 
 from alignment_task_io import load_task_context, materialize_task_fastas
-from feature_coverage import summarize_feature_coverage
+from feature_coverage import summarize_feature_coverage_rows
 import bam_filtering_v1
 
 
@@ -684,10 +684,10 @@ def main() -> None:
         write_tsv_gz(outdir / "failures.tsv.gz", FAILURE_FIELDS, [])
         feature_coverage_count = None
         if args.target_features:
-            feature_coverage_count = summarize_feature_coverage(
+            feature_coverage_count = summarize_feature_coverage_rows(
                 args.target_features,
-                outdir / "ortholog_alignment_summary.tsv.gz",
-                outdir / "alignment_segments.tsv.gz",
+                summary_rows,
+                segment_rows,
                 outdir / "feature_coverage.tsv.gz",
             )
 

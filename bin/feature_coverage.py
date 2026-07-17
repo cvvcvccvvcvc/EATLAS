@@ -5,6 +5,7 @@ from __future__ import annotations
 import bisect
 import csv
 import gzip
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -92,10 +93,10 @@ class FeatureIntervalIndex:
         ]
 
 
-def summarize_feature_coverage(
+def summarize_feature_coverage_rows(
     target_features: Path,
-    summaries_path: Path,
-    segments_path: Path,
+    summary_rows: Iterable[dict[str, object]],
+    segment_rows: Iterable[dict[str, object]],
     output: Path,
 ) -> int:
     features_by_gene: dict[str, list[dict[str, str]]] = {}
@@ -106,10 +107,10 @@ def summarize_feature_coverage(
     feature_index = FeatureIntervalIndex.from_features(features_by_gene)
 
     orthologs_by_gene_strategy: dict[tuple[str, str], set[str]] = {}
-    for row in read_tsv_gz(summaries_path):
-        gene_id = row.get("gene_id", "")
-        strategy = row.get("strategy", "")
-        ortholog_gene_id = row.get("ortholog_gene_id", "")
+    for row in summary_rows:
+        gene_id = str(row.get("gene_id", ""))
+        strategy = str(row.get("strategy", ""))
+        ortholog_gene_id = str(row.get("ortholog_gene_id", ""))
         if gene_id and strategy and ortholog_gene_id:
             orthologs_by_gene_strategy.setdefault((gene_id, strategy), set()).add(ortholog_gene_id)
 
@@ -120,10 +121,10 @@ def summarize_feature_coverage(
     overlap_any: dict[tuple[str, str, str], list[tuple[int, int]]] = {}
     overlap_by_ortholog: dict[tuple[str, str, str], dict[str, list[tuple[int, int]]]] = {}
 
-    for segment in read_tsv_gz(segments_path):
-        gene_id = segment.get("gene_id", "")
-        strategy = segment.get("strategy", "")
-        ortholog_gene_id = segment.get("ortholog_gene_id", "")
+    for segment in segment_rows:
+        gene_id = str(segment.get("gene_id", ""))
+        strategy = str(segment.get("strategy", ""))
+        ortholog_gene_id = str(segment.get("ortholog_gene_id", ""))
         if not gene_id or not strategy or not ortholog_gene_id:
             continue
         seg_start = int(segment.get("target_start0") or 0)
@@ -181,3 +182,17 @@ def summarize_feature_coverage(
                 )
 
     return write_tsv_gz(output, FEATURE_COVERAGE_FIELDS, rows)
+
+
+def summarize_feature_coverage(
+    target_features: Path,
+    summaries_path: Path,
+    segments_path: Path,
+    output: Path,
+) -> int:
+    return summarize_feature_coverage_rows(
+        target_features,
+        read_tsv_gz(summaries_path),
+        read_tsv_gz(segments_path),
+        output,
+    )

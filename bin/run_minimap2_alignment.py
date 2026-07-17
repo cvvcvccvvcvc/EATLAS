@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Iterable
 
 from alignment_task_io import load_task_context, materialize_task_fastas
-from feature_coverage import summarize_feature_coverage
+from feature_coverage import summarize_feature_coverage_rows
 
 
 CS_OP_RE = re.compile(r"(:\d+|=[A-Za-z]+|\*[A-Za-z][A-Za-z]|[+\-][A-Za-z]+|~[A-Za-z]{2}\d+[A-Za-z]{2})")
@@ -609,10 +609,10 @@ def main() -> None:
     write_tsv_gz(args.outdir / "failures.tsv.gz", FAILURE_FIELDS, failures)
     feature_coverage_count = None
     if args.target_features:
-        feature_coverage_count = summarize_feature_coverage(
+        feature_coverage_count = summarize_feature_coverage_rows(
             args.target_features,
-            args.outdir / "ortholog_alignment_summary.tsv.gz",
-            args.outdir / "alignment_segments.tsv.gz",
+            summary_rows,
+            all_segments,
             args.outdir / "feature_coverage.tsv.gz",
         )
     manifest = {
