@@ -210,10 +210,12 @@ workflow ALIGNMENT_STAGE {
         .splitCsv(header: true, sep: '\t', decompress: true)
         .filter { row -> row.status == 'ready' }
         .map { row -> tuple(row.gene_id as String, row.partition_id as String) }
-    partition_gene_counts = task_partitions
+    ready_genes_by_partition = task_partitions
         .map { gene_id, partition_id -> tuple(partition_id, gene_id) }
         .groupTuple()
-        .map { partition_id, gene_ids -> tuple(partition_id, gene_ids.size()) }
+        .map { partition_id, gene_ids ->
+            tuple(partition_id, gene_ids.unique().sort())
+        }
     task_dirs_by_gene = task_dirs_by_gene_unpartitioned
         .join(task_partitions)
         .map { gene_id, dir, partition_id -> tuple(gene_id, partition_id, dir) }
@@ -322,22 +324,50 @@ workflow ALIGNMENT_STAGE {
     }
 
     gene_result_dirs = alignment_result_dirs
+        .ifEmpty { error "No alignment result directories were produced" }
         .map { meta, dir ->
             def key = tuple(meta.partition_id as String, meta.gene_id as String)
             tuple(groupKey(key, ALIGNMENT_RESULT_PROCESS_COUNT), dir)
         }
-        .groupTuple()
+        .groupTuple(remainder: true)
         .map { key, dirs ->
-            def partition_id = key.getGroupTarget()[0]
-            tuple(partition_id, dirs)
+            def target = key.getGroupTarget()
+            if (dirs.size() != ALIGNMENT_RESULT_PROCESS_COUNT) {
+                error(
+                    "Incomplete alignment outputs for gene ${target[1]} in partition ${target[0]}: " +
+                    "expected ${ALIGNMENT_RESULT_PROCESS_COUNT} result directories, observed ${dirs.size()}"
+                )
+            }
+            tuple(target[0], target[1], dirs)
         }
     partition_merge_inputs = gene_result_dirs
-        .combine(partition_gene_counts, by: 0)
-        .map { partition_id, dirs, gene_count -> tuple(groupKey(partition_id, gene_count), dirs) }
-        .groupTuple()
-        .map { key, dirs_by_gene ->
-            def partition_id = key.getGroupTarget()
-            tuple([id: partition_id, partition_id: partition_id], dirs_by_gene.flatten())
+        .combine(ready_genes_by_partition, by: 0)
+        .map { partition_id, gene_id, dirs, expected_gene_ids ->
+            def key = tuple(partition_id, expected_gene_ids)
+            tuple(groupKey(key, expected_gene_ids.size()), gene_id, dirs)
+        }
+        .groupTuple(remainder: true)
+        .map { key, observed_gene_ids, dirs_by_gene ->
+            def target = key.getGroupTarget()
+            def partition_id = target[0]
+            def expected_gene_ids = target[1]
+            def missing_gene_ids = expected_gene_ids.findAll { !observed_gene_ids.contains(it) }
+            def unexpected_gene_ids = observed_gene_ids.findAll { !expected_gene_ids.contains(it) }
+            if (
+                observed_gene_ids.size() != expected_gene_ids.size() ||
+                missing_gene_ids ||
+                unexpected_gene_ids
+            ) {
+                error(
+                    "Incomplete alignment partition ${partition_id}: " +
+                    "expected ${expected_gene_ids.size()} genes, observed ${observed_gene_ids.size()}; " +
+                    "missing=${missing_gene_ids}; unexpected=${unexpected_gene_ids}"
+                )
+            }
+            tuple(
+                [id: partition_id, partition_id: partition_id, gene_ids: expected_gene_ids],
+                dirs_by_gene.flatten()
+            )
         }
     MERGE_ALIGNMENT_PARTITION(
         partition_merge_inputs,
