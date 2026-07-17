@@ -75,6 +75,7 @@ VARIANT_STRATEGY_SUPPORT_FIELDS = [
 
 FAILURE_FIELDS = ["source", "scope", "chrom", "start", "end", "failure_type", "message"]
 GNOMAD_DATASET = "gnomad_r4"
+DNA_BASES = frozenset("ACGT")
 
 CLINVAR_REVIEW_STARS = {
     "practice_guideline": "4",
@@ -391,6 +392,11 @@ def normalize_vcf_key_for_context(
 
 
 def event_vcf_key(row: dict, contexts: dict[str, dict]) -> tuple[tuple[str, int, str, str] | None, str]:
+    ref = str(row.get("ref") or "").upper()
+    alt = str(row.get("alt") or "").upper()
+    if any(base not in DNA_BASES for base in ref + alt):
+        return None, "non_concrete_allele"
+
     gene_id = row.get("gene_id", "")
     context = contexts.get(gene_id)
     chrom = _refseq_accession_to_gnomad_chrom(row.get("genomic_accession", ""))
@@ -401,7 +407,7 @@ def event_vcf_key(row: dict, contexts: dict[str, dict]) -> tuple[tuple[str, int,
         raw_pos = int(row.get("genomic_start1", 0))
     except ValueError:
         return None, "bad_position"
-    raw_key = (chrom, raw_pos, row.get("ref", "").upper(), row.get("alt", "").upper())
+    raw_key = (chrom, raw_pos, ref, alt)
 
     if not context:
         return raw_key, "raw_no_context"
@@ -413,9 +419,6 @@ def event_vcf_key(row: dict, contexts: dict[str, dict]) -> tuple[tuple[str, int,
 
     seq = context_sequence(context)
     event_type = row.get("event_type", "")
-    ref = row.get("ref", "").upper()
-    alt = row.get("alt", "").upper()
-
     if event_type == "snv":
         if len(ref) != 1 or len(alt) != 1:
             return raw_key, "bad_snv_allele"
@@ -642,11 +645,13 @@ def main():
         for row in reader:
             input_row_count += 1
             acc = row["genomic_accession"]
+            lookup_key, status = event_vcf_key(row, contexts)
+            event_key_status_counts[status] += 1
+            if status == "non_concrete_allele":
+                continue
             raw_pos = int_or_default(row.get("genomic_start1"), -1)
             if acc and raw_pos > 0:
                 accession_positions[acc].add(raw_pos)
-            lookup_key, status = event_vcf_key(row, contexts)
-            event_key_status_counts[status] += 1
             if acc and lookup_key:
                 accession_positions[acc].add(int(lookup_key[1]))
 
@@ -795,6 +800,7 @@ def main():
         "output_mode": "unique_variant_context",
         "partition_id": args.partition_id,
         "event_row_count": input_row_count,
+        "excluded_non_concrete_event_count": event_key_status_counts["non_concrete_allele"],
         "variant_context_count": len(variant_aggregates),
         "annotated_variant_context_count": output_row_count,
         "variant_strategy_support_count": strategy_support_count,

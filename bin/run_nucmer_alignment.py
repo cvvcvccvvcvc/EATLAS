@@ -94,6 +94,7 @@ SUMMARY_FIELDS = [
 ]
 
 FAILURE_FIELDS = ["gene_id", "ortholog_gene_id", "strategy", "tool", "failure_type", "message"]
+DNA_BASES = {"A", "C", "G", "T"}
 
 
 def parse_args() -> argparse.Namespace:
@@ -286,8 +287,9 @@ def parse_snps(
     meta_by_sequence: dict[str, dict[str, str]],
     segments_by_query: dict[str, list[dict[str, object]]],
     summaries: dict[str, dict[str, object]],
-) -> list[dict[str, object]]:
+) -> tuple[list[dict[str, object]], int]:
     events: list[dict[str, object]] = []
+    ambiguous_event_allele_count = 0
     with snps_path.open() as handle:
         for event_index, line in enumerate(handle, start=1):
             line = line.rstrip("\n")
@@ -320,6 +322,13 @@ def parse_snps(
                 event_type = "snv"
                 target_start0 = p1 - 1
                 target_end0 = target_start0 + 1
+            if (
+                (ref and (len(ref) != 1 or ref not in DNA_BASES))
+                or (alt and (len(alt) != 1 or alt not in DNA_BASES))
+            ):
+                summaries[query_id]["qc_flags"].add("ambiguous_event_allele")
+                ambiguous_event_allele_count += 1
+                continue
             segment = segment_for_event(segments_by_query.get(query_id, []), target_start0)
             strand = segment.get("strand", "") if segment else ""
             genomic_start, genomic_end = genomic_coords(target_meta, target_start0, target_end0)
@@ -348,7 +357,7 @@ def parse_snps(
                 }
             )
             summaries[query_id]["event_count"] += 1
-    return events
+    return events, ambiguous_event_allele_count
 
 
 def finalize_summary(row: dict[str, object]) -> dict[str, object]:
@@ -400,6 +409,7 @@ def main() -> None:
 
     failures: list[dict[str, object]] = []
     commands: list[str] = []
+    ambiguous_event_allele_count = 0
 
     with tempfile.TemporaryDirectory(prefix="nucmer_", dir=args.outdir) as tmp_name:
         work_dir = Path(tmp_name)
@@ -442,7 +452,14 @@ def main() -> None:
                 )
             )
             segments, segments_by_query = parse_coords(coords_path, gene_id, target_meta, meta_by_sequence, summaries)
-            events = parse_snps(snps_path, gene_id, target_meta, meta_by_sequence, segments_by_query, summaries)
+            events, ambiguous_event_allele_count = parse_snps(
+                snps_path,
+                gene_id,
+                target_meta,
+                meta_by_sequence,
+                segments_by_query,
+                summaries,
+            )
             if keep_native:
                 gzip_copy(delta_path, args.outdir / "native" / f"{gene_id}.delta.gz")
                 gzip_copy(coords_path, args.outdir / "native" / f"{gene_id}.coords.gz")
@@ -480,6 +497,7 @@ def main() -> None:
         "commands": commands,
         "segment_count": len(segments),
         "event_count": len(events),
+        "ambiguous_event_allele_count": ambiguous_event_allele_count,
         "feature_coverage_count": feature_coverage_count,
         "ortholog_count": len(ortholog_meta),
         "keep_native": keep_native,

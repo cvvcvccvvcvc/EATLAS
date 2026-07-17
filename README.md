@@ -154,6 +154,10 @@ Annotation outputs:
 - `annotation/manifest.json` - annotation input, source, row-count, cache, and diagnostic counters.
 - `annotation/failures.tsv.gz` - non-fatal external annotation lookup failures, such as gnomAD region fetch errors.
 
+Annotation accepts only concrete A/C/G/T event alleles for external variant
+lookup. Non-concrete legacy or external event rows are excluded before lookup
+regions are built and counted in `annotation/manifest.json`.
+
 Standalone `--stage fetch` and `--stage align` runs publish the full handoff
 tables and ortholog FASTA required to start the following stage separately.
 

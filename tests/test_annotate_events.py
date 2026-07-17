@@ -13,6 +13,7 @@ from annotate_events import (  # noqa: E402
     VARIANT_ANNOTATION_FIELDS,
     add_strategy_support,
     build_variant_strategy_support,
+    event_vcf_key,
     variant_aggregate_key,
 )
 
@@ -147,3 +148,48 @@ def test_canonical_variant_key_collapses_raw_indel_representations() -> None:
         "1:100:AA>A",
     )
     assert variant_aggregate_key(left, "") != variant_aggregate_key(right, "")
+
+
+@pytest.mark.parametrize(
+    ("ref", "alt"),
+    [
+        ("G", "Y"),
+        ("T", "R"),
+        ("A", "N"),
+        ("", "."),
+    ],
+)
+def test_event_vcf_key_rejects_non_concrete_alleles(ref: str, alt: str) -> None:
+    key, status = event_vcf_key(
+        {
+            "gene_id": "1",
+            "event_type": "snv",
+            "genomic_accession": "NC_000001.11",
+            "genomic_start1": "100",
+            "target_start0": "0",
+            "ref": ref,
+            "alt": alt,
+        },
+        {},
+    )
+
+    assert key is None
+    assert status == "non_concrete_allele"
+
+
+def test_event_vcf_key_keeps_concrete_alleles() -> None:
+    key, status = event_vcf_key(
+        {
+            "gene_id": "1",
+            "event_type": "snv",
+            "genomic_accession": "NC_000001.11",
+            "genomic_start1": "100",
+            "target_start0": "0",
+            "ref": "A",
+            "alt": "G",
+        },
+        {},
+    )
+
+    assert key == ("1", 100, "A", "G")
+    assert status == "raw_no_context"
