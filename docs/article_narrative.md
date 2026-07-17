@@ -2,8 +2,8 @@
 
 This is the evolving scientific spine of the GAPH study. It defines what the
 main paper must establish and keeps analytics work aligned with one coherent
-argument. Detailed exploratory ideas remain in `research-idea/`; they enter the
-paper only when they support this narrative.
+argument. It is the canonical source for the study's current hypotheses,
+validation logic, and unresolved scientific decisions.
 
 ## Central Hypothesis
 
