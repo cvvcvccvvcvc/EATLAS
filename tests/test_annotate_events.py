@@ -16,6 +16,7 @@ from annotate_events import (  # noqa: E402
     event_vcf_key,
     variant_aggregate_key,
 )
+from finalize_annotation_partitions import COUNT_FIELDS  # noqa: E402
 
 
 def test_variant_annotation_schema_is_analysis_ready() -> None:
@@ -43,6 +44,10 @@ def test_variant_annotation_schema_is_analysis_ready() -> None:
         "gnomad_af_source",
         "gnomad_csq",
     ]
+
+
+def test_partitioned_manifest_keeps_non_concrete_exclusion_count() -> None:
+    assert "excluded_non_concrete_event_count" in COUNT_FIELDS
 
 
 def test_variant_strategy_support_counts_distinct_orthologs() -> None:

@@ -14,6 +14,7 @@ from pathlib import Path
 
 COUNT_FIELDS = [
     "event_row_count",
+    "excluded_non_concrete_event_count",
     "variant_context_count",
     "annotated_variant_context_count",
     "variant_strategy_support_count",
