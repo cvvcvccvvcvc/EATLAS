@@ -7,6 +7,7 @@ process FINALIZE_ANNOTATION {
 
     output:
     path "variant_annotations.tsv.gz", emit: variant_annotations
+    path "variant_strategy_support.tsv.gz", emit: variant_strategy_support
     path "manifest.json", emit: manifest
     path "failures.tsv.gz", emit: failures
 

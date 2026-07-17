@@ -28,6 +28,9 @@ ALT_observed = at least one callable ortholog carries the exact human ALT
 ```
 
 The unit of analysis is one human allele, strategy, and gene context.
+The annotation layer also preserves the number of distinct ALT-supporting
+orthologs for each such unit so that a later dose-response analysis does not
+depend on raw alignment-event publication.
 
 **Main evidence:** workflow diagram and a compact dataset summary.
 

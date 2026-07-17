@@ -9,7 +9,9 @@ import gzip
 import logging
 import sys
 import concurrent.futures
+from collections.abc import Iterable
 from collections import Counter, defaultdict
+from dataclasses import dataclass, field
 from pathlib import Path
 
 # Add bin to path so we can import fetch_gnomad_variants
@@ -92,6 +94,14 @@ VARIANT_ANNOTATION_FIELDS = [
     *ANNOTATION_COLUMNS,
 ]
 
+VARIANT_STRATEGY_SUPPORT_FIELDS = [
+    "variant_key",
+    "gene_id",
+    "strategy",
+    "alt_support_row_count",
+    "alt_support_ortholog_count",
+]
+
 FAILURE_FIELDS = ["source", "scope", "chrom", "start", "end", "failure_type", "message"]
 GNOMAD_DATASET = "gnomad_r4"
 
@@ -108,6 +118,13 @@ CLINVAR_REVIEW_STARS = {
     "no_classification_provided": "0",
     "no_classification_for_the_individual_variant": "0",
 }
+
+
+@dataclass(slots=True)
+class StrategySupport:
+    row_count: int = 0
+    orthologs: set[str] = field(default_factory=set)
+    ortholog_count_hint: int = 0
 
 
 def parse_args():
@@ -185,6 +202,85 @@ def int_or_default(value, default: int = 0) -> int:
         return int(value)
     except (TypeError, ValueError):
         return default
+
+
+def add_strategy_support(aggregate: dict, row: dict[str, str]) -> None:
+    singular_strategies = split_values(row.get("strategy"))
+    strategies = singular_strategies | split_values(row.get("strategies"))
+    if not strategies:
+        raise ValueError("Event row does not identify an alignment strategy")
+    if len(strategies) > 1 and not singular_strategies:
+        raise ValueError(
+            "Event row contains support aggregated across multiple strategies; "
+            "per-strategy support counts cannot be recovered"
+        )
+
+    support_row_count = int_or_default(row.get("support_row_count"), 1)
+    ortholog_gene_id = row.get("ortholog_gene_id", "")
+    ortholog_count_hint = int_or_default(row.get("support_ortholog_count"), 0)
+    support_by_strategy = aggregate["_support_by_strategy"]
+    for strategy in strategies:
+        support = support_by_strategy.get(strategy)
+        if support is None:
+            support = StrategySupport()
+            support_by_strategy[strategy] = support
+        support.row_count += support_row_count
+        if ortholog_gene_id:
+            support.orthologs.add(ortholog_gene_id)
+        else:
+            support.ortholog_count_hint += ortholog_count_hint
+
+
+def build_variant_strategy_support(
+    aggregates: Iterable[dict],
+) -> tuple[list[dict[str, object]], int]:
+    rows: list[dict[str, object]] = []
+    missing_key_count = 0
+    for aggregate in aggregates:
+        variant_key = aggregate.get("variant_key", "")
+        support_by_strategy = aggregate["_support_by_strategy"]
+        if not variant_key:
+            missing_key_count += len(support_by_strategy)
+            continue
+        for strategy, support in support_by_strategy.items():
+            rows.append(
+                {
+                    "variant_key": variant_key,
+                    "gene_id": aggregate.get("gene_id", ""),
+                    "strategy": strategy,
+                    "alt_support_row_count": support.row_count,
+                    "alt_support_ortholog_count": max(
+                        len(support.orthologs),
+                        support.ortholog_count_hint,
+                    ),
+                }
+            )
+    rows.sort(
+        key=lambda row: (
+            int_or_default(row.get("gene_id"), 10**18),
+            row["variant_key"],
+            row["strategy"],
+        )
+    )
+    return rows, missing_key_count
+
+
+def variant_aggregate_key(row: dict[str, str], variant_key: str) -> tuple:
+    gene_id = row.get("gene_id", "")
+    if variant_key:
+        return "canonical", gene_id, variant_key
+    return (
+        "raw",
+        gene_id,
+        row.get("event_type", ""),
+        row.get("target_start0", ""),
+        row.get("target_end0", ""),
+        row.get("genomic_accession", ""),
+        row.get("genomic_start1", ""),
+        row.get("genomic_end1", ""),
+        row.get("ref", ""),
+        row.get("alt", ""),
+    )
 
 
 def path_metadata(path: Path) -> dict[str, object]:
@@ -559,6 +655,7 @@ def main():
     args = parse_args()
     args.outdir.mkdir(parents=True, exist_ok=True)
     out_tsv = args.outdir / "variant_annotations.tsv.gz"
+    support_tsv = args.outdir / "variant_strategy_support.tsv.gz"
     failures_tsv = args.outdir / "failures.tsv.gz"
     manifest_json = args.outdir / "manifest.json"
     if not args.clinvar_vcf.exists():
@@ -584,6 +681,8 @@ def main():
         missing = required - set(header or [])
         if missing:
             raise ValueError(f"Events table missing required columns: {', '.join(sorted(missing))}")
+        if not {"strategy", "strategies"} & set(header or []):
+            raise ValueError("Events table must include strategy or strategies")
         for row in reader:
             input_row_count += 1
             acc = row["genomic_accession"]
@@ -600,18 +699,7 @@ def main():
             lookup_ref = lookup_key[2] if lookup_key else ""
             lookup_alt = lookup_key[3] if lookup_key else ""
             variant_key = lookup_key_text(lookup_key)
-            aggregate_key = (
-                row.get("gene_id", ""),
-                row.get("event_type", ""),
-                row.get("target_start0", ""),
-                row.get("target_end0", ""),
-                row.get("genomic_accession", ""),
-                row.get("genomic_start1", ""),
-                row.get("genomic_end1", ""),
-                row.get("ref", ""),
-                row.get("alt", ""),
-                variant_key,
-            )
+            aggregate_key = variant_aggregate_key(row, variant_key)
             aggregate = variant_aggregates.get(aggregate_key)
             if aggregate is None:
                 aggregate = {
@@ -632,10 +720,7 @@ def main():
                     "lookup_status": status,
                     "support_row_count": 0,
                     "_lookup_key": lookup_key,
-                    "_orthologs": set(),
-                    "_ortholog_count_hint": 0,
-                    "_strategies": set(),
-                    "_strategy_count_hint": 0,
+                    "_support_by_strategy": {},
                     "_tools": set(),
                     "_presets": set(),
                     "_tax_ids": set(),
@@ -647,14 +732,7 @@ def main():
                 unique_lookup_status_counts[status] += 1
 
             aggregate["support_row_count"] += int_or_default(row.get("support_row_count"), 1)
-            if row.get("ortholog_gene_id"):
-                aggregate["_orthologs"].add(row["ortholog_gene_id"])
-            else:
-                aggregate["_ortholog_count_hint"] += int_or_default(row.get("support_ortholog_count"), 0)
-
-            aggregate["_strategies"].update(split_values(row.get("strategy")))
-            aggregate["_strategies"].update(split_values(row.get("strategies")))
-            aggregate["_strategy_count_hint"] += int_or_default(row.get("support_strategy_count"), 0)
+            add_strategy_support(aggregate, row)
 
             aggregate["_tools"].update(split_values(row.get("tool")))
             aggregate["_tools"].update(split_values(row.get("tools")))
@@ -754,15 +832,18 @@ def main():
             gnomad_annotation = gnomad_annotation_from_variant(gnomad_cache[lookup_key])
 
         row = {field: aggregate.get(field, "") for field in VARIANT_ANNOTATION_FIELDS}
+        support_by_strategy = aggregate["_support_by_strategy"]
+        orthologs = set()
+        ortholog_count_hint = 0
+        for support in support_by_strategy.values():
+            orthologs.update(support.orthologs)
+            ortholog_count_hint += support.ortholog_count_hint
         row["support_ortholog_count"] = max(
-            len(aggregate["_orthologs"]),
-            int_or_default(aggregate["_ortholog_count_hint"]),
+            len(orthologs),
+            ortholog_count_hint,
         )
-        row["support_strategy_count"] = max(
-            len(aggregate["_strategies"]),
-            int_or_default(aggregate["_strategy_count_hint"]),
-        )
-        row["strategies"] = ",".join(sorted(aggregate["_strategies"]))
+        row["support_strategy_count"] = len(support_by_strategy)
+        row["strategies"] = ",".join(sorted(support_by_strategy))
         row["tools"] = ",".join(sorted(aggregate["_tools"]))
         row["presets"] = ",".join(sorted(aggregate["_presets"]))
         row["tax_id_count"] = max(len(aggregate["_tax_ids"]), int_or_default(aggregate["_tax_id_count_hint"]))
@@ -783,6 +864,14 @@ def main():
         )
     )
     output_row_count = write_tsv_gz(out_tsv, VARIANT_ANNOTATION_FIELDS, variant_rows)
+    strategy_support_rows, strategy_support_missing_key_count = build_variant_strategy_support(
+        variant_aggregates.values()
+    )
+    strategy_support_count = write_tsv_gz(
+        support_tsv,
+        VARIANT_STRATEGY_SUPPORT_FIELDS,
+        strategy_support_rows,
+    )
 
     failure_count = write_tsv_gz(failures_tsv, FAILURE_FIELDS, failures)
     manifest = {
@@ -791,6 +880,8 @@ def main():
         "event_row_count": input_row_count,
         "variant_context_count": len(variant_aggregates),
         "annotated_variant_context_count": output_row_count,
+        "variant_strategy_support_count": strategy_support_count,
+        "variant_strategy_support_missing_key_count": strategy_support_missing_key_count,
         "target_context_count": len(contexts),
         "clinvar_vcf": path_metadata(args.clinvar_vcf),
         "clinvar_tbi": path_metadata(clinvar_tbi),
@@ -812,6 +903,7 @@ def main():
     manifest_json.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
 
     logger.info(f"Saved variant annotations to {out_tsv}")
+    logger.info(f"Saved variant-strategy support to {support_tsv}")
     logger.info(f"Saved annotation failures to {failures_tsv}")
     logger.info(f"Saved annotation manifest to {manifest_json}")
 

@@ -429,6 +429,7 @@ workflow ANNOTATION_STAGE {
 
     emit:
     variant_annotations = ANNOTATE_EVENTS.out.variant_annotations
+    variant_strategy_support = ANNOTATE_EVENTS.out.variant_strategy_support
     manifest = ANNOTATE_EVENTS.out.manifest
     failures = ANNOTATE_EVENTS.out.failures
 }
@@ -464,6 +465,7 @@ workflow PARTITIONED_ANNOTATION_STAGE {
 
     emit:
     variant_annotations = FINALIZE_ANNOTATION.out.variant_annotations
+    variant_strategy_support = FINALIZE_ANNOTATION.out.variant_strategy_support
     manifest = FINALIZE_ANNOTATION.out.manifest
     failures = FINALIZE_ANNOTATION.out.failures
 }

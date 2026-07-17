@@ -70,9 +70,9 @@ strategies. Remote Ensembl MAF chunk tasks default to
 `--ensembl_compara_maf_max_forks 3`; increase it only after checking network
 stability.
 
-Large runs can enable `--compact_alignment_events true` to publish unique event
-support rows instead of raw per-support event rows. Raw remains the default
-because it preserves maximum traceability.
+Large runs can enable `--compact_alignment_events true` to publish one support
+row per unique event and strategy instead of raw per-ortholog event rows. Raw
+remains the default because it preserves maximum traceability.
 
 ## Taxonomy Presets
 

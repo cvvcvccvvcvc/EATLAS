@@ -98,10 +98,11 @@ Runtime environments:
 - `bin/annotate_events.py`
   - normalizes alignment events to VCF-style keys using target context
   - annotates events with ClinVar when a VCF is configured
+  - preserves distinct per-strategy ortholog support in a compact table
   - streams event rows and fetches gnomAD regions within one bounded partition
 
 - `bin/finalize_annotation_partitions.py`
-  - streams partition annotations into the canonical Stage 3 outputs
+  - streams partition annotations and strategy-support rows into canonical Stage 3 outputs
   - aggregates partition manifests without loading variant rows into memory
 
 ## Output Boundary

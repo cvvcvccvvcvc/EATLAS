@@ -16,6 +16,8 @@ COUNT_FIELDS = [
     "event_row_count",
     "variant_context_count",
     "annotated_variant_context_count",
+    "variant_strategy_support_count",
+    "variant_strategy_support_missing_key_count",
     "target_context_count",
     "clinvar_cached_variant_count",
     "gnomad_region_count",
@@ -100,6 +102,11 @@ def main() -> None:
         "variant_annotations.tsv.gz",
         args.outdir / "variant_annotations.tsv.gz",
     )
+    support_count = merge_tsv_gz(
+        partitions,
+        "variant_strategy_support.tsv.gz",
+        args.outdir / "variant_strategy_support.tsv.gz",
+    )
     failure_count = merge_tsv_gz(partitions, "failures.tsv.gz", args.outdir / "failures.tsv.gz")
 
     counts = {
@@ -110,6 +117,11 @@ def main() -> None:
         raise ValueError(
             "Annotation row count does not match partition manifests: "
             f"rows={annotation_count}, manifests={counts['annotated_variant_context_count']}"
+        )
+    if counts["variant_strategy_support_count"] != support_count:
+        raise ValueError(
+            "Variant-strategy support row count does not match partition manifests: "
+            f"rows={support_count}, manifests={counts['variant_strategy_support_count']}"
         )
     manifest_failure_count = sum(
         int(manifest.get("failure_count") or 0) for _path, manifest in partitions
@@ -135,6 +147,7 @@ def main() -> None:
         **counts,
         **counters,
         "annotated_variant_context_count": annotation_count,
+        "variant_strategy_support_count": support_count,
         "failure_count": failure_count,
         "clinvar_vcf": first_manifest.get("clinvar_vcf", {}),
         "clinvar_tbi": first_manifest.get("clinvar_tbi", {}),

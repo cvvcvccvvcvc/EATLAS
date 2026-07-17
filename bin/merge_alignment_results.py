@@ -42,10 +42,9 @@ COMPACT_EVENT_FIELDS = [
     "genomic_end1",
     "ref",
     "alt",
+    "strategy",
     "support_row_count",
     "support_ortholog_count",
-    "support_strategy_count",
-    "strategies",
     "tools",
     "presets",
     "tax_id_count",
@@ -358,7 +357,8 @@ def write_compact_events(paths: list[Path], output: Path) -> tuple[int, int]:
                 genomic_start1,
                 genomic_end1,
                 ref,
-                alt
+                alt,
+                strategy
             )
             """
         )
@@ -374,10 +374,9 @@ def write_compact_events(paths: list[Path], output: Path) -> tuple[int, int]:
                 genomic_end1,
                 ref,
                 alt,
+                strategy,
                 COUNT(*) AS support_row_count,
                 COUNT(DISTINCT ortholog_gene_id) AS support_ortholog_count,
-                COUNT(DISTINCT strategy) AS support_strategy_count,
-                GROUP_CONCAT(DISTINCT strategy) AS strategies,
                 GROUP_CONCAT(DISTINCT tool) AS tools,
                 GROUP_CONCAT(DISTINCT preset) AS presets,
                 COUNT(DISTINCT tax_id) AS tax_id_count,
@@ -393,13 +392,15 @@ def write_compact_events(paths: list[Path], output: Path) -> tuple[int, int]:
                 genomic_start1,
                 genomic_end1,
                 ref,
-                alt
+                alt,
+                strategy
             ORDER BY
                 CAST(gene_id AS INTEGER),
                 CAST(target_start0 AS INTEGER),
                 event_type,
                 ref,
-                alt
+                alt,
+                strategy
         """
         compact_count = 0
         with gzip.open(output, "wt", newline="") as handle:

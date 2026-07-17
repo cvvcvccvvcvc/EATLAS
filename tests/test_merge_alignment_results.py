@@ -224,6 +224,49 @@ def test_partition_merge_supports_compact_events(tmp_path: Path) -> None:
     assert manifest["alignment_event_count"] == 0
 
 
+def test_compact_events_preserve_strategy_specific_support(tmp_path: Path) -> None:
+    result_dirs = [
+        write_result_dir(
+            tmp_path,
+            f"gene_1_{strategy}",
+            {"gene_id": "1", "strategy": strategy},
+        )
+        for strategy in ["s1", "s2"]
+    ]
+    event_header = [
+        *TABLE_HEADERS["alignment_events.tsv.gz"],
+        "ortholog_gene_id",
+        "strategy",
+        "tool",
+        "preset",
+        "tax_id",
+        "taxname",
+        "qc_flags",
+    ]
+    for result_dir, strategy in zip(result_dirs, ["s1", "s2"]):
+        write_tsv_gz(
+            result_dir / "alignment_events.tsv.gz",
+            event_header,
+            [["1", "snv", "0", "1", "NC_1", "1", "1", "A", "G", "101", strategy, "tool", "", "1", "species", ""]],
+        )
+
+    arguments = partition_arguments(
+        result_dirs,
+        tmp_path / "merged",
+        gene_ids="1",
+        strategies="s1,s2",
+    )
+    arguments.append("--compact-events")
+
+    completed = run_merge(arguments)
+
+    assert completed.returncode == 0, completed.stderr
+    with gzip.open(tmp_path / "merged" / "alignment_events.tsv.gz", "rt", newline="") as handle:
+        rows = list(csv.DictReader(handle, delimiter="\t"))
+    assert [row["strategy"] for row in rows] == ["s1", "s2"]
+    assert [row["support_ortholog_count"] for row in rows] == ["1", "1"]
+
+
 def test_partition_merge_rejects_duplicate_gene_strategy(tmp_path: Path) -> None:
     result_dirs = [
         write_result_dir(

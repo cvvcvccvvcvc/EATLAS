@@ -31,6 +31,7 @@ results/run_001/
 `annotation/` contains:
 
 - the compressed unique variant-context annotation table
+- compact per-strategy ALT-support counts for every normalized variant
 - annotation manifest and diagnostic failure table
 
 This layer should be kept.
