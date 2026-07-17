@@ -252,7 +252,7 @@ is not staged into every aligner job.
 
 Task preparation also assigns a stable `partition_id` after sorting target genes
 by chromosome and genomic interval. `--alignment_partition_size` controls the
-maximum number of target genes in each partition (default: 50). The identifier
+maximum number of target genes in each partition (default: 10). The identifier
 is carried in task metadata for bounded downstream merge and annotation; it does
 not change gene-level alignment behavior.
 

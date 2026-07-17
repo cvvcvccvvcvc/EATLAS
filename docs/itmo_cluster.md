@@ -94,6 +94,14 @@ all sequence aligners. Four concurrent tasks per alignment process are
 therefore the default on the verified cluster setup; this setting does not
 change the separate Ensembl MAF or annotation concurrency limits.
 
+In the same run, annotation partitions containing two genes used 0.38-5.6 GB
+RSS for 66,921-815,531 unique variant contexts. Memory tracked context count
+closely, while gene counts alone did not predict it. The default partition size
+is therefore 10 genes, and partitioned annotation requests 24 GB on its first
+attempt, retrying at 48 and 72 GB after memory-related failures. With the
+default two annotation forks, the maximum retry reservation remains below the
+verified 512 GB per-user Slurm memory limit.
+
 Current memory requests are conservative initial bounds. Tune them from
 Nextflow trace `peak_rss` after representative cluster runs. Requesting the
 account maximum for every task wastes capacity and can increase queue time.

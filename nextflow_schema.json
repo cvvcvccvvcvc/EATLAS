@@ -113,13 +113,13 @@
                 },
                 "alignment_max_forks": {
                     "type": "integer",
-                    "default": 2,
+                    "default": 4,
                     "description": "Maximum concurrent tasks per alignment strategy process. With multiple strategies selected, total alignment concurrency can be higher and is also bounded by executor CPU/queue limits."
                 },
                 "alignment_partition_size": {
                     "type": "integer",
                     "minimum": 1,
-                    "default": 50,
+                    "default": 10,
                     "description": "Maximum target genes per bounded alignment and annotation output partition."
                 },
                 "compact_alignment_events": {
