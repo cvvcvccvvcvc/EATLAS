@@ -132,6 +132,7 @@ Fetch outputs:
 - `fetch/manifest.json` - run constants and tool versions.
 - `fetch/input.ids.tsv` - normalized input IDs.
 - `fetch/genes.tsv.gz` - target gene metadata.
+- `fetch/target_features.tsv.gz` - compact gene/exon/CDS/UTR/intron intervals.
 - `fetch/orthologs.selected.tsv.gz` - selected ortholog sequence metadata.
 - `fetch/failures.tsv.gz` - gene-level failures.
 - `fetch/sequences/targets/*.fa.gz` - GRCh38 target gene sequences.
@@ -145,8 +146,9 @@ Alignment outputs:
 
 Annotation outputs:
 
-- `annotation/variant_annotations.tsv.gz` - unique variant-context rows with expanded ClinVar fields
-  including review stars derived from `CLNREVSTAT`, plus gnomAD AF/AC/AN annotation columns.
+- `annotation/variant_annotations.tsv.gz` - compact unique variant-context rows
+  with report-relevant ClinVar classification/review evidence and selected
+  gnomAD AF/consequence fields.
 - `annotation/variant_strategy_support.tsv.gz` - compact per-strategy ALT-support
   row and distinct-ortholog counts for every normalized variant.
 - `annotation/manifest.json` - annotation input, source, row-count, cache, and diagnostic counters.

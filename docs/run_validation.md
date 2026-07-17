@@ -225,7 +225,7 @@ Annotation expected properties:
 - `clinvar_*` columns are present and populated when matching ClinVar records exist;
   `clinvar_review_stars` is derived from the raw `clinvar_revstat` value.
 - `gnomad_*` columns are populated only for variants found in fetched gnomAD regions,
-  including selected AF plus exome/genome/joint AF and joint AC/AN when available.
+  including the selected AF, its source dataset, and consequence annotation.
 
 ## Quick Checks
 

@@ -38,31 +38,16 @@ CLINVAR_COLUMNS = [
     "clinvar_review_stars_status",
     "clinvar_id",
     "clinvar_allele_id",
-    "clinvar_sig_conflict",
     "clinvar_scv_count",
-    "clinvar_scv_accessions",
     "clinvar_hgvs",
-    "clinvar_geneinfo",
     "clinvar_disease",
-    "clinvar_disease_db",
     "clinvar_variant_type",
-    "clinvar_variant_type_so",
-    "clinvar_origin",
-    "clinvar_rs",
 ]
 
 GNOMAD_COLUMNS = [
     "gnomad_af",
     "gnomad_af_source",
     "gnomad_csq",
-    "gnomad_variant_id",
-    "gnomad_af_exome",
-    "gnomad_af_genome",
-    "gnomad_af_joint",
-    "gnomad_ac_joint",
-    "gnomad_an_joint",
-    "gnomad_hgvsc",
-    "gnomad_hgvsp",
 ]
 
 ANNOTATION_COLUMNS = CLINVAR_COLUMNS + GNOMAD_COLUMNS
@@ -71,26 +56,12 @@ VARIANT_ANNOTATION_FIELDS = [
     "variant_key",
     "gene_id",
     "event_type",
-    "target_start0",
-    "target_end0",
-    "genomic_accession",
-    "genomic_start1",
-    "genomic_end1",
     "ref",
     "alt",
-    "lookup_chrom",
-    "lookup_pos",
-    "lookup_ref",
-    "lookup_alt",
     "lookup_status",
     "support_row_count",
     "support_ortholog_count",
-    "support_strategy_count",
     "strategies",
-    "tools",
-    "presets",
-    "tax_id_count",
-    "taxname_count",
     *ANNOTATION_COLUMNS,
 ]
 
@@ -571,34 +542,19 @@ def clinvar_annotation_from_record(rec) -> dict[str, str]:
         "clinvar_review_stars_status": stars_status,
         "clinvar_id": rec.id or "",
         "clinvar_allele_id": format_info_value(rec.info.get("ALLELEID")),
-        "clinvar_sig_conflict": format_info_value(rec.info.get("CLNSIGCONF")),
         "clinvar_scv_count": count_pipe_values(scv_accessions),
-        "clinvar_scv_accessions": scv_accessions,
         "clinvar_hgvs": format_info_value(rec.info.get("CLNHGVS")),
-        "clinvar_geneinfo": format_info_value(rec.info.get("GENEINFO")),
         "clinvar_disease": format_info_value(rec.info.get("CLNDN")),
-        "clinvar_disease_db": format_info_value(rec.info.get("CLNDISDB")),
         "clinvar_variant_type": format_info_value(rec.info.get("CLNVC")),
-        "clinvar_variant_type_so": format_info_value(rec.info.get("CLNVCSO")),
-        "clinvar_origin": format_info_value(rec.info.get("ORIGIN")),
-        "clinvar_rs": format_info_value(rec.info.get("RS")),
     }
 
 
 def gnomad_annotation_from_variant(variant: dict) -> dict[str, str]:
-    af, af_source, af_exome, af_genome, af_joint, an_joint, ac_joint = _select_af_metrics(variant)
+    af, af_source, *_ = _select_af_metrics(variant)
     return {
         "gnomad_af": format_float(af),
         "gnomad_af_source": af_source or "",
         "gnomad_csq": str(variant.get("consequence") or ""),
-        "gnomad_variant_id": str(variant.get("variant_id") or ""),
-        "gnomad_af_exome": format_float(af_exome),
-        "gnomad_af_genome": format_float(af_genome),
-        "gnomad_af_joint": format_float(af_joint),
-        "gnomad_ac_joint": str(ac_joint) if ac_joint is not None else "",
-        "gnomad_an_joint": str(an_joint) if an_joint is not None else "",
-        "gnomad_hgvsc": str(variant.get("hgvsc") or ""),
-        "gnomad_hgvsp": str(variant.get("hgvsp") or ""),
     }
 
 
@@ -694,10 +650,6 @@ def main():
             if acc and lookup_key:
                 accession_positions[acc].add(int(lookup_key[1]))
 
-            lookup_chrom = lookup_key[0] if lookup_key else ""
-            lookup_pos = lookup_key[1] if lookup_key else ""
-            lookup_ref = lookup_key[2] if lookup_key else ""
-            lookup_alt = lookup_key[3] if lookup_key else ""
             variant_key = lookup_key_text(lookup_key)
             aggregate_key = variant_aggregate_key(row, variant_key)
             aggregate = variant_aggregates.get(aggregate_key)
@@ -706,47 +658,18 @@ def main():
                     "variant_key": variant_key,
                     "gene_id": row.get("gene_id", ""),
                     "event_type": row.get("event_type", ""),
-                    "target_start0": row.get("target_start0", ""),
-                    "target_end0": row.get("target_end0", ""),
-                    "genomic_accession": row.get("genomic_accession", ""),
-                    "genomic_start1": row.get("genomic_start1", ""),
-                    "genomic_end1": row.get("genomic_end1", ""),
                     "ref": row.get("ref", ""),
                     "alt": row.get("alt", ""),
-                    "lookup_chrom": lookup_chrom,
-                    "lookup_pos": lookup_pos,
-                    "lookup_ref": lookup_ref,
-                    "lookup_alt": lookup_alt,
                     "lookup_status": status,
                     "support_row_count": 0,
                     "_lookup_key": lookup_key,
                     "_support_by_strategy": {},
-                    "_tools": set(),
-                    "_presets": set(),
-                    "_tax_ids": set(),
-                    "_tax_id_count_hint": 0,
-                    "_taxnames": set(),
-                    "_taxname_count_hint": 0,
                 }
                 variant_aggregates[aggregate_key] = aggregate
                 unique_lookup_status_counts[status] += 1
 
             aggregate["support_row_count"] += int_or_default(row.get("support_row_count"), 1)
             add_strategy_support(aggregate, row)
-
-            aggregate["_tools"].update(split_values(row.get("tool")))
-            aggregate["_tools"].update(split_values(row.get("tools")))
-            aggregate["_presets"].update(split_values(row.get("preset")))
-            aggregate["_presets"].update(split_values(row.get("presets")))
-
-            if row.get("tax_id"):
-                aggregate["_tax_ids"].add(row["tax_id"])
-            else:
-                aggregate["_tax_id_count_hint"] += int_or_default(row.get("tax_id_count"), 0)
-            if row.get("taxname"):
-                aggregate["_taxnames"].add(row["taxname"])
-            else:
-                aggregate["_taxname_count_hint"] += int_or_default(row.get("taxname_count"), 0)
     logger.info(f"Event key normalization status: {dict(event_key_status_counts)}")
     logger.info(f"Collapsed {input_row_count} event row(s) to {len(variant_aggregates)} variant-context row(s).")
 
@@ -842,12 +765,7 @@ def main():
             len(orthologs),
             ortholog_count_hint,
         )
-        row["support_strategy_count"] = len(support_by_strategy)
         row["strategies"] = ",".join(sorted(support_by_strategy))
-        row["tools"] = ",".join(sorted(aggregate["_tools"]))
-        row["presets"] = ",".join(sorted(aggregate["_presets"]))
-        row["tax_id_count"] = max(len(aggregate["_tax_ids"]), int_or_default(aggregate["_tax_id_count_hint"]))
-        row["taxname_count"] = max(len(aggregate["_taxnames"]), int_or_default(aggregate["_taxname_count_hint"]))
         row.update(clinvar_annotation)
         row.update(gnomad_annotation)
         for column in ANNOTATION_COLUMNS:
@@ -858,9 +776,8 @@ def main():
     variant_rows.sort(
         key=lambda row: (
             int_or_default(row.get("gene_id"), 10**18),
-            int_or_default(row.get("target_start0"), 10**18),
-            row.get("event_type", ""),
             row.get("variant_key", ""),
+            row.get("event_type", ""),
         )
     )
     output_row_count = write_tsv_gz(out_tsv, VARIANT_ANNOTATION_FIELDS, variant_rows)

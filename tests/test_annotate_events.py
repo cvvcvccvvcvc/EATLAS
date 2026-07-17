@@ -10,10 +10,38 @@ BIN_DIR = Path(__file__).resolve().parents[1] / "bin"
 sys.path.insert(0, str(BIN_DIR))
 
 from annotate_events import (  # noqa: E402
+    VARIANT_ANNOTATION_FIELDS,
     add_strategy_support,
     build_variant_strategy_support,
     variant_aggregate_key,
 )
+
+
+def test_variant_annotation_schema_is_analysis_ready() -> None:
+    assert VARIANT_ANNOTATION_FIELDS == [
+        "variant_key",
+        "gene_id",
+        "event_type",
+        "ref",
+        "alt",
+        "lookup_status",
+        "support_row_count",
+        "support_ortholog_count",
+        "strategies",
+        "clinvar_sig",
+        "clinvar_revstat",
+        "clinvar_review_stars",
+        "clinvar_review_stars_status",
+        "clinvar_id",
+        "clinvar_allele_id",
+        "clinvar_scv_count",
+        "clinvar_hgvs",
+        "clinvar_disease",
+        "clinvar_variant_type",
+        "gnomad_af",
+        "gnomad_af_source",
+        "gnomad_csq",
+    ]
 
 
 def test_variant_strategy_support_counts_distinct_orthologs() -> None:

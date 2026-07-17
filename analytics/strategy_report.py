@@ -4,8 +4,6 @@
 from __future__ import annotations
 
 import argparse
-import csv
-import gzip
 import json
 import re
 import warnings
@@ -100,7 +98,6 @@ class RunInputs:
     feature_coverage_tsv: Path
     alignment_manifest_json: Path
     strategy_summary_tsv: Path
-    ortholog_alignment_summary_tsv: Path
 
 
 @dataclass(frozen=True)
@@ -172,7 +169,6 @@ def resolve_run_inputs(run_dir: Path) -> RunInputs:
         feature_coverage_tsv=run_dir / "alignment" / "feature_coverage.tsv.gz",
         alignment_manifest_json=run_dir / "alignment" / "manifest.json",
         strategy_summary_tsv=run_dir / "alignment" / "strategy_summary.tsv.gz",
-        ortholog_alignment_summary_tsv=run_dir / "alignment" / "ortholog_alignment_summary.tsv.gz",
     )
     if not inputs.variant_annotations_tsv.exists():
         raise FileNotFoundError(
@@ -306,54 +302,11 @@ def read_feature_coverage(path: Path) -> pd.DataFrame:
     return cov
 
 
-def summarize_alignment_rows(path: Path) -> pd.DataFrame:
-    aggregates: dict[str, dict] = {}
-    with gzip.open(path, "rt", newline="") as handle:
-        reader = csv.DictReader(handle, delimiter="\t")
-        required = {"gene_id", "strategy", "status", "event_count", "aligned_target_bp"}
-        missing = required - set(reader.fieldnames or [])
-        if missing:
-            raise ValueError(
-                f"Alignment summary {path} missing required columns: {', '.join(sorted(missing))}"
-            )
-        for row in reader:
-            strategy = row["strategy"]
-            aggregate = aggregates.setdefault(
-                strategy,
-                {
-                    "strategy": strategy,
-                    "summary_row_count": 0,
-                    "gene_ids": set(),
-                    "aligned_summary_row_count": 0,
-                    "event_count": 0,
-                    "aligned_target_bp": 0,
-                },
-            )
-            aggregate["summary_row_count"] += 1
-            aggregate["gene_ids"].add(row["gene_id"])
-            aggregate["aligned_summary_row_count"] += int(row["status"] == "aligned")
-            aggregate["event_count"] += int(row["event_count"] or 0)
-            aggregate["aligned_target_bp"] += int(row["aligned_target_bp"] or 0)
-    rows = []
-    for aggregate in aggregates.values():
-        row = dict(aggregate)
-        row["gene_count"] = len(row.pop("gene_ids"))
-        rows.append(row)
-    return pd.DataFrame(rows)
-
-
-def read_strategy_summary(path: Path, alignment_summary_path: Path) -> pd.DataFrame:
-    if path.exists():
-        print(f"Reading {path}...")
-        summary = pd.read_csv(path, sep="\t", compression="gzip", low_memory=False)
-    elif alignment_summary_path.exists():
-        print(f"Deriving strategy summary from {alignment_summary_path}...")
-        summary = summarize_alignment_rows(alignment_summary_path)
-    else:
-        raise FileNotFoundError(
-            "Missing alignment/strategy_summary.tsv.gz and "
-            "alignment/ortholog_alignment_summary.tsv.gz under --run-dir."
-        )
+def read_strategy_summary(path: Path) -> pd.DataFrame:
+    if not path.exists():
+        raise FileNotFoundError("Missing alignment/strategy_summary.tsv.gz under --run-dir.")
+    print(f"Reading {path}...")
+    summary = pd.read_csv(path, sep="\t", compression="gzip", low_memory=False)
     required = {"strategy", "summary_row_count", "aligned_summary_row_count", "event_count"}
     missing = required - set(summary.columns)
     if missing:
@@ -1594,7 +1547,6 @@ def build_methods_sections(
         ("Target Sequences", inputs.target_sequences_dir),
         ("Feature Coverage", inputs.feature_coverage_tsv),
         ("Strategy Summary", inputs.strategy_summary_tsv),
-        ("Ortholog Alignment Summary", inputs.ortholog_alignment_summary_tsv),
         ("Annotation Manifest", inputs.annotation_manifest_json),
         ("Alignment Manifest", inputs.alignment_manifest_json),
         ("Output HTML", out_html),
@@ -1859,10 +1811,7 @@ def main() -> None:
         strategy_label,
     )
     cov = read_feature_coverage(inputs.feature_coverage_tsv)
-    alignment_summary = read_strategy_summary(
-        inputs.strategy_summary_tsv,
-        inputs.ortholog_alignment_summary_tsv,
-    )
+    alignment_summary = read_strategy_summary(inputs.strategy_summary_tsv)
     failures = read_failures(inputs.annotation_failures_tsv)
     annotation_manifest = read_json(inputs.annotation_manifest_json)
     alignment_manifest = read_json(inputs.alignment_manifest_json)

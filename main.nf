@@ -157,6 +157,7 @@ workflow FETCH_STAGE {
             BUILD_FETCH_DATASET.out.manifest,
             BUILD_FETCH_DATASET.out.input_ids,
             BUILD_FETCH_DATASET.out.genes,
+            BUILD_FETCH_DATASET.out.target_features,
             BUILD_FETCH_DATASET.out.orthologs_selected,
             BUILD_FETCH_DATASET.out.failures,
             BUILD_FETCH_DATASET.out.sequences

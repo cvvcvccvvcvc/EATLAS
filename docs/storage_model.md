@@ -17,6 +17,7 @@ For a default end-to-end `--stage all` run, `fetch/` contains:
 
 - compressed target FASTA files
 - input and target-gene metadata
+- compact target feature intervals
 - the compact selected-ortholog provenance table
 - fetch failures
 - `manifest.json`
@@ -32,6 +33,12 @@ For a default end-to-end `--stage all` run, `fetch/` contains:
 - the compressed unique variant-context annotation table
 - compact per-strategy ALT-support counts for every normalized variant
 - annotation manifest and diagnostic failure table
+
+The variant-context table intentionally stores one compact interpretation
+layer: canonical key, gene/event, raw alleles, normalization status, aggregate
+support, strategy membership, ClinVar classification/review fields, and the
+selected gnomAD AF/source/consequence. Provider fields not used by the report
+are not duplicated into durable output.
 
 This layer should be kept.
 
@@ -118,10 +125,10 @@ Keep:
 - `results/.../manifest.json`
 - `results/.../*.tsv.gz`
 - `results/.../sequences/targets/*.fa.gz`
+- `results/.../target_features.tsv.gz`
 
 Keep standalone Stage 1 output until its Stage 2 consumer has finished:
 - `results/.../sequences/orthologs/*.fa.gz`
-- `results/.../target_features.tsv.gz`
 
 Usually remove after validation:
 - Nextflow `work/`

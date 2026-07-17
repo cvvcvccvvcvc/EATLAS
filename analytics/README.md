@@ -36,6 +36,8 @@ The report reads `annotation/variant_annotations.tsv.gz` in chunks. It uses a
 temporary SQLite file under `<run-dir>/analytics/` to deduplicate
 variant-strategy records without loading the full annotation table into memory;
 the file is removed when aggregation finishes or fails.
+The report requires the canonical `alignment/strategy_summary.tsv.gz`; it does
+not reconstruct that aggregate from a raw per-ortholog table.
 
 The strategy report writes its ClinVar validation universe under:
 

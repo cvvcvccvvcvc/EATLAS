@@ -21,31 +21,20 @@ VARIANT_USECOLS = [
     "event_type",
     "ref",
     "alt",
-    "lookup_ref",
-    "lookup_alt",
     "strategies",
     "support_row_count",
     "support_ortholog_count",
-    "support_strategy_count",
     "clinvar_id",
     "clinvar_allele_id",
     "clinvar_sig",
     "clinvar_revstat",
     "clinvar_review_stars",
-    "clinvar_review_stars_status",
-    "clinvar_sig_conflict",
     "clinvar_scv_count",
     "clinvar_hgvs",
-    "clinvar_geneinfo",
     "clinvar_disease",
     "clinvar_variant_type",
-    "clinvar_origin",
-    "clinvar_rs",
     "gnomad_af",
-    "gnomad_af_source",
     "gnomad_csq",
-    "gnomad_hgvsc",
-    "gnomad_hgvsp",
 ]
 VARIANT_REQUIRED = {"variant_key", "gene_id", "event_type", "strategies"}
 
@@ -119,14 +108,14 @@ def _normalize_chunk(df: pd.DataFrame) -> pd.DataFrame:
         )
 
     df["gnomad_af"] = pd.to_numeric(df["gnomad_af"], errors="coerce")
-    for column in ["support_row_count", "support_ortholog_count", "support_strategy_count", "clinvar_scv_count"]:
+    for column in ["support_row_count", "support_ortholog_count", "clinvar_scv_count"]:
         df[column] = pd.to_numeric(df[column], errors="coerce").fillna(0).astype("int64")
     df["clinvar_found"] = df["clinvar_id"].astype(str) != ""
     df["clinvar_classified"] = df["clinvar_sig"].astype(str) != ""
     df["clinvar_category"] = _categorize_clinvar(df["clinvar_sig"])
 
-    ref = df["lookup_ref"].where(df["lookup_ref"].astype(str) != "", df["ref"]).astype(str).str.upper()
-    alt = df["lookup_alt"].where(df["lookup_alt"].astype(str) != "", df["alt"]).astype(str).str.upper()
+    ref = df["ref"].astype(str).str.upper()
+    alt = df["alt"].astype(str).str.upper()
     valid_snv = df["event_type"].astype(str).eq("snv") & ref.str.len().eq(1) & alt.str.len().eq(1)
     transition = ref.str.cat(alt, sep=">").isin(["A>G", "G>A", "C>T", "T>C"])
     df["titv_kind"] = ""
