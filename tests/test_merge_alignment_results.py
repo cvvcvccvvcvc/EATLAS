@@ -369,3 +369,84 @@ def test_final_merge_rejects_missing_ready_gene(tmp_path: Path) -> None:
     assert completed.returncode != 0
     assert "Final alignment gene coverage mismatch" in completed.stderr
     assert "missing=['2']" in completed.stderr
+
+
+def test_bwa_parameters_survive_partition_and_final_merge(tmp_path: Path) -> None:
+    bwa_parameters = {
+        "pseudoread_len": 75,
+        "pseudoread_step": 35,
+        "pseudoread_phred": 30,
+        "task_cpus": 3,
+        "bwa_threads": 2,
+    }
+    result_dir = write_result_dir(
+        tmp_path,
+        "gene_1_bwa",
+        {
+            "gene_id": "1",
+            "strategy": "bwa_pseudoreads",
+            **bwa_parameters,
+        },
+    )
+    partition_dir = tmp_path / "partition"
+
+    partition = run_merge(
+        partition_arguments(
+            [result_dir],
+            partition_dir,
+            gene_ids="1",
+            strategies="bwa_pseudoreads",
+        )
+    )
+
+    assert partition.returncode == 0, partition.stderr
+    partition_manifest = json.loads((partition_dir / "manifest.json").read_text())
+    assert partition_manifest["strategy_parameters"] == {
+        "bwa_pseudoreads": bwa_parameters
+    }
+
+    inputs = write_final_inputs(tmp_path, [["1", "ready"]])
+    final_dir = tmp_path / "final"
+    final = run_merge(
+        final_arguments(
+            [partition_dir],
+            final_dir,
+            inputs,
+            strategies="bwa_pseudoreads",
+        )
+    )
+
+    assert final.returncode == 0, final.stderr
+    final_manifest = json.loads((final_dir / "manifest.json").read_text())
+    assert final_manifest["strategy_parameters"] == {
+        "bwa_pseudoreads": bwa_parameters
+    }
+
+
+def test_partition_merge_rejects_inconsistent_bwa_parameters(tmp_path: Path) -> None:
+    result_dirs = [
+        write_result_dir(
+            tmp_path,
+            f"gene_{gene_id}_bwa",
+            {
+                "gene_id": gene_id,
+                "strategy": "bwa_pseudoreads",
+                "pseudoread_len": 75,
+                "pseudoread_step": step,
+                "pseudoread_phred": 30,
+            },
+        )
+        for gene_id, step in [("1", 35), ("2", 50)]
+    ]
+
+    completed = run_merge(
+        partition_arguments(
+            result_dirs,
+            tmp_path / "merged",
+            gene_ids="1,2",
+            strategies="bwa_pseudoreads",
+        )
+    )
+
+    assert completed.returncode != 0
+    assert "Inconsistent strategy parameters for bwa_pseudoreads" in completed.stderr

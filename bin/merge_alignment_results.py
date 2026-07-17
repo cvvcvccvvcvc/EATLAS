@@ -61,6 +61,14 @@ STRATEGY_SUMMARY_FIELDS = [
     "aligned_target_bp",
 ]
 
+BWA_STRATEGY = "bwa_pseudoreads"
+BWA_REQUIRED_PARAMETERS = (
+    "pseudoread_len",
+    "pseudoread_step",
+    "pseudoread_phred",
+)
+BWA_OPTIONAL_PARAMETERS = ("task_cpus", "bwa_threads")
+
 
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
@@ -469,6 +477,54 @@ def manifest_gene_ids(manifests: list[dict]) -> list[str]:
     return sorted_gene_ids(gene_ids)
 
 
+def merge_strategy_parameters(manifests: list[dict]) -> dict[str, dict]:
+    merged: dict[str, dict] = {}
+    for manifest in manifests:
+        parameters = manifest.get("strategy_parameters") or {}
+        if not isinstance(parameters, dict):
+            raise ValueError("strategy_parameters must be a JSON object")
+        candidates = dict(parameters)
+
+        if manifest.get("strategy") == BWA_STRATEGY:
+            present_required = {
+                name: manifest[name]
+                for name in BWA_REQUIRED_PARAMETERS
+                if manifest.get(name) is not None
+            }
+            if present_required:
+                missing = sorted(set(BWA_REQUIRED_PARAMETERS) - set(present_required))
+                if missing:
+                    raise ValueError(
+                        "BWA manifest has incomplete pseudoread parameters: "
+                        + ", ".join(missing)
+                    )
+                direct = dict(present_required)
+                direct.update(
+                    {
+                        name: manifest[name]
+                        for name in BWA_OPTIONAL_PARAMETERS
+                        if manifest.get(name) is not None
+                    }
+                )
+                nested = candidates.get(BWA_STRATEGY)
+                if nested is not None and nested != direct:
+                    raise ValueError(
+                        "BWA manifest has conflicting direct and nested strategy parameters"
+                    )
+                candidates[BWA_STRATEGY] = direct
+
+        for strategy, values in candidates.items():
+            if not isinstance(values, dict):
+                raise ValueError(f"Strategy parameters for {strategy} must be a JSON object")
+            normalized = dict(sorted(values.items()))
+            existing = merged.get(strategy)
+            if existing is not None and existing != normalized:
+                raise ValueError(f"Inconsistent strategy parameters for {strategy}")
+            merged[strategy] = normalized
+
+    return dict(sorted(merged.items()))
+
+
 def require_alignment_tables(result_dirs: list[Path], require_feature_coverage: bool) -> None:
     filenames = [
         "ortholog_alignment_summary.tsv.gz",
@@ -700,6 +756,7 @@ def main() -> None:
         [path / "failures.tsv.gz" for path in result_dirs],
         args.outdir / "failures.tsv.gz",
     )
+    strategy_parameters = merge_strategy_parameters(manifests)
     native_file_count = copy_native(result_dirs, args.outdir)
     manifest = {
         "created_at": utc_now(),
@@ -707,6 +764,7 @@ def main() -> None:
         "partition_id": args.partition_id or "",
         "strategy_count": len(strategies),
         "strategies": strategies,
+        "strategy_parameters": strategy_parameters,
         "gene_count": gene_count,
         "gene_ids": gene_ids,
         "alignment_task_count": alignment_task_count,
