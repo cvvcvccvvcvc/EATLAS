@@ -163,7 +163,7 @@ length denominator across all blocks, so consolidated MAF rows leave
 
 ## Durable Outputs
 
-Stage 2 publishes:
+Standalone `--stage align` publishes the full handoff contract:
 
 | Path | Meaning |
 | --- | --- |
@@ -180,6 +180,13 @@ Stage 2 publishes:
 | `native/` | Optional raw PAF/delta/coords/snps files when enabled. |
 
 Native outputs are disabled by default.
+
+In an end-to-end `--stage all` run, Stage 3 consumes partitioned events directly
+from Nextflow `work/`. The durable `alignment/` directory therefore contains
+only `manifest.json`, `strategy_summary.tsv.gz`, `feature_coverage.tsv.gz`, and
+`failures.tsv.gz`. The manifest retains the raw row counts even though raw
+events, segments, per-ortholog summaries, task metadata, and taxonomy tables are
+not copied into the final run directory.
 
 For Minimap2 rows, `native_record_id` is derived from the PAF record content
 rather than its output line number. `event_id` combines the strategy, that

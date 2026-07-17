@@ -5,7 +5,7 @@ current narrow cleanup, but matter for larger runs.
 
 ## Raw Events vs Compact Support
 
-Default alignment output remains raw:
+Standalone `--stage align` output remains raw by default:
 
 ```text
 alignment_events.tsv.gz
@@ -21,33 +21,28 @@ Large runs can enable:
 --compact_alignment_events true
 ```
 
-In compact mode, the final `alignment_events.tsv.gz` contains one row per unique
-target event key plus support counts. This reduces durable disk usage and makes
-annotation cheaper, but it drops per-ortholog/native-record traceability from
-the final published table. Raw per-task event files remain recoverable through
-Nextflow `work/` while the cache is retained.
+In compact mode, `alignment_events.tsv.gz` contains one row per unique target
+event and strategy plus support counts. This reduces handoff size and makes
+annotation cheaper, but it drops per-ortholog/native-record traceability. Raw
+per-task event files remain recoverable through Nextflow `work/` while the
+cache is retained.
 
-Future direction: if compact mode becomes the default for production, publish
-raw event tables only behind an explicit debug flag such as
-`--keep_raw_alignment_events`.
+End-to-end `--stage all` does not publish a global event table. Partition events
+remain in `work/` until annotation consumes them, and Stage 3 preserves compact
+per-strategy ALT-support counts in `variant_strategy_support.tsv.gz`.
 
 ## Partitioned Alignment Outputs
 
 Alignment merging is internally partitioned by genomic-order target groups. A
 partition is released as soon as all expected strategy results for its genes are
-ready, and compact-event aggregation is bounded to that partition. The final
-merge streams partition files and still publishes one global set of alignment
-TSVs for compatibility with current downstream tools.
+ready. In `--stage all`, each partition retains only events needed by annotation
+plus strategy/coverage summaries and failures. The final alignment merge
+combines only those small summaries and records raw row counts from partition
+manifests. It does not rewrite a global event, segment, or per-ortholog summary
+table.
 
-Remaining future direction:
-
-- publish durable alignment outputs as partitions instead of one global table;
-- write a small manifest/index that lists partitions and row counts;
-- build compact support tables through chunk-level aggregation followed by a
-  final aggregation step;
-- keep raw event rows partitioned as debug evidence rather than one global file.
-
-This keeps memory bounded and avoids a single huge `alignment_events.tsv.gz`.
+Standalone `--stage align` preserves the full global handoff for a later
+annotation invocation.
 
 ## BWA Pseudoreads
 
@@ -58,8 +53,8 @@ BWA, sorts and indexes BAM, and applies the LIS BAM filter.
 Current behavior:
 
 - `bwa_pseudoreads` extracts BAM/CIGAR-supported events with `pysam`;
-- `bwa mem` is streamed through `samtools view` and `samtools sort`, avoiding
-  durable SAM and unsorted BAM intermediates;
+- `bwa mem` is streamed directly into `samtools sort`, avoiding durable SAM and
+  unsorted BAM intermediates;
 - native BAM files are kept only with `--keep_native_alignments true`;
 - normalized segments, summaries, events, failures, and manifest files are
   emitted like the other aligner strategies.

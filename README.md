@@ -95,7 +95,7 @@ Annotation-only debug mode can reuse an existing alignment event table:
 nextflow run . \
   -profile local \
   --stage annotate \
-  --events_tsv results/run_test/alignment/alignment_events.tsv.gz \
+  --events_tsv results/align_debug/alignment_events.tsv.gz \
   --fetch_dir results/run_test/fetch \
   --outdir results/annotate_debug \
   -resume
@@ -125,39 +125,35 @@ results/run_test/
   annotation/
 ```
 
+The default end-to-end `--stage all` output is intentionally compact.
+
 Fetch outputs:
 
 - `fetch/manifest.json` - run constants and tool versions.
 - `fetch/input.ids.tsv` - normalized input IDs.
-- `fetch/chunks.tsv` - deterministic chunk list used for NCBI requests.
-- `fetch/chunk_metrics.tsv.gz` - per-chunk fetch timing and package-size metrics.
 - `fetch/genes.tsv.gz` - target gene metadata.
-- `fetch/target_features.tsv.gz` - collapsed target structural intervals.
 - `fetch/orthologs.selected.tsv.gz` - selected ortholog sequence metadata.
-- `fetch/orthologs.candidates.tsv.gz` - candidate records and deterministic selection decisions.
 - `fetch/failures.tsv.gz` - gene-level failures.
 - `fetch/sequences/targets/*.fa.gz` - GRCh38 target gene sequences.
-- `fetch/sequences/orthologs/*.fa.gz` - selected non-human ortholog gene sequences.
 
 Alignment outputs:
 
 - `alignment/manifest.json` - strategies and row counts.
-- `alignment/alignment_tasks.tsv.gz` - per-gene alignment task manifest.
-- `alignment/taxonomy_presets.tsv.gz` - tax_id to minimap2 preset metadata.
-- `alignment/taxonomy_failures.tsv.gz` - taxonomy lookup warnings/failures.
-- `alignment/ortholog_alignment_summary.tsv.gz` - one row per gene/ortholog/strategy.
-- `alignment/alignment_segments.tsv.gz` - normalized alignment intervals.
+- `alignment/strategy_summary.tsv.gz` - compact per-strategy aggregate.
 - `alignment/feature_coverage.tsv.gz` - coverage/depth by target feature and strategy.
-- `alignment/alignment_events.tsv.gz` - raw mismatch/indel evidence by default;
-  unique event support rows with `--compact_alignment_events true`.
 - `alignment/failures.tsv.gz` - alignment-stage failures.
 
 Annotation outputs:
 
 - `annotation/variant_annotations.tsv.gz` - unique variant-context rows with expanded ClinVar fields
   including review stars derived from `CLNREVSTAT`, plus gnomAD AF/AC/AN annotation columns.
+- `annotation/variant_strategy_support.tsv.gz` - compact per-strategy ALT-support
+  row and distinct-ortholog counts for every normalized variant.
 - `annotation/manifest.json` - annotation input, source, row-count, cache, and diagnostic counters.
 - `annotation/failures.tsv.gz` - non-fatal external annotation lookup failures, such as gnomAD region fetch errors.
+
+Standalone `--stage fetch` and `--stage align` runs publish the full handoff
+tables and ortholog FASTA required to start the following stage separately.
 
 The target assembly is fixed to GRCh38.p14 (`GCF_000001405.40`). Ortholog
 retrieval always uses the complete NCBI ortholog set (`--ortholog all`).

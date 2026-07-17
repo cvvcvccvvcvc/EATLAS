@@ -13,19 +13,18 @@ results/run_001/
   annotation/
 ```
 
-`fetch/` contains the normalized data layer for downstream pipeline stages:
+For a default end-to-end `--stage all` run, `fetch/` contains:
 
 - compressed target FASTA files
-- compressed selected ortholog FASTA files
-- compressed metadata tables
+- input and target-gene metadata
+- the compact selected-ortholog provenance table
+- fetch failures
 - `manifest.json`
 
 `alignment/` contains:
 
-- compressed alignment segments
-- compressed raw alignment events
-- per-ortholog alignment summaries
-- compact taxonomy preset metadata
+- compact per-strategy and feature-coverage summaries
+- alignment failures
 - `manifest.json`
 
 `annotation/` contains:
@@ -35,6 +34,18 @@ results/run_001/
 - annotation manifest and diagnostic failure table
 
 This layer should be kept.
+
+Large handoff artifacts remain inside Nextflow `work/` during `--stage all`.
+They are consumed by the next stage and removed after a successful
+`low_storage` run:
+
+- selected ortholog FASTA files
+- raw alignment events
+- alignment segments
+- per-ortholog alignment summaries
+
+Standalone `--stage fetch` and `--stage align` runs still publish their full
+handoff datasets because a later invocation needs those files.
 
 ## Execution Cache
 
@@ -107,7 +118,10 @@ Keep:
 - `results/.../manifest.json`
 - `results/.../*.tsv.gz`
 - `results/.../sequences/targets/*.fa.gz`
+
+Keep standalone Stage 1 output until its Stage 2 consumer has finished:
 - `results/.../sequences/orthologs/*.fa.gz`
+- `results/.../target_features.tsv.gz`
 
 Usually remove after validation:
 - Nextflow `work/`

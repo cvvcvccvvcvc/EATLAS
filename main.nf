@@ -111,6 +111,7 @@ include { VALIDATE_IDS } from './modules/local/validate_ids.nf'
 include { CHECK_RUNTIME } from './modules/local/check_runtime.nf'
 include { FETCH_PARSE_CHUNK } from './modules/local/fetch_parse_chunk.nf'
 include { BUILD_FETCH_DATASET } from './modules/local/build_fetch_dataset.nf'
+include { FINALIZE_FETCH_OUTPUT } from './modules/local/finalize_fetch_output.nf'
 include { FETCH_TAXONOMY_PRESETS } from './modules/local/fetch_taxonomy_presets.nf'
 include { BUILD_ALIGNMENT_TASKS } from './modules/local/build_alignment_tasks.nf'
 include { ALIGN_MINIMAP2_ASM10 } from './modules/local/align_minimap2_asm10.nf'
@@ -151,6 +152,16 @@ workflow FETCH_STAGE {
         target_annotation_gff3,
         build_fetch_dataset_script
     )
+    if (params.stage == 'all') {
+        FINALIZE_FETCH_OUTPUT(
+            BUILD_FETCH_DATASET.out.manifest,
+            BUILD_FETCH_DATASET.out.input_ids,
+            BUILD_FETCH_DATASET.out.genes,
+            BUILD_FETCH_DATASET.out.orthologs_selected,
+            BUILD_FETCH_DATASET.out.failures,
+            BUILD_FETCH_DATASET.out.sequences
+        )
+    }
 
     emit:
     manifest = BUILD_FETCH_DATASET.out.manifest

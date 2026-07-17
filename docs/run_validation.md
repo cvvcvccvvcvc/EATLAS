@@ -185,7 +185,7 @@ Expected layout:
   annotation/
 ```
 
-Fetch expected properties:
+Standalone `--stage fetch` expected properties:
 - `fetch/manifest.json` exists.
 - `input_record_count` is 4.
 - `unique_gene_count` is 3.
@@ -196,7 +196,7 @@ Fetch expected properties:
 - `failure_count` is 0, unless NCBI data changed or the request failed.
 - `orthologs.candidates.tsv.gz` has no rows with `tax_id=9606`.
 
-Alignment expected properties:
+Standalone `--stage align` expected properties:
 - `alignment/manifest.json` exists.
 - `alignment/manifest.json` `gene_count` equals the length of `gene_ids`, and
   those IDs equal the `ready` genes in `alignment_tasks.tsv.gz`.
@@ -208,8 +208,16 @@ Alignment expected properties:
   strategy, and target structural feature.
 - `alignment/native/` is absent unless `--keep_native_alignments true` was used.
 
+For default end-to-end `--stage all`, fetch and alignment publish only the
+analysis-ready subset documented in `docs/storage_model.md`. In that mode,
+verify `orthologs.selected.tsv.gz`, target FASTA, `strategy_summary.tsv.gz`,
+`feature_coverage.tsv.gz`, manifests, and failure tables instead of expecting
+the standalone handoff files.
+
 Annotation expected properties:
 - `annotation/variant_annotations.tsv.gz` exists for end-to-end runs.
+- `annotation/variant_strategy_support.tsv.gz` contains per-strategy ALT-support
+  counts for future dose-effect analyses.
 - `annotation/manifest.json` records event and unique variant-context row counts, source metadata, and annotation counters.
 - End-to-end annotation records `partition_count`; partition outputs are merged
   by streaming and are not published as duplicate durable tables.
@@ -237,9 +245,7 @@ from pathlib import Path
 base = Path("results/run_001/fetch")
 for name in [
     "genes.tsv.gz",
-    "target_features.tsv.gz",
     "orthologs.selected.tsv.gz",
-    "orthologs.candidates.tsv.gz",
     "failures.tsv.gz",
 ]:
     with gzip.open(base / name, "rt", newline="") as handle:
@@ -256,11 +262,8 @@ import csv, gzip
 from pathlib import Path
 base = Path("results/run_001/alignment")
 for name in [
-    "taxonomy_presets.tsv.gz",
-    "ortholog_alignment_summary.tsv.gz",
-    "alignment_segments.tsv.gz",
+    "strategy_summary.tsv.gz",
     "feature_coverage.tsv.gz",
-    "alignment_events.tsv.gz",
     "failures.tsv.gz",
 ]:
     with gzip.open(base / name, "rt", newline="") as handle:

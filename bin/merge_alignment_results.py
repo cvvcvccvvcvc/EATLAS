@@ -29,6 +29,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--expected-gene-ids")
     parser.add_argument("--compact-events", action="store_true")
     parser.add_argument("--events-already-compacted", action="store_true")
+    parser.add_argument(
+        "--output-profile",
+        choices=["full", "annotation-input", "report-input"],
+        default="full",
+        help="Select full outputs, partitioned annotation inputs, or final report inputs.",
+    )
     return parser.parse_args()
 
 
@@ -199,38 +205,41 @@ def merge_tsv_gz(paths: list[Path], output: Path) -> int:
 
 
 def write_strategy_summary(
-    summaries_path: Path,
+    summary_paths: list[Path],
     output: Path,
     expected_strategies: list[str],
-) -> int:
+) -> tuple[int, int]:
     """Write small per-strategy aggregates from the canonical summary table."""
     aggregates: dict[str, dict[str, int | set[str]]] = {}
-    with gzip.open(summaries_path, "rt", newline="") as handle:
-        reader = csv.DictReader(handle, delimiter="\t")
-        required = {"gene_id", "strategy", "status", "event_count", "aligned_target_bp"}
-        missing = required - set(reader.fieldnames or [])
-        if missing:
-            raise ValueError(
-                f"Alignment summary {summaries_path} missing required columns: "
-                + ", ".join(sorted(missing))
-            )
-        for row in reader:
-            strategy = row["strategy"]
-            aggregate = aggregates.setdefault(
-                strategy,
-                {
-                    "summary_row_count": 0,
-                    "gene_ids": set(),
-                    "aligned_summary_row_count": 0,
-                    "event_count": 0,
-                    "aligned_target_bp": 0,
-                },
-            )
-            aggregate["summary_row_count"] += 1
-            aggregate["gene_ids"].add(row["gene_id"])
-            aggregate["aligned_summary_row_count"] += int(row["status"] == "aligned")
-            aggregate["event_count"] += int(row["event_count"] or 0)
-            aggregate["aligned_target_bp"] += int(row["aligned_target_bp"] or 0)
+    summary_row_count = 0
+    for summaries_path in summary_paths:
+        with gzip.open(summaries_path, "rt", newline="") as handle:
+            reader = csv.DictReader(handle, delimiter="\t")
+            required = {"gene_id", "strategy", "status", "event_count", "aligned_target_bp"}
+            missing = required - set(reader.fieldnames or [])
+            if missing:
+                raise ValueError(
+                    f"Alignment summary {summaries_path} missing required columns: "
+                    + ", ".join(sorted(missing))
+                )
+            for row in reader:
+                summary_row_count += 1
+                strategy = row["strategy"]
+                aggregate = aggregates.setdefault(
+                    strategy,
+                    {
+                        "summary_row_count": 0,
+                        "gene_ids": set(),
+                        "aligned_summary_row_count": 0,
+                        "event_count": 0,
+                        "aligned_target_bp": 0,
+                    },
+                )
+                aggregate["summary_row_count"] += 1
+                aggregate["gene_ids"].add(row["gene_id"])
+                aggregate["aligned_summary_row_count"] += int(row["status"] == "aligned")
+                aggregate["event_count"] += int(row["event_count"] or 0)
+                aggregate["aligned_target_bp"] += int(row["aligned_target_bp"] or 0)
 
     for strategy in expected_strategies:
         aggregates.setdefault(
@@ -260,6 +269,46 @@ def write_strategy_summary(
                     "aligned_target_bp": aggregate["aligned_target_bp"],
                 }
             )
+    return summary_row_count, len(aggregates)
+
+
+def merge_strategy_summaries(
+    paths: list[Path],
+    output: Path,
+    expected_strategies: list[str],
+) -> int:
+    aggregates: dict[str, dict[str, int]] = {}
+    numeric_fields = [field for field in STRATEGY_SUMMARY_FIELDS if field != "strategy"]
+    for path in paths:
+        with gzip.open(path, "rt", newline="") as handle:
+            reader = csv.DictReader(handle, delimiter="\t")
+            missing = set(STRATEGY_SUMMARY_FIELDS) - set(reader.fieldnames or [])
+            if missing:
+                raise ValueError(
+                    f"Strategy summary {path} missing required columns: "
+                    + ", ".join(sorted(missing))
+                )
+            for row in reader:
+                strategy = row["strategy"]
+                aggregate = aggregates.setdefault(
+                    strategy,
+                    {field: 0 for field in numeric_fields},
+                )
+                for field in numeric_fields:
+                    aggregate[field] += int(row[field] or 0)
+
+    unexpected = sorted(set(aggregates) - set(expected_strategies))
+    if unexpected:
+        raise ValueError(f"Unexpected strategies in partition summaries: {unexpected}")
+    for strategy in expected_strategies:
+        aggregates.setdefault(strategy, {field: 0 for field in numeric_fields})
+
+    output.parent.mkdir(parents=True, exist_ok=True)
+    with gzip.open(output, "wt", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=STRATEGY_SUMMARY_FIELDS, delimiter="\t")
+        writer.writeheader()
+        for strategy in sorted(aggregates):
+            writer.writerow({"strategy": strategy, **aggregates[strategy]})
     return len(aggregates)
 
 
@@ -525,15 +574,26 @@ def merge_strategy_parameters(manifests: list[dict]) -> dict[str, dict]:
     return dict(sorted(merged.items()))
 
 
-def require_alignment_tables(result_dirs: list[Path], require_feature_coverage: bool) -> None:
-    filenames = [
-        "ortholog_alignment_summary.tsv.gz",
-        "alignment_segments.tsv.gz",
-        "alignment_events.tsv.gz",
-        "failures.tsv.gz",
-    ]
-    if require_feature_coverage:
-        filenames.append("feature_coverage.tsv.gz")
+def require_alignment_tables(
+    result_dirs: list[Path],
+    require_feature_coverage: bool,
+    output_profile: str,
+) -> None:
+    if output_profile == "report-input":
+        filenames = [
+            "strategy_summary.tsv.gz",
+            "feature_coverage.tsv.gz",
+            "failures.tsv.gz",
+        ]
+    else:
+        filenames = [
+            "ortholog_alignment_summary.tsv.gz",
+            "alignment_segments.tsv.gz",
+            "alignment_events.tsv.gz",
+            "failures.tsv.gz",
+        ]
+        if require_feature_coverage:
+            filenames.append("feature_coverage.tsv.gz")
     missing = [
         str(result_dir / filename)
         for result_dir in result_dirs
@@ -658,10 +718,39 @@ def validate_final_manifests(
     return sorted_gene_ids(observed_gene_set), sorted(expected_strategies)
 
 
+def sum_manifest_count(
+    manifests: list[dict],
+    field: str,
+    *fallback_fields: str,
+) -> int:
+    total = 0
+    for manifest in manifests:
+        value = manifest.get(field)
+        if value is None:
+            value = next(
+                (manifest.get(name) for name in fallback_fields if manifest.get(name) is not None),
+                0,
+            )
+        total += int(value or 0)
+    return total
+
+
+def merged_event_mode(manifests: list[dict]) -> str:
+    modes = {
+        str(manifest.get("alignment_event_mode") or "raw")
+        for manifest in manifests
+    }
+    return next(iter(modes)) if len(modes) == 1 else "mixed"
+
+
 def main() -> None:
     args = parse_args()
     if args.events_already_compacted and not args.compact_events:
         raise ValueError("--events-already-compacted requires --compact-events")
+    if args.partition_id and args.output_profile == "report-input":
+        raise ValueError("--output-profile report-input is only valid for the final merge")
+    if not args.partition_id and args.output_profile == "annotation-input":
+        raise ValueError("--output-profile annotation-input requires --partition-id")
     expected_strategies = sorted(
         parse_expected_values(args.expected_strategies, "--expected-strategies")
     )
@@ -676,7 +765,11 @@ def main() -> None:
         )
 
     manifests = load_manifests(result_dirs)
-    require_alignment_tables(result_dirs, require_feature_coverage=bool(args.partition_id))
+    require_alignment_tables(
+        result_dirs,
+        require_feature_coverage=bool(args.partition_id),
+        output_profile=args.output_profile,
+    )
     if args.partition_id:
         expected_gene_ids = parse_expected_values(args.expected_gene_ids, "--expected-gene-ids")
         gene_ids, strategies = validate_partition_manifests(
@@ -696,30 +789,57 @@ def main() -> None:
             expected_gene_ids,
             expected_strategies,
         )
-        copy_or_keep(args.alignment_tasks, args.outdir / "alignment_tasks.tsv.gz")
-        copy_or_keep(args.taxonomy_presets, args.outdir / "taxonomy_presets.tsv.gz")
-        copy_or_keep(args.taxonomy_failures, args.outdir / "taxonomy_failures.tsv.gz")
+        if args.output_profile == "full":
+            copy_or_keep(args.alignment_tasks, args.outdir / "alignment_tasks.tsv.gz")
+            copy_or_keep(args.taxonomy_presets, args.outdir / "taxonomy_presets.tsv.gz")
+            copy_or_keep(args.taxonomy_failures, args.outdir / "taxonomy_failures.tsv.gz")
     gene_count = len(gene_ids)
 
-    summary_count = merge_tsv_gz(
-        [path / "ortholog_alignment_summary.tsv.gz" for path in result_dirs],
-        args.outdir / "ortholog_alignment_summary.tsv.gz",
-    )
-    strategy_summary_count = write_strategy_summary(
-        args.outdir / "ortholog_alignment_summary.tsv.gz",
-        args.outdir / "strategy_summary.tsv.gz",
-        strategies,
-    )
-    segment_count = merge_tsv_gz(
-        [path / "alignment_segments.tsv.gz" for path in result_dirs],
-        args.outdir / "alignment_segments.tsv.gz",
-    )
+    if args.output_profile == "report-input":
+        summary_count = sum_manifest_count(manifests, "ortholog_alignment_summary_count")
+        strategy_summary_count = merge_strategy_summaries(
+            [path / "strategy_summary.tsv.gz" for path in result_dirs],
+            args.outdir / "strategy_summary.tsv.gz",
+            strategies,
+        )
+        segment_count = sum_manifest_count(manifests, "alignment_segment_count")
+    else:
+        summary_inputs = [
+            path / "ortholog_alignment_summary.tsv.gz"
+            for path in result_dirs
+        ]
+        if args.output_profile == "full":
+            summary_count = merge_tsv_gz(
+                summary_inputs,
+                args.outdir / "ortholog_alignment_summary.tsv.gz",
+            )
+            _, strategy_summary_count = write_strategy_summary(
+                [args.outdir / "ortholog_alignment_summary.tsv.gz"],
+                args.outdir / "strategy_summary.tsv.gz",
+                strategies,
+            )
+            segment_count = merge_tsv_gz(
+                [path / "alignment_segments.tsv.gz" for path in result_dirs],
+                args.outdir / "alignment_segments.tsv.gz",
+            )
+        else:
+            summary_count, strategy_summary_count = write_strategy_summary(
+                summary_inputs,
+                args.outdir / "strategy_summary.tsv.gz",
+                strategies,
+            )
+            segment_count = sum_manifest_count(
+                manifests,
+                "alignment_segment_count",
+                "segment_count",
+            )
+
     feature_coverage_inputs = [path / "feature_coverage.tsv.gz" for path in result_dirs]
     missing_feature_coverage = [str(path.parent) for path in feature_coverage_inputs if not path.exists()]
     if missing_feature_coverage:
-        if args.partition_id:
+        if args.partition_id or args.output_profile == "report-input":
             raise FileNotFoundError(
-                "Alignment partition inputs missing feature_coverage.tsv.gz: "
+                "Alignment inputs missing feature_coverage.tsv.gz: "
                 + ", ".join(missing_feature_coverage)
             )
         feature_coverage_mode = "global_fallback"
@@ -735,33 +855,44 @@ def main() -> None:
             feature_coverage_inputs,
             args.outdir / "feature_coverage.tsv.gz",
         )
-    event_inputs = [path / "alignment_events.tsv.gz" for path in result_dirs]
-    if args.compact_events and not args.events_already_compacted:
-        event_count, raw_event_count = write_compact_events(
-            event_inputs,
-            args.outdir / "alignment_events.tsv.gz",
-        )
+    if args.output_profile == "report-input":
+        event_count = sum_manifest_count(manifests, "alignment_event_count")
+        raw_event_count = sum_manifest_count(manifests, "raw_alignment_event_count")
+        alignment_event_mode = merged_event_mode(manifests)
     else:
-        event_count = merge_tsv_gz(
-            event_inputs,
-            args.outdir / "alignment_events.tsv.gz",
-        )
-        raw_event_count = event_count
-        if args.events_already_compacted:
-            raw_event_count = sum(
-                int(manifest.get("raw_alignment_event_count") or manifest.get("alignment_event_count") or 0)
-                for manifest in manifests
+        event_inputs = [path / "alignment_events.tsv.gz" for path in result_dirs]
+        if args.compact_events and not args.events_already_compacted:
+            event_count, raw_event_count = write_compact_events(
+                event_inputs,
+                args.outdir / "alignment_events.tsv.gz",
             )
+        else:
+            event_count = merge_tsv_gz(
+                event_inputs,
+                args.outdir / "alignment_events.tsv.gz",
+            )
+            raw_event_count = event_count
+            if args.events_already_compacted:
+                raw_event_count = sum(
+                    int(manifest.get("raw_alignment_event_count") or manifest.get("alignment_event_count") or 0)
+                    for manifest in manifests
+                )
+        alignment_event_mode = "compact_support" if args.compact_events else "raw"
     failure_count = merge_tsv_gz(
         [path / "failures.tsv.gz" for path in result_dirs],
         args.outdir / "failures.tsv.gz",
     )
     strategy_parameters = merge_strategy_parameters(manifests)
-    native_file_count = copy_native(result_dirs, args.outdir)
+    native_file_count = (
+        copy_native(result_dirs, args.outdir)
+        if args.output_profile == "full"
+        else 0
+    )
     manifest = {
         "created_at": utc_now(),
         "stage": "alignment",
         "partition_id": args.partition_id or "",
+        "output_profile": args.output_profile,
         "strategy_count": len(strategies),
         "strategies": strategies,
         "strategy_parameters": strategy_parameters,
@@ -776,7 +907,7 @@ def main() -> None:
         "feature_coverage_mode": feature_coverage_mode,
         "feature_coverage_missing_result_count": len(missing_feature_coverage),
         "feature_coverage_count": feature_coverage_count,
-        "alignment_event_mode": "compact_support" if args.compact_events else "raw",
+        "alignment_event_mode": alignment_event_mode,
         "raw_alignment_event_count": raw_event_count,
         "alignment_event_count": event_count,
         "failure_count": failure_count,

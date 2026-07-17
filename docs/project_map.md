@@ -89,7 +89,8 @@ Runtime environments:
 
 - `bin/merge_alignment_results.py`
   - merges per-gene/per-strategy evidence into bounded genomic partitions
-  - streams disjoint partitions into the final Stage 2 tables
+  - keeps only annotation inputs in end-to-end partitions
+  - writes report-ready Stage 2 summaries without globally rewriting raw events
   - intersects target features with alignment segments for coverage/depth summaries
   - writes a canonical small per-strategy summary for downstream reports
   - can write compact event support rows when `--compact_alignment_events true`

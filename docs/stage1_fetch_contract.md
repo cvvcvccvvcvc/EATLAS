@@ -86,6 +86,13 @@ Optional operational parameters:
 
 ## Final Output Files
 
+The table below is the full standalone `--stage fetch` handoff contract. In an
+end-to-end `--stage all` run, the ortholog FASTA, chunk tables, target features,
+and candidate table remain in Nextflow `work/` only as long as downstream
+alignment needs them. The durable `fetch/` directory keeps `manifest.json`,
+`input.ids.tsv`, `genes.tsv.gz`, `orthologs.selected.tsv.gz`, `failures.tsv.gz`,
+and target FASTA files.
+
 | Path | Meaning |
 | --- | --- |
 | `manifest.json` | Run constants, counts, and Datasets CLI version(s). |

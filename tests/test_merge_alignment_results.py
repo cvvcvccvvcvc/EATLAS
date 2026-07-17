@@ -19,6 +19,14 @@ TABLE_HEADERS = {
         "event_count",
         "aligned_target_bp",
     ],
+    "strategy_summary.tsv.gz": [
+        "strategy",
+        "summary_row_count",
+        "gene_count",
+        "aligned_summary_row_count",
+        "event_count",
+        "aligned_target_bp",
+    ],
     "alignment_segments.tsv.gz": ["gene_id"],
     "feature_coverage.tsv.gz": ["gene_id"],
     "alignment_events.tsv.gz": [
@@ -62,10 +70,19 @@ def write_result_dir(
         for gene_id in gene_ids
         for strategy in strategies
     ]
+    strategy_rows = [
+        [strategy, str(len(gene_ids)), str(len(gene_ids)), str(len(gene_ids)), "0", str(len(gene_ids))]
+        for strategy in strategies
+    ]
     for filename, header in TABLE_HEADERS.items():
         if filename == missing_table:
             continue
-        rows = summary_rows if filename == "ortholog_alignment_summary.tsv.gz" else []
+        if filename == "ortholog_alignment_summary.tsv.gz":
+            rows = summary_rows
+        elif filename == "strategy_summary.tsv.gz":
+            rows = strategy_rows
+        else:
+            rows = []
         write_tsv_gz(result_dir / filename, header, rows)
     return result_dir
 
@@ -224,6 +241,43 @@ def test_partition_merge_supports_compact_events(tmp_path: Path) -> None:
     assert manifest["alignment_event_count"] == 0
 
 
+def test_partition_annotation_input_omits_debug_tables(tmp_path: Path) -> None:
+    result_dir = write_result_dir(
+        tmp_path,
+        "gene_1_s1",
+        {
+            "gene_id": "1",
+            "strategy": "s1",
+            "segment_count": 7,
+        },
+    )
+    arguments = partition_arguments(
+        [result_dir],
+        tmp_path / "merged",
+        gene_ids="1",
+        strategies="s1",
+    )
+    arguments.extend(["--output-profile", "annotation-input"])
+
+    completed = run_merge(arguments)
+
+    assert completed.returncode == 0, completed.stderr
+    outdir = tmp_path / "merged"
+    assert {
+        path.name
+        for path in outdir.iterdir()
+    } == {
+        "alignment_events.tsv.gz",
+        "failures.tsv.gz",
+        "feature_coverage.tsv.gz",
+        "manifest.json",
+        "strategy_summary.tsv.gz",
+    }
+    manifest = json.loads((outdir / "manifest.json").read_text())
+    assert manifest["output_profile"] == "annotation-input"
+    assert manifest["alignment_segment_count"] == 7
+
+
 def test_compact_events_preserve_strategy_specific_support(tmp_path: Path) -> None:
     result_dirs = [
         write_result_dir(
@@ -342,6 +396,54 @@ def test_final_merge_writes_exact_gene_manifest(tmp_path: Path) -> None:
     manifest = json.loads((outdir / "manifest.json").read_text())
     assert manifest["gene_count"] == 2
     assert manifest["gene_ids"] == ["1", "2"]
+
+
+def test_final_report_input_omits_handoff_tables(tmp_path: Path) -> None:
+    partition_dirs = [
+        write_result_dir(
+            tmp_path,
+            f"partition_{index:06d}",
+            {
+                "partition_id": f"partition_{index:06d}",
+                "gene_count": 1,
+                "gene_ids": [gene_id],
+                "strategies": ["s1"],
+                "ortholog_alignment_summary_count": 4,
+                "alignment_segment_count": 5,
+                "alignment_event_count": 6,
+                "raw_alignment_event_count": 6,
+                "alignment_event_mode": "raw",
+            },
+        )
+        for index, gene_id in enumerate(["1", "2"], start=1)
+    ]
+    inputs = write_final_inputs(tmp_path, [["1", "ready"], ["2", "ready"]])
+    outdir = tmp_path / "merged"
+    arguments = final_arguments(
+        partition_dirs,
+        outdir,
+        inputs,
+        strategies="s1",
+    )
+    arguments.extend(["--output-profile", "report-input"])
+
+    completed = run_merge(arguments)
+
+    assert completed.returncode == 0, completed.stderr
+    assert {
+        path.name
+        for path in outdir.iterdir()
+    } == {
+        "failures.tsv.gz",
+        "feature_coverage.tsv.gz",
+        "manifest.json",
+        "strategy_summary.tsv.gz",
+    }
+    manifest = json.loads((outdir / "manifest.json").read_text())
+    assert manifest["output_profile"] == "report-input"
+    assert manifest["ortholog_alignment_summary_count"] == 8
+    assert manifest["alignment_segment_count"] == 10
+    assert manifest["alignment_event_count"] == 12
 
 
 def test_final_merge_rejects_missing_ready_gene(tmp_path: Path) -> None:
