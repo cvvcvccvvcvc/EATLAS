@@ -11,6 +11,7 @@ import shutil
 import subprocess
 import tempfile
 from collections import defaultdict
+from dataclasses import dataclass
 from pathlib import Path
 
 import pysam
@@ -100,6 +101,13 @@ FAILURE_FIELDS = ["gene_id", "ortholog_gene_id", "strategy", "tool", "failure_ty
 
 EventKey = tuple[str, int, int, str, str]
 EventSupport = dict[EventKey, dict[str, dict[str, object]]]
+
+
+@dataclass(frozen=True)
+class PseudoreadGeneration:
+    total_reads: int
+    query_lengths: dict[str, int]
+    generated_counts: dict[str, int]
 
 
 def parse_args() -> argparse.Namespace:
@@ -217,12 +225,15 @@ def generate_pseudoreads(
     read_len: int,
     step: int,
     phred: int,
-) -> int:
+) -> PseudoreadGeneration:
     phred_char = chr(phred + 33)
     total_reads = 0
+    query_lengths: dict[str, int] = {}
+    generated_counts: dict[str, int] = {}
     with out_fastq.open("w") as out:
         for header, seq in iter_fasta(orthologs_fa):
             ortholog_id = header.split()[0]
+            query_lengths[ortholog_id.removeprefix("ortholog_")] = len(seq)
             read_index = 1
             for start in bam_filtering_v1.pseudoread_starts(len(seq), read_len, step):
                 read_seq = seq[start : start + read_len]
@@ -231,7 +242,8 @@ def generate_pseudoreads(
                 out.write(f"@{ortholog_id}_pseudo_{read_index}_{start + 1}-{end}\n{read_seq}\n+\n{qual}\n")
                 read_index += 1
                 total_reads += 1
-    return total_reads
+            generated_counts[ortholog_id] = read_index - 1
+    return PseudoreadGeneration(total_reads, query_lengths, generated_counts)
 
 
 def read_ortholog_gene_id(read_name: str) -> str:
@@ -271,14 +283,6 @@ def read_target_sequence(target_fasta: Path) -> str:
     for _, seq in iter_fasta(target_fasta):
         return seq
     raise ValueError(f"Target FASTA has no records: {target_fasta}")
-
-
-def query_lengths_by_ortholog(orthologs_fasta: Path) -> dict[str, int]:
-    lengths: dict[str, int] = {}
-    for header, seq in iter_fasta(orthologs_fasta):
-        sequence_id = header.split()[0]
-        lengths[sequence_id.removeprefix("ortholog_")] = len(seq)
-    return lengths
 
 
 def sequence_length_from_read(read: pysam.AlignedSegment) -> int:
@@ -611,10 +615,9 @@ def main() -> None:
             work_dir,
         )
         target_seq = read_target_sequence(local_target_fasta)
-        query_lengths = query_lengths_by_ortholog(local_orthologs_fasta)
 
         pseudoreads_fastq = work_dir / "pseudo_reads.fastq"
-        pseudoread_count = generate_pseudoreads(
+        pseudoreads = generate_pseudoreads(
             local_orthologs_fasta,
             pseudoreads_fastq,
             read_len=args.pseudoread_len,
@@ -645,6 +648,8 @@ def main() -> None:
             filtering_cfg=filter_cfg,
             read_len=args.pseudoread_len,
             step=args.pseudoread_step,
+            generated_counts=pseudoreads.generated_counts,
+            generated_source="pseudoread_generator",
         )
         filtered_bam = work_dir / "aln.filtered.lis.bam"
 
@@ -668,7 +673,7 @@ def main() -> None:
             gene_id,
             len(target_seq),
             ortholog_meta,
-            query_lengths,
+            pseudoreads.query_lengths,
             segment_rows,
             event_rows,
         )
@@ -698,7 +703,7 @@ def main() -> None:
             "event_count": len(event_rows),
             "feature_coverage_count": feature_coverage_count,
             "ortholog_count": len(ortholog_meta),
-            "pseudoread_count": pseudoread_count,
+            "pseudoread_count": pseudoreads.total_reads,
             "keep_native": keep_native,
             "task_cpus": args.threads,
             "bwa_threads": bwa_threads,

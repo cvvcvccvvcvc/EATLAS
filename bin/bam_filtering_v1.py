@@ -410,6 +410,8 @@ def filter_bam_for_gene(
     read_len: int = 75,
     step: int = 35,
     verbose: bool = False,
+    generated_counts: Optional[Dict[str, int]] = None,
+    generated_source: Optional[str] = None,
 ) -> FilterResult:
     """
     Apply LIS-based BAM filtering in production pipeline.
@@ -452,7 +454,15 @@ def filter_bam_for_gene(
         step,
     )
 
-    generated_counts, generated_source = load_generated_pseudoreads(work_dir, read_len=read_len, step=step)
+    if generated_counts is None:
+        generated_counts, generated_source = load_generated_pseudoreads(
+            work_dir,
+            read_len=read_len,
+            step=step,
+        )
+    else:
+        generated_counts = dict(generated_counts)
+        generated_source = generated_source or "provided"
     if generated_source:
         logger.info(
             "Generated pseudo-read counts loaded: source={} homologues={}",

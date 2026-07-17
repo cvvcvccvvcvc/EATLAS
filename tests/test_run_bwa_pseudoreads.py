@@ -32,7 +32,7 @@ def test_generate_pseudoreads_uses_endpoint_inclusive_starts(tmp_path: Path) -> 
     fastq = tmp_path / "pseudoreads.fastq"
     fasta.write_text(">ortholog_1\n" + "A" * 109 + "\n")
 
-    count = generate_pseudoreads(
+    generation = generate_pseudoreads(
         fasta,
         fastq,
         read_len=75,
@@ -41,7 +41,9 @@ def test_generate_pseudoreads_uses_endpoint_inclusive_starts(tmp_path: Path) -> 
     )
 
     headers = fastq.read_text().splitlines()[::4]
-    assert count == expected_pseudoreads(109, read_len=75, step=35)
+    assert generation.total_reads == expected_pseudoreads(109, read_len=75, step=35)
+    assert generation.query_lengths == {"1": 109}
+    assert generation.generated_counts == {"ortholog_1": 2}
     assert headers == [
         "@ortholog_1_pseudo_1_1-75",
         "@ortholog_1_pseudo_2_35-109",
