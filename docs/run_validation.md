@@ -124,7 +124,7 @@ reference transfer, preflight checks, and staged smoke-test procedure.
 Conservative starting parameters:
 
 ```bash
---chunk_size 10 --fetch_max_forks 2 --fetch_request_stagger_seconds 5 --alignment_max_forks 2
+--chunk_size 10 --fetch_max_forks 2 --fetch_request_stagger_seconds 5 --alignment_max_forks 4
 ```
 
 `fetch_max_forks` controls local fetch concurrency. `fetch_request_stagger_seconds`
@@ -198,6 +198,8 @@ Fetch expected properties:
 
 Alignment expected properties:
 - `alignment/manifest.json` exists.
+- `alignment/manifest.json` `gene_count` equals the length of `gene_ids`, and
+  those IDs equal the `ready` genes in `alignment_tasks.tsv.gz`.
 - `alignment/taxonomy_presets.tsv.gz` has one row per unique ortholog tax_id.
 - `alignment/ortholog_alignment_summary.tsv.gz` has rows for each enabled strategy.
 - `alignment/alignment_segments.tsv.gz` and `alignment/alignment_events.tsv.gz`

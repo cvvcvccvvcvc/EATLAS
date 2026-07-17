@@ -87,6 +87,13 @@ canonical segment/event evidence. Minimap2 initially differed only in
 line-order-derived provenance identifiers; those identifiers are now derived
 from PAF content and remain stable across thread counts.
 
+A 20-gene all-strategies run completed without task retries or scheduler
+resource failures with `--alignment_max_forks 4`. Minimap2 used 2.32-2.53 CPUs
+per task at the median, Nucmer used 2.04, and peak RSS stayed below 2.4 GB for
+all sequence aligners. Four concurrent tasks per alignment process are
+therefore the default on the verified cluster setup; this setting does not
+change the separate Ensembl MAF or annotation concurrency limits.
+
 Current memory requests are conservative initial bounds. Tune them from
 Nextflow trace `peak_rss` after representative cluster runs. Requesting the
 account maximum for every task wastes capacity and can increase queue time.
