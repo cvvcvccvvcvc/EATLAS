@@ -104,7 +104,7 @@
                 "fetch_download_retries": {
                     "type": "integer",
                     "default": 4,
-                    "description": "Number of in-process retries for transient NCBI Datasets download failures before the fetch chunk fails."
+                    "description": "Number of in-process retries for each NCBI Datasets chunk or singleton fallback download."
                 },
                 "fetch_download_retry_base_seconds": {
                     "type": "integer",

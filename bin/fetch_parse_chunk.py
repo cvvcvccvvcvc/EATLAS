@@ -16,6 +16,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 import zipfile
 from collections import defaultdict
@@ -64,6 +65,38 @@ class FastaMeta:
     priority: tuple = field(default_factory=tuple)
 
 
+@dataclass
+class NormalizedPackage:
+    genes: list[dict[str, object]]
+    orthologs_selected: list[dict[str, object]]
+    orthologs_candidates: list[dict[str, object]]
+    failures: list[dict[str, object]]
+    catalog: dict
+    package_sha256: str
+
+
+class DownloadError(RuntimeError):
+    def __init__(
+        self,
+        attempts: int,
+        returncode: int,
+        message: str,
+        stagger_wait_seconds: float,
+    ) -> None:
+        super().__init__(
+            f"datasets download failed after {attempts} attempts "
+            f"with exit code {returncode}: {message}"
+        )
+        self.attempts = attempts
+        self.returncode = returncode
+        self.message = message
+        self.stagger_wait_seconds = stagger_wait_seconds
+
+
+class PackageValidationError(RuntimeError):
+    pass
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--ids-file", required=True, type=Path)
@@ -89,7 +122,8 @@ def time_step(timings: dict[str, float], name: str):
     try:
         yield
     finally:
-        timings[name] = round(time.perf_counter() - start, 3)
+        elapsed = time.perf_counter() - start
+        timings[name] = round(timings.get(name, 0.0) + elapsed, 3)
 
 
 def env_configured(*names: str) -> bool:
@@ -202,22 +236,51 @@ def run_datasets_download(datasets_bin: str, ids_file: Path, zip_path: Path) -> 
     return subprocess.run(cmd, text=True, capture_output=True)
 
 
+def concise_download_error(result: subprocess.CompletedProcess) -> str:
+    text = result.stderr or result.stdout or "datasets download returned no error message"
+    return " ".join(text.split())[-500:]
+
+
+def valid_package_archive(path: Path) -> bool:
+    if not path.is_file() or not zipfile.is_zipfile(path):
+        return False
+    try:
+        with zipfile.ZipFile(path) as archive:
+            names = set(archive.namelist())
+    except (OSError, zipfile.BadZipFile):
+        return False
+    return {
+        "ncbi_dataset/data/data_report.jsonl",
+        "ncbi_dataset/data/gene.fna",
+    }.issubset(names)
+
+
 def download_package(
     datasets_bin: str,
     ids_file: Path,
     zip_path: Path,
     retries: int,
     retry_base_seconds: float,
-) -> None:
+    throttle_dir: Path | None = None,
+    stagger_seconds: float = 0.0,
+) -> tuple[int, float]:
     attempts = max(1, retries + 1)
     last_result: subprocess.CompletedProcess | None = None
+    last_error_message = ""
+    stagger_wait_seconds = 0.0
     for attempt in range(1, attempts + 1):
         if zip_path.exists():
             zip_path.unlink()
+        stagger_wait_seconds += throttle_ncbi_request(throttle_dir, stagger_seconds)
         result = run_datasets_download(datasets_bin, ids_file, zip_path)
         last_result = result
+        if result.returncode == 0 and valid_package_archive(zip_path):
+            return attempt, round(stagger_wait_seconds, 3)
         if result.returncode == 0:
-            return
+            last_error_message = "datasets reported success but did not produce a valid ZIP package"
+            print(last_error_message, file=sys.stderr)
+        else:
+            last_error_message = concise_download_error(result)
 
         if result.stdout:
             print(result.stdout, file=sys.stderr)
@@ -239,22 +302,29 @@ def download_package(
     result = last_result
     if result is None:
         raise RuntimeError("datasets download did not run")
-    if result.returncode != 0:
-        raise RuntimeError(f"datasets download failed after {attempts} attempts with exit code {result.returncode}")
+    raise DownloadError(
+        attempts=attempts,
+        returncode=result.returncode,
+        message=last_error_message or concise_download_error(result),
+        stagger_wait_seconds=round(stagger_wait_seconds, 3),
+    )
 
 
 def extract_package(zip_path: Path, extract_dir: Path) -> tuple[Path, Path, Path | None]:
-    with zipfile.ZipFile(zip_path) as archive:
-        archive.extractall(extract_dir)
+    try:
+        with zipfile.ZipFile(zip_path) as archive:
+            archive.extractall(extract_dir)
+    except (OSError, zipfile.BadZipFile) as error:
+        raise PackageValidationError(f"Invalid NCBI package: {error}") from error
 
     data_dir = extract_dir / "ncbi_dataset" / "data"
     report_path = data_dir / "data_report.jsonl"
     gene_fna = data_dir / "gene.fna"
     catalog_path = data_dir / "dataset_catalog.json"
     if not report_path.exists():
-        raise FileNotFoundError(f"Missing NCBI data report: {report_path}")
+        raise PackageValidationError(f"Missing NCBI data report: {report_path}")
     if not gene_fna.exists():
-        raise FileNotFoundError(f"Missing NCBI gene FASTA: {gene_fna}")
+        raise PackageValidationError(f"Missing NCBI gene FASTA: {gene_fna}")
     return report_path, gene_fna, catalog_path if catalog_path.exists() else None
 
 
@@ -747,13 +817,74 @@ def selected_ortholog_rows(records: list[FastaMeta], checksums: dict[int, str]) 
         }
 
 
+def normalize_package(
+    zip_path: Path,
+    extract_dir: Path,
+    requested_ids: list[str],
+    outdir: Path,
+    target_assembly_accession: str,
+    target_assembly_name: str,
+    target_tax_id: str,
+    timings: dict[str, float],
+) -> NormalizedPackage:
+    if extract_dir.exists():
+        shutil.rmtree(extract_dir)
+    with time_step(timings, "extract_package"):
+        report_path, gene_fna, catalog_path = extract_package(zip_path, extract_dir)
+    with time_step(timings, "load_report"):
+        report_by_gene_id, gene_to_query = load_report(report_path, set(requested_ids))
+    with time_step(timings, "scan_fasta"):
+        fasta_records = build_fasta_metadata(gene_fna, report_by_gene_id, gene_to_query)
+    with time_step(timings, "select_records"):
+        failures = select_records(
+            fasta_records,
+            requested_ids,
+            report_by_gene_id,
+            target_assembly_accession,
+            target_tax_id,
+        )
+    with time_step(timings, "write_sequences"):
+        target_checksums, ortholog_checksums = write_sequences(
+            gene_fna,
+            fasta_records,
+            report_by_gene_id,
+            outdir,
+            target_assembly_accession,
+            target_assembly_name,
+        )
+
+    catalog = {}
+    if catalog_path and catalog_path.exists():
+        with time_step(timings, "load_dataset_catalog"):
+            catalog = json.loads(catalog_path.read_text())
+    with time_step(timings, "package_sha256"):
+        package_sha256 = sha256_file(zip_path)
+
+    return NormalizedPackage(
+        genes=list(
+            genes_rows(
+                requested_ids,
+                report_by_gene_id,
+                fasta_records,
+                target_checksums,
+                target_assembly_accession,
+                target_assembly_name,
+            )
+        ),
+        orthologs_selected=list(selected_ortholog_rows(fasta_records, ortholog_checksums)),
+        orthologs_candidates=list(candidate_rows(fasta_records, target_tax_id)),
+        failures=failures,
+        catalog=catalog,
+        package_sha256=package_sha256,
+    )
+
+
 def main() -> None:
     total_start = time.perf_counter()
     timings: dict[str, float] = {}
     args = parse_args()
     with time_step(timings, "read_ids"):
         requested_ids = read_ids(args.ids_file)
-    requested_set = set(requested_ids)
     outdir = args.outdir
     outdir.mkdir(parents=True, exist_ok=True)
 
@@ -764,43 +895,110 @@ def main() -> None:
 
     zip_path = Path("ncbi_dataset.zip")
     extract_dir = Path("ncbi_dataset_unpacked")
-    with time_step(timings, "ncbi_request_stagger"):
-        ncbi_request_wait_seconds = throttle_ncbi_request(
-            args.request_throttle_dir,
-            args.request_stagger_seconds,
-        )
-    with time_step(timings, "download_package"):
-        download_package(
-            datasets_bin,
-            args.ids_file,
-            zip_path,
-            retries=args.download_retries,
-            retry_base_seconds=args.download_retry_base_seconds,
-        )
-    with time_step(timings, "extract_package"):
-        report_path, gene_fna, catalog_path = extract_package(zip_path, extract_dir)
+    packages: list[NormalizedPackage] = []
+    failures: list[dict[str, object]] = []
+    download_mode = "batch"
+    batch_download_attempts = 0
+    singleton_download_attempts = 0
+    ncbi_request_wait_seconds = 0.0
 
-    with time_step(timings, "load_report"):
-        report_by_gene_id, gene_to_query = load_report(report_path, requested_set)
-    with time_step(timings, "scan_fasta"):
-        fasta_records = build_fasta_metadata(gene_fna, report_by_gene_id, gene_to_query)
-    with time_step(timings, "select_records"):
-        failures = select_records(
-            fasta_records,
-            requested_ids,
-            report_by_gene_id,
-            args.target_assembly_accession,
-            args.target_tax_id,
+    try:
+        with time_step(timings, "download_package"):
+            batch_download_attempts, wait_seconds = download_package(
+                datasets_bin,
+                args.ids_file,
+                zip_path,
+                retries=args.download_retries,
+                retry_base_seconds=args.download_retry_base_seconds,
+                throttle_dir=args.request_throttle_dir,
+                stagger_seconds=args.request_stagger_seconds,
+            )
+        ncbi_request_wait_seconds += wait_seconds
+        packages.append(
+            normalize_package(
+                zip_path,
+                extract_dir,
+                requested_ids,
+                outdir,
+                args.target_assembly_accession,
+                args.target_assembly_name,
+                args.target_tax_id,
+                timings,
+            )
         )
-    with time_step(timings, "write_sequences"):
-        target_checksums, ortholog_checksums = write_sequences(
-            gene_fna,
-            fasta_records,
-            report_by_gene_id,
-            outdir,
-            args.target_assembly_accession,
-            args.target_assembly_name,
+    except (DownloadError, PackageValidationError) as batch_error:
+        download_mode = "singleton_fallback"
+        if isinstance(batch_error, DownloadError):
+            batch_download_attempts = batch_error.attempts
+            ncbi_request_wait_seconds += batch_error.stagger_wait_seconds
+        print(
+            f"Batch download failed for {len(requested_ids)} genes; "
+            f"falling back to singleton downloads: {batch_error}",
+            file=sys.stderr,
+            flush=True,
         )
+        zip_path.unlink(missing_ok=True)
+        shutil.rmtree(extract_dir, ignore_errors=True)
+
+        for gene_id in requested_ids:
+            with tempfile.TemporaryDirectory(
+                prefix=f"ncbi_gene_{gene_id}_",
+                dir=Path.cwd(),
+            ) as tmp:
+                tmp_dir = Path(tmp)
+                singleton_ids = tmp_dir / "gene.ids.txt"
+                singleton_zip = tmp_dir / "ncbi_dataset.zip"
+                singleton_extract = tmp_dir / "unpacked"
+                singleton_ids.write_text(f"{gene_id}\n")
+                try:
+                    with time_step(timings, "download_package"):
+                        attempts, wait_seconds = download_package(
+                            datasets_bin,
+                            singleton_ids,
+                            singleton_zip,
+                            retries=args.download_retries,
+                            retry_base_seconds=args.download_retry_base_seconds,
+                            throttle_dir=args.request_throttle_dir,
+                            stagger_seconds=args.request_stagger_seconds,
+                        )
+                    singleton_download_attempts += attempts
+                    ncbi_request_wait_seconds += wait_seconds
+                    packages.append(
+                        normalize_package(
+                            singleton_zip,
+                            singleton_extract,
+                            [gene_id],
+                            outdir,
+                            args.target_assembly_accession,
+                            args.target_assembly_name,
+                            args.target_tax_id,
+                            timings,
+                        )
+                    )
+                except DownloadError as error:
+                    singleton_download_attempts += error.attempts
+                    ncbi_request_wait_seconds += error.stagger_wait_seconds
+                    failures.append(
+                        failure_row(
+                            gene_id,
+                            "ncbi_download_failed",
+                            (
+                                f"attempts={error.attempts}; exit_code={error.returncode}; "
+                                f"error={error.message}"
+                            ),
+                        )
+                    )
+                except PackageValidationError as error:
+                    failures.append(
+                        failure_row(
+                            gene_id,
+                            "ncbi_package_invalid",
+                            str(error),
+                        )
+                    )
+
+    for package in packages:
+        failures.extend(package.failures)
 
     gene_fields = [
         "gene_id",
@@ -869,44 +1067,42 @@ def main() -> None:
         genes_count = write_tsv_gz(
             outdir / "genes.tsv.gz",
             gene_fields,
-            genes_rows(
-                requested_ids,
-                report_by_gene_id,
-                fasta_records,
-                target_checksums,
-                args.target_assembly_accession,
-                args.target_assembly_name,
-            ),
+            (row for package in packages for row in package.genes),
         )
         selected_count = write_tsv_gz(
             outdir / "orthologs.selected.tsv.gz",
             selected_fields,
-            selected_ortholog_rows(fasta_records, ortholog_checksums),
+            (row for package in packages for row in package.orthologs_selected),
         )
         candidate_count = write_tsv_gz(
             outdir / "orthologs.candidates.tsv.gz",
             candidate_fields,
-            candidate_rows(fasta_records, args.target_tax_id),
+            (row for package in packages for row in package.orthologs_candidates),
         )
         failure_count = write_tsv_gz(outdir / "failures.tsv.gz", failure_fields, failures)
 
-    catalog = {}
-    if catalog_path and catalog_path.exists():
-        with time_step(timings, "load_dataset_catalog"):
-            catalog = json.loads(catalog_path.read_text())
+    def catalog_size(catalog: dict, file_path: str) -> int:
+        files = catalog.get("genes", {}).get("files", []) if catalog else []
+        for item in files:
+            if item.get("filePath") == file_path:
+                return int(item.get("uncompressedLengthBytes") or 0)
+        return 0
 
-    catalog_files = {
-        item.get("filePath"): item
-        for item in (catalog.get("genes", {}).get("files", []) if catalog else [])
-    }
-    gene_fna_uncompressed_bytes = catalog_files.get("gene.fna", {}).get("uncompressedLengthBytes", "")
-    report_uncompressed_bytes = catalog_files.get("data_report.jsonl", {}).get("uncompressedLengthBytes", "")
-
-    with time_step(timings, "package_sha256"):
-        package_sha256 = sha256_file(zip_path)
+    gene_fna_uncompressed_bytes = sum(
+        catalog_size(package.catalog, "gene.fna") for package in packages
+    )
+    report_uncompressed_bytes = sum(
+        catalog_size(package.catalog, "data_report.jsonl") for package in packages
+    )
+    catalog = packages[0].catalog if download_mode == "batch" and packages else {}
+    package_sha256 = packages[0].package_sha256 if download_mode == "batch" and packages else ""
     manifest = {
         "created_at": utc_now(),
         "chunk_id": outdir.name.removeprefix("fetch_"),
+        "status": "partial" if failures else "complete",
+        "download_mode": download_mode,
+        "batch_download_attempts": batch_download_attempts,
+        "singleton_download_attempts": singleton_download_attempts,
         "requested_gene_count": len(requested_ids),
         "target_gene_count": genes_count,
         "selected_ortholog_count": selected_count,
@@ -922,7 +1118,7 @@ def main() -> None:
         "ncbi_api_key_configured": env_configured("NCBI_API_KEY", "ENTREZ_API_KEY"),
         "ncbi_contact_email_configured": env_configured("NCBI_EMAIL", "ENTREZ_EMAIL"),
         "request_stagger_seconds": args.request_stagger_seconds,
-        "request_stagger_wait_seconds": ncbi_request_wait_seconds,
+        "request_stagger_wait_seconds": round(ncbi_request_wait_seconds, 3),
         "download_retries": args.download_retries,
         "download_retry_base_seconds": args.download_retry_base_seconds,
         "sequence_gzip_compresslevel": SEQUENCE_GZIP_COMPRESSLEVEL,

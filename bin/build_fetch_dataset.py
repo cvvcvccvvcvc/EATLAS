@@ -62,6 +62,10 @@ TARGET_FEATURE_FIELDS = [
 
 CHUNK_METRIC_FIELDS = [
     "chunk_id",
+    "status",
+    "download_mode",
+    "batch_download_attempts",
+    "singleton_download_attempts",
     "requested_gene_count",
     "target_gene_count",
     "selected_ortholog_count",
@@ -458,13 +462,79 @@ def read_input_counts(ids_tsv: Path) -> tuple[int, int]:
     return total, accepted
 
 
+def read_accepted_gene_ids(ids_tsv: Path) -> set[str]:
+    with ids_tsv.open(newline="") as handle:
+        return {
+            row["gene_id"]
+            for row in csv.DictReader(handle, delimiter="\t")
+            if row.get("accepted") == "true"
+        }
+
+
+def read_expected_chunk_ids(chunks_tsv: Path) -> set[str]:
+    with chunks_tsv.open(newline="") as handle:
+        return {
+            row["chunk_id"]
+            for row in csv.DictReader(handle, delimiter="\t")
+            if row.get("chunk_id")
+        }
+
+
+def read_tsv_gz_column(path: Path, column: str) -> list[str]:
+    with gzip.open(path, "rt", newline="") as handle:
+        reader = csv.DictReader(handle, delimiter="\t")
+        if column not in (reader.fieldnames or []):
+            raise ValueError(f"Missing {column!r} column in {path}")
+        return [row[column] for row in reader if row.get(column)]
+
+
 def load_chunk_manifests(chunk_dirs: list[Path]) -> list[dict]:
     manifests = []
     for chunk_dir in chunk_dirs:
         path = chunk_dir / "manifest.json"
-        if path.exists():
-            manifests.append(json.loads(path.read_text()))
+        if not path.exists():
+            raise FileNotFoundError(f"Missing chunk manifest: {path}")
+        manifests.append(json.loads(path.read_text()))
     return manifests
+
+
+def validate_chunk_manifests(expected_ids: set[str], manifests: list[dict]) -> None:
+    observed = [str(manifest.get("chunk_id") or "") for manifest in manifests]
+    if any(not chunk_id for chunk_id in observed):
+        raise ValueError("Every chunk manifest must contain a non-empty chunk_id")
+    if len(observed) != len(set(observed)):
+        raise ValueError("Duplicate chunk_id values found in chunk manifests")
+    if set(observed) != expected_ids:
+        missing = sorted(expected_ids - set(observed))
+        unexpected = sorted(set(observed) - expected_ids)
+        raise ValueError(
+            f"Chunk manifest mismatch: missing={missing or '-'}, "
+            f"unexpected={unexpected or '-'}"
+        )
+
+
+def validate_gene_outcomes(
+    accepted_ids: set[str],
+    gene_ids: list[str],
+    failure_ids: list[str],
+) -> None:
+    if len(gene_ids) != len(set(gene_ids)):
+        raise ValueError("Duplicate gene_id values found in genes.tsv.gz")
+    if len(failure_ids) != len(set(failure_ids)):
+        raise ValueError("Duplicate gene_id values found in failures.tsv.gz")
+
+    successes = set(gene_ids)
+    failures = set(failure_ids)
+    overlap = successes & failures
+    unknown = (successes | failures) - accepted_ids
+    missing = accepted_ids - successes - failures
+    if overlap or unknown or missing:
+        raise ValueError(
+            "Fetch gene outcome mismatch: "
+            f"both_success_and_failure={sorted(overlap) or '-'}, "
+            f"unknown={sorted(unknown) or '-'}, "
+            f"missing={sorted(missing) or '-'}"
+        )
 
 
 def chunk_metric_rows(chunk_manifests: list[dict]) -> list[dict[str, object]]:
@@ -474,6 +544,10 @@ def chunk_metric_rows(chunk_manifests: list[dict]) -> list[dict[str, object]]:
         rows.append(
             {
                 "chunk_id": manifest.get("chunk_id", ""),
+                "status": manifest.get("status", ""),
+                "download_mode": manifest.get("download_mode", ""),
+                "batch_download_attempts": manifest.get("batch_download_attempts", ""),
+                "singleton_download_attempts": manifest.get("singleton_download_attempts", ""),
                 "requested_gene_count": manifest.get("requested_gene_count", ""),
                 "target_gene_count": manifest.get("target_gene_count", ""),
                 "selected_ortholog_count": manifest.get("selected_ortholog_count", ""),
@@ -507,6 +581,10 @@ def main() -> None:
 
     copy_or_keep(args.ids_tsv, outdir / "input.ids.tsv")
     copy_or_keep(args.chunks_tsv, outdir / "chunks.tsv")
+    accepted_gene_ids = read_accepted_gene_ids(args.ids_tsv)
+    expected_chunk_ids = read_expected_chunk_ids(args.chunks_tsv)
+    chunk_manifests = load_chunk_manifests(chunk_dirs)
+    validate_chunk_manifests(expected_chunk_ids, chunk_manifests)
 
     table_inputs = {
         "genes.tsv.gz": [chunk / "genes.tsv.gz" for chunk in chunk_dirs],
@@ -518,6 +596,25 @@ def main() -> None:
         name: merge_tsv_gz(paths, outdir / name) for name, paths in table_inputs.items()
     }
     target_files, ortholog_files = copy_sequences(chunk_dirs, outdir)
+    gene_ids = read_tsv_gz_column(outdir / "genes.tsv.gz", "gene_id")
+    failure_ids = read_tsv_gz_column(outdir / "failures.tsv.gz", "gene_id")
+    validate_gene_outcomes(accepted_gene_ids, gene_ids, failure_ids)
+    if target_files != len(gene_ids):
+        raise ValueError(
+            f"Target FASTA count mismatch: files={target_files}, genes={len(gene_ids)}"
+        )
+
+    with gzip.open(outdir / "failures.tsv.gz", "rt", newline="") as handle:
+        failure_rows = list(csv.DictReader(handle, delimiter="\t"))
+    download_failed_gene_count = sum(
+        row.get("failure_type") in {"ncbi_download_failed", "ncbi_package_invalid"}
+        for row in failure_rows
+    )
+    singleton_fallback_chunk_count = sum(
+        manifest.get("download_mode") == "singleton_fallback"
+        for manifest in chunk_manifests
+    )
+
     gff3_path = args.target_annotation_gff3.expanduser()
     if not gff3_path.exists():
         raise FileNotFoundError(f"Target annotation GFF3 does not exist: {gff3_path}")
@@ -534,7 +631,6 @@ def main() -> None:
     )
 
     input_total, input_unique = read_input_counts(args.ids_tsv)
-    chunk_manifests = load_chunk_manifests(chunk_dirs)
     chunk_metric_count = write_tsv_gz(
         outdir / "chunk_metrics.tsv.gz",
         CHUNK_METRIC_FIELDS,
@@ -547,6 +643,7 @@ def main() -> None:
     manifest = {
         "created_at": utc_now(),
         "stage": "fetch",
+        "status": "partial" if failure_ids else "complete",
         "input_record_count": input_total,
         "unique_gene_count": input_unique,
         "chunk_count": len(chunk_dirs),
@@ -556,6 +653,8 @@ def main() -> None:
         "orthologs_selected_grouped_by_query_gene_id": True,
         "candidate_record_count": table_counts["orthologs.candidates.tsv.gz"],
         "failure_count": table_counts["failures.tsv.gz"],
+        "download_failed_gene_count": download_failed_gene_count,
+        "singleton_fallback_chunk_count": singleton_fallback_chunk_count,
         "target_sequence_files": target_files,
         "ortholog_sequence_files": ortholog_files,
         "target_feature_count": target_feature_count,

@@ -25,8 +25,8 @@ Optional operational parameters:
 - `--fetch_request_stagger_seconds`: minimum spacing between starts of NCBI
   Datasets download requests across concurrent local fetch tasks. Default is
   5 seconds.
-- `--fetch_download_retries`: in-process retries for transient NCBI Datasets
-  download failures. Default is 4.
+- `--fetch_download_retries`: in-process retries for each NCBI Datasets
+  download, including chunk and singleton fallback requests. Default is 4.
 - `--fetch_download_retry_base_seconds`: base exponential backoff interval for
   NCBI Datasets download retries. Default is 30 seconds.
 - `--datasets_bin`: path/name for the NCBI Datasets CLI. Defaults to
@@ -55,10 +55,16 @@ Optional operational parameters:
      datasets download gene gene-id --inputfile <chunk> --ortholog all --include gene
      ```
 
+   - Retries transient or invalid package downloads with exponential backoff.
+   - If the chunk package still fails, retries every requested gene as a
+     sequential singleton download.
+   - Records a terminal singleton download/package failure in
+     `failures.tsv.gz` and preserves successful genes from the same chunk.
    - Uses `data_report.jsonl` to map every ortholog GeneID back to the requested
      query GeneID via `geneGroups[].id`.
    - Uses `gene.fna` as the source of genomic gene sequences.
-   - Writes per-chunk timings into chunk `manifest.json`.
+   - Writes per-chunk status, download mode, attempt counts, and timings into
+     chunk `manifest.json`.
 
 3. Target selection
    - Selects the requested human GeneID.
@@ -79,6 +85,10 @@ Optional operational parameters:
 5. `BUILD_FETCH_DATASET`
    - Merges chunk tables.
    - Copies final per-gene FASTA files.
+   - Requires every accepted GeneID to have exactly one terminal outcome:
+     a target gene row or a gene-level failure.
+   - Requires one manifest for every planned chunk and rejects duplicate or
+     missing chunk results.
    - Builds compact target structural features from the configured local target assembly GFF3.
    - Writes `chunk_metrics.tsv.gz` with durable per-chunk timing and package-size
      metrics.
@@ -95,7 +105,7 @@ them. The durable `fetch/` directory keeps `manifest.json`,
 
 | Path | Meaning |
 | --- | --- |
-| `manifest.json` | Run constants, counts, and Datasets CLI version(s). |
+| `manifest.json` | Run status, constants, counts, download fallback metrics, and Datasets CLI version(s). |
 | `input.ids.tsv` | All input rows, accepted status, duplicate mapping. |
 | `chunks.tsv` | Chunk IDs and accepted Gene IDs assigned to each chunk. |
 | `genes.tsv.gz` | Target human gene metadata and sequence checksum. |
