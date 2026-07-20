@@ -407,8 +407,8 @@ def load_reference_pseudoreads(
 def filter_bam_for_gene(
     work_dir: Path,
     filtering_cfg: Dict[str, Any],
-    read_len: int = 75,
-    step: int = 35,
+    read_len: int = 150,
+    step: int = 75,
     verbose: bool = False,
     generated_counts: Optional[Dict[str, int]] = None,
     generated_source: Optional[str] = None,

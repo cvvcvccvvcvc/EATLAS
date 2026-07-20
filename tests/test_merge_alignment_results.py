@@ -475,8 +475,8 @@ def test_final_merge_rejects_missing_ready_gene(tmp_path: Path) -> None:
 
 def test_bwa_parameters_survive_partition_and_final_merge(tmp_path: Path) -> None:
     bwa_parameters = {
-        "pseudoread_len": 75,
-        "pseudoread_step": 35,
+        "pseudoread_len": 150,
+        "pseudoread_step": 75,
         "pseudoread_phred": 30,
         "task_cpus": 3,
         "bwa_threads": 2,
@@ -533,12 +533,12 @@ def test_partition_merge_rejects_inconsistent_bwa_parameters(tmp_path: Path) -> 
             {
                 "gene_id": gene_id,
                 "strategy": "bwa_pseudoreads",
-                "pseudoread_len": 75,
+                "pseudoread_len": 150,
                 "pseudoread_step": step,
                 "pseudoread_phred": 30,
             },
         )
-        for gene_id, step in [("1", 35), ("2", 50)]
+        for gene_id, step in [("1", 75), ("2", 100)]
     ]
 
     completed = run_merge(

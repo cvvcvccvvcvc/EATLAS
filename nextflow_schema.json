@@ -139,12 +139,12 @@
                 },
                 "bwa_pseudoread_len": {
                     "type": "integer",
-                    "default": 75,
+                    "default": 150,
                     "description": "Pseudo-read length used by the BWA pseudoread strategies."
                 },
                 "bwa_pseudoread_step": {
                     "type": "integer",
-                    "default": 35,
+                    "default": 75,
                     "description": "Step size between generated pseudo-read starts for the BWA pseudoread strategies."
                 },
                 "bwa_pseudoread_phred": {

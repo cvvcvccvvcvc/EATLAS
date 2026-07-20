@@ -16,37 +16,37 @@ from run_bwa_pseudoreads import generate_pseudoreads  # noqa: E402
 
 
 def test_pseudoread_starts_include_final_window() -> None:
-    assert pseudoread_starts(109, read_len=75, step=35) == [0, 34]
-    assert pseudoread_starts(110, read_len=75, step=35) == [0, 35]
-    assert pseudoread_starts(111, read_len=75, step=35) == [0, 35, 36]
+    assert pseudoread_starts(224, read_len=150, step=75) == [0, 74]
+    assert pseudoread_starts(225, read_len=150, step=75) == [0, 75]
+    assert pseudoread_starts(226, read_len=150, step=75) == [0, 75, 76]
 
 
 def test_short_sequence_count_matches_generation() -> None:
-    assert pseudoread_starts(19, read_len=75, step=35) == []
-    assert pseudoread_starts(20, read_len=75, step=35) == [0]
-    assert expected_pseudoreads(20, read_len=75, step=35) == 1
+    assert pseudoread_starts(19, read_len=150, step=75) == []
+    assert pseudoread_starts(20, read_len=150, step=75) == [0]
+    assert expected_pseudoreads(20, read_len=150, step=75) == 1
 
 
 def test_generate_pseudoreads_uses_endpoint_inclusive_starts(tmp_path: Path) -> None:
     fasta = tmp_path / "orthologs.fa"
     fastq = tmp_path / "pseudoreads.fastq"
-    fasta.write_text(">ortholog_1\n" + "A" * 109 + "\n")
+    fasta.write_text(">ortholog_1\n" + "A" * 224 + "\n")
 
     generation = generate_pseudoreads(
         fasta,
         fastq,
-        read_len=75,
-        step=35,
+        read_len=150,
+        step=75,
         phred=30,
     )
 
     headers = fastq.read_text().splitlines()[::4]
-    assert generation.total_reads == expected_pseudoreads(109, read_len=75, step=35)
-    assert generation.query_lengths == {"1": 109}
+    assert generation.total_reads == expected_pseudoreads(224, read_len=150, step=75)
+    assert generation.query_lengths == {"1": 224}
     assert generation.generated_counts == {"ortholog_1": 2}
     assert headers == [
-        "@ortholog_1_pseudo_1_1-75",
-        "@ortholog_1_pseudo_2_35-109",
+        "@ortholog_1_pseudo_1_1-150",
+        "@ortholog_1_pseudo_2_75-224",
     ]
 
 
