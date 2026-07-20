@@ -18,8 +18,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--datasets-bin", required=True)
     parser.add_argument("--minimap2-bin", required=True)
     parser.add_argument("--nucmer-bin", required=True)
-    parser.add_argument("--show-coords-bin", required=True)
-    parser.add_argument("--show-snps-bin", required=True)
     parser.add_argument("--bwa-bin", required=True)
     parser.add_argument("--samtools-bin", required=True)
     parser.add_argument("--out-json", required=True, type=Path)
@@ -60,9 +58,8 @@ def main() -> None:
         if strategies & {"minimap2_asm10", "minimap2_asm20", "minimap2_taxonomy_adaptive"}:
             require_executable("minimap2", args.minimap2_bin, errors)
         if "nucmer" in strategies:
+            require_python_module("pysam", errors)
             require_executable("nucmer", args.nucmer_bin, errors)
-            require_executable("show-coords", args.show_coords_bin, errors)
-            require_executable("show-snps", args.show_snps_bin, errors)
         if "bwa_pseudoreads" in strategies:
             require_python_module("pysam", errors)
             require_python_module("bam_filtering_v1", errors)

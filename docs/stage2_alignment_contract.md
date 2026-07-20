@@ -123,11 +123,13 @@ target gene FASTA vs multi-FASTA of all selected orthologs for that gene
 Raw multi-query nucmer is used, but the workflow does not run global
 `delta-filter -1`. One-to-one delta filtering is appropriate for comparing two
 assemblies, but it is wrong for many orthologs that are all expected to align to
-the same human target locus. The parser separates evidence by query sequence and
-adds `unfiltered_nucmer` QC flags. `show-snps` rows are published as variant
-events only when both non-gap alleles are concrete A/C/G/T bases. Rows containing
-IUPAC ambiguity symbols are excluded and counted in the task manifest; the
-affected ortholog summary receives `ambiguous_event_allele`.
+the same human target locus. Nucmer emits SAM-long records and the Python parser
+normalizes their CIGAR operations per query sequence. A contiguous CIGAR
+insertion or deletion is therefore published as one event rather than one row
+per affected base. Identical events repeated by overlapping Nucmer records are
+collapsed within an ortholog. The parser adds `unfiltered_nucmer` QC flags.
+Events containing IUPAC ambiguity symbols are excluded and counted in the task
+manifest; the affected ortholog summary receives `ambiguous_event_allele`.
 
 For Ensembl Compara MAF:
 
@@ -187,7 +189,7 @@ Standalone `--stage align` publishes the full handoff contract:
 | `feature_coverage.tsv.gz` | Per-gene, per-strategy coverage and depth over target structural intervals. |
 | `alignment_events.tsv.gz` | Raw mismatch/indel events normalized to target coordinates by default; unique event support rows when `--compact_alignment_events true`. |
 | `failures.tsv.gz` | Alignment-stage failures. |
-| `native/` | Optional raw PAF/delta/coords/snps files when enabled. |
+| `native/` | Optional raw PAF/SAM files when enabled. |
 
 Native outputs are disabled by default.
 

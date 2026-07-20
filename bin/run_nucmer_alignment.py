@@ -13,6 +13,8 @@ import tempfile
 from pathlib import Path
 from typing import Iterable
 
+import pysam
+
 from alignment_task_io import load_task_context, materialize_task_fastas
 from feature_coverage import summarize_feature_coverage_rows
 
@@ -104,8 +106,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--source-ortholog-fasta", required=True, type=Path)
     parser.add_argument("--outdir", required=True, type=Path)
     parser.add_argument("--nucmer-bin", required=True)
-    parser.add_argument("--show-coords-bin", required=True)
-    parser.add_argument("--show-snps-bin", required=True)
     parser.add_argument("--threads", default=1, type=int)
     parser.add_argument("--target-features", type=Path)
     parser.add_argument("--keep-native", default="false")
@@ -155,12 +155,8 @@ def genomic_coords(target_meta: dict[str, str], start0: int, end0: int) -> tuple
     return str(genomic_start), str(genomic_end)
 
 
-def run_command(cmd: list[str], stdout_path: Path | None = None) -> str:
-    if stdout_path:
-        with stdout_path.open("w") as handle:
-            result = subprocess.run(cmd, text=True, stdout=handle, stderr=subprocess.PIPE)
-    else:
-        result = subprocess.run(cmd, text=True, capture_output=True)
+def run_command(cmd: list[str]) -> str:
+    result = subprocess.run(cmd, text=True, capture_output=True)
     if result.returncode != 0:
         raise RuntimeError(f"{cmd[0]} failed: {(result.stderr or result.stdout or '').strip()}")
     return " ".join(cmd)
@@ -190,45 +186,155 @@ def empty_summary(gene_id: str, meta: dict[str, str], target_length: int) -> dic
     }
 
 
-def parse_coords(
-    coords_path: Path,
-    gene_id: str,
-    target_meta: dict[str, str],
-    meta_by_sequence: dict[str, dict[str, str]],
-    summaries: dict[str, dict[str, object]],
-) -> tuple[list[dict[str, object]], dict[str, list[dict[str, object]]]]:
-    segments: list[dict[str, object]] = []
-    segments_by_query: dict[str, list[dict[str, object]]] = {sequence_id: [] for sequence_id in meta_by_sequence}
-    target_id = f"target_{gene_id}"
-
-    with coords_path.open() as handle:
-        for line_index, line in enumerate(handle, start=1):
-            line = line.rstrip("\n")
+def read_first_fasta_sequence(path: Path) -> str:
+    opener = gzip.open if path.suffix == ".gz" else open
+    parts: list[str] = []
+    found_record = False
+    with opener(path, "rt") as handle:
+        for line in handle:
+            line = line.strip()
             if not line:
                 continue
-            fields = line.split("\t")
-            if len(fields) < 13:
+            if line.startswith(">"):
+                if found_record:
+                    break
+                found_record = True
                 continue
-            ref_id = fields[-2]
-            query_id = fields[-1]
+            if found_record:
+                parts.append(line)
+    if not parts:
+        raise ValueError(f"Target FASTA has no sequence: {path}")
+    return "".join(parts).upper()
+
+
+def cigar_block_length(read: pysam.AlignedSegment) -> int:
+    return sum(length for op, length in (read.cigartuples or []) if op in {0, 1, 2, 7, 8})
+
+
+def query_interval(read: pysam.AlignedSegment) -> tuple[int, int, int]:
+    cigartuples = read.cigartuples or []
+    query_length = sum(length for op, length in cigartuples if op in {0, 1, 4, 5, 7, 8})
+    if query_length <= 0:
+        query_length = read.infer_query_length(always=True) or len(read.query_sequence or "")
+
+    leading_clip = 0
+    for op, length in cigartuples:
+        if op not in {4, 5}:
+            break
+        leading_clip += length
+
+    trailing_clip = 0
+    for op, length in reversed(cigartuples):
+        if op not in {4, 5}:
+            break
+        trailing_clip += length
+
+    oriented_start = leading_clip
+    oriented_end = query_length - trailing_clip
+    if read.is_reverse:
+        return query_length - oriented_end, query_length - oriented_start, query_length
+    return oriented_start, oriented_end, query_length
+
+
+def append_event(
+    event_by_key: dict[tuple[object, ...], dict[str, object]],
+    *,
+    gene_id: str,
+    target_meta: dict[str, str],
+    meta: dict[str, str],
+    query_id: str,
+    strand: str,
+    native_record_id: int,
+    event_ordinal: int,
+    event_type: str,
+    target_start0: int,
+    target_end0: int,
+    ref: str,
+    alt: str,
+    is_primary: bool,
+) -> bool:
+    ref = ref.upper()
+    alt = alt.upper()
+    if any(base not in DNA_BASES for base in ref + alt):
+        return False
+
+    genomic_start, genomic_end = genomic_coords(target_meta, target_start0, target_end0)
+    flags = {"unfiltered_nucmer"}
+    if not is_primary:
+        flags.add("non_primary")
+    event = {
+        "gene_id": gene_id,
+        "ortholog_gene_id": meta.get("ortholog_gene_id", ""),
+        "tax_id": meta.get("tax_id", ""),
+        "taxname": meta.get("taxname", ""),
+        "strategy": "nucmer",
+        "tool": "nucmer",
+        "preset": "default",
+        "event_id": f"{native_record_id}:{event_ordinal}",
+        "event_type": event_type,
+        "target_start0": target_start0,
+        "target_end0": target_end0,
+        "genomic_accession": target_meta.get("genomic_accession", ""),
+        "genomic_start1": genomic_start,
+        "genomic_end1": genomic_end,
+        "ref": ref,
+        "alt": alt,
+        "query_id": query_id,
+        "strand": strand,
+        "native_record_id": native_record_id,
+        "qc_flags": ",".join(sorted(flags)),
+        "_is_primary": is_primary,
+    }
+    key = (
+        query_id,
+        event_type,
+        target_start0,
+        target_end0,
+        ref,
+        alt,
+    )
+    current = event_by_key.get(key)
+    if current is None or (is_primary and not bool(current["_is_primary"])):
+        event_by_key[key] = event
+    return True
+
+
+def parse_sam(
+    sam_path: Path,
+    gene_id: str,
+    target_meta: dict[str, str],
+    target_seq: str,
+    meta_by_sequence: dict[str, dict[str, str]],
+    summaries: dict[str, dict[str, object]],
+) -> tuple[list[dict[str, object]], list[dict[str, object]], int]:
+    segments: list[dict[str, object]] = []
+    event_by_key: dict[tuple[object, ...], dict[str, object]] = {}
+    ambiguous_event_allele_count = 0
+
+    with pysam.AlignmentFile(str(sam_path), "r") as sam:
+        for native_record_id, read in enumerate(sam.fetch(until_eof=True), start=1):
+            if read.is_unmapped or read.reference_start is None or read.reference_end is None:
+                continue
+            query_id = read.query_name
             meta = meta_by_sequence.get(query_id)
             if meta is None:
                 continue
 
-            s1, e1, s2, e2 = (int(fields[index]) for index in range(4))
-            len1 = int(fields[4])
-            len2 = int(fields[5])
-            identity_pct = float(fields[6])
-            len_r = int(float(fields[7]))
-            len_q = int(float(fields[8]))
-            target_start0 = min(s1, e1) - 1
-            target_end0 = max(s1, e1)
-            query_start0 = min(s2, e2) - 1
-            query_end0 = max(s2, e2)
-            strand = "-" if s2 > e2 else "+"
-            identity = identity_pct / 100.0
-            block_length = max(len1, len2)
-            matches = round(identity * block_length)
+            query_start0, query_end0, query_length = query_interval(read)
+            target_start0 = int(read.reference_start)
+            target_end0 = int(read.reference_end)
+            strand = "-" if read.is_reverse else "+"
+            block_length = cigar_block_length(read)
+            try:
+                edit_distance = int(read.get_tag("NM"))
+            except KeyError:
+                edit_distance = 0
+            matches = max(0, block_length - edit_distance)
+            identity = matches / block_length if block_length else 0.0
+            is_primary = not read.is_secondary and not read.is_supplementary
+            flags = {"unfiltered_nucmer"}
+            if not is_primary:
+                flags.add("non_primary")
 
             segment = {
                 "gene_id": gene_id,
@@ -239,7 +345,7 @@ def parse_coords(
                 "tool": "nucmer",
                 "preset": "default",
                 "sequence_id": query_id,
-                "target_id": ref_id or target_id,
+                "target_id": read.reference_name or f"target_{gene_id}",
                 "query_id": query_id,
                 "target_start0": target_start0,
                 "target_end0": target_end0,
@@ -250,114 +356,141 @@ def parse_coords(
                 "block_length": block_length,
                 "identity": f"{identity:.6f}",
                 "mapq": "",
-                "is_primary": "true",
+                "is_primary": str(is_primary).lower(),
                 "divergence": "",
                 "gap_compressed_divergence": "",
-                "native_record_id": line_index,
-                "qc_flags": "unfiltered_nucmer",
+                "native_record_id": native_record_id,
+                "qc_flags": ",".join(sorted(flags)),
             }
             segments.append(segment)
-            segments_by_query[query_id].append(segment)
 
             summary = summaries[query_id]
             summary["status"] = "aligned"
-            summary["target_length"] = len_r or summary["target_length"]
-            summary["query_length"] = len_q or summary["query_length"]
+            summary["target_length"] = len(target_seq)
+            summary["query_length"] = query_length or summary["query_length"]
             summary["segment_count"] += 1
-            summary["primary_segment_count"] += 1
+            if is_primary:
+                summary["primary_segment_count"] += 1
+            else:
+                summary["secondary_segment_count"] += 1
             summary["target_intervals"].append((target_start0, target_end0))
             summary["query_intervals"].append((query_start0, query_end0))
             summary["identities"].append(identity)
             summary["best_identity"] = max(summary["best_identity"], identity)
 
-    return segments, segments_by_query
+            query_seq = (read.query_sequence or "").upper()
+            if not query_seq:
+                raise ValueError(f"Nucmer SAM record has no query sequence: {query_id}")
+            ref_pos = target_start0
+            query_pos = 0
+            event_ordinal = 0
+            for op, length in read.cigartuples or []:
+                if op in {0, 7, 8}:
+                    if op == 7:
+                        ref_pos += length
+                        query_pos += length
+                        continue
+                    for offset in range(length):
+                        target_index = ref_pos + offset
+                        query_index = query_pos + offset
+                        if target_index >= len(target_seq) or query_index >= len(query_seq):
+                            raise ValueError(
+                                f"Nucmer SAM alignment exceeds sequence bounds for {query_id}"
+                            )
+                        ref = target_seq[target_index]
+                        alt = query_seq[query_index]
+                        if ref == alt:
+                            continue
+                        event_ordinal += 1
+                        if not append_event(
+                            event_by_key,
+                            gene_id=gene_id,
+                            target_meta=target_meta,
+                            meta=meta,
+                            query_id=query_id,
+                            strand=strand,
+                            native_record_id=native_record_id,
+                            event_ordinal=event_ordinal,
+                            event_type="snv",
+                            target_start0=target_index,
+                            target_end0=target_index + 1,
+                            ref=ref,
+                            alt=alt,
+                            is_primary=is_primary,
+                        ):
+                            summary["qc_flags"].add("ambiguous_event_allele")
+                            ambiguous_event_allele_count += 1
+                    ref_pos += length
+                    query_pos += length
+                elif op == 1:
+                    alt = query_seq[query_pos : query_pos + length]
+                    if len(alt) != length:
+                        raise ValueError(f"Truncated Nucmer insertion sequence for {query_id}")
+                    event_ordinal += 1
+                    if not append_event(
+                        event_by_key,
+                        gene_id=gene_id,
+                        target_meta=target_meta,
+                        meta=meta,
+                        query_id=query_id,
+                        strand=strand,
+                        native_record_id=native_record_id,
+                        event_ordinal=event_ordinal,
+                        event_type="ins",
+                        target_start0=ref_pos,
+                        target_end0=ref_pos,
+                        ref="",
+                        alt=alt,
+                        is_primary=is_primary,
+                    ):
+                        summary["qc_flags"].add("ambiguous_event_allele")
+                        ambiguous_event_allele_count += 1
+                    query_pos += length
+                elif op == 2:
+                    ref = target_seq[ref_pos : ref_pos + length]
+                    if len(ref) != length:
+                        raise ValueError(f"Truncated Nucmer deletion sequence for {query_id}")
+                    event_ordinal += 1
+                    if not append_event(
+                        event_by_key,
+                        gene_id=gene_id,
+                        target_meta=target_meta,
+                        meta=meta,
+                        query_id=query_id,
+                        strand=strand,
+                        native_record_id=native_record_id,
+                        event_ordinal=event_ordinal,
+                        event_type="del",
+                        target_start0=ref_pos,
+                        target_end0=ref_pos + length,
+                        ref=ref,
+                        alt="",
+                        is_primary=is_primary,
+                    ):
+                        summary["qc_flags"].add("ambiguous_event_allele")
+                        ambiguous_event_allele_count += 1
+                    ref_pos += length
+                elif op == 3:
+                    ref_pos += length
+                elif op == 4:
+                    query_pos += length
+                elif op in {5, 6}:
+                    continue
 
-
-def segment_for_event(segments: list[dict[str, object]], target_pos0: int) -> dict[str, object] | None:
-    for segment in segments:
-        if int(segment["target_start0"]) <= target_pos0 < int(segment["target_end0"]):
-            return segment
-    return segments[0] if segments else None
-
-
-def parse_snps(
-    snps_path: Path,
-    gene_id: str,
-    target_meta: dict[str, str],
-    meta_by_sequence: dict[str, dict[str, str]],
-    segments_by_query: dict[str, list[dict[str, object]]],
-    summaries: dict[str, dict[str, object]],
-) -> tuple[list[dict[str, object]], int]:
-    events: list[dict[str, object]] = []
-    ambiguous_event_allele_count = 0
-    with snps_path.open() as handle:
-        for event_index, line in enumerate(handle, start=1):
-            line = line.rstrip("\n")
-            if not line:
-                continue
-            fields = line.split("\t")
-            if len(fields) < 6:
-                continue
-            query_id = fields[-1]
-            meta = meta_by_sequence.get(query_id)
-            if meta is None:
-                continue
-            try:
-                p1 = int(fields[0])
-            except ValueError:
-                continue
-            ref = fields[1].upper()
-            alt = fields[2].upper()
-            if ref == ".":
-                event_type = "ins"
-                target_start0 = max(p1 - 1, 0)
-                target_end0 = target_start0
-                ref = ""
-            elif alt == ".":
-                event_type = "del"
-                target_start0 = p1 - 1
-                target_end0 = target_start0 + 1
-                alt = ""
-            else:
-                event_type = "snv"
-                target_start0 = p1 - 1
-                target_end0 = target_start0 + 1
-            if (
-                (ref and (len(ref) != 1 or ref not in DNA_BASES))
-                or (alt and (len(alt) != 1 or alt not in DNA_BASES))
-            ):
-                summaries[query_id]["qc_flags"].add("ambiguous_event_allele")
-                ambiguous_event_allele_count += 1
-                continue
-            segment = segment_for_event(segments_by_query.get(query_id, []), target_start0)
-            strand = segment.get("strand", "") if segment else ""
-            genomic_start, genomic_end = genomic_coords(target_meta, target_start0, target_end0)
-            events.append(
-                {
-                    "gene_id": gene_id,
-                    "ortholog_gene_id": meta.get("ortholog_gene_id", ""),
-                    "tax_id": meta.get("tax_id", ""),
-                    "taxname": meta.get("taxname", ""),
-                    "strategy": "nucmer",
-                    "tool": "nucmer",
-                    "preset": "default",
-                    "event_id": event_index,
-                    "event_type": event_type,
-                    "target_start0": target_start0,
-                    "target_end0": target_end0,
-                    "genomic_accession": target_meta.get("genomic_accession", ""),
-                    "genomic_start1": genomic_start,
-                    "genomic_end1": genomic_end,
-                    "ref": ref,
-                    "alt": alt,
-                    "query_id": query_id,
-                    "strand": strand,
-                    "native_record_id": event_index,
-                    "qc_flags": "unfiltered_nucmer",
-                }
-            )
-            summaries[query_id]["event_count"] += 1
-    return events, ambiguous_event_allele_count
+    events = sorted(
+        event_by_key.values(),
+        key=lambda row: (
+            str(row["query_id"]),
+            int(row["target_start0"]),
+            str(row["event_type"]),
+            str(row["ref"]),
+            str(row["alt"]),
+        ),
+    )
+    for event in events:
+        event.pop("_is_primary", None)
+        summaries[str(event["query_id"])]["event_count"] += 1
+    return segments, events, ambiguous_event_allele_count
 
 
 def finalize_summary(row: dict[str, object]) -> dict[str, object]:
@@ -420,10 +553,7 @@ def main() -> None:
             ortholog_meta,
             work_dir,
         )
-        prefix = str(work_dir / "nucmer")
-        delta_path = work_dir / "nucmer.delta"
-        coords_path = work_dir / "nucmer.coords"
-        snps_path = work_dir / "nucmer.snps"
+        sam_path = work_dir / "nucmer.sam"
 
         try:
             commands.append(
@@ -432,38 +562,23 @@ def main() -> None:
                         args.nucmer_bin,
                         "--threads",
                         str(args.threads),
-                        "--prefix",
-                        prefix,
+                        f"--sam-long={sam_path}",
                         str(target_fasta),
                         str(orthologs_fasta),
                     ]
                 )
             )
-            commands.append(
-                run_command(
-                    [args.show_coords_bin, "-THrcl", str(delta_path)],
-                    stdout_path=coords_path,
-                )
-            )
-            commands.append(
-                run_command(
-                    [args.show_snps_bin, "-THrl", str(delta_path)],
-                    stdout_path=snps_path,
-                )
-            )
-            segments, segments_by_query = parse_coords(coords_path, gene_id, target_meta, meta_by_sequence, summaries)
-            events, ambiguous_event_allele_count = parse_snps(
-                snps_path,
+            target_seq = read_first_fasta_sequence(target_fasta)
+            segments, events, ambiguous_event_allele_count = parse_sam(
+                sam_path,
                 gene_id,
                 target_meta,
+                target_seq,
                 meta_by_sequence,
-                segments_by_query,
                 summaries,
             )
             if keep_native:
-                gzip_copy(delta_path, args.outdir / "native" / f"{gene_id}.delta.gz")
-                gzip_copy(coords_path, args.outdir / "native" / f"{gene_id}.coords.gz")
-                gzip_copy(snps_path, args.outdir / "native" / f"{gene_id}.snps.gz")
+                gzip_copy(sam_path, args.outdir / "native" / f"{gene_id}.sam.gz")
         except Exception as exc:
             failures.append(
                 {
@@ -501,7 +616,7 @@ def main() -> None:
         "feature_coverage_count": feature_coverage_count,
         "ortholog_count": len(ortholog_meta),
         "keep_native": keep_native,
-        "filtering": "no global delta-filter; downstream parser evaluates records per ortholog",
+        "filtering": "no global one-to-one filtering; SAM/CIGAR records are evaluated per ortholog",
     }
     (args.outdir / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
 

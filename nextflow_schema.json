@@ -219,8 +219,6 @@
                 },
                 "minimap2_bin": { "type": "string" },
                 "nucmer_bin": { "type": "string" },
-                "show_coords_bin": { "type": "string" },
-                "show_snps_bin": { "type": "string" },
                 "bwa_bin": { "type": "string" },
                 "samtools_bin": { "type": "string" }
             }

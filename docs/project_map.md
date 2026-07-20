@@ -69,7 +69,7 @@ Runtime environments:
 
 - `bin/run_nucmer_alignment.py`
   - runs multi-query nucmer comparator without global one-to-one filtering
-  - parses `show-coords` and `show-snps`
+  - parses SAM-long alignment records and emits CIGAR-normalized events
   - writes the same normalized alignment evidence schema
 
 - `bin/build_ensembl_compara_maf_manifest.py`

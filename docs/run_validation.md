@@ -29,8 +29,6 @@ nextflow run . \
   --datasets_bin /path/to/datasets \
   --minimap2_bin /path/to/minimap2 \
   --nucmer_bin /path/to/nucmer \
-  --show_coords_bin /path/to/show-coords \
-  --show_snps_bin /path/to/show-snps \
   -resume
 ```
 
