@@ -322,7 +322,6 @@ def main() -> None:
 
     genes = {row["gene_id"]: row for row in read_tsv_gz(args.genes_tsv)}
     gene_partitions = partition_ids(genes, args.partition_size)
-    write_partition_genes(genes, gene_partitions, args.outdir / "partition_genes")
     fetch_manifest = json.loads(args.fetch_manifest.read_text())
     grouped_orthologs = fetch_manifest.get("orthologs_selected_grouped_by_query_gene_id") is True
     taxonomy = load_taxonomy(args.taxonomy_presets)
@@ -371,6 +370,16 @@ def main() -> None:
             if str(row["gene_id"]).isdigit()
             else (1, str(row["gene_id"]))
         )
+    )
+    ready_gene_ids = [
+        str(row["gene_id"])
+        for row in task_rows
+        if row["status"] == "ready"
+    ]
+    write_partition_genes(
+        {gene_id: genes[gene_id] for gene_id in ready_gene_ids},
+        {gene_id: gene_partitions[gene_id] for gene_id in ready_gene_ids},
+        args.outdir / "partition_genes",
     )
 
     task_fields = [
