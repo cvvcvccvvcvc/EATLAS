@@ -18,14 +18,14 @@ micromamba run -n gaph-v2-analytics python -m analytics.strategy_report \
   --run-dir "$RUN"
 ```
 
-The report computes ClinVar enrichment and conservation-stratified validation
-by default. Conservation tracks and quantile bins can be adjusted with:
+The report computes ClinVar enrichment plus categorical and continuous
+conservation-adjusted validation within target introns by default. Conservation
+tracks can be selected with:
 
 ```bash
 micromamba run -n gaph-v2-analytics python -m analytics.strategy_report \
   --run-dir "$RUN" \
-  --conservation-tracks phyloP100way,phastCons100way,GERP_RS_92mammals \
-  --conservation-bins 4
+  --conservation-tracks phyloP100way,phastCons100way,GERP_RS_92mammals
 ```
 
 When an analysis needs durable intermediate tables, write them under
@@ -48,7 +48,7 @@ The strategy report writes its ClinVar validation universe under:
 ```
 
 Validation statistics are computed separately for SNV and INDEL rows. The
-conservation-stratified block also writes:
+intronic conservation blocks also write:
 
 ```text
 <run-dir>/analytics/clinvar_universe.snv.conservation.tsv.gz
@@ -62,6 +62,8 @@ partial tracks until the cache is complete.
 
 Raw p-values remain visible in the report. ClinVar Fisher tests use
 Benjamini-Hochberg correction separately within the SNV and INDEL families.
-Conservation bin-level Fisher tests and score-by-strategy CMH tests are corrected
-as two separate analysis families. Mantel-Haenszel confidence intervals use the
-Robins-Breslow-Greenland variance implemented by `statsmodels.StratifiedTable`.
+Within the intronic analysis, fixed-category Fisher tests, score-by-strategy CMH
+tests, and continuous-model Wald tests are corrected as separate families.
+Mantel-Haenszel confidence intervals use the Robins-Breslow-Greenland variance
+implemented by `statsmodels.StratifiedTable`. Continuous models use a natural
+cubic spline with three degrees of freedom for one conservation score at a time.

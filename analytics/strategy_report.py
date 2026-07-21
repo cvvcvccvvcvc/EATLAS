@@ -17,7 +17,16 @@ import plotly.graph_objects as go
 
 from analytics.core.clinvar_validation import build_validation
 from analytics.core.conservation import DEFAULT_TRACK_NAMES, build_conservation_annotations
-from analytics.core.stratified_enrichment import compute_conservation_stratified_enrichment
+from analytics.core.intronic_conservation import (
+    CATEGORY_DEFINITIONS,
+    PRIMARY_SCOPE,
+    SCOPE_LABELS,
+    SENSITIVITY_SCOPE,
+    SPLICE_PROXIMAL_BP,
+    build_intronic_cohort,
+    compute_categorical_enrichment,
+    compute_continuous_enrichment,
+)
 from analytics.core.variant_summary import StrategyOverlap, VariantSummary, build_variant_summary
 
 
@@ -91,6 +100,7 @@ STRATEGY_LABELS = {
 class RunInputs:
     run_dir: Path
     genes_tsv: Path
+    target_features_tsv: Path
     target_sequences_dir: Path
     variant_annotations_tsv: Path
     annotation_manifest_json: Path
@@ -101,13 +111,15 @@ class RunInputs:
 
 
 @dataclass(frozen=True)
-class ConservationStratifiedAnalysis:
+class IntronicConservationAnalysis:
     annotations_path: Path
     manifest_path: Path
     manifest: dict
     score_columns: list[str]
+    cohort_summary: dict[str, int]
     bin_results: pd.DataFrame
     adjusted_results: pd.DataFrame
+    continuous_results: pd.DataFrame
 
 
 def parse_args() -> argparse.Namespace:
@@ -133,12 +145,6 @@ def parse_args() -> argparse.Namespace:
         default=DEFAULT_TRACK_NAMES,
         help=f"Comma-separated conservation tracks for stratified validation. Default: {DEFAULT_TRACK_NAMES}",
     )
-    parser.add_argument(
-        "--conservation-bins",
-        type=int,
-        default=4,
-        help="Quantile bins per conservation score for stratified validation.",
-    )
     return parser.parse_args()
 
 
@@ -162,6 +168,7 @@ def resolve_run_inputs(run_dir: Path) -> RunInputs:
     inputs = RunInputs(
         run_dir=run_dir,
         genes_tsv=run_dir / "fetch" / "genes.tsv.gz",
+        target_features_tsv=run_dir / "fetch" / "target_features.tsv.gz",
         target_sequences_dir=run_dir / "fetch" / "sequences" / "targets",
         variant_annotations_tsv=run_dir / "annotation" / "variant_annotations.tsv.gz",
         annotation_manifest_json=run_dir / "annotation" / "manifest.json",
@@ -177,6 +184,8 @@ def resolve_run_inputs(run_dir: Path) -> RunInputs:
         )
     if not inputs.genes_tsv.exists():
         raise FileNotFoundError("Missing fetch/genes.tsv.gz under --run-dir.")
+    if not inputs.target_features_tsv.exists():
+        raise FileNotFoundError("Missing fetch/target_features.tsv.gz under --run-dir.")
     if not inputs.target_sequences_dir.exists():
         raise FileNotFoundError("Missing fetch/sequences/targets under --run-dir.")
     return inputs
@@ -529,51 +538,84 @@ def validation_method_table() -> pd.DataFrame:
     )
 
 
-def conservation_stratified_method_table() -> pd.DataFrame:
+def intronic_conservation_method_table() -> pd.DataFrame:
     return pd.DataFrame(
         [
             {
                 "Step": "Variant set",
-                "Definition": "Usable ClinVar SNVs from the same normalized validation universe used by ClinVar Enrichment.",
+                "Definition": (
+                    "Clean B/LB and P/LP ClinVar SNVs from the normalized validation universe. INDELs are excluded "
+                    "because a single-position conservation score is not an allele-level summary for an indel."
+                ),
+            },
+            {
+                "Step": "Intronic restriction",
+                "Definition": (
+                    "A position must fall in an intron from fetch/target_features.tsv.gz and in no exon of any "
+                    "overlapping target-gene context. Target introns are the gene body minus the collapsed exon union."
+                ),
             },
             {
                 "Step": "Conservation annotation",
                 "Definition": "Each SNV position is annotated once from remote bigWig tracks and cached under <run-dir>/analytics/.",
             },
             {
-                "Step": "Binning",
-                "Definition": "For each conservation score, SNVs are split into quantile bins across the usable SNV universe.",
+                "Step": "phyloP categories",
+                "Definition": "<= -1.30103 acceleration; (-1.30103, 1.30103) no significant departure; >= 1.30103 conservation. The cutoffs equal signed -log10(0.05).",
             },
             {
-                "Step": "Within-bin test",
+                "Step": "phastCons categories",
+                "Definition": "< 0.5 lower and >= 0.5 higher posterior conservation probability.",
+            },
+            {
+                "Step": "GERP RS categories",
                 "Definition": (
-                    "For every strategy and bin, the same B/LB-vs-P/LP ALT-observed 2x2 enrichment table is computed; "
-                    "Fisher p-values receive Benjamini-Hochberg correction across all reported bin tests."
+                    "<= 0 no constraint/substitution surplus; (0, 2) weak; [2, 4) moderate; >= 4 strong constraint. "
+                    "These are prespecified descriptive bands, not GERP significance thresholds."
                 ),
             },
             {
-                "Step": "Adjusted summary",
+                "Step": "Categorical analysis",
                 "Definition": (
-                    "A Mantel-Haenszel common odds ratio with Robins-Breslow-Greenland 95% CI and a "
-                    "Cochran-Mantel-Haenszel test without continuity correction summarize the effect across bins."
+                    "Each category receives a B/LB-vs-P/LP ALT-observed 2x2 table, OR, 95% CI, and two-sided Fisher "
+                    "test. A Mantel-Haenszel common OR and CMH test summarize the association across categories."
                 ),
             },
             {
-                "Step": "Sparse strata",
+                "Step": "Continuous analysis",
                 "Definition": (
-                    "No 0.5 continuity correction is applied to the pooled estimate. An infinite MH OR remains "
-                    "infinite; its normal-approximation RBG confidence interval is reported as not estimable."
+                    "For each strategy and score separately: logit P(B/LB) = intercept + beta_ALT*ALT_observed + "
+                    "natural cubic spline(score, df=3). exp(beta_ALT) is the continuous-score-adjusted OR; its "
+                    "95% CI and p-value use the fitted model's Wald covariance."
                 ),
             },
             {
-                "Step": "Adjusted-summary multiplicity",
+                "Step": "Sparse data",
                 "Definition": (
-                    "CMH p-values receive Benjamini-Hochberg correction across all reported score-by-strategy tests."
+                    "A result is marked not estimable when either clinical class or ALT-observed group is absent, "
+                    "the spline lacks score support, or fitting is rank-deficient/non-finite/numerically separated."
                 ),
             },
             {
-                "Step": "Scope",
-                "Definition": "INDELs are excluded from this first conservation-control block because a single-position conservation score is ambiguous for indel alleles.",
+                "Step": "Multiplicity",
+                "Definition": (
+                    "Benjamini-Hochberg correction is applied separately to category-level Fisher tests, "
+                    "score-by-strategy CMH tests, and continuous-model Wald tests within each cohort scope."
+                ),
+            },
+            {
+                "Step": "Splice sensitivity",
+                "Definition": (
+                    "The primary cohort includes all intronic positions. A supporting analysis excludes the first "
+                    f"and last {SPLICE_PROXIMAL_BP} bases of each intron."
+                ),
+            },
+            {
+                "Step": "Callability limitation",
+                "Definition": (
+                    "ALT_observed=0 means the normalized allele is absent from that strategy's event output. "
+                    "This analytics-only analysis does not yet exclude positions lacking per-position ortholog callability."
+                ),
             },
         ]
     )
@@ -1243,106 +1285,165 @@ def build_validation_kind_sections(results: pd.DataFrame, variant_kind: str, inc
     return sections
 
 
-def build_conservation_stratified_analysis(
+def build_intronic_conservation_analysis(
     *,
     inputs: RunInputs,
     validation,
     strategies: list[str],
     track_names: str,
-    bins: int,
-) -> ConservationStratifiedAnalysis:
+) -> IntronicConservationAnalysis:
     conservation = build_conservation_annotations(
         universe=validation.universe,
         universe_path=validation.universe_path,
         analytics_dir=inputs.run_dir / "analytics",
         track_names=track_names,
     )
-    bin_results, adjusted_results = compute_conservation_stratified_enrichment(
+    cohort = build_intronic_cohort(
         universe=validation.universe,
         conservation=conservation.annotations,
+        target_features_tsv=inputs.target_features_tsv,
+        score_columns=conservation.score_columns,
+    )
+    bin_results, adjusted_results = compute_categorical_enrichment(
+        cohort=cohort.variants,
         observed_by_strategy_type=validation.observed_by_strategy_type,
         strategies=strategies,
         score_columns=conservation.score_columns,
-        bins=bins,
     )
-    return ConservationStratifiedAnalysis(
+    continuous_results = compute_continuous_enrichment(
+        cohort=cohort.variants,
+        observed_by_strategy_type=validation.observed_by_strategy_type,
+        strategies=strategies,
+        score_columns=conservation.score_columns,
+    )
+    return IntronicConservationAnalysis(
         annotations_path=conservation.annotations_path,
         manifest_path=conservation.manifest_path,
         manifest=conservation.manifest,
         score_columns=conservation.score_columns,
+        cohort_summary=cohort.summary,
         bin_results=bin_results,
         adjusted_results=adjusted_results,
+        continuous_results=continuous_results,
     )
 
 
-def build_conservation_stratified_sections(
-    analysis: ConservationStratifiedAnalysis,
+def build_categorical_conservation_sections(
+    analysis: IntronicConservationAnalysis,
     include_plotly: bool,
 ) -> list[str]:
-    sections = ["<h2>Conservation-Stratified Validation</h2>"]
+    sections = ["<h2>Intronic Validation by Conservation Category</h2>"]
     sections.append(
-        "<p class=\"lead\">This control asks whether ALT-observed enrichment persists within variants that have comparable site-level conservation. Only SNVs are used.</p>"
+        "<p class=\"lead\">ClinVar B/LB and P/LP SNVs are restricted to target introns, then stratified by "
+        "prespecified conservation-score thresholds. The primary result is the Mantel-Haenszel odds ratio "
+        "across categories.</p>"
     )
-    sections.append(
-        metric_cards(
-            [
-                ("ClinVar SNVs with conservation rows", format_int(analysis.manifest.get("row_count", 0))),
-                ("Conservation scores", format_int(len(analysis.score_columns))),
-                (
-                    "Strategies tested",
-                    format_int(analysis.adjusted_results["strategy"].nunique())
-                    if not analysis.adjusted_results.empty
-                    else "0",
-                ),
-                (
-                    "Score-bin tests",
-                    format_int(len(analysis.bin_results))
-                    if not analysis.bin_results.empty
-                    else "0",
-                ),
-            ]
-        )
-    )
-    if analysis.adjusted_results.empty:
-        sections.append("<p>No conservation-stratified enrichment results could be computed.</p>")
-        return sections
+    sections.append(intronic_cohort_cards(analysis))
 
     include_js = include_plotly
     for score in analysis.score_columns:
-        adjusted = analysis.adjusted_results[analysis.adjusted_results["score"].astype(str) == score].copy()
-        bins = analysis.bin_results[analysis.bin_results["score"].astype(str) == score].copy()
+        adjusted = analysis.adjusted_results[
+            (analysis.adjusted_results["scope"] == PRIMARY_SCOPE)
+            & (analysis.adjusted_results["score"].astype(str) == score)
+        ].copy()
+        bins = analysis.bin_results[
+            (analysis.bin_results["scope"] == PRIMARY_SCOPE)
+            & (analysis.bin_results["score"].astype(str) == score)
+        ].copy()
         sections.append(f"<h3>{score}</h3>")
-        if adjusted.empty or bins.empty:
-            sections.append(f"<p>No usable conservation-stratified results for {score}.</p>")
+        if bins.empty:
+            sections.append(f"<p>No intronic ClinVar SNVs with {score} were available.</p>")
             continue
 
         fig_adjusted = conservation_adjusted_figure(adjusted, score)
         if fig_adjusted is not None:
             sections.append(fig_html(fig_adjusted, include_plotlyjs=include_js))
             include_js = False
-        infinite_count = int(np.isposinf(adjusted["odds_ratio_mh"]).sum())
-        if infinite_count:
-            sections.append(
-                f"<p class=\"lead\">{format_int(infinite_count)} infinite MH OR estimate(s) have no estimable "
-                "normal-approximation RBG confidence interval and are listed in the table but omitted from the "
-                "forest plot.</p>"
-            )
-
         fig_heatmap = conservation_bin_heatmap(bins, adjusted, score)
         if fig_heatmap is not None:
             sections.append(fig_html(fig_heatmap, include_plotlyjs=include_js))
             include_js = False
 
-        sections.append("<h4>Adjusted Summary</h4>")
+        if not bool((adjusted["status"] == "estimated").any()):
+            reason = adjusted["reason"].dropna().astype(str).replace("", np.nan).dropna()
+            message = reason.iloc[0] if not reason.empty else "The adjusted effect is not estimable."
+            sections.append(f"<p><strong>Not estimable:</strong> {message}</p>")
+        sections.append("<h4>Categorical Adjusted Summary</h4>")
         sections.append(table_html(conservation_adjusted_table(adjusted), classes="table table-sm table-striped"))
         sections.append("<details><summary>Per-bin 2x2 tables</summary>")
         sections.append(table_html(conservation_bin_detail_table(bins), classes="table table-sm table-striped"))
         sections.append("</details>")
+
+    sensitivity_adjusted = analysis.adjusted_results[
+        analysis.adjusted_results["scope"] == SENSITIVITY_SCOPE
+    ].copy()
+    sensitivity_bins = analysis.bin_results[analysis.bin_results["scope"] == SENSITIVITY_SCOPE].copy()
+    sections.append(
+        f"<details><summary>Sensitivity: {SCOPE_LABELS[SENSITIVITY_SCOPE]}</summary>"
+    )
+    sections.append(
+        "<p class=\"lead\">This repeats the categorical analysis after excluding splice-proximal intronic "
+        "positions; it is supporting evidence, not a separately selected primary cohort.</p>"
+    )
+    sections.append(table_html(conservation_adjusted_table(sensitivity_adjusted), classes="table table-sm table-striped"))
+    sections.append("<details><summary>Per-bin sensitivity tables</summary>")
+    sections.append(table_html(conservation_bin_detail_table(sensitivity_bins), classes="table table-sm table-striped"))
+    sections.append("</details></details>")
     return sections
 
 
+def build_continuous_conservation_sections(
+    analysis: IntronicConservationAnalysis,
+    include_plotly: bool,
+) -> list[str]:
+    sections = ["<h2>Intronic Validation with Continuous Conservation</h2>"]
+    sections.append(
+        "<p class=\"lead\">Each conservation score is modeled separately as a continuous nonlinear covariate "
+        "using a three-degree-of-freedom natural cubic spline. The reported OR estimates the association of "
+        "ALT observation with B/LB classification at the same modeled conservation score.</p>"
+    )
+    sections.append(intronic_cohort_cards(analysis))
+
+    primary = analysis.continuous_results[
+        analysis.continuous_results["scope"] == PRIMARY_SCOPE
+    ].copy()
+    figure = continuous_conservation_figure(primary)
+    if figure is not None:
+        sections.append(fig_html(figure, include_plotlyjs=include_plotly))
+    if primary.empty or not bool((primary["status"] == "estimated").any()):
+        sections.append(
+            "<p><strong>No continuous adjusted effect is currently estimable.</strong> "
+            "The table states the data condition that prevents each model fit.</p>"
+        )
+    sections.append("<h3>Continuous Adjusted Models</h3>")
+    sections.append(table_html(continuous_conservation_table(primary), classes="table table-sm table-striped"))
+
+    sensitivity = analysis.continuous_results[
+        analysis.continuous_results["scope"] == SENSITIVITY_SCOPE
+    ].copy()
+    sections.append(
+        f"<details><summary>Sensitivity: {SCOPE_LABELS[SENSITIVITY_SCOPE]}</summary>"
+    )
+    sections.append(table_html(continuous_conservation_table(sensitivity), classes="table table-sm table-striped"))
+    sections.append("</details>")
+    return sections
+
+
+def intronic_cohort_cards(analysis: IntronicConservationAnalysis) -> str:
+    summary = analysis.cohort_summary
+    return metric_cards(
+        [
+            ("Usable ClinVar SNVs", format_int(summary.get("usable_snv_count", 0))),
+            ("Intronic SNVs", format_int(summary.get("intronic_snv_count", 0))),
+            ("Intronic B/LB", format_int(summary.get("intronic_benign_count", 0))),
+            ("Intronic P/LP", format_int(summary.get("intronic_pathogenic_count", 0))),
+            ("Splice-proximal intronic", format_int(summary.get("splice_proximal_count", 0))),
+        ]
+    )
+
+
 def conservation_adjusted_figure(adjusted: pd.DataFrame, score: str):
-    plot_df = adjusted.dropna(subset=["ci_low", "ci_high"]).copy()
+    plot_df = adjusted[adjusted["status"] == "estimated"].dropna(subset=["ci_low", "ci_high"]).copy()
     plot_df = plot_df[(plot_df["ci_low"] > 0) & (plot_df["ci_high"] > 0)]
     if plot_df.empty:
         return None
@@ -1389,7 +1490,7 @@ def conservation_adjusted_figure(adjusted: pd.DataFrame, score: str):
     )
     fig.add_vline(x=1.0, line_dash="dash", line_color="#8c8c8c")
     fig.update_layout(
-        title=f"{score}: adjusted ALT-observed enrichment after conservation stratification",
+        title=f"{score}: intronic enrichment adjusted across fixed categories",
         xaxis_title="Mantel-Haenszel odds ratio (log scale)",
         yaxis_title="",
         xaxis_type="log",
@@ -1404,11 +1505,7 @@ def conservation_adjusted_figure(adjusted: pd.DataFrame, score: str):
 def conservation_bin_heatmap(bins: pd.DataFrame, adjusted: pd.DataFrame, score: str):
     work = bins.copy()
     work["Strategy"] = work["strategy"].map(strategy_label)
-    work["Bin"] = work.apply(lambda row: f"Q{int(row['bin_index'])}", axis=1)
-    work["bin_range"] = work.apply(
-        lambda row: f"{format_float(row['bin_low'], 4)} to {format_float(row['bin_high'], 4)}",
-        axis=1,
-    )
+    work["Bin"] = work["bin_label"].astype(str)
     finite_positive = np.isfinite(work["odds_ratio"]) & (work["odds_ratio"] > 0)
     infinite_positive = np.isposinf(work["odds_ratio"])
     if not bool(finite_positive.any() or infinite_positive.any()):
@@ -1423,7 +1520,8 @@ def conservation_bin_heatmap(bins: pd.DataFrame, adjusted: pd.DataFrame, score: 
     adjusted_order["Strategy"] = adjusted_order["strategy"].map(strategy_label)
     adjusted_order["plot_order"] = adjusted_order["odds_ratio_mh"].replace([np.inf, -np.inf], np.nan)
     strategy_order = adjusted_order.sort_values("plot_order", ascending=False, na_position="last")["Strategy"].tolist()
-    bin_order = [f"Q{index}" for index in sorted(work["bin_index"].astype(int).unique())]
+    definitions = CATEGORY_DEFINITIONS.get(score, [])
+    bin_order = [definition.label for definition in definitions]
     pivot = work.pivot_table(index="Strategy", columns="Bin", values="log2_or", aggfunc="first")
     text = work.pivot_table(index="Strategy", columns="Bin", values="odds_ratio", aggfunc="first")
     pvalues = work.pivot_table(index="Strategy", columns="Bin", values="fisher_p", aggfunc="first")
@@ -1474,34 +1572,46 @@ def conservation_bin_heatmap(bins: pd.DataFrame, adjusted: pd.DataFrame, score: 
     )
     fig.update_traces(texttemplate="%{text}", textfont_size=11)
     fig.update_layout(
-        title=f"{score}: within-bin odds ratios",
+        title=f"{score}: within-category odds ratios",
         height=360,
         margin={"l": 140, "r": 30, "t": 52, "b": 58},
         template="plotly_white",
     )
-    fig.update_xaxes(title_text="Conservation quantile bin, low to high")
+    fig.update_xaxes(title_text="Conservation category, low to high", tickangle=-18)
     fig.update_yaxes(title_text="")
     return fig
 
 
 def conservation_adjusted_table(adjusted: pd.DataFrame) -> pd.DataFrame:
+    if adjusted.empty:
+        return pd.DataFrame(
+            columns=["Strategy", "Usable SNVs", "Categories", "MH adjusted OR", "95% CI", "CMH p", "BH q", "Status"]
+        )
     table = adjusted.sort_values("odds_ratio_mh", ascending=False, na_position="last").copy()
     table["Strategy"] = table["strategy"].map(strategy_label)
     table["MH adjusted OR"] = table["odds_ratio_mh"].map(format_ratio)
-    table["95% CI"] = table.apply(lambda row: f"{format_ratio(row['ci_low'])}-{format_ratio(row['ci_high'])}", axis=1)
+    table["95% CI"] = table.apply(lambda row: format_ci(row["ci_low"], row["ci_high"]), axis=1)
     table["CMH p"] = table["cmh_p"].map(format_pvalue)
     table["BH q"] = table["cmh_q"].map(format_pvalue)
-    table = table.rename(columns={"usable_rows": "Usable SNVs", "bin_count": "Bins"})
-    return table[["Strategy", "Usable SNVs", "Bins", "MH adjusted OR", "95% CI", "CMH p", "BH q"]]
+    table["Status"] = table.apply(
+        lambda row: "Estimated" if row["status"] == "estimated" else str(row["reason"]),
+        axis=1,
+    )
+    table = table.rename(columns={"usable_rows": "Usable SNVs", "bin_count": "Categories"})
+    return table[
+        ["Strategy", "Usable SNVs", "Categories", "MH adjusted OR", "95% CI", "CMH p", "BH q", "Status"]
+    ]
 
 
 def conservation_bin_detail_table(bins: pd.DataFrame) -> pd.DataFrame:
+    if bins.empty:
+        return pd.DataFrame()
     table = bins.sort_values(["strategy", "bin_index"], kind="mergesort").copy()
     table["Strategy"] = table["strategy"].map(strategy_label)
     table["Bin"] = table["bin_label"]
-    table["Range"] = table.apply(lambda row: f"{format_float(row['bin_low'], 4)} to {format_float(row['bin_high'], 4)}", axis=1)
+    table["Range"] = table["bin_range"]
     table["OR"] = table["odds_ratio"].map(format_ratio)
-    table["95% CI"] = table.apply(lambda row: f"{format_ratio(row['ci_low'])}-{format_ratio(row['ci_high'])}", axis=1)
+    table["95% CI"] = table.apply(lambda row: format_ci(row["ci_low"], row["ci_high"]), axis=1)
     table["Fisher p"] = table["fisher_p"].map(format_pvalue)
     table["BH q"] = table["fisher_q"].map(format_pvalue)
     return table[
@@ -1530,6 +1640,97 @@ def conservation_bin_detail_table(bins: pd.DataFrame) -> pd.DataFrame:
     )
 
 
+def continuous_conservation_figure(results: pd.DataFrame):
+    plot_df = results[
+        (results["status"] == "estimated")
+        & results["ci_low"].notna()
+        & results["ci_high"].notna()
+        & (results["ci_low"] > 0)
+        & (results["ci_high"] > 0)
+    ].copy()
+    if plot_df.empty:
+        return None
+    plot_df["Strategy"] = plot_df["strategy"].map(strategy_label)
+    plot_df["Model"] = plot_df["Strategy"] + " · " + plot_df["score"].astype(str)
+    plot_df = plot_df.sort_values("odds_ratio", ascending=False)
+    colors = {
+        "phyloP100way": "#2f6f62",
+        "phastCons100way": "#376a9e",
+        "GERP_RS_92mammals": "#9a5f24",
+    }
+    fig = go.Figure()
+    for score, group in plot_df.groupby("score", sort=False):
+        fig.add_trace(
+            go.Scatter(
+                x=group["odds_ratio"],
+                y=group["Model"],
+                mode="markers",
+                name=str(score),
+                marker={"size": 9, "color": colors.get(str(score), "#52606d")},
+                error_x={
+                    "type": "data",
+                    "symmetric": False,
+                    "array": group["ci_high"] - group["odds_ratio"],
+                    "arrayminus": group["odds_ratio"] - group["ci_low"],
+                    "thickness": 1.3,
+                },
+                customdata=np.stack([group["ci_low"], group["ci_high"], group["wald_p"], group["wald_q"]], axis=-1),
+                hovertemplate=(
+                    "%{y}<br>Adjusted OR: %{x:.3g}<br>95% CI: %{customdata[0]:.3g}-%{customdata[1]:.3g}<br>"
+                    "Wald p: %{customdata[2]:.3g}<br>BH q: %{customdata[3]:.3g}<extra></extra>"
+                ),
+            )
+        )
+    fig.add_vline(x=1.0, line_dash="dash", line_color="#8c8c8c")
+    fig.update_layout(
+        title="ALT-observed association after continuous conservation adjustment",
+        xaxis_title="Spline-adjusted odds ratio (log scale)",
+        yaxis_title="",
+        xaxis_type="log",
+        height=max(380, 28 * len(plot_df) + 110),
+        margin={"l": 210, "r": 30, "t": 55, "b": 58},
+        template="plotly_white",
+        legend_title_text="Conservation score",
+    )
+    fig.update_yaxes(categoryorder="array", categoryarray=plot_df["Model"].tolist()[::-1])
+    return fig
+
+
+def continuous_conservation_table(results: pd.DataFrame) -> pd.DataFrame:
+    if results.empty:
+        return pd.DataFrame(
+            columns=["Strategy", "Score", "N", "B/LB", "P/LP", "Observed", "Adjusted OR", "95% CI", "Wald p", "BH q", "Status"]
+        )
+    table = results.sort_values("odds_ratio", ascending=False, na_position="last").copy()
+    table["Strategy"] = table["strategy"].map(strategy_label)
+    table["Score"] = table["score"]
+    table["Adjusted OR"] = table["odds_ratio"].map(format_ratio)
+    table["95% CI"] = table.apply(lambda row: format_ci(row["ci_low"], row["ci_high"]), axis=1)
+    table["Wald p"] = table["wald_p"].map(format_pvalue)
+    table["BH q"] = table["wald_q"].map(format_pvalue)
+    table["Status"] = table.apply(
+        lambda row: "Estimated" if row["status"] == "estimated" else str(row["reason"]),
+        axis=1,
+    )
+    table = table.rename(
+        columns={
+            "usable_rows": "N",
+            "benign_rows": "B/LB",
+            "pathogenic_rows": "P/LP",
+            "observed_rows": "Observed",
+        }
+    )
+    return table[
+        ["Strategy", "Score", "N", "B/LB", "P/LP", "Observed", "Adjusted OR", "95% CI", "Wald p", "BH q", "Status"]
+    ]
+
+
+def format_ci(low, high) -> str:
+    if pd.isna(low) or pd.isna(high):
+        return ""
+    return f"{format_ratio(low)}-{format_ratio(high)}"
+
+
 def build_methods_sections(
     inputs: RunInputs,
     out_html: Path,
@@ -1539,11 +1740,12 @@ def build_methods_sections(
     annotation_manifest: dict,
     alignment_manifest: dict,
     validation=None,
-    conservation_analysis: ConservationStratifiedAnalysis | None = None,
+    conservation_analysis: IntronicConservationAnalysis | None = None,
 ) -> list[str]:
     files = [
         ("Run Dir", inputs.run_dir),
         ("Variant Annotations", inputs.variant_annotations_tsv),
+        ("Target Features", inputs.target_features_tsv),
         ("Target Sequences", inputs.target_sequences_dir),
         ("Feature Coverage", inputs.feature_coverage_tsv),
         ("Strategy Summary", inputs.strategy_summary_tsv),
@@ -1617,11 +1819,11 @@ def build_methods_sections(
     )
     sections.append(table_html(validation_method_table(), classes="table table-sm table-striped"))
     sections.append("</details>")
-    sections.append("<details><summary>Conservation-stratified validation method</summary>")
+    sections.append("<details><summary>Intronic conservation validation method</summary>")
     sections.append(
-        "<p class=\"lead\">This block checks whether ALT-observed enrichment remains after conditioning on site-level conservation.</p>"
+        "<p class=\"lead\">These blocks test ALT-observed enrichment within introns while treating site-level conservation categorically and continuously.</p>"
     )
-    sections.append(table_html(conservation_stratified_method_table(), classes="table table-sm table-striped"))
+    sections.append(table_html(intronic_conservation_method_table(), classes="table table-sm table-striped"))
     sections.append("</details>")
     sections.append("<details><summary>Feature coverage formulas</summary>")
     sections.append(
@@ -1799,8 +2001,6 @@ def render_html(sections: list[tuple[str, str, list[str]]]) -> str:
 
 def main() -> None:
     args = parse_args()
-    if args.conservation_bins < 2:
-        raise ValueError("--conservation-bins must be >= 2")
     inputs = resolve_run_inputs(args.run_dir)
     out_html = resolve_out_html(args, inputs.run_dir)
 
@@ -1842,13 +2042,12 @@ def main() -> None:
         strategies=strategies,
     )
 
-    print("Computing conservation-stratified validation...")
-    conservation_analysis = build_conservation_stratified_analysis(
+    print("Computing intronic conservation validation...")
+    conservation_analysis = build_intronic_conservation_analysis(
         inputs=inputs,
         validation=validation,
         strategies=strategies,
         track_names=args.conservation_tracks,
-        bins=args.conservation_bins,
     )
 
     sections = [
@@ -1862,9 +2061,14 @@ def main() -> None:
         ("coverage", "Feature Coverage", build_feature_sections(cov, include_plotly=True)),
         ("clinvar-enrichment", "ClinVar Enrichment", build_validation_sections(validation, include_plotly=True)),
         (
-            "conservation-stratified",
-            "Conservation-Stratified",
-            build_conservation_stratified_sections(conservation_analysis, include_plotly=True),
+            "intronic-conservation-categories",
+            "Conservation + Introns: Categories",
+            build_categorical_conservation_sections(conservation_analysis, include_plotly=True),
+        ),
+        (
+            "intronic-conservation-continuous",
+            "Conservation + Introns: Continuous",
+            build_continuous_conservation_sections(conservation_analysis, include_plotly=True),
         ),
         (
             "qc",
