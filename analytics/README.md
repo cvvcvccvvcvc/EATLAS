@@ -18,9 +18,9 @@ micromamba run -n gaph-v2-analytics python -m analytics.strategy_report \
   --run-dir "$RUN"
 ```
 
-The report computes ClinVar enrichment plus categorical and continuous
-conservation-adjusted validation within target introns by default. Conservation
-tracks can be selected with:
+The report computes ClinVar enrichment, categorical and continuous
+conservation-adjusted validation within target introns, and two sampled SNV
+negative controls by default. Conservation tracks can be selected with:
 
 ```bash
 micromamba run -n gaph-v2-analytics python -m analytics.strategy_report \
@@ -59,6 +59,24 @@ The conservation cache is SNV-only and is reused on later report runs when the
 ClinVar universe and requested tracks are unchanged. Successful track columns
 are retained when another remote track fails; later runs retry only failed or
 partial tracks until the cache is complete.
+
+Negative controls are shown in separate report tabs:
+
+- `Matched Callable Null` compares GAPH SNVs with unobserved SNVs matched by
+  gene, target context, REF, and callable-species depth bin;
+- `Same-Position ALT Null` compares the exact GAPH ALT with other unobserved
+  SNV ALTs at the same position.
+
+Their bounded, deterministic samples and annotations are cached under:
+
+```text
+<run-dir>/analytics/negative_control/
+```
+
+The default limit is 25,000 focal SNVs per strategy with 1,000 matched-null
+resamples. For a faster exploratory run, use
+`--negative-control-sample-size` and `--negative-control-permutations`; changing
+only the number of resamples reuses the prepared control tables.
 
 Raw p-values remain visible in the report. ClinVar Fisher tests use
 Benjamini-Hochberg correction separately within the SNV and INDEL families.

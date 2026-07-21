@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import re
 import warnings
 from dataclasses import dataclass
@@ -27,6 +28,7 @@ from analytics.core.intronic_conservation import (
     compute_categorical_enrichment,
     compute_continuous_enrichment,
 )
+from analytics.core.negative_controls import NegativeControlAnalysis, build_negative_controls
 from analytics.core.variant_summary import StrategyOverlap, VariantSummary, build_variant_summary
 
 
@@ -106,6 +108,7 @@ class RunInputs:
     annotation_manifest_json: Path
     annotation_failures_tsv: Path
     feature_coverage_tsv: Path
+    alignment_segments_tsv: Path
     alignment_manifest_json: Path
     strategy_summary_tsv: Path
 
@@ -145,6 +148,24 @@ def parse_args() -> argparse.Namespace:
         default=DEFAULT_TRACK_NAMES,
         help=f"Comma-separated conservation tracks for stratified validation. Default: {DEFAULT_TRACK_NAMES}",
     )
+    parser.add_argument(
+        "--negative-control-sample-size",
+        type=int,
+        default=25_000,
+        help="Maximum deterministic SNV sample per strategy for each negative control.",
+    )
+    parser.add_argument(
+        "--negative-control-permutations",
+        type=int,
+        default=1_000,
+        help="Matched-null resampling iterations. Default: 1000.",
+    )
+    parser.add_argument(
+        "--negative-control-seed",
+        type=int,
+        default=20_260_721,
+        help="Deterministic negative-control seed.",
+    )
     return parser.parse_args()
 
 
@@ -174,6 +195,7 @@ def resolve_run_inputs(run_dir: Path) -> RunInputs:
         annotation_manifest_json=run_dir / "annotation" / "manifest.json",
         annotation_failures_tsv=run_dir / "annotation" / "failures.tsv.gz",
         feature_coverage_tsv=run_dir / "alignment" / "feature_coverage.tsv.gz",
+        alignment_segments_tsv=run_dir / "alignment" / "alignment_segments.tsv.gz",
         alignment_manifest_json=run_dir / "alignment" / "manifest.json",
         strategy_summary_tsv=run_dir / "alignment" / "strategy_summary.tsv.gz",
     )
@@ -616,6 +638,46 @@ def intronic_conservation_method_table() -> pd.DataFrame:
                     "ALT_observed=0 means the normalized allele is absent from that strategy's event output. "
                     "This analytics-only analysis does not yet exclude positions lacking per-position ortholog callability."
                 ),
+            },
+        ]
+    )
+
+
+def negative_control_method_table() -> pd.DataFrame:
+    return pd.DataFrame(
+        [
+            {
+                "Control": "Matched callable",
+                "Definition": (
+                    "For each sampled GAPH SNV, up to five ALT-unobserved SNVs are sampled from the same gene, "
+                    "CDS/UTR/other-exon/intron context, REF base, and callable-species depth bin "
+                    "(1-4, 5-9, 10-19, 20-49, or 50+)."
+                ),
+                "Question": "Do GAPH SNVs differ in phyloP from the technically observable background?",
+            },
+            {
+                "Control": "Same-position ALT",
+                "Definition": (
+                    "The other possible SNV ALTs at the exact GAPH position are retained only when that strategy "
+                    "did not observe them."
+                ),
+                "Question": "Does the exact observed ALT carry external evidence beyond the site itself?",
+            },
+            {
+                "Control": "Sampling",
+                "Definition": (
+                    "Candidates are selected by a stable hash per strategy. Null intervals and empirical two-sided "
+                    "p-values come from deterministic matched resampling; p-values are exploratory and unadjusted."
+                ),
+                "Question": "Bounded memory and reproducible results without materializing every possible allele.",
+            },
+            {
+                "Control": "Callability",
+                "Definition": (
+                    "Primary alignment intervals are merged within species before depth is counted; low-MAPQ, "
+                    "non-primary, and ambiguous rows are excluded."
+                ),
+                "Question": "Overlapping records from one species cannot inflate the matched background.",
             },
         ]
     )
@@ -1731,6 +1793,238 @@ def format_ci(low, high) -> str:
     return f"{format_ratio(low)}-{format_ratio(high)}"
 
 
+def build_matched_callable_sections(
+    analysis: NegativeControlAnalysis | None,
+    include_plotly: bool,
+) -> list[str]:
+    sections = ["<h2>Matched Callable Background</h2>"]
+    sections.append(
+        "<p class=\"lead\">GAPH SNVs are compared with ALT-unobserved SNVs sampled from the same gene, "
+        "target context, REF base, and callable-species depth bin. This tests whether candidate positions differ "
+        "from the technically observable background.</p>"
+    )
+    if analysis is None:
+        sections.append(
+            "<p>This run does not publish <code>alignment/alignment_segments.tsv.gz</code>; an exact callable "
+            "background cannot be reconstructed from feature-level coverage summaries.</p>"
+        )
+        return sections
+    summary = analysis.matched_summary.copy()
+    if summary.empty:
+        sections.append("<p>No matched callable SNV pairs could be constructed.</p>")
+        return sections
+
+    annotated = int(summary["matched_focals"].sum())
+    sections.append(
+        metric_cards(
+            [
+                ("Sampled GAPH SNVs", format_int(analysis.manifest.get("focal_candidate_count", 0))),
+                ("Matched focal SNVs", format_int(analysis.manifest.get("matched_focal_count", 0))),
+                ("Scored focal SNVs", format_int(annotated)),
+                ("Null resamples", format_int(analysis.permutations)),
+            ]
+        )
+    )
+    conservation_status = analysis.manifest.get("conservation", {}).get("status", "")
+    if conservation_status != "complete":
+        error = analysis.manifest.get("conservation", {}).get("error", "")
+        sections.append(f"<p>phyloP annotation was incomplete: {error or conservation_status}</p>")
+
+    plot = summary.copy()
+    plot["Strategy"] = plot["strategy"].map(strategy_label)
+    plot = plot.sort_values("median_difference", ascending=False, kind="mergesort")
+    fig = go.Figure()
+    fig.add_trace(
+        go.Scatter(
+            x=plot["null_median"],
+            y=plot["Strategy"],
+            mode="markers",
+            marker={"color": "#8c8c8c", "size": 8},
+            error_x={
+                "type": "data",
+                "symmetric": False,
+                "array": plot["null_ci_high"] - plot["null_median"],
+                "arrayminus": plot["null_median"] - plot["null_ci_low"],
+                "color": "#8c8c8c",
+            },
+            name="Matched null median (95% null interval)",
+        )
+    )
+    fig.add_trace(
+        go.Scatter(
+            x=plot["observed_median"],
+            y=plot["Strategy"],
+            mode="markers",
+            marker={"color": "#2166ac", "size": 10, "symbol": "diamond"},
+            name="GAPH median",
+        )
+    )
+    fig.update_layout(
+        title="phyloP median relative to matched callable background",
+        xaxis_title="phyloP100way",
+        yaxis={"categoryorder": "array", "categoryarray": plot["Strategy"].tolist()[::-1]},
+    )
+    compact_figure(fig, height=max(360, 52 * len(plot) + 120), show_x_title=True)
+    sections.append(fig_html(fig, include_plotlyjs=include_plotly))
+
+    ecdf = analysis.matched_ecdf.copy()
+    if not ecdf.empty:
+        ecdf["Strategy"] = ecdf["strategy"].map(strategy_label)
+        fig_ecdf = px.line(
+            ecdf,
+            x="phyloP100way",
+            y="fraction_leq",
+            color="set",
+            facet_col="Strategy",
+            facet_col_wrap=2,
+            title="phyloP distributions: GAPH and focal-weighted matched controls",
+            labels={"fraction_leq": "Cumulative fraction", "set": ""},
+            color_discrete_map={"GAPH": "#2166ac", "Matched callable": "#8c8c8c"},
+        )
+        fig_ecdf.for_each_annotation(lambda item: item.update(text=item.text.split("=")[-1]))
+        fig_ecdf.update_yaxes(tickformat=".0%")
+        compact_figure(fig_ecdf, height=max(420, 260 * math.ceil(ecdf["Strategy"].nunique() / 2)))
+        sections.append(fig_html(fig_ecdf))
+
+    table = summary.rename(
+        columns={
+            "strategy": "Strategy",
+            "matched_focals": "Matched SNVs",
+            "observed_median": "GAPH median",
+            "null_median": "Null median",
+            "null_ci_low": "Null 2.5%",
+            "null_ci_high": "Null 97.5%",
+            "median_difference": "Median difference",
+            "empirical_p": "Empirical p",
+        }
+    )
+    table["Strategy"] = table["Strategy"].map(strategy_label)
+    table["Empirical p"] = table["Empirical p"].map(format_pvalue)
+    sections.append("<h3>Strategy Summary</h3>")
+    sections.append(table_html(table, classes="table table-sm table-striped"))
+
+    context = analysis.matched_context_summary.copy()
+    if not context.empty:
+        context = context.rename(
+            columns={
+                "strategy": "Strategy",
+                "context": "Target context",
+                "matched_focals": "Matched SNVs",
+                "observed_median": "GAPH median",
+                "null_median": "Null median",
+                "median_difference": "Median difference",
+                "empirical_p": "Empirical p",
+            }
+        )
+        context["Strategy"] = context["Strategy"].map(strategy_label)
+        context["Empirical p"] = context["Empirical p"].map(format_pvalue)
+        context = context[
+            [
+                "Strategy",
+                "Target context",
+                "Matched SNVs",
+                "GAPH median",
+                "Null median",
+                "Median difference",
+                "Empirical p",
+            ]
+        ]
+        sections.append("<details><summary>CDS, UTR, other-exon, and intron results</summary>")
+        sections.append(table_html(context, classes="table table-sm table-striped"))
+        sections.append("</details>")
+    return sections
+
+
+def build_same_position_sections(
+    analysis: NegativeControlAnalysis | None,
+    include_plotly: bool,
+) -> list[str]:
+    sections = ["<h2>Same-Position Alternative ALT</h2>"]
+    sections.append(
+        "<p class=\"lead\">Each exact GAPH ALT is compared with SNV ALTs at the same position that the same "
+        "strategy did not observe. Position, callability, local context, and conservation are therefore identical.</p>"
+    )
+    if analysis is None:
+        sections.append("<p>No negative-control analysis is available for this run.</p>")
+        return sections
+    summary = analysis.same_site_summary.copy()
+    if summary.empty:
+        sections.append("<p>No same-position ALT controls could be constructed.</p>")
+        return sections
+    sections.append(
+        metric_cards(
+            [
+                ("Eligible focal SNVs", format_int(analysis.manifest.get("same_site_focal_count", 0))),
+                ("Observed/control rows", format_int(analysis.manifest.get("same_site_row_count", 0))),
+                ("ClinVar comparison", "complete"),
+                ("gnomAD comparison", "complete" if analysis.manifest.get("gnomad_complete") else "unavailable"),
+            ]
+        )
+    )
+    if not analysis.manifest.get("gnomad_complete"):
+        sections.append(
+            "<p>gnomAD control annotation was not used because at least one API region failed; partial results "
+            "are intentionally discarded.</p>"
+        )
+
+    include_js = include_plotly
+    for metric, metric_rows in summary.groupby("metric", sort=False):
+        plot = metric_rows.sort_values("enrichment_ratio", ascending=False, kind="mergesort").copy()
+        plot["Strategy"] = plot["strategy"].map(strategy_label)
+        order = plot["Strategy"].tolist()
+        fig = go.Figure()
+        fig.add_trace(
+            go.Bar(
+                x=plot["Strategy"],
+                y=plot["observed_rate"],
+                name="GAPH ALT",
+                marker_color="#2166ac",
+            )
+        )
+        fig.add_trace(
+            go.Bar(
+                x=plot["Strategy"],
+                y=plot["null_rate"],
+                name="Same-position ALT null",
+                marker_color="#8c8c8c",
+                error_y={
+                    "type": "data",
+                    "symmetric": False,
+                    "array": plot["null_ci_high"] - plot["null_rate"],
+                    "arrayminus": plot["null_rate"] - plot["null_ci_low"],
+                },
+            )
+        )
+        fig.update_layout(
+            title=f"{metric}: exact GAPH ALT versus same-position alternatives",
+            barmode="group",
+            xaxis={"categoryorder": "array", "categoryarray": order},
+            yaxis={"title": "Allele fraction", "tickformat": ".1%"},
+        )
+        compact_figure(fig, height=370)
+        sections.append(fig_html(fig, include_plotlyjs=include_js))
+        include_js = False
+
+    table = summary.rename(
+        columns={
+            "strategy": "Strategy",
+            "metric": "Metric",
+            "matched_focals": "Matched SNVs",
+            "observed_rate": "GAPH rate",
+            "null_rate": "Null rate",
+            "null_ci_low": "Null 2.5%",
+            "null_ci_high": "Null 97.5%",
+            "enrichment_ratio": "Enrichment ratio",
+            "empirical_p": "Empirical p",
+        }
+    )
+    table["Strategy"] = table["Strategy"].map(strategy_label)
+    table["Empirical p"] = table["Empirical p"].map(format_pvalue)
+    sections.append("<h3>Matched Comparison</h3>")
+    sections.append(table_html(table, classes="table table-sm table-striped"))
+    return sections
+
+
 def build_methods_sections(
     inputs: RunInputs,
     out_html: Path,
@@ -1741,6 +2035,7 @@ def build_methods_sections(
     alignment_manifest: dict,
     validation=None,
     conservation_analysis: IntronicConservationAnalysis | None = None,
+    negative_controls: NegativeControlAnalysis | None = None,
 ) -> list[str]:
     files = [
         ("Run Dir", inputs.run_dir),
@@ -1748,6 +2043,7 @@ def build_methods_sections(
         ("Target Features", inputs.target_features_tsv),
         ("Target Sequences", inputs.target_sequences_dir),
         ("Feature Coverage", inputs.feature_coverage_tsv),
+        ("Alignment Segments", inputs.alignment_segments_tsv),
         ("Strategy Summary", inputs.strategy_summary_tsv),
         ("Annotation Manifest", inputs.annotation_manifest_json),
         ("Alignment Manifest", inputs.alignment_manifest_json),
@@ -1825,6 +2121,13 @@ def build_methods_sections(
     )
     sections.append(table_html(intronic_conservation_method_table(), classes="table table-sm table-striped"))
     sections.append("</details>")
+    sections.append("<details><summary>Negative-control construction</summary>")
+    sections.append(
+        "<p class=\"lead\">The two controls use only normalized SNVs and preserve the technical or positional "
+        "structure needed for their respective null hypotheses.</p>"
+    )
+    sections.append(table_html(negative_control_method_table(), classes="table table-sm table-striped"))
+    sections.append("</details>")
     sections.append("<details><summary>Feature coverage formulas</summary>")
     sections.append(
         "<p class=\"lead\">Feature Coverage uses the normalized feature-level table emitted by the alignment stage.</p>"
@@ -1886,6 +2189,26 @@ def build_methods_sections(
         ]
         if track_rows:
             sections.append(table_html(pd.DataFrame(track_rows), classes="table table-sm table-striped"))
+        sections.append("</details>")
+    if negative_controls is not None:
+        control_files = [
+            ("Negative-control manifest", negative_controls.manifest_path),
+            ("Matched callable rows", negative_controls.matched_path),
+            ("Same-position ALT rows", negative_controls.same_site_path),
+            ("Matched phyloP annotations", negative_controls.conservation_path),
+        ]
+        sections.append("<details><summary>Negative-control cache files</summary>")
+        sections.append(
+            table_html(
+                pd.DataFrame(
+                    [
+                        {"Key": label, "Path": str(path), "Exists": path.exists(), "Size": file_size_label(path)}
+                        for label, path in control_files
+                    ]
+                ),
+                classes="table table-sm table-striped",
+            )
+        )
         sections.append("</details>")
     return sections
 
@@ -2001,6 +2324,10 @@ def render_html(sections: list[tuple[str, str, list[str]]]) -> str:
 
 def main() -> None:
     args = parse_args()
+    if args.negative_control_sample_size < 1:
+        raise ValueError("--negative-control-sample-size must be >= 1")
+    if args.negative_control_permutations < 100:
+        raise ValueError("--negative-control-permutations must be >= 100")
     inputs = resolve_run_inputs(args.run_dir)
     out_html = resolve_out_html(args, inputs.run_dir)
 
@@ -2050,6 +2377,36 @@ def main() -> None:
         track_names=args.conservation_tracks,
     )
 
+    negative_controls = None
+    clinvar_regions_value = str(validation.manifest.get("regions_bed", "")).strip()
+    clinvar_regions = Path(clinvar_regions_value) if clinvar_regions_value else None
+    if (
+        inputs.alignment_segments_tsv.exists()
+        and inputs.target_features_tsv.exists()
+        and clinvar_regions is not None
+        and clinvar_regions.exists()
+    ):
+        print("Computing matched negative controls...")
+        negative_controls = build_negative_controls(
+            run_dir=inputs.run_dir,
+            variant_annotations_tsv=inputs.variant_annotations_tsv,
+            alignment_segments_tsv=inputs.alignment_segments_tsv,
+            target_features_tsv=inputs.target_features_tsv,
+            genes_tsv=inputs.genes_tsv,
+            target_sequences_dir=inputs.target_sequences_dir,
+            clinvar_vcf=args.clinvar_vcf.expanduser().resolve(),
+            clinvar_regions_bed=clinvar_regions,
+            strategies=strategies,
+            sample_size_per_strategy=args.negative_control_sample_size,
+            permutations=args.negative_control_permutations,
+            seed=args.negative_control_seed,
+        )
+    else:
+        print(
+            "Skipping matched negative controls: alignment segments, target features, "
+            "or ClinVar target regions are unavailable."
+        )
+
     sections = [
         ("overview", "Overview", build_overview(variant_summary, cov, strategy_stats, annotation_manifest, alignment_manifest)),
         ("variants", "Variant Profile", build_variant_sections(variant_summary, strategy_stats, include_plotly=True)),
@@ -2059,6 +2416,16 @@ def main() -> None:
             build_clinvar_gnomad_sections(variant_summary, strategy_stats_full, include_plotly=True),
         ),
         ("coverage", "Feature Coverage", build_feature_sections(cov, include_plotly=True)),
+        (
+            "matched-callable",
+            "Matched Callable Null",
+            build_matched_callable_sections(negative_controls, include_plotly=True),
+        ),
+        (
+            "same-position-alt",
+            "Same-Position ALT Null",
+            build_same_position_sections(negative_controls, include_plotly=True),
+        ),
         ("clinvar-enrichment", "ClinVar Enrichment", build_validation_sections(validation, include_plotly=True)),
         (
             "intronic-conservation-categories",
@@ -2083,6 +2450,7 @@ def main() -> None:
                 alignment_manifest,
                 validation,
                 conservation_analysis,
+                negative_controls,
             ),
         ),
     ]
