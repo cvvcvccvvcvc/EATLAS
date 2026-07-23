@@ -101,6 +101,7 @@ DNA_BASES = {"A", "C", "G", "T"}
 COMPLEMENT = str.maketrans("ACGTNacgtn", "TGCANtgcan")
 TOOL_NAME = "ensembl_compara_maf"
 OUTPUT_GZIP_COMPRESSLEVEL = 3
+TRANSIENT_HTTP_STATUSES = {408, 429, 500, 502, 503, 504}
 
 
 @dataclass(frozen=True)
@@ -171,9 +172,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--method", default="EPO_EXTENDED")
     parser.add_argument("--target-features", type=Path)
     parser.add_argument("--timeout", type=float, default=120.0)
-    parser.add_argument("--retries", type=int, default=3)
-    parser.add_argument("--retry-base-seconds", type=float, default=2.0)
-    parser.add_argument("--retry-max-seconds", type=float, default=30.0)
+    parser.add_argument("--retries", type=int, default=8)
+    parser.add_argument("--retry-base-seconds", type=float, default=5.0)
+    parser.add_argument("--retry-max-seconds", type=float, default=300.0)
     parser.add_argument("--candidate-neighbors", type=int, default=1)
     return parser.parse_args()
 
@@ -259,6 +260,10 @@ def open_maf_text(source: str, timeout: float) -> TextIO:
 
 
 def retryable_maf_error(exc: Exception) -> bool:
+    if isinstance(exc, urllib.error.HTTPError):
+        return exc.code in TRANSIENT_HTTP_STATUSES
+    if isinstance(exc, FileNotFoundError):
+        return False
     return isinstance(
         exc,
         (
@@ -271,11 +276,17 @@ def retryable_maf_error(exc: Exception) -> bool:
     )
 
 
+def missing_maf_source_error(exc: Exception) -> bool:
+    return isinstance(exc, FileNotFoundError) or (
+        isinstance(exc, urllib.error.HTTPError) and exc.code in {404, 410}
+    )
+
+
 def retry_sleep_seconds(args: argparse.Namespace, attempt: int) -> float:
     base = max(float(args.retry_base_seconds), 0.0)
     cap = max(float(args.retry_max_seconds), 0.0)
     delay = min(cap, base * (2 ** max(attempt - 1, 0))) if cap else base
-    jitter = random.uniform(0.0, min(1.5, delay * 0.25)) if delay > 0 else 0.0
+    jitter = random.uniform(0.0, delay * 0.2) if delay > 0 else 0.0
     return delay + jitter
 
 
@@ -800,6 +811,21 @@ def scan_source(
         try:
             handle = open_maf_text(source, args.timeout)
         except Exception as exc:
+            if missing_maf_source_error(exc):
+                return (
+                    event_id,
+                    used_block_count,
+                    row_count,
+                    source_read_failure(
+                        args,
+                        gene_id,
+                        source,
+                        attempt,
+                        completed_block_count,
+                        used_block_count,
+                        exc,
+                    ),
+                )
             if not retryable_maf_error(exc):
                 raise
             attempt_error = exc

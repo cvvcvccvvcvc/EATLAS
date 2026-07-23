@@ -27,6 +27,7 @@ from run_ensembl_compara_maf_alignment import (
     is_ancestral,
     iter_maf_blocks,
     maf_source_name,
+    missing_maf_source_error,
     open_maf_text,
     overlaps,
     retry_sleep_seconds,
@@ -47,9 +48,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--species-set", default="92_mammals.epo_extended")
     parser.add_argument("--method", default="EPO_EXTENDED")
     parser.add_argument("--timeout", type=float, default=120.0)
-    parser.add_argument("--retries", type=int, default=3)
-    parser.add_argument("--retry-base-seconds", type=float, default=2.0)
-    parser.add_argument("--retry-max-seconds", type=float, default=30.0)
+    parser.add_argument("--retries", type=int, default=8)
+    parser.add_argument("--retry-base-seconds", type=float, default=5.0)
+    parser.add_argument("--retry-max-seconds", type=float, default=300.0)
     return parser.parse_args()
 
 
@@ -224,6 +225,20 @@ def scan_chunk_source(
         try:
             handle = open_maf_text(source, args.timeout)
         except Exception as exc:
+            if missing_maf_source_error(exc):
+                failures.extend(
+                    source_read_failure(
+                        args,
+                        gene_id,
+                        source,
+                        attempt,
+                        completed_block_count,
+                        used_block_count,
+                        exc,
+                    )
+                    for gene_id in gene_ids
+                )
+                return event_id, used_block_count, alignment_row_count, failures
             if not retryable_maf_error(exc):
                 raise
             attempt_error = exc

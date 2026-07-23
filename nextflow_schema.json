@@ -164,17 +164,17 @@
                 },
                 "ensembl_compara_maf_retries": {
                     "type": "integer",
-                    "default": 3,
-                    "description": "Number of retries for transient Ensembl Compara MAF stream failures."
+                    "default": 8,
+                    "description": "Maximum attempts for transient Ensembl Compara MAF stream failures."
                 },
                 "ensembl_compara_maf_retry_base_seconds": {
                     "type": "number",
-                    "default": 2.0,
+                    "default": 5.0,
                     "description": "Initial retry backoff in seconds for transient Ensembl Compara MAF stream failures."
                 },
                 "ensembl_compara_maf_retry_max_seconds": {
                     "type": "number",
-                    "default": 30.0,
+                    "default": 300.0,
                     "description": "Maximum retry backoff in seconds for transient Ensembl Compara MAF stream failures."
                 }
             }

@@ -1,15 +1,21 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import csv
 import gzip
 import sys
 from pathlib import Path
+from urllib.error import HTTPError
+
+import pytest
 
 
 BIN_DIR = Path(__file__).resolve().parents[1] / "bin"
 sys.path.insert(0, str(BIN_DIR))
 
+import run_ensembl_compara_maf_alignment as maf  # noqa: E402
+import run_ensembl_compara_maf_chunk_alignment as maf_chunk  # noqa: E402
 from run_ensembl_compara_maf_alignment import (  # noqa: E402
     AlignmentRow,
     EVENT_FIELDS,
@@ -25,6 +31,18 @@ from run_ensembl_compara_maf_alignment import (  # noqa: E402
 
 def args() -> argparse.Namespace:
     return argparse.Namespace(strategy="maf", method="EPO_EXTENDED", species_set="test")
+
+
+def retry_args(retries: int = 8) -> argparse.Namespace:
+    return argparse.Namespace(
+        strategy="maf",
+        method="EPO_EXTENDED",
+        species_set="test",
+        retries=retries,
+        retry_base_seconds=5.0,
+        retry_max_seconds=300.0,
+        timeout=120.0,
+    )
 
 
 def read_rows(path: Path) -> list[dict[str, str]]:
@@ -104,3 +122,99 @@ def test_ambiguous_maf_indel_is_not_emitted(tmp_path: Path) -> None:
     assert events == []
     assert summary["event_count"] == 0
     assert summary["qc_flags"] == {"ambiguous_base"}
+
+
+def test_maf_retry_classification_and_backoff(monkeypatch: pytest.MonkeyPatch) -> None:
+    transient = HTTPError("https://example.test/source.maf.gz", 503, "unavailable", None, None)
+    missing = HTTPError("https://example.test/source.maf.gz", 404, "not found", None, None)
+    monkeypatch.setattr(maf.random, "uniform", lambda _start, _end: 0.0)
+
+    assert maf.retryable_maf_error(EOFError("truncated"))
+    assert maf.retryable_maf_error(transient)
+    assert not maf.retryable_maf_error(missing)
+    assert maf.missing_maf_source_error(missing)
+    assert not maf.retryable_maf_error(FileNotFoundError("missing.maf.gz"))
+    assert maf.retry_sleep_seconds(retry_args(), 1) == 5.0
+    assert maf.retry_sleep_seconds(retry_args(), 7) == 300.0
+
+
+def test_chunk_scan_resumes_after_truncated_stream_without_duplicates(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    gene = {
+        "gene_id": "1",
+        "human_src": "homo_sapiens.1",
+        "genomic_accession": "NC_000001.11",
+        "target_origin1": "1",
+        "target_end1": "2",
+        "target_length": "2",
+    }
+    blocks = [
+        [
+            MafSequence("homo_sapiens.1", 0, 1, "+", 100, "A"),
+            MafSequence("mus_musculus.1", 0, 1, "+", 100, "G"),
+        ],
+        [
+            MafSequence("homo_sapiens.1", 1, 1, "+", 100, "C"),
+            MafSequence("mus_musculus.1", 1, 1, "+", 100, "T"),
+        ],
+    ]
+    attempts = iter([(blocks[:1], EOFError("truncated")), (blocks, None)])
+    converted: list[str] = []
+
+    def iter_blocks(_handle):
+        attempt_blocks, error = next(attempts)
+        yield from attempt_blocks
+        if error:
+            raise error
+
+    def convert(*call_args, **_kwargs):
+        converted.append(call_args[7])
+        return call_args[9] + 1
+
+    monkeypatch.setattr(maf_chunk, "open_maf_text", lambda _source, _timeout: contextlib.nullcontext())
+    monkeypatch.setattr(maf_chunk, "iter_maf_blocks", iter_blocks)
+    monkeypatch.setattr(maf_chunk, "convert_pair", convert)
+    monkeypatch.setattr(maf_chunk.time, "sleep", lambda _seconds: None)
+
+    _event_id, used_blocks, row_count, failures = maf_chunk.scan_chunk_source(
+        retry_args(retries=2),
+        "source.maf.gz",
+        maf_chunk.GeneIntervalIndex.build([gene]),
+        ["1"],
+        {},
+        None,
+        None,
+    )
+
+    assert converted == ["source.maf.gz:block1:row2", "source.maf.gz:block2:row2"]
+    assert used_blocks == 2
+    assert row_count == 2
+    assert failures == []
+
+
+def test_missing_chunk_source_is_not_retried(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls = 0
+
+    def missing(_source: str, _timeout: float):
+        nonlocal calls
+        calls += 1
+        raise HTTPError("https://example.test/source.maf.gz", 404, "not found", None, None)
+
+    monkeypatch.setattr(maf_chunk, "open_maf_text", missing)
+
+    _event_id, used_blocks, row_count, failures = maf_chunk.scan_chunk_source(
+        retry_args(),
+        "https://example.test/source.maf.gz",
+        maf_chunk.GeneIntervalIndex.build([]),
+        ["1"],
+        {},
+        None,
+        None,
+    )
+
+    assert calls == 1
+    assert used_blocks == 0
+    assert row_count == 0
+    assert len(failures) == 1
+    assert "failed after 1 attempts" in failures[0]["message"]
