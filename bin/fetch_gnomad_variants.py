@@ -4,6 +4,7 @@
 import argparse
 import json
 import logging
+import random
 import sys
 import time
 import urllib.request
@@ -15,8 +16,10 @@ logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 logger = logging.getLogger(__name__)
 
 GNOMAD_API_URL = "https://gnomad.broadinstitute.org/api"
-GNOMAD_MAX_RETRIES = 5
-GNOMAD_RATE_LIMIT_SLEEP_SEC = 65
+GNOMAD_MAX_ATTEMPTS = 5
+GNOMAD_RETRY_BASE_SECONDS = 5.0
+GNOMAD_RETRY_MAX_SECONDS = 30.0
+GNOMAD_TRANSIENT_HTTP_STATUSES = {408, 429, 500, 502, 503, 504}
 GNOMAD_REGION_MIN_WINDOW_BP = 500
 
 GNOMAD_REGION_QUERY = """
@@ -97,40 +100,73 @@ def execute_graphql(query: str, variables: dict) -> dict:
     with urllib.request.urlopen(req, timeout=60) as response:
         return json.loads(response.read())
 
-def fetch_region_variants_recursive(chrom: str, start: int, stop: int, rate_limit_retries: int = GNOMAD_MAX_RETRIES) -> list[dict]:
-    try:
-        data = execute_graphql(GNOMAD_REGION_QUERY, {"chrom": chrom, "start": start, "stop": stop})
-        
-        if "errors" in data:
-            errors = data["errors"]
-            messages = [str(e.get("message", e)) for e in errors]
-            joined = " | ".join(m.lower() for m in messages)
-            
-            if "rate limit" in joined and rate_limit_retries > 0:
-                logger.warning(f"gnomAD rate limit for region {chrom}:{start}-{stop}. Retrying in {GNOMAD_RATE_LIMIT_SLEEP_SEC}s...")
-                time.sleep(GNOMAD_RATE_LIMIT_SLEEP_SEC)
-                return fetch_region_variants_recursive(chrom, start, stop, rate_limit_retries - 1)
-                
-            if ("select a smaller region" in joined or "too many variants" in joined) and (stop - start + 1) > GNOMAD_REGION_MIN_WINDOW_BP:
+def retry_sleep_seconds(attempt: int) -> float:
+    delay = min(GNOMAD_RETRY_MAX_SECONDS, GNOMAD_RETRY_BASE_SECONDS * (2 ** (attempt - 1)))
+    return delay + random.uniform(0.0, delay * 0.2)
+
+
+def is_retryable_network_error(exc: Exception) -> bool:
+    if isinstance(exc, HTTPError):
+        return exc.code in GNOMAD_TRANSIENT_HTTP_STATUSES
+    return isinstance(exc, (URLError, TimeoutError))
+
+
+def fetch_region_variants_recursive(
+    chrom: str,
+    start: int,
+    stop: int,
+    max_attempts: int = GNOMAD_MAX_ATTEMPTS,
+) -> list[dict]:
+    if max_attempts < 1:
+        raise ValueError("max_attempts must be >= 1")
+
+    variables = {"chrom": chrom, "start": start, "stop": stop}
+    for attempt in range(1, max_attempts + 1):
+        retry_error: Exception | None = None
+        try:
+            data = execute_graphql(GNOMAD_REGION_QUERY, variables)
+        except (HTTPError, URLError, TimeoutError) as exc:
+            if not is_retryable_network_error(exc):
+                raise
+            retry_error = exc
+        else:
+            if "errors" not in data:
+                region = data.get("data", {}).get("region")
+                return region.get("variants", []) if region else []
+
+            messages = [str(error.get("message", error)) for error in data["errors"]]
+            joined = " | ".join(message.lower() for message in messages)
+            if (
+                ("select a smaller region" in joined or "too many variants" in joined)
+                and (stop - start + 1) > GNOMAD_REGION_MIN_WINDOW_BP
+            ):
                 mid = (start + stop) // 2
                 logger.info(f"Splitting gnomAD region {chrom}:{start}-{stop} due to API constraint.")
-                left = fetch_region_variants_recursive(chrom, start, mid, rate_limit_retries)
-                right = fetch_region_variants_recursive(chrom, mid + 1, stop, rate_limit_retries)
+                left = fetch_region_variants_recursive(chrom, start, mid, max_attempts)
+                right = fetch_region_variants_recursive(chrom, mid + 1, stop, max_attempts)
                 return left + right
-                
-            raise RuntimeError(f"GraphQL errors: {joined}")
-            
-        region = data.get("data", {}).get("region")
-        if not region:
-            return []
-        return region.get("variants", [])
-        
-    except (HTTPError, URLError) as e:
-        if isinstance(e, HTTPError) and e.code == 429 and rate_limit_retries > 0:
-            logger.warning(f"gnomAD HTTP 429 Rate Limit. Retrying in {GNOMAD_RATE_LIMIT_SLEEP_SEC}s...")
-            time.sleep(GNOMAD_RATE_LIMIT_SLEEP_SEC)
-            return fetch_region_variants_recursive(chrom, start, stop, rate_limit_retries - 1)
-        raise
+            if "rate limit" not in joined:
+                raise RuntimeError(f"GraphQL errors: {joined}")
+            retry_error = RuntimeError(f"GraphQL errors: {joined}")
+
+        if attempt == max_attempts:
+            assert retry_error is not None
+            raise retry_error
+
+        delay = retry_sleep_seconds(attempt)
+        logger.warning(
+            "gnomAD request failed for %s:%s-%s on attempt %s/%s (%s: %s); "
+            "retrying in %.1fs",
+            chrom,
+            start,
+            stop,
+            attempt,
+            max_attempts,
+            type(retry_error).__name__,
+            retry_error,
+            delay,
+        )
+        time.sleep(delay)
 
 def write_vcf(variants: list, out_path: Path) -> None:
     with open(out_path, "w") as vcf:
