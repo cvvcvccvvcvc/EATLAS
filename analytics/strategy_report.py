@@ -29,7 +29,7 @@ from analytics.core.conservation_validation import (
     build_conservation_cohort,
     compute_conservation_validation,
 )
-from analytics.core.negative_controls import NegativeControlAnalysis, build_negative_controls
+from analytics.core.negative_controls import TargetSpaceNullAnalysis, build_target_space_null
 from analytics.core.variant_summary import StrategyOverlap, VariantSummary, build_variant_summary
 
 
@@ -144,19 +144,19 @@ def parse_args() -> argparse.Namespace:
         "--negative-control-sample-size",
         type=int,
         default=25_000,
-        help="Maximum deterministic focal-SNV sample per strategy for each background comparator.",
+        help="Maximum deterministic focal-SNV sample per strategy for the target-space null.",
     )
     parser.add_argument(
         "--negative-control-permutations",
         type=int,
         default=1_000,
-        help="Matched-null resampling iterations. Default: 1000.",
+        help="Target-space-null resampling iterations. Default: 1000.",
     )
     parser.add_argument(
         "--negative-control-seed",
         type=int,
         default=20_260_721,
-        help="Deterministic negative-control seed.",
+        help="Deterministic target-space-null seed.",
     )
     return parser.parse_args()
 
@@ -658,38 +658,33 @@ def negative_control_method_table() -> pd.DataFrame:
     return pd.DataFrame(
         [
             {
-                "Comparator": "Matched callable background",
+                "Step": "Focal sample",
                 "Definition": (
-                    "For each sampled GAPH SNV, up to five ALT-unobserved SNVs are sampled from the same gene, "
-                    "CDS/UTR/other-exon/intron context, REF base, and callable-species depth bin "
-                    "(1-4, 5-9, 10-19, 20-49, or 50+)."
+                    "Normalized GAPH SNVs are selected by a stable hash independently per strategy, up to the "
+                    "configured engineering cap. All eligible SNVs are used below the cap."
                 ),
-                "Question": "Do GAPH SNVs differ in phyloP from the technically observable background?",
             },
             {
-                "Comparator": "Same-position ALT (unadjusted)",
+                "Step": "Target-space matching",
                 "Definition": (
-                    "The other possible SNV ALTs at the exact GAPH position are retained only when that strategy "
-                    "did not observe them. Mutation class and context-specific mutation probability are not yet "
-                    "matched, so the displayed rates are descriptive."
+                    "Each focal SNV is matched to up to five SNVs from the same gene and target context, with the "
+                    "same genomic REF>ALT substitution and the same primary RefSeq VEP consequence. A control is "
+                    "excluded when the same GAPH strategy observed it."
                 ),
-                "Question": "Raw diagnostic for whether the exact ALT may carry evidence beyond the site itself.",
             },
             {
-                "Comparator": "Sampling",
+                "Step": "VEP consequence",
                 "Definition": (
-                    "Candidates are selected by a stable hash per strategy up to the configured cap. Control "
-                    "resampling intervals describe the sampled background; no inferential p-value is reported."
+                    "Ensembl REST VEP uses RefSeq transcripts and pick_allele_gene. The target Entrez Gene ID is "
+                    "selected; the most severe Sequence Ontology term on the picked transcript is the matching key."
                 ),
-                "Question": "Bounded memory and reproducible results without materializing every possible allele.",
             },
             {
-                "Comparator": "Callability",
+                "Step": "Outcome",
                 "Definition": (
-                    "Primary alignment intervals are merged within species before depth is counted; low-MAPQ, "
-                    "non-primary, and ambiguous rows are excluded."
+                    "phyloP100way is compared as a focal-weighted ECDF and a descriptive median summary. "
+                    "Conservation and GAPH callability are not matching variables, and no inferential p-value is reported."
                 ),
-                "Question": "Overlapping records from one species cannot inflate the matched background.",
             },
         ]
     )
@@ -1601,28 +1596,25 @@ def format_ci(low, high) -> str:
     return f"{format_ratio(low)}-{format_ratio(high)}"
 
 
-def build_matched_callable_sections(
-    analysis: NegativeControlAnalysis | None,
+def build_target_space_null_sections(
+    analysis: TargetSpaceNullAnalysis | None,
     include_plotly: bool,
 ) -> list[str]:
-    sections = ["<h2>Matched Callable Background</h2>"]
+    sections = ["<h2>Target-Space Null</h2>"]
     sections.append(
-        "<p class=\"lead\">GAPH SNVs are compared with ALT-unobserved SNVs sampled from the same gene, "
-        "target context, REF base, and callable-species depth bin. This tests whether candidate positions differ "
-        "from the technically observable background.</p>"
+        "<p class=\"lead\">Each sampled GAPH SNV is compared with SNVs from the same gene and target context, "
+        "with the same genomic REF&gt;ALT substitution and the same primary RefSeq VEP consequence. Controls "
+        "observed by that GAPH strategy are excluded. phyloP is the outcome and is not used for matching.</p>"
     )
     if analysis is None:
-        sections.append(
-            "<p>This run does not publish <code>alignment/alignment_segments.tsv.gz</code>; an exact callable "
-            "background cannot be reconstructed from feature-level coverage summaries.</p>"
-        )
+        sections.append("<p>No target-space-null analysis is available for this run.</p>")
         return sections
-    summary = analysis.matched_summary.copy()
+    summary = analysis.summary.copy()
     if summary.empty:
-        sections.append("<p>No matched callable SNV pairs could be constructed.</p>")
+        sections.append("<p>No consequence-matched target-space controls could be constructed.</p>")
         return sections
 
-    annotated = int(summary["matched_focals"].sum())
+    focal_vep = analysis.manifest.get("focal_vep", {})
     sections.append(
         metric_cards(
             [
@@ -1630,10 +1622,11 @@ def build_matched_callable_sections(
                     "Sample cap per strategy",
                     format_int(analysis.manifest.get("inputs", {}).get("sample_size_per_strategy", 0)),
                 ),
-                ("Sampled GAPH SNVs", format_int(analysis.manifest.get("focal_candidate_count", 0))),
+                ("Sampled GAPH SNVs", format_int(analysis.manifest.get("sampled_focal_count", 0))),
+                ("VEP-annotated focal SNVs", format_int(analysis.manifest.get("vep_annotated_focal_count", 0))),
                 ("Matched focal SNVs", format_int(analysis.manifest.get("matched_focal_count", 0))),
-                ("Scored focal SNVs", format_int(annotated)),
-                ("Control resamples", format_int(analysis.permutations)),
+                ("VEP release", str(focal_vep.get("release", ""))),
+                ("Control resamples", format_int(analysis.resamples)),
             ]
         )
     )
@@ -1643,11 +1636,11 @@ def build_matched_callable_sections(
         sections.append(f"<p>phyloP annotation was incomplete: {error or conservation_status}</p>")
 
     sections.append(
-        "<p>The ECDF is the primary distribution view: at each phyloP value, it shows the fraction of SNVs "
-        "at or below that value. A GAPH curve shifted upward and left indicates lower phyloP than its matched "
-        "callable background.</p>"
+        "<p>The ECDF is the primary distribution view. At each phyloP value it shows the fraction of SNVs at or "
+        "below that value. A GAPH curve shifted upward and left indicates lower conservation than its matched "
+        "target-space null.</p>"
     )
-    ecdf = analysis.matched_ecdf.copy()
+    ecdf = analysis.ecdf.copy()
     if not ecdf.empty:
         ecdf["Strategy"] = ecdf["strategy"].map(strategy_label)
         fig_ecdf = px.line(
@@ -1657,9 +1650,9 @@ def build_matched_callable_sections(
             color="set",
             facet_col="Strategy",
             facet_col_wrap=2,
-            title="Full phyloP distributions: GAPH and focal-weighted matched background",
+            title="phyloP distributions: GAPH and consequence-matched target-space null",
             labels={"fraction_leq": "Cumulative fraction", "set": ""},
-            color_discrete_map={"GAPH": "#2166ac", "Matched callable": "#8c8c8c"},
+            color_discrete_map={"GAPH": "#2166ac", "Matched target-space null": "#8c8c8c"},
         )
         fig_ecdf.for_each_annotation(lambda item: item.update(text=item.text.split("=")[-1]))
         fig_ecdf.update_yaxes(tickformat=".0%")
@@ -1683,7 +1676,7 @@ def build_matched_callable_sections(
                 "arrayminus": plot["null_median"] - plot["null_ci_low"],
                 "color": "#8c8c8c",
             },
-            name="Matched-background median (95% resampling interval)",
+            name="Target-space-null median (95% resampling interval)",
         )
     )
     fig.add_trace(
@@ -1708,134 +1701,61 @@ def build_matched_callable_sections(
             "strategy": "Strategy",
             "matched_focals": "Matched SNVs",
             "observed_median": "GAPH median",
-            "null_median": "Background median",
-            "null_ci_low": "Background median Q2.5",
-            "null_ci_high": "Background median Q97.5",
+            "null_median": "Target-space median",
+            "null_ci_low": "Target-space median Q2.5",
+            "null_ci_high": "Target-space median Q97.5",
             "median_difference": "Median difference",
         }
     )
     table["Strategy"] = table["Strategy"].map(strategy_label)
-    table = table.drop(columns=["empirical_p"], errors="ignore")
     sections.append("<h3>Strategy Summary</h3>")
     sections.append(table_html(table, classes="table table-sm table-striped"))
 
-    context = analysis.matched_context_summary.copy()
-    if not context.empty:
-        context = context.rename(
+    matching = pd.DataFrame(analysis.manifest.get("matching_by_consequence", []))
+    if not matching.empty:
+        matching = matching.rename(
             columns={
                 "strategy": "Strategy",
-                "context": "Target context",
+                "primary_consequence": "Primary VEP consequence",
+                "eligible_focals": "VEP-annotated focal SNVs",
+                "matched_focals": "Matched focal SNVs",
+                "match_rate": "Matched %",
+            }
+        )
+        matching["Strategy"] = matching["Strategy"].map(strategy_label)
+        sections.append("<details><summary>Matching yield by consequence</summary>")
+        sections.append(
+            "<p>Low match yield identifies consequence classes for which the target-space comparison is poorly supported.</p>"
+        )
+        sections.append(table_html(matching, classes="table table-sm table-striped"))
+        sections.append("</details>")
+
+    consequence = analysis.consequence_summary.copy()
+    if not consequence.empty:
+        consequence = consequence.rename(
+            columns={
+                "strategy": "Strategy",
+                "primary_consequence": "Primary VEP consequence",
                 "matched_focals": "Matched SNVs",
                 "observed_median": "GAPH median",
-                "null_median": "Background median",
+                "null_median": "Target-space median",
                 "median_difference": "Median difference",
             }
         )
-        context["Strategy"] = context["Strategy"].map(strategy_label)
-        context = context[
+        consequence["Strategy"] = consequence["Strategy"].map(strategy_label)
+        consequence = consequence[
             [
                 "Strategy",
-                "Target context",
+                "Primary VEP consequence",
                 "Matched SNVs",
                 "GAPH median",
-                "Background median",
+                "Target-space median",
                 "Median difference",
             ]
         ]
-        sections.append("<details><summary>CDS, UTR, other-exon, and intron results</summary>")
-        sections.append(table_html(context, classes="table table-sm table-striped"))
+        sections.append("<details><summary>Results by primary VEP consequence</summary>")
+        sections.append(table_html(consequence, classes="table table-sm table-striped"))
         sections.append("</details>")
-    return sections
-
-
-def build_same_position_sections(
-    analysis: NegativeControlAnalysis | None,
-    include_plotly: bool,
-) -> list[str]:
-    sections = ["<h2>Same-Position ALT Comparator: Unadjusted</h2>"]
-    sections.append(
-        "<p class=\"lead\">Each exact GAPH ALT is compared with SNV ALTs at the same position that the same "
-        "strategy did not observe. Position, callability, local context, and conservation are therefore identical. "
-        "The raw comparison does not match transition/transversion class or context-specific mutation probability, "
-        "so it is descriptive and must not be interpreted as adjusted allele-specific enrichment.</p>"
-    )
-    if analysis is None:
-        sections.append("<p>No negative-control analysis is available for this run.</p>")
-        return sections
-    summary = analysis.same_site_summary.copy()
-    if summary.empty:
-        sections.append("<p>No same-position ALT controls could be constructed.</p>")
-        return sections
-    sections.append(
-        metric_cards(
-            [
-                ("Eligible focal SNVs", format_int(analysis.manifest.get("same_site_focal_count", 0))),
-                ("Observed/control rows", format_int(analysis.manifest.get("same_site_row_count", 0))),
-                ("ClinVar comparison", "complete"),
-                ("gnomAD comparison", "complete" if analysis.manifest.get("gnomad_complete") else "unavailable"),
-            ]
-        )
-    )
-    if not analysis.manifest.get("gnomad_complete"):
-        sections.append(
-            "<p>gnomAD control annotation was not used because at least one API region failed; partial results "
-            "are intentionally discarded.</p>"
-        )
-
-    include_js = include_plotly
-    for metric, metric_rows in summary.groupby("metric", sort=False):
-        plot = metric_rows.sort_values("enrichment_ratio", ascending=False, kind="mergesort").copy()
-        plot["Strategy"] = plot["strategy"].map(strategy_label)
-        order = plot["Strategy"].tolist()
-        fig = go.Figure()
-        fig.add_trace(
-            go.Bar(
-                x=plot["Strategy"],
-                y=plot["observed_rate"],
-                name="GAPH ALT",
-                marker_color="#2166ac",
-            )
-        )
-        fig.add_trace(
-            go.Bar(
-                x=plot["Strategy"],
-                y=plot["null_rate"],
-                name="Other same-position ALT",
-                marker_color="#8c8c8c",
-                error_y={
-                    "type": "data",
-                    "symmetric": False,
-                    "array": plot["null_ci_high"] - plot["null_rate"],
-                    "arrayminus": plot["null_rate"] - plot["null_ci_low"],
-                },
-            )
-        )
-        fig.update_layout(
-            title=f"{metric}: exact GAPH ALT versus same-position alternatives",
-            barmode="group",
-            xaxis={"categoryorder": "array", "categoryarray": order},
-            yaxis={"title": "Allele fraction", "tickformat": ".1%"},
-        )
-        compact_figure(fig, height=370)
-        sections.append(fig_html(fig, include_plotlyjs=include_js))
-        include_js = False
-
-    table = summary.rename(
-        columns={
-            "strategy": "Strategy",
-            "metric": "Metric",
-            "matched_focals": "Matched SNVs",
-            "observed_rate": "GAPH rate",
-            "null_rate": "Comparator rate",
-            "null_ci_low": "Comparator rate Q2.5",
-            "null_ci_high": "Comparator rate Q97.5",
-            "enrichment_ratio": "Enrichment ratio",
-        }
-    )
-    table["Strategy"] = table["Strategy"].map(strategy_label)
-    table = table.drop(columns=["empirical_p"], errors="ignore")
-    sections.append("<h3>Raw Matched Comparison</h3>")
-    sections.append(table_html(table, classes="table table-sm table-striped"))
     return sections
 
 
@@ -1849,7 +1769,7 @@ def build_methods_sections(
     alignment_manifest: dict,
     validation=None,
     conservation_analysis: ConservationAnalysis | None = None,
-    negative_controls: NegativeControlAnalysis | None = None,
+    negative_controls: TargetSpaceNullAnalysis | None = None,
 ) -> list[str]:
     files = [
         ("Run Dir", inputs.run_dir),
@@ -1940,8 +1860,8 @@ def build_methods_sections(
     sections.append("</details>")
     sections.append("<details><summary>Negative-control construction</summary>")
     sections.append(
-        "<p class=\"lead\">The two controls use only normalized SNVs and preserve the technical or positional "
-        "structure needed for their respective null hypotheses.</p>"
+        "<p class=\"lead\">The target-space null uses normalized SNVs and preserves gene, target context, "
+        "substitution, and allele-specific functional consequence.</p>"
     )
     sections.append(table_html(negative_control_method_table(), classes="table table-sm table-striped"))
     sections.append("</details>")
@@ -2012,9 +1932,9 @@ def build_methods_sections(
     if negative_controls is not None:
         control_files = [
             ("Negative-control manifest", negative_controls.manifest_path),
-            ("Matched callable rows", negative_controls.matched_path),
-            ("Same-position ALT rows", negative_controls.same_site_path),
-            ("Matched phyloP annotations", negative_controls.conservation_path),
+            ("Target-space-null rows", negative_controls.matched_path),
+            ("Target-space-null phyloP annotations", negative_controls.conservation_path),
+            ("VEP consequence cache", negative_controls.vep_cache_path),
         ]
         sections.append("<details><summary>Negative-control cache files</summary>")
         sections.append(
@@ -2224,35 +2144,18 @@ def main() -> None:
         strategies=strategies,
     )
 
-    negative_controls = None
-    clinvar_regions_value = str(validation.manifest.get("regions_bed", "")).strip()
-    clinvar_regions = Path(clinvar_regions_value) if clinvar_regions_value else None
-    if (
-        inputs.alignment_segments_tsv.exists()
-        and inputs.target_features_tsv.exists()
-        and clinvar_regions is not None
-        and clinvar_regions.exists()
-    ):
-        print("Computing matched background comparators...")
-        negative_controls = build_negative_controls(
-            run_dir=inputs.run_dir,
-            variant_annotations_tsv=inputs.variant_annotations_tsv,
-            alignment_segments_tsv=inputs.alignment_segments_tsv,
-            target_features_tsv=inputs.target_features_tsv,
-            genes_tsv=inputs.genes_tsv,
-            target_sequences_dir=inputs.target_sequences_dir,
-            clinvar_vcf=args.clinvar_vcf.expanduser().resolve(),
-            clinvar_regions_bed=clinvar_regions,
-            strategies=strategies,
-            sample_size_per_strategy=args.negative_control_sample_size,
-            permutations=args.negative_control_permutations,
-            seed=args.negative_control_seed,
-        )
-    else:
-        print(
-            "Skipping matched background comparators: alignment segments, target features, "
-            "or ClinVar target regions are unavailable."
-        )
+    print("Computing consequence-matched target-space null...")
+    negative_controls = build_target_space_null(
+        run_dir=inputs.run_dir,
+        variant_annotations_tsv=inputs.variant_annotations_tsv,
+        target_features_tsv=inputs.target_features_tsv,
+        genes_tsv=inputs.genes_tsv,
+        target_sequences_dir=inputs.target_sequences_dir,
+        strategies=strategies,
+        sample_size_per_strategy=args.negative_control_sample_size,
+        resamples=args.negative_control_permutations,
+        seed=args.negative_control_seed,
+    )
 
     sections = [
         ("overview", "Overview", build_overview(variant_summary, cov, strategy_stats, annotation_manifest, alignment_manifest)),
@@ -2264,14 +2167,9 @@ def main() -> None:
         ),
         ("coverage", "Feature Coverage", build_feature_sections(cov, include_plotly=True)),
         (
-            "matched-callable",
-            "Matched Callable Background",
-            build_matched_callable_sections(negative_controls, include_plotly=True),
-        ),
-        (
-            "same-position-alt",
-            "Same-Position ALT: Raw",
-            build_same_position_sections(negative_controls, include_plotly=True),
+            "target-space-null",
+            "Target-Space Null",
+            build_target_space_null_sections(negative_controls, include_plotly=True),
         ),
         ("clinvar-enrichment", "ClinVar Enrichment", build_validation_sections(validation, include_plotly=True)),
         (

@@ -34,8 +34,9 @@ ALT_observed = at least one callable ortholog carries the exact human ALT
 Describe the candidate variants before testing clinical enrichment:
 
 - consequence-class composition;
-- conservation-score distribution relative to the callable target background;
-- fraction of callable alleles with `ALT_observed = 1` across conservation.
+- conservation-score distribution of GAPH candidates;
+- conservation-score distribution relative to a target-space null matched by
+  gene, target context, exact substitution, and allele-specific consequence.
 
 An excess of synonymous variants and a shift toward less constrained or
 accelerated positions are biologically expected and scientifically informative.
@@ -118,6 +119,7 @@ stories:
 - per-strategy callability and ortholog-depth distributions;
 - gene-level and full consequence-class counts;
 - fixed-band conservation sensitivity results and selector-level cohort counts;
+- target-space-null construction, matching yield, and consequence-specific counts;
 - strategy overlap, runtime, storage, and alignment QC;
 - additional matching or robustness analyses only if overlap diagnostics make
   them necessary.

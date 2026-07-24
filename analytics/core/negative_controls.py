@@ -1,30 +1,19 @@
-"""Matched null controls for GAPH SNV candidates.
+"""Consequence-matched target-space null for GAPH SNV candidates.
 
-Two controls answer different questions:
-
-* matched callable positions test whether GAPH candidates differ from the
-  technically observable background;
-* unobserved alternate alleles at the same position test whether the exact ALT
-  carries information beyond the site itself.
-
-The implementation samples a bounded, deterministic candidate set per
-strategy.  It never materializes every possible allele in a target gene.
+For each sampled GAPH SNV, controls are possible SNVs from the same gene,
+target context, genomic REF>ALT substitution, and RefSeq VEP consequence. The
+control allele must not be observed by the same GAPH strategy. Conservation is
+the measured outcome and is therefore not part of matching.
 """
 
 from __future__ import annotations
 
 import bisect
-import concurrent.futures
-import csv
 import gzip
 import hashlib
 import heapq
 import json
 import math
-import os
-import shutil
-import subprocess
-import tempfile
 from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
@@ -32,88 +21,82 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from bin.fetch_gnomad_variants import fetch_region_variants_recursive
-
-from .clinvar_validation import clinvar_label, info_value, path_metadata, split_strategies
+from .clinvar_validation import directory_metadata, path_metadata, split_strategies
 from .conservation import annotate_track, parse_tracks
+from .vep_consequences import annotate_vep_consequences
 
 
 DNA_BASES = ("A", "C", "G", "T")
 CONTEXT_PRIORITY = ("cds", "utr", "exon", "intron")
-INVALID_SEGMENT_FLAGS = frozenset({"low_mapq", "non_primary", "ambiguous_event_allele"})
-CONTROL_VERSION = 1
-CALLABLE_BLOCK_VERSION = 1
+CONTROL_VERSION = 2
 MATCHED_POOL_SIZE = 5
+CANDIDATE_POOL_SIZE = MATCHED_POOL_SIZE * 3
+CANDIDATE_FOCAL_CHUNK_SIZE = 2_000
 
 
 @dataclass(frozen=True)
-class NegativeControlAnalysis:
-    matched_summary: pd.DataFrame
-    matched_context_summary: pd.DataFrame
-    matched_ecdf: pd.DataFrame
-    same_site_summary: pd.DataFrame
+class TargetSpaceNullAnalysis:
+    summary: pd.DataFrame
+    consequence_summary: pd.DataFrame
+    ecdf: pd.DataFrame
     manifest: dict
     manifest_path: Path
     matched_path: Path
-    same_site_path: Path
     conservation_path: Path
-    permutations: int
+    vep_cache_path: Path
+    resamples: int
 
 
-def build_negative_controls(
+def build_target_space_null(
     *,
     run_dir: Path,
     variant_annotations_tsv: Path,
-    alignment_segments_tsv: Path,
     target_features_tsv: Path,
     genes_tsv: Path,
     target_sequences_dir: Path,
-    clinvar_vcf: Path,
-    clinvar_regions_bed: Path,
     strategies: list[str],
     sample_size_per_strategy: int = 25_000,
-    permutations: int = 1_000,
+    resamples: int = 1_000,
     seed: int = 20_260_721,
-) -> NegativeControlAnalysis:
-    """Build or load both negative-control analyses for one completed run."""
+) -> TargetSpaceNullAnalysis:
+    """Build or load the target-space null for one completed run."""
 
     if sample_size_per_strategy < 1:
-        raise ValueError("negative-control sample size must be >= 1")
-    if permutations < 100:
-        raise ValueError("negative-control permutations must be >= 100")
+        raise ValueError("target-space-null sample size must be >= 1")
+    if resamples < 100:
+        raise ValueError("target-space-null resamples must be >= 100")
 
     outdir = run_dir / "analytics" / "negative_control"
     outdir.mkdir(parents=True, exist_ok=True)
-    matched_path = outdir / "matched_callable.snv.tsv.gz"
-    same_site_path = outdir / "same_position_alt.snv.tsv.gz"
-    conservation_path = outdir / "matched_callable.phyloP100way.tsv.gz"
+    matched_path = outdir / "target_space_null.snv.tsv.gz"
+    conservation_path = outdir / "target_space_null.phyloP100way.tsv.gz"
+    vep_cache_path = outdir / "vep_consequences.sqlite"
     manifest_path = outdir / "manifest.json"
-    callable_blocks_path = outdir / "callable_blocks.tsv.gz"
-    callable_manifest_path = outdir / "callable_blocks.manifest.json"
 
     expected_inputs = {
         "version": CONTROL_VERSION,
         "variant_annotations": path_metadata(variant_annotations_tsv),
-        "alignment_segments": path_metadata(alignment_segments_tsv),
         "target_features": path_metadata(target_features_tsv),
         "genes": path_metadata(genes_tsv),
-        "clinvar_vcf": path_metadata(clinvar_vcf),
-        "clinvar_tbi": path_metadata(Path(f"{clinvar_vcf}.tbi")),
+        "target_sequences": directory_metadata(target_sequences_dir),
         "strategies": sorted(strategies),
         "sample_size_per_strategy": sample_size_per_strategy,
         "matched_pool_size": MATCHED_POOL_SIZE,
+        "candidate_pool_size": CANDIDATE_POOL_SIZE,
+        "candidate_focal_chunk_size": CANDIDATE_FOCAL_CHUNK_SIZE,
         "seed": seed,
+        "matching": ["gene_id", "target_context", "ref", "alt", "vep_primary_consequence"],
         "conservation_track": "phyloP100way",
     }
-    if _cache_is_valid(manifest_path, expected_inputs, [matched_path, same_site_path, conservation_path]):
+    if _cache_is_valid(manifest_path, expected_inputs, [matched_path, conservation_path]):
         manifest = json.loads(manifest_path.read_text())
         return _load_analysis(
             matched_path,
-            same_site_path,
             conservation_path,
+            vep_cache_path,
             manifest,
             manifest_path,
-            permutations,
+            resamples,
             seed,
         )
 
@@ -127,68 +110,75 @@ def build_negative_controls(
         seed,
     )
     if focal.empty:
-        raise ValueError("No normalized GAPH SNVs were available for negative controls.")
+        raise ValueError("No normalized GAPH SNVs were available for the target-space null.")
+    sampled_focal_count = len(focal)
 
-    _build_or_load_callable_blocks(
-        alignment_segments_tsv,
-        callable_blocks_path,
-        callable_manifest_path,
-    )
     sequences = _read_target_sequences(target_sequences_dir, set(focal["gene_id"]))
-    tentative_matched, same_site = _generate_control_options(
-        focal=focal,
-        callable_blocks_path=callable_blocks_path,
-        contexts=contexts,
-        genes=genes,
-        sequences=sequences,
-        seed=seed,
-    )
-    observed_controls = _collect_observed_control_keys(
-        variant_annotations_tsv,
-        tentative_matched,
-        same_site,
-    )
-    matched = _finalize_matched_options(tentative_matched, observed_controls)
-    same_site = _finalize_same_site_options(same_site, observed_controls)
+    focal, reference_mismatch_count = _validate_focal_reference(focal, genes, sequences)
+    reference_valid_focal_count = len(focal)
+    if focal.empty:
+        raise ValueError("No sampled GAPH SNVs matched the target reference sequence.")
 
-    clinvar = _read_clinvar_snv_annotations(clinvar_vcf, clinvar_regions_bed)
-    gnomad_keys, gnomad_complete, gnomad_error = _fetch_gnomad_presence(same_site)
-    same_site = _annotate_same_site_controls(same_site, clinvar, gnomad_keys, gnomad_complete)
-    _write_tsv(same_site_path, same_site)
-
-    conservation_rows, conservation_manifest = _annotate_matched_conservation(
-        matched,
-        conservation_path,
+    focal_annotations, focal_vep = annotate_vep_consequences(
+        focal[["variant_key", "gene_id", "chrom", "pos", "ref", "alt"]],
+        vep_cache_path,
     )
+    focal = _merge_vep(focal, focal_annotations)
+    focal = focal[focal["vep_status"].eq("ok")].reset_index(drop=True)
+    if focal.empty:
+        raise ValueError("VEP returned no target-gene consequences for sampled GAPH SNVs.")
+
+    candidates, generated_candidate_count, candidate_vep = _annotate_candidate_controls(
+        focal,
+        contexts,
+        genes,
+        sequences,
+        vep_cache_path,
+        str(focal_vep["release"]),
+        seed,
+    )
+    if candidates.empty:
+        raise ValueError("No consequence-matched target-space control candidates were available.")
+
+    observed_controls = _collect_observed_control_keys(variant_annotations_tsv, candidates)
+    matched = _build_matched_rows(focal, candidates, observed_controls)
+    if matched.empty:
+        raise ValueError("No consequence-matched target-space controls were available.")
+    matching_diagnostics = _matching_diagnostics(focal, matched)
+
+    conservation_rows, conservation_manifest = _annotate_conservation(matched, conservation_path)
     matched = matched.merge(conservation_rows, on="variant_key", how="left", validate="many_to_one")
     _write_tsv(matched_path, matched)
 
     manifest = {
         "inputs": expected_inputs,
-        "complete": bool(gnomad_complete and conservation_manifest.get("status") == "complete"),
-        "focal_candidate_count": int(len(focal)),
-        "matched_row_count": int(len(matched)),
+        "complete": conservation_manifest.get("status") == "complete",
+        "sampled_focal_count": sampled_focal_count,
+        "reference_valid_focal_count": reference_valid_focal_count,
+        "reference_mismatch_count": reference_mismatch_count,
+        "vep_annotated_focal_count": int(focal["focal_id"].nunique()),
         "matched_focal_count": int(matched.loc[matched["role"] == "observed", "focal_id"].nunique()),
-        "same_site_row_count": int(len(same_site)),
-        "same_site_focal_count": int(same_site.loc[same_site["role"] == "observed", "focal_id"].nunique()),
-        "gnomad_complete": gnomad_complete,
-        "gnomad_error": gnomad_error,
+        "matched_row_count": int(len(matched)),
+        "matched_control_count": int((matched["role"] == "control").sum()),
+        "matching_by_consequence": matching_diagnostics.to_dict(orient="records"),
+        "generated_control_candidate_count": generated_candidate_count,
+        "consequence_matched_candidate_count": int(len(candidates)),
+        "focal_vep": focal_vep,
+        "candidate_vep": candidate_vep,
         "conservation": conservation_manifest,
-        "callable_blocks": str(callable_blocks_path),
         "matched_tsv": str(matched_path),
-        "same_site_tsv": str(same_site_path),
         "conservation_tsv": str(conservation_path),
+        "vep_cache": str(vep_cache_path),
     }
     manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
     return _summarize_analysis(
         matched,
-        same_site,
         manifest,
         manifest_path,
         matched_path,
-        same_site_path,
         conservation_path,
-        permutations,
+        vep_cache_path,
+        resamples,
         seed,
     )
 
@@ -200,32 +190,28 @@ def _cache_is_valid(manifest_path: Path, expected_inputs: dict, outputs: list[Pa
         manifest = json.loads(manifest_path.read_text())
     except (OSError, json.JSONDecodeError):
         return False
-    if manifest.get("complete") is False:
-        return False
-    return manifest.get("inputs") == expected_inputs
+    return manifest.get("complete") is not False and manifest.get("inputs") == expected_inputs
 
 
 def _load_analysis(
     matched_path: Path,
-    same_site_path: Path,
     conservation_path: Path,
+    vep_cache_path: Path,
     manifest: dict,
     manifest_path: Path,
-    permutations: int,
+    resamples: int,
     seed: int,
-) -> NegativeControlAnalysis:
+) -> TargetSpaceNullAnalysis:
     matched = pd.read_csv(matched_path, sep="\t", compression="gzip", keep_default_na=False)
     matched["phyloP100way"] = pd.to_numeric(matched["phyloP100way"], errors="coerce")
-    same_site = pd.read_csv(same_site_path, sep="\t", compression="gzip", keep_default_na=False)
     return _summarize_analysis(
         matched,
-        same_site,
         manifest,
         manifest_path,
         matched_path,
-        same_site_path,
         conservation_path,
-        permutations,
+        vep_cache_path,
+        resamples,
         seed,
     )
 
@@ -240,15 +226,15 @@ def _read_genes(path: Path) -> dict[str, dict[str, object]]:
     missing = required - set(frame.columns)
     if missing:
         raise ValueError(f"Genes table missing columns: {', '.join(sorted(missing))}")
-    genes = {}
-    for row in frame.itertuples(index=False):
-        genes[str(row.gene_id)] = {
+    return {
+        str(row.gene_id): {
             "chrom": str(row.chromosome).removeprefix("chr"),
             "begin": int(row.begin),
             "end": int(row.end),
             "length": int(row.sequence_length),
         }
-    return genes
+        for row in frame.itertuples(index=False)
+    }
 
 
 def _read_disjoint_contexts(
@@ -354,7 +340,7 @@ def _sample_focal_snvs(
                 "gene_id": gene_id,
                 "variant_key": str(row.variant_key),
                 "target_pos": target_pos,
-                "genomic_pos": int(row.genomic_start1),
+                "pos": int(row.genomic_start1),
                 "ref": str(row.ref).upper(),
                 "alt": str(row.alt).upper(),
                 "context": _context_at(contexts.get(gene_id, []), target_pos),
@@ -390,203 +376,44 @@ def _read_target_sequences(directory: Path, gene_ids: set[str]) -> dict[str, str
         path = directory / f"{gene_id}.fa.gz"
         if not path.exists():
             raise FileNotFoundError(f"Missing target sequence for gene {gene_id}: {path}")
-        parts = []
         with gzip.open(path, "rt") as handle:
-            for line in handle:
-                if not line.startswith(">"):
-                    parts.append(line.strip())
-        sequences[gene_id] = "".join(parts).upper()
+            sequences[gene_id] = "".join(
+                line.strip() for line in handle if not line.startswith(">")
+            ).upper()
     return sequences
 
 
-def _build_or_load_callable_blocks(
-    segments_path: Path,
-    blocks_path: Path,
-    manifest_path: Path,
-) -> None:
-    expected = {
-        "version": CALLABLE_BLOCK_VERSION,
-        "alignment_segments": path_metadata(segments_path),
-        "invalid_flags": sorted(INVALID_SEGMENT_FLAGS),
-        "support_unit": "tax_id, else taxname, else ortholog_gene_id",
-    }
-    if _cache_is_valid(manifest_path, expected, [blocks_path]):
-        return
-
-    with tempfile.TemporaryDirectory(prefix="callable_blocks_", dir=blocks_path.parent) as tmp_name:
-        sorted_path = Path(tmp_name) / "segments.sorted.tsv"
-        env = dict(os.environ)
-        env["LC_ALL"] = "C"
-        with sorted_path.open("w") as sorted_handle:
-            process = subprocess.Popen(
-                ["sort", "-t", "\t", "-k1,1", "-k2,2", "-k3,3", "-k4,4n", "-k5,5n"],
-                stdin=subprocess.PIPE,
-                stdout=sorted_handle,
-                stderr=subprocess.PIPE,
-                text=True,
-                env=env,
-            )
-            assert process.stdin is not None
-            with gzip.open(segments_path, "rt", newline="") as handle:
-                reader = csv.DictReader(handle, delimiter="\t")
-                required = {
-                    "gene_id",
-                    "strategy",
-                    "ortholog_gene_id",
-                    "tax_id",
-                    "taxname",
-                    "target_start0",
-                    "target_end0",
-                    "is_primary",
-                    "qc_flags",
-                }
-                missing = required - set(reader.fieldnames or [])
-                if missing:
-                    process.stdin.close()
-                    process.kill()
-                    raise ValueError(f"Alignment segments missing columns: {', '.join(sorted(missing))}")
-                for row in reader:
-                    if str(row["is_primary"]).lower() != "true":
-                        continue
-                    flags = {item for item in str(row.get("qc_flags") or "").split(",") if item}
-                    if flags & INVALID_SEGMENT_FLAGS:
-                        continue
-                    start = int(row["target_start0"])
-                    end = int(row["target_end0"])
-                    if end <= start:
-                        continue
-                    unit = row.get("tax_id") or row.get("taxname") or row.get("ortholog_gene_id")
-                    if not unit:
-                        continue
-                    process.stdin.write(
-                        f"{row['strategy']}\t{row['gene_id']}\t{unit}\t{start}\t{end}\n"
-                    )
-            process.stdin.close()
-            stderr = process.stderr.read() if process.stderr is not None else ""
-            return_code = process.wait()
-            if return_code != 0:
-                raise RuntimeError(f"sort failed while building callable blocks: {stderr.strip()}")
-
-        block_count = _collapse_sorted_segments(sorted_path, blocks_path)
-
-    manifest = {
-        "inputs": expected,
-        "block_count": block_count,
-        "blocks_tsv": str(blocks_path),
-    }
-    manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
+def _validate_focal_reference(
+    focal: pd.DataFrame,
+    genes: dict[str, dict[str, object]],
+    sequences: dict[str, str],
+) -> tuple[pd.DataFrame, int]:
+    rows = []
+    mismatches = 0
+    for row in focal.to_dict(orient="records"):
+        gene_id = str(row["gene_id"])
+        target_pos = int(row["target_pos"])
+        sequence = sequences[gene_id]
+        if target_pos < 0 or target_pos >= len(sequence) or sequence[target_pos] != str(row["ref"]):
+            mismatches += 1
+            continue
+        rows.append({**row, "chrom": str(genes[gene_id]["chrom"])})
+    return pd.DataFrame(rows), mismatches
 
 
-def _collapse_sorted_segments(sorted_path: Path, blocks_path: Path) -> int:
-    fields = ["strategy", "gene_id", "target_start0", "target_end0", "callable_species"]
-    block_count = 0
-    current_group: tuple[str, str] | None = None
-    current_unit: tuple[str, str, str] | None = None
-    merged_start = 0
-    merged_end = 0
-    events: dict[int, int] = defaultdict(int)
-
-    def add_merged_interval() -> None:
-        if current_unit is not None and merged_end > merged_start:
-            events[merged_start] += 1
-            events[merged_end] -= 1
-
-    def write_group(writer: csv.DictWriter) -> int:
-        if current_group is None or not events:
-            return 0
-        written = 0
-        depth = 0
-        previous = None
-        strategy, gene_id = current_group
-        for position in sorted(events):
-            if previous is not None and position > previous and depth > 0:
-                writer.writerow(
-                    {
-                        "strategy": strategy,
-                        "gene_id": gene_id,
-                        "target_start0": previous,
-                        "target_end0": position,
-                        "callable_species": depth,
-                    }
-                )
-                written += 1
-            depth += events[position]
-            previous = position
-        return written
-
-    with sorted_path.open() as source, gzip.open(blocks_path, "wt", newline="") as destination:
-        writer = csv.DictWriter(destination, fieldnames=fields, delimiter="\t", lineterminator="\n")
-        writer.writeheader()
-        for line in source:
-            strategy, gene_id, unit, start_text, end_text = line.rstrip("\n").split("\t")
-            group = (strategy, gene_id)
-            unit_key = (strategy, gene_id, unit)
-            start = int(start_text)
-            end = int(end_text)
-            if current_group is not None and group != current_group:
-                add_merged_interval()
-                block_count += write_group(writer)
-                events.clear()
-                current_unit = None
-            if current_unit != unit_key:
-                if current_unit is not None:
-                    add_merged_interval()
-                current_unit = unit_key
-                merged_start, merged_end = start, end
-            elif start <= merged_end:
-                merged_end = max(merged_end, end)
-            else:
-                add_merged_interval()
-                merged_start, merged_end = start, end
-            current_group = group
-        add_merged_interval()
-        block_count += write_group(writer)
-    return block_count
-
-
-def _depth_bin(depth: int) -> str:
-    if depth < 5:
-        return "1-4"
-    if depth < 10:
-        return "5-9"
-    if depth < 20:
-        return "10-19"
-    if depth < 50:
-        return "20-49"
-    return "50+"
-
-
-def _intersect_blocks_with_contexts(
-    blocks: list[tuple[int, int, int]],
-    contexts: list[tuple[int, int, str]],
-) -> tuple[
-    list[tuple[int, int, int]],
-    dict[tuple[str, str], list[tuple[int, int]]],
-]:
-    searchable = []
-    strata: dict[tuple[str, str], list[tuple[int, int]]] = defaultdict(list)
-    context_index = 0
-    for start, end, depth in blocks:
-        searchable.append((start, end, depth))
-        while context_index < len(contexts) and contexts[context_index][1] <= start:
-            context_index += 1
-        index = context_index
-        while index < len(contexts) and contexts[index][0] < end:
-            context_start, context_end, context = contexts[index]
-            overlap_start = max(start, context_start)
-            overlap_end = min(end, context_end)
-            if overlap_end > overlap_start:
-                strata[(context, _depth_bin(depth))].append((overlap_start, overlap_end))
-            index += 1
-    return searchable, strata
-
-
-def _depth_at(blocks: list[tuple[int, int, int]], position: int) -> int:
-    starts = [item[0] for item in blocks]
-    index = bisect.bisect_right(starts, position) - 1
-    if index >= 0 and blocks[index][0] <= position < blocks[index][1]:
-        return blocks[index][2]
-    return 0
+def _merge_vep(frame: pd.DataFrame, annotations: pd.DataFrame) -> pd.DataFrame:
+    renamed = annotations.rename(
+        columns={
+            "status": "vep_status",
+            "consequence_terms": "vep_consequence_terms",
+            "transcript_id": "vep_transcript_id",
+            "mane_select": "vep_mane_select",
+            "canonical": "vep_canonical",
+            "impact": "vep_impact",
+            "variant_class": "vep_variant_class",
+        }
+    )
+    return frame.merge(renamed, on=["variant_key", "gene_id"], how="left", validate="many_to_one")
 
 
 def _weighted_position(
@@ -601,145 +428,126 @@ def _weighted_position(
     return start + (offset - previous)
 
 
-def _generate_control_options(
-    *,
+def _generate_candidate_controls(
     focal: pd.DataFrame,
-    callable_blocks_path: Path,
     contexts: dict[str, list[tuple[int, int, str]]],
     genes: dict[str, dict[str, object]],
     sequences: dict[str, str],
     seed: int,
-) -> tuple[pd.DataFrame, pd.DataFrame]:
-    focal_groups = {
-        (strategy, gene_id): group.copy()
-        for (strategy, gene_id), group in focal.groupby(["strategy", "gene_id"], sort=False)
-    }
-    matched_rows = []
-    same_site_rows = []
-
-    for row in focal.itertuples(index=False):
-        common = {
-            "focal_id": row.focal_id,
-            "strategy": row.strategy,
-            "gene_id": row.gene_id,
-            "context": row.context,
-            "role": "observed",
-            "option": 0,
-            "variant_key": row.variant_key,
-            "chrom": str(genes[row.gene_id]["chrom"]),
-            "pos": int(row.genomic_pos),
-            "ref": row.ref,
-            "alt": row.alt,
-        }
-        same_site_rows.append(common)
-        for option, alt in enumerate((base for base in DNA_BASES if base not in {row.ref, row.alt}), start=1):
-            same_site_rows.append(
+) -> pd.DataFrame:
+    rows = []
+    unique_focal = focal.drop_duplicates(["variant_key", "gene_id"])
+    for focal_row in unique_focal.itertuples(index=False):
+        intervals = [
+            (start, end)
+            for start, end, context in contexts.get(str(focal_row.gene_id), [])
+            if context == focal_row.context and end > start
+        ]
+        if not intervals:
+            continue
+        cumulative = np.cumsum([end - start for start, end in intervals]).astype(int).tolist()
+        sequence = sequences[str(focal_row.gene_id)]
+        gene = genes[str(focal_row.gene_id)]
+        rng = np.random.default_rng(_stable_rank(seed, focal_row.gene_id, focal_row.variant_key))
+        seen = set()
+        for _attempt in range(CANDIDATE_POOL_SIZE * 250):
+            target_pos = _weighted_position(intervals, cumulative, rng)
+            if target_pos >= len(sequence) or sequence[target_pos] != focal_row.ref:
+                continue
+            pos = int(gene["begin"]) + target_pos
+            variant_key = f"{gene['chrom']}:{pos}:{focal_row.ref}>{focal_row.alt}"
+            if variant_key == focal_row.variant_key or variant_key in seen:
+                continue
+            seen.add(variant_key)
+            rows.append(
                 {
-                    **common,
-                    "role": "control",
-                    "option": option,
-                    "alt": alt,
-                    "variant_key": f"{common['chrom']}:{common['pos']}:{row.ref}>{alt}",
+                    "control_group": f"{focal_row.gene_id}|{focal_row.variant_key}",
+                    "focal_consequence": focal_row.primary_consequence,
+                    "gene_id": str(focal_row.gene_id),
+                    "context": focal_row.context,
+                    "variant_key": variant_key,
+                    "chrom": str(gene["chrom"]),
+                    "pos": pos,
+                    "target_pos": target_pos,
+                    "ref": focal_row.ref,
+                    "alt": focal_row.alt,
                 }
             )
+            if len(seen) >= CANDIDATE_POOL_SIZE:
+                break
+    return pd.DataFrame(rows)
 
-    current_key = None
-    current_blocks: list[tuple[int, int, int]] = []
 
-    def process_group(key: tuple[str, str] | None, blocks: list[tuple[int, int, int]]) -> None:
-        if key is None or key not in focal_groups or not blocks:
-            return
-        strategy, gene_id = key
-        searchable, strata = _intersect_blocks_with_contexts(blocks, contexts.get(gene_id, []))
-        gene = genes[gene_id]
-        sequence = sequences[gene_id]
-        for row in focal_groups[key].itertuples(index=False):
-            depth = _depth_at(searchable, int(row.target_pos))
-            if depth <= 0:
-                continue
-            depth_group = _depth_bin(depth)
-            common = {
-                "focal_id": row.focal_id,
-                "strategy": strategy,
-                "gene_id": gene_id,
-                "context": row.context,
-                "depth_bin": depth_group,
-                "role": "observed",
-                "option": 0,
-                "variant_key": row.variant_key,
-                "chrom": str(gene["chrom"]),
-                "pos": int(row.genomic_pos),
-                "target_pos": int(row.target_pos),
-                "ref": row.ref,
-                "alt": row.alt,
-                "callable_species": depth,
-            }
-            matched_rows.append(common)
-            intervals = strata.get((row.context, depth_group), [])
-            if not intervals:
-                continue
-            cumulative = np.cumsum([end - start for start, end in intervals]).astype(int).tolist()
-            rng = np.random.default_rng(_stable_rank(seed, strategy, row.focal_id))
-            seen = set()
-            target_options = MATCHED_POOL_SIZE * 3
-            for _attempt in range(target_options * 100):
-                target_pos = _weighted_position(intervals, cumulative, rng)
-                if target_pos >= len(sequence) or sequence[target_pos] != row.ref:
-                    continue
-                alt = DNA_BASES[int(rng.integers(0, len(DNA_BASES)))]
-                if alt == row.ref:
-                    continue
-                genomic_pos = int(gene["begin"]) + target_pos
-                variant_key = f"{gene['chrom']}:{genomic_pos}:{row.ref}>{alt}"
-                if variant_key == row.variant_key or variant_key in seen:
-                    continue
-                seen.add(variant_key)
-                matched_rows.append(
-                    {
-                        **common,
-                        "role": "control",
-                        "option": len(seen),
-                        "variant_key": variant_key,
-                        "pos": genomic_pos,
-                        "target_pos": target_pos,
-                        "alt": alt,
-                        "callable_species": _depth_at(searchable, target_pos),
-                    }
-                )
-                if len(seen) >= target_options:
-                    break
+def _annotate_candidate_controls(
+    focal: pd.DataFrame,
+    contexts: dict[str, list[tuple[int, int, str]]],
+    genes: dict[str, dict[str, object]],
+    sequences: dict[str, str],
+    vep_cache_path: Path,
+    vep_release: str,
+    seed: int,
+) -> tuple[pd.DataFrame, int, dict[str, object]]:
+    unique_focal = focal.drop_duplicates(["variant_key", "gene_id"]).reset_index(drop=True)
+    matched_parts = []
+    generated_count = 0
+    summaries = []
+    for start in range(0, len(unique_focal), CANDIDATE_FOCAL_CHUNK_SIZE):
+        focal_chunk = unique_focal.iloc[start : start + CANDIDATE_FOCAL_CHUNK_SIZE]
+        candidates = _generate_candidate_controls(focal_chunk, contexts, genes, sequences, seed)
+        if candidates.empty:
+            continue
+        generated_count += len(candidates)
+        annotations, summary = annotate_vep_consequences(
+            candidates[["variant_key", "gene_id", "chrom", "pos", "ref", "alt"]],
+            vep_cache_path,
+            release=vep_release,
+        )
+        summaries.append(summary)
+        candidates = _merge_vep(candidates, annotations)
+        candidates = candidates[
+            candidates["vep_status"].eq("ok")
+            & candidates["primary_consequence"].eq(candidates["focal_consequence"])
+        ]
+        if not candidates.empty:
+            matched_parts.append(candidates)
 
-    with gzip.open(callable_blocks_path, "rt", newline="") as handle:
-        reader = csv.DictReader(handle, delimiter="\t")
-        for row in reader:
-            key = (str(row["strategy"]), str(row["gene_id"]))
-            if current_key is not None and key != current_key:
-                process_group(current_key, current_blocks)
-                current_blocks = []
-            current_key = key
-            current_blocks.append(
-                (int(row["target_start0"]), int(row["target_end0"]), int(row["callable_species"]))
-            )
-        process_group(current_key, current_blocks)
+    summary = _merge_vep_summaries(summaries, vep_release, vep_cache_path)
+    if not matched_parts:
+        return pd.DataFrame(), generated_count, summary
+    return pd.concat(matched_parts, ignore_index=True), generated_count, summary
 
-    return pd.DataFrame(matched_rows), pd.DataFrame(same_site_rows)
+
+def _merge_vep_summaries(
+    summaries: list[dict[str, object]],
+    release: str,
+    cache_path: Path,
+) -> dict[str, object]:
+    status_counts: dict[str, int] = defaultdict(int)
+    for summary in summaries:
+        for status, count in dict(summary.get("status_counts", {})).items():
+            status_counts[str(status)] += int(count)
+    first = summaries[0] if summaries else {}
+    return {
+        "status": "complete",
+        "base_url": first.get("base_url", ""),
+        "release": release,
+        "options": first.get("options", {}),
+        "requested": sum(int(item.get("requested", 0)) for item in summaries),
+        "cached": sum(int(item.get("cached", 0)) for item in summaries),
+        "queried": sum(int(item.get("queried", 0)) for item in summaries),
+        "batch_count": sum(int(item.get("batch_count", 0)) for item in summaries),
+        "status_counts": dict(sorted(status_counts.items())),
+        "cache_path": str(cache_path),
+    }
 
 
 def _collect_observed_control_keys(
     annotations_path: Path,
-    matched: pd.DataFrame,
-    same_site: pd.DataFrame,
+    candidates: pd.DataFrame,
 ) -> set[tuple[str, str]]:
-    wanted: dict[str, set[str]] = defaultdict(set)
-    for frame in (matched, same_site):
-        if frame.empty:
-            continue
-        controls = frame[frame["role"] == "control"]
-        for row in controls[["variant_key", "strategy"]].itertuples(index=False):
-            wanted[str(row.variant_key)].add(str(row.strategy))
-    if not wanted:
+    wanted_keys = set(candidates["variant_key"].astype(str))
+    if not wanted_keys:
         return set()
-
     found: set[tuple[str, str]] = set()
     for chunk in pd.read_csv(
         annotations_path,
@@ -749,194 +557,97 @@ def _collect_observed_control_keys(
         keep_default_na=False,
         chunksize=250_000,
     ):
-        subset = chunk[chunk["variant_key"].astype(str).isin(wanted)]
+        subset = chunk[chunk["variant_key"].astype(str).isin(wanted_keys)]
         for row in subset.itertuples(index=False):
-            key = str(row.variant_key)
-            requested = wanted.get(key, set())
             for strategy in split_strategies(str(row.strategies)):
-                if strategy in requested:
-                    found.add((key, strategy))
+                found.add((str(row.variant_key), strategy))
     return found
 
 
-def _finalize_matched_options(
-    frame: pd.DataFrame,
-    observed: set[tuple[str, str]],
+def _build_matched_rows(
+    focal: pd.DataFrame,
+    candidates: pd.DataFrame,
+    observed_controls: set[tuple[str, str]],
 ) -> pd.DataFrame:
-    if frame.empty:
-        return frame
-    keep_rows = []
-    for _focal_id, group in frame.groupby("focal_id", sort=False):
-        focal = group[group["role"] == "observed"]
-        controls = group[group["role"] == "control"].copy()
+    candidates_by_group = {
+        group_id: group.drop_duplicates("variant_key")
+        for group_id, group in candidates.groupby("control_group", sort=False)
+    }
+    rows = []
+    for focal_row in focal.itertuples(index=False):
+        group_id = f"{focal_row.gene_id}|{focal_row.variant_key}"
+        controls = candidates_by_group.get(group_id)
+        if controls is None:
+            continue
         controls = controls[
             [
-                (str(row.variant_key), str(row.strategy)) not in observed
+                (str(row.variant_key), str(focal_row.strategy)) not in observed_controls
                 for row in controls.itertuples(index=False)
             ]
-        ]
-        controls = controls.drop_duplicates("variant_key").head(MATCHED_POOL_SIZE)
-        if focal.empty or controls.empty:
+        ].head(MATCHED_POOL_SIZE)
+        if controls.empty:
             continue
-        keep_rows.append(focal.iloc[[0]])
-        controls.loc[:, "option"] = np.arange(1, len(controls) + 1)
-        keep_rows.append(controls)
-    if not keep_rows:
-        return frame.iloc[0:0].copy()
-    return pd.concat(keep_rows, ignore_index=True)
-
-
-def _finalize_same_site_options(
-    frame: pd.DataFrame,
-    observed: set[tuple[str, str]],
-) -> pd.DataFrame:
-    if frame.empty:
-        return frame
-    keep_rows = []
-    for _focal_id, group in frame.groupby("focal_id", sort=False):
-        focal = group[group["role"] == "observed"]
-        controls = group[group["role"] == "control"].copy()
-        controls = controls[
-            [
-                (str(row.variant_key), str(row.strategy)) not in observed
-                for row in controls.itertuples(index=False)
-            ]
-        ]
-        controls = controls.drop_duplicates("variant_key")
-        if focal.empty or controls.empty:
-            continue
-        keep_rows.append(focal.iloc[[0]])
-        controls.loc[:, "option"] = np.arange(1, len(controls) + 1)
-        keep_rows.append(controls)
-    if not keep_rows:
-        return frame.iloc[0:0].copy()
-    return pd.concat(keep_rows, ignore_index=True)
-
-
-def _read_clinvar_snv_annotations(
-    clinvar_vcf: Path,
-    regions_bed: Path,
-) -> dict[str, str]:
-    tabix = shutil.which("tabix")
-    if tabix is None:
-        raise FileNotFoundError("tabix is required for negative-control ClinVar annotation.")
-    result = subprocess.run(
-        [tabix, "-R", str(regions_bed), str(clinvar_vcf)],
-        text=True,
-        capture_output=True,
-        check=False,
-    )
-    if result.returncode not in (0, 1):
-        raise RuntimeError(f"tabix ClinVar query failed: {result.stderr.strip()}")
-
-    labels_by_key: dict[str, set[str]] = defaultdict(set)
-    for line in result.stdout.splitlines():
-        if not line or line.startswith("#"):
-            continue
-        fields = line.split("\t")
-        if len(fields) < 8:
-            continue
-        chrom, pos, _record_id, ref, alts = fields[:5]
-        ref = ref.upper()
-        if len(ref) != 1 or ref not in DNA_BASES:
-            continue
-        label = clinvar_label(info_value(fields[7], "CLNSIG"))
-        for alt in alts.split(","):
-            alt = alt.upper()
-            if len(alt) != 1 or alt not in DNA_BASES:
-                continue
-            key = f"{chrom.removeprefix('chr')}:{int(pos)}:{ref}>{alt}"
-            labels_by_key[key].add(label)
-
-    annotations = {}
-    for key, labels in labels_by_key.items():
-        if labels == {"benign"}:
-            annotations[key] = "B/LB"
-        elif labels == {"pathogenic"}:
-            annotations[key] = "P/LP"
-        elif labels == {"excluded_vus"}:
-            annotations[key] = "VUS"
-        else:
-            annotations[key] = "Other"
-    return annotations
-
-
-def _cluster_positions(
-    positions: set[int],
-    max_gap: int = 20_000,
-    max_span: int = 200_000,
-) -> list[tuple[int, int]]:
-    if not positions:
-        return []
-    ordered = sorted(positions)
-    clusters = []
-    start = previous = ordered[0]
-    for position in ordered[1:]:
-        if position - previous > max_gap or position - start > max_span:
-            clusters.append((start, previous))
-            start = position
-        previous = position
-    clusters.append((start, previous))
-    return clusters
-
-
-def _fetch_gnomad_presence(frame: pd.DataFrame) -> tuple[set[str], bool, str]:
-    if frame.empty:
-        return set(), True, ""
-    positions_by_chrom: dict[str, set[int]] = defaultdict(set)
-    for row in frame[["chrom", "pos"]].drop_duplicates().itertuples(index=False):
-        positions_by_chrom[str(row.chrom)].add(int(row.pos))
-    tasks = [
-        (chrom, start, end)
-        for chrom, positions in positions_by_chrom.items()
-        for start, end in _cluster_positions(positions)
-    ]
-    variants = []
-    errors = []
-    with concurrent.futures.ThreadPoolExecutor(max_workers=min(4, max(1, len(tasks)))) as executor:
-        futures = {
-            executor.submit(fetch_region_variants_recursive, chrom, max(1, start - 1), end + 1): (
-                chrom,
-                start,
-                end,
-            )
-            for chrom, start, end in tasks
+        common = {
+            "focal_id": focal_row.focal_id,
+            "strategy": focal_row.strategy,
+            "gene_id": str(focal_row.gene_id),
+            "context": focal_row.context,
+            "primary_consequence": focal_row.primary_consequence,
         }
-        for future in concurrent.futures.as_completed(futures):
-            chrom, start, end = futures[future]
-            try:
-                variants.extend(future.result())
-            except Exception as exc:  # network/API failures must not create partial evidence
-                errors.append(f"{chrom}:{start}-{end}: {exc}")
-    if errors:
-        return set(), False, " | ".join(errors[:5])
-    keys = set()
-    for variant in variants:
-        ref = str(variant.get("ref") or "").upper()
-        alt = str(variant.get("alt") or "").upper()
-        if len(ref) == 1 and len(alt) == 1 and ref in DNA_BASES and alt in DNA_BASES:
-            chrom = str(variant.get("chrom") or "").removeprefix("chr")
-            keys.add(f"{chrom}:{int(variant['pos'])}:{ref}>{alt}")
-    return keys, True, ""
+        rows.append(
+            {
+                **common,
+                "role": "observed",
+                "option": 0,
+                "variant_key": focal_row.variant_key,
+                "chrom": focal_row.chrom,
+                "pos": int(focal_row.pos),
+                "target_pos": int(focal_row.target_pos),
+                "ref": focal_row.ref,
+                "alt": focal_row.alt,
+                "vep_consequence_terms": focal_row.vep_consequence_terms,
+                "vep_transcript_id": focal_row.vep_transcript_id,
+            }
+        )
+        for option, control in enumerate(controls.itertuples(index=False), start=1):
+            rows.append(
+                {
+                    **common,
+                    "role": "control",
+                    "option": option,
+                    "variant_key": control.variant_key,
+                    "chrom": control.chrom,
+                    "pos": int(control.pos),
+                    "target_pos": int(control.target_pos),
+                    "ref": control.ref,
+                    "alt": control.alt,
+                    "vep_consequence_terms": control.vep_consequence_terms,
+                    "vep_transcript_id": control.vep_transcript_id,
+                }
+            )
+    return pd.DataFrame(rows)
 
 
-def _annotate_same_site_controls(
-    frame: pd.DataFrame,
-    clinvar: dict[str, str],
-    gnomad_keys: set[str],
-    gnomad_complete: bool,
-) -> pd.DataFrame:
-    frame = frame.copy()
-    frame["clinvar_class"] = frame["variant_key"].map(clinvar).fillna("Not Found")
-    frame["clinvar_found"] = frame["clinvar_class"].ne("Not Found")
-    if gnomad_complete:
-        frame["gnomad_found"] = frame["variant_key"].isin(gnomad_keys)
-    else:
-        frame["gnomad_found"] = ""
-    return frame
+def _matching_diagnostics(focal: pd.DataFrame, matched: pd.DataFrame) -> pd.DataFrame:
+    eligible = (
+        focal.groupby(["strategy", "primary_consequence"], sort=True)["focal_id"]
+        .nunique()
+        .rename("eligible_focals")
+    )
+    matched_ids = set(matched.loc[matched["role"] == "observed", "focal_id"].astype(str))
+    retained = (
+        focal[focal["focal_id"].astype(str).isin(matched_ids)]
+        .groupby(["strategy", "primary_consequence"], sort=True)["focal_id"]
+        .nunique()
+        .rename("matched_focals")
+    )
+    result = eligible.to_frame().join(retained, how="left").fillna({"matched_focals": 0}).reset_index()
+    result["matched_focals"] = result["matched_focals"].astype(int)
+    result["match_rate"] = result["matched_focals"] / result["eligible_focals"]
+    return result
 
 
-def _annotate_matched_conservation(
+def _annotate_conservation(
     matched: pd.DataFrame,
     output_path: Path,
 ) -> tuple[pd.DataFrame, dict]:
@@ -984,42 +695,31 @@ def _annotate_matched_conservation(
 
 def _summarize_analysis(
     matched: pd.DataFrame,
-    same_site: pd.DataFrame,
     manifest: dict,
     manifest_path: Path,
     matched_path: Path,
-    same_site_path: Path,
     conservation_path: Path,
-    permutations: int,
+    vep_cache_path: Path,
+    resamples: int,
     seed: int,
-) -> NegativeControlAnalysis:
+) -> TargetSpaceNullAnalysis:
     matched = matched.copy()
     matched["phyloP100way"] = pd.to_numeric(matched["phyloP100way"], errors="coerce")
-    matched_summary = _matched_summary(matched, ["strategy"], permutations, seed)
-    matched_context_summary = _matched_summary(
-        matched,
-        ["strategy", "context"],
-        permutations,
-        seed + 1,
-    )
-    matched_ecdf = _matched_ecdf(matched)
-    same_site_summary = _same_site_summary(
-        same_site,
-        permutations,
-        seed + 2,
-        bool(manifest.get("gnomad_complete")),
-    )
-    return NegativeControlAnalysis(
-        matched_summary=matched_summary,
-        matched_context_summary=matched_context_summary,
-        matched_ecdf=matched_ecdf,
-        same_site_summary=same_site_summary,
+    return TargetSpaceNullAnalysis(
+        summary=_matched_summary(matched, ["strategy"], resamples, seed),
+        consequence_summary=_matched_summary(
+            matched,
+            ["strategy", "primary_consequence"],
+            resamples,
+            seed + 1,
+        ),
+        ecdf=_matched_ecdf(matched),
         manifest=manifest,
         manifest_path=manifest_path,
         matched_path=matched_path,
-        same_site_path=same_site_path,
         conservation_path=conservation_path,
-        permutations=permutations,
+        vep_cache_path=vep_cache_path,
+        resamples=resamples,
     )
 
 
@@ -1032,12 +732,10 @@ def _paired_values(frame: pd.DataFrame, value_column: str) -> tuple[np.ndarray, 
     controls = []
     for _focal_id, group in frame.groupby("focal_id", sort=False):
         focal_values = pd.to_numeric(
-            group.loc[group["role"] == "observed", value_column],
-            errors="coerce",
+            group.loc[group["role"] == "observed", value_column], errors="coerce"
         ).dropna()
         control_values = pd.to_numeric(
-            group.loc[group["role"] == "control", value_column],
-            errors="coerce",
+            group.loc[group["role"] == "control", value_column], errors="coerce"
         ).dropna()
         if focal_values.empty or control_values.empty:
             continue
@@ -1049,37 +747,27 @@ def _paired_values(frame: pd.DataFrame, value_column: str) -> tuple[np.ndarray, 
 def _resampled_statistics(
     observed: np.ndarray,
     controls: list[np.ndarray],
-    statistic,
-    permutations: int,
+    resamples: int,
     seed: int,
 ) -> tuple[float, np.ndarray]:
     if observed.size == 0 or not controls:
         return math.nan, np.array([], dtype=float)
-    observed_stat = float(statistic(observed))
     rng = np.random.default_rng(seed)
-    null = np.empty(permutations, dtype=float)
-    for index in range(permutations):
+    null = np.empty(resamples, dtype=float)
+    for index in range(resamples):
         draw = np.fromiter(
             (values[int(rng.integers(0, len(values)))] for values in controls),
             dtype=float,
             count=len(controls),
         )
-        null[index] = float(statistic(draw))
-    return observed_stat, null
-
-
-def _empirical_two_sided(observed: float, null: np.ndarray) -> float:
-    if not np.isfinite(observed) or null.size == 0:
-        return math.nan
-    lower = (1 + int(np.sum(null <= observed))) / (len(null) + 1)
-    upper = (1 + int(np.sum(null >= observed))) / (len(null) + 1)
-    return min(1.0, 2.0 * min(lower, upper))
+        null[index] = float(np.median(draw))
+    return float(np.median(observed)), null
 
 
 def _matched_summary(
     frame: pd.DataFrame,
     group_columns: list[str],
-    permutations: int,
+    resamples: int,
     seed: int,
 ) -> pd.DataFrame:
     columns = [
@@ -1090,7 +778,6 @@ def _matched_summary(
         "null_ci_low",
         "null_ci_high",
         "median_difference",
-        "empirical_p",
     ]
     if frame.empty:
         return pd.DataFrame(columns=columns)
@@ -1099,11 +786,10 @@ def _matched_summary(
     for raw_key, group in frame.groupby(grouper, sort=True):
         key = _group_key(raw_key)
         observed, controls = _paired_values(group, "phyloP100way")
-        observed_stat, null = _resampled_statistics(
+        observed_median, null = _resampled_statistics(
             observed,
             controls,
-            np.median,
-            permutations,
+            resamples,
             _stable_rank(seed, *key),
         )
         null_median = float(np.median(null)) if null.size else math.nan
@@ -1111,12 +797,11 @@ def _matched_summary(
         row.update(
             {
                 "matched_focals": len(controls),
-                "observed_median": observed_stat,
+                "observed_median": observed_median,
                 "null_median": null_median,
                 "null_ci_low": float(np.quantile(null, 0.025)) if null.size else math.nan,
                 "null_ci_high": float(np.quantile(null, 0.975)) if null.size else math.nan,
-                "median_difference": observed_stat - null_median,
-                "empirical_p": _empirical_two_sided(observed_stat, null),
+                "median_difference": observed_median - null_median,
             }
         )
         rows.append(row)
@@ -1143,7 +828,7 @@ def _matched_ecdf(frame: pd.DataFrame) -> pd.DataFrame:
         )
         for label, fractions in (
             ("GAPH", observed_fractions),
-            ("Matched callable", control_fractions),
+            ("Matched target-space null", control_fractions),
         ):
             rows.extend(
                 {
@@ -1155,65 +840,3 @@ def _matched_ecdf(frame: pd.DataFrame) -> pd.DataFrame:
                 for score, fraction in zip(grid, fractions)
             )
     return pd.DataFrame(rows)
-
-
-def _as_boolean(series: pd.Series) -> pd.Series:
-    return series.astype(str).str.lower().map({"true": True, "false": False})
-
-
-def _same_site_summary(
-    frame: pd.DataFrame,
-    permutations: int,
-    seed: int,
-    gnomad_complete: bool,
-) -> pd.DataFrame:
-    columns = [
-        "strategy",
-        "metric",
-        "matched_focals",
-        "observed_rate",
-        "null_rate",
-        "null_ci_low",
-        "null_ci_high",
-        "enrichment_ratio",
-        "empirical_p",
-    ]
-    if frame.empty:
-        return pd.DataFrame(columns=columns)
-    frame = frame.copy()
-    frame["clinvar_found"] = _as_boolean(frame["clinvar_found"])
-    metrics = [("clinvar_found", "ClinVar found")]
-    if gnomad_complete:
-        frame["gnomad_found"] = _as_boolean(frame["gnomad_found"])
-        metrics.append(("gnomad_found", "gnomAD found"))
-
-    rows = []
-    for strategy, group in frame.groupby("strategy", sort=True):
-        for value_column, label in metrics:
-            observed, controls = _paired_values(group, value_column)
-            observed_stat, null = _resampled_statistics(
-                observed,
-                controls,
-                np.mean,
-                permutations,
-                _stable_rank(seed, strategy, value_column),
-            )
-            null_rate = float(np.mean(null)) if null.size else math.nan
-            rows.append(
-                {
-                    "strategy": strategy,
-                    "metric": label,
-                    "matched_focals": len(controls),
-                    "observed_rate": observed_stat,
-                    "null_rate": null_rate,
-                    "null_ci_low": float(np.quantile(null, 0.025)) if null.size else math.nan,
-                    "null_ci_high": float(np.quantile(null, 0.975)) if null.size else math.nan,
-                    "enrichment_ratio": (
-                        observed_stat / null_rate
-                        if np.isfinite(observed_stat) and np.isfinite(null_rate) and null_rate > 0
-                        else math.nan
-                    ),
-                    "empirical_p": _empirical_two_sided(observed_stat, null),
-                }
-            )
-    return pd.DataFrame(rows, columns=columns)

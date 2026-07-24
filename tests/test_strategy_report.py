@@ -1,8 +1,56 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import pandas as pd
 
-from analytics.strategy_report import conservation_selector_view, dataframe_records, format_table_dataframe
+from analytics.core.negative_controls import TargetSpaceNullAnalysis
+from analytics.strategy_report import (
+    build_target_space_null_sections,
+    conservation_selector_view,
+    dataframe_records,
+    format_table_dataframe,
+)
+
+
+def test_target_space_null_section_reports_consequence_matched_design(tmp_path: Path) -> None:
+    analysis = TargetSpaceNullAnalysis(
+        summary=pd.DataFrame(
+            [
+                {
+                    "strategy": "s1",
+                    "matched_focals": 2,
+                    "observed_median": 0.5,
+                    "null_median": 1.0,
+                    "null_ci_low": 0.8,
+                    "null_ci_high": 1.2,
+                    "median_difference": -0.5,
+                }
+            ]
+        ),
+        consequence_summary=pd.DataFrame(),
+        ecdf=pd.DataFrame(),
+        manifest={
+            "inputs": {"sample_size_per_strategy": 25_000},
+            "sampled_focal_count": 2,
+            "vep_annotated_focal_count": 2,
+            "matched_focal_count": 2,
+            "focal_vep": {"release": "116"},
+            "conservation": {"status": "complete"},
+        },
+        manifest_path=tmp_path / "manifest.json",
+        matched_path=tmp_path / "target_space_null.snv.tsv.gz",
+        conservation_path=tmp_path / "target_space_null.phyloP100way.tsv.gz",
+        vep_cache_path=tmp_path / "vep.sqlite",
+        resamples=1_000,
+    )
+
+    html = "".join(build_target_space_null_sections(analysis, include_plotly=False))
+
+    assert "Target-Space Null" in html
+    assert "same genomic REF&gt;ALT substitution" in html
+    assert "Matched Callable" not in html
+    assert "Same-Position" not in html
 
 
 def test_phyloP_quantiles_are_not_formatted_as_percentages() -> None:

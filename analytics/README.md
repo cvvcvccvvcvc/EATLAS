@@ -56,28 +56,26 @@ use the mean across deleted reference bases without the VCF padding base, and
 insertions use the mean of their two flanking bases. All required bases must be
 scored.
 
-Background comparators are shown in separate report tabs:
+`Target-Space Null` compares GAPH SNVs with unobserved possible SNVs matched by
+gene, target context, exact genomic REF>ALT substitution, and primary RefSeq VEP
+consequence. GAPH callability and conservation are not matching variables.
+Ensembl REST VEP annotations are cached batch by batch so interrupted runs can
+resume without downloading a local VEP cache.
 
-- `Matched Callable Background` compares GAPH SNVs with unobserved SNVs matched by
-  gene, target context, REF, and callable-species depth bin;
-- `Same-Position ALT: Raw` compares the exact GAPH ALT with other unobserved
-  SNV ALTs at the same position. This view is descriptive because it does not
-  yet adjust for transition/transversion class or context-specific mutability.
-
-Their bounded, deterministic samples and annotations are cached under:
+Its bounded, deterministic samples and annotations are cached under:
 
 ```text
 <run-dir>/analytics/negative_control/
 ```
 
-The default limit is 25,000 focal SNVs per strategy with 1,000 matched-background
+The default limit is 25,000 focal SNVs per strategy with 1,000 target-space-null
 resamples. For a faster exploratory run, use
 `--negative-control-sample-size` and `--negative-control-permutations`; changing
 only the number of resamples reuses the prepared control tables.
 
 The sample size is an engineering cap, not a fixed scientific cohort size. A
 run uses every eligible focal SNV when fewer than the cap are available. The
-report shows full focal-weighted phyloP ECDFs and descriptive background
+report shows full focal-weighted phyloP ECDFs and descriptive target-space
 resampling intervals; it does not report an inferential p-value for these
 comparators.
 
