@@ -18,16 +18,10 @@ micromamba run -n gaph-v2-analytics python -m analytics.strategy_report \
   --run-dir "$RUN"
 ```
 
-The report computes ClinVar enrichment, categorical and continuous
-conservation-adjusted validation within target introns, and two sampled SNV
-background comparators by default. `phyloP100way` is the primary and default
-conservation track. GERP and phastCons can be requested as sensitivity tracks:
-
-```bash
-micromamba run -n gaph-v2-analytics python -m analytics.strategy_report \
-  --run-dir "$RUN" \
-  --conservation-tracks phyloP100way,phastCons100way,GERP_RS_92mammals
-```
+The report computes ClinVar enrichment, fixed-band and continuous
+phyloP100way-adjusted validation, and two sampled SNV background comparators.
+The conservation analyses support strategy, variant-type, and ClinVar MC
+consequence selectors. The primary view is SNV / Missense.
 
 When an analysis needs durable intermediate tables, write them under
 `<run-dir>/analytics/`. The source tree does not keep a default scratch/work
@@ -49,17 +43,18 @@ The strategy report writes its ClinVar validation universe under:
 ```
 
 Validation statistics are computed separately for SNV and INDEL rows. The
-intronic conservation blocks also write:
+conservation-adjusted blocks also write:
 
 ```text
-<run-dir>/analytics/clinvar_universe.snv.conservation.tsv.gz
-<run-dir>/analytics/clinvar_universe.snv.conservation.manifest.json
+<run-dir>/analytics/clinvar_universe.snv_indel.conservation.tsv.gz
+<run-dir>/analytics/clinvar_universe.snv_indel.conservation.manifest.json
 ```
 
-The conservation cache is SNV-only and is reused on later report runs when the
-ClinVar universe and requested tracks are unchanged. Successful track columns
-are retained when another remote track fails; later runs retry only failed or
-partial tracks until the cache is complete.
+The conservation cache is allele-level and is reused when the ClinVar universe
+and phyloP100way source are unchanged. SNVs use the substituted base, deletions
+use the mean across deleted reference bases without the VCF padding base, and
+insertions use the mean of their two flanking bases. All required bases must be
+scored.
 
 Background comparators are shown in separate report tabs:
 
@@ -88,8 +83,10 @@ comparators.
 
 Raw p-values remain visible for the formal validation analyses. ClinVar Fisher
 tests use Benjamini-Hochberg correction separately within the SNV and INDEL families.
-Within the intronic analysis, fixed-category Fisher tests, score-by-strategy CMH
-tests, and continuous-model Wald tests are corrected as separate families.
+Within conservation-adjusted validation, fixed-band Fisher tests, pooled CMH
+tests, and continuous-model profile-likelihood-ratio tests are corrected as
+three separate families across displayed selector combinations.
 Mantel-Haenszel confidence intervals use the Robins-Breslow-Greenland variance
-implemented by `statsmodels.StratifiedTable`. Continuous models use a natural
-cubic spline with three degrees of freedom for one conservation score at a time.
+implemented by `statsmodels.StratifiedTable`. Continuous models use Firth
+logistic regression (`logistf`) with a three-degree-of-freedom natural spline
+for phyloP100way and profile penalized-likelihood confidence intervals.

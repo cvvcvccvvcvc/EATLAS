@@ -11,3 +11,5 @@ dependencies:
   - plotly
   - pybigwig
   - htslib
+  - r-base=4.5
+  - r-logistf=1.26.1

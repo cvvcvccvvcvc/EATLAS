@@ -941,12 +941,18 @@ def _annotate_matched_conservation(
     output_path: Path,
 ) -> tuple[pd.DataFrame, dict]:
     unique = (
-        matched[["variant_key", "chrom", "pos"]]
+        matched[["variant_key", "chrom", "pos", "ref", "alt"]]
         .drop_duplicates("variant_key")
         .sort_values(["chrom", "pos", "variant_key"], kind="mergesort")
     )
     rows = [
-        {"variant_key": str(row.variant_key), "chrom": str(row.chrom), "pos": str(int(row.pos))}
+        {
+            "variant_key": str(row.variant_key),
+            "chrom": str(row.chrom),
+            "pos": str(int(row.pos)),
+            "ref": str(row.ref),
+            "alt": str(row.alt),
+        }
         for row in unique.itertuples(index=False)
     ]
     track = parse_tracks("phyloP100way")[0]

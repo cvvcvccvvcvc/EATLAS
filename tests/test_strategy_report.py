@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pandas as pd
 
-from analytics.strategy_report import conservation_bin_detail_table, format_table_dataframe
+from analytics.strategy_report import conservation_selector_view, dataframe_records, format_table_dataframe
 
 
 def test_phyloP_quantiles_are_not_formatted_as_percentages() -> None:
@@ -19,30 +19,42 @@ def test_phyloP_quantiles_are_not_formatted_as_percentages() -> None:
     assert shown.loc[0, "Comparator rate Q2.5"] == "9.5%"
 
 
-def test_conservation_bin_table_suppresses_unestimable_inference() -> None:
-    bins = pd.DataFrame(
+def test_conservation_selector_serializes_sparse_results_and_has_all_controls() -> None:
+    primary = pd.DataFrame(
         [
             {
                 "strategy": "s1",
-                "bin_index": 1,
-                "bin_label": "Central phyloP band",
-                "bin_range": "-1.30103 to 1.30103",
-                "row_count": 10,
-                "benign_observed": 6,
-                "pathogenic_observed": 0,
-                "benign_not_observed": 4,
-                "pathogenic_not_observed": 0,
-                "odds_ratio": float("nan"),
-                "ci_low": 0.1,
-                "ci_high": 10.0,
-                "fisher_p": 1.0,
-                "fisher_q": 1.0,
+                "variant_type": "snv",
+                "consequence": "missense",
+                "odds_ratio_mh": float("inf"),
+                "ci_low": float("nan"),
+                "ci_high": float("nan"),
+                "cmh_p": float("nan"),
+                "cmh_q": float("nan"),
+                "usable_rows": 10,
+                "status": "not_estimable",
+                "reason": "Sparse data",
             }
         ]
     )
+    detail = pd.DataFrame()
 
-    table = conservation_bin_detail_table(bins)
+    html = conservation_selector_view(
+        view_id="fixed-test",
+        strategies=["s1"],
+        primary=primary,
+        detail=detail,
+        mode="fixed",
+    )
 
-    assert table.loc[0, "95% CI"] == ""
-    assert table.loc[0, "Fisher p"] == ""
-    assert table.loc[0, "Status"] == "Not estimable"
+    assert 'data-role="strategy"' in html
+    assert 'data-role="variant-type"' in html
+    assert 'data-role="consequence"' in html
+    assert "Missense" in html
+    assert "Infinity" not in html
+    assert "NaN" not in html
+
+
+def test_dataframe_records_replaces_nonfinite_values() -> None:
+    records = dataframe_records(pd.DataFrame({"value": [1.0, float("inf"), float("nan")]}))
+    assert records == [{"value": 1.0}, {"value": "inf"}, {"value": None}]

@@ -27,11 +27,6 @@ The first feature is deliberately simple:
 ALT_observed = at least one callable ortholog carries the exact human ALT
 ```
 
-The unit of analysis is one human allele, strategy, and gene context.
-The annotation layer also preserves the number of distinct ALT-supporting
-orthologs for each such unit so that a later dose-response analysis does not
-depend on raw alignment-event publication.
-
 **Main evidence:** workflow diagram and a compact dataset summary.
 
 ### 2. Characterize where GAPH produces signal
@@ -78,14 +73,17 @@ low constraint -> more ortholog substitutions and more benign human variants
 
 Use phyloP as the prespecified primary site-level score and model it
 continuously. Estimate the association of `ALT_observed` with B/LB after
-adjusting for nonlinear phyloP and the number of callable orthologs. The final
-model must account for gene-level dependence when the validation panel is large
-enough to support it. Sparse or separated data require a bias-reduced or
-regularized logistic estimate with an appropriate confidence interval.
+adjusting for nonlinear phyloP using Firth logistic regression with a natural
+spline. Report a profile penalized-likelihood confidence interval and test.
+The current analysis deliberately does not add a callable-ortholog filter or
+covariate; `ALT_observed=0` means that the strategy did not report the exact ALT.
+Gene-level dependence remains a later requirement when the validation panel is
+large enough to estimate it reliably.
 
-Quantile-bin and Mantel-Haenszel results are descriptive sensitivity analyses,
-not the primary proof. GERP and phastCons are secondary conservation
-sensitivities.
+Fixed phyloP bands at signed `-log10(0.05)` thresholds and their
+Mantel-Haenszel summary are a descriptive sensitivity analysis, not the primary
+proof. The same thresholds in INDEL views apply to aggregate allele scores and
+do not retain their nominal single-base p-value interpretation.
 
 **Main evidence:** adjusted OR with 95% confidence interval, accompanied by a
 plot showing conservation overlap between `ALT_observed` groups.
@@ -119,7 +117,7 @@ stories:
 - normalization exclusions, ClinVar review status, and cohort flow details;
 - per-strategy callability and ortholog-depth distributions;
 - gene-level and full consequence-class counts;
-- GERP, phastCons, and quantile-stratified sensitivity results;
+- fixed-band conservation sensitivity results and selector-level cohort counts;
 - strategy overlap, runtime, storage, and alignment QC;
 - additional matching or robustness analyses only if overlap diagnostics make
   them necessary.

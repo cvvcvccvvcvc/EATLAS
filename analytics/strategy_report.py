@@ -18,15 +18,16 @@ import plotly.graph_objects as go
 
 from analytics.core.clinvar_validation import build_validation
 from analytics.core.conservation import DEFAULT_TRACK_NAMES, build_conservation_annotations
-from analytics.core.intronic_conservation import (
-    CATEGORY_DEFINITIONS,
-    PRIMARY_SCOPE,
-    SCOPE_LABELS,
-    SENSITIVITY_SCOPE,
-    SPLICE_PROXIMAL_BP,
-    build_intronic_cohort,
-    compute_categorical_enrichment,
-    compute_continuous_enrichment,
+from analytics.core.conservation_validation import (
+    CONSEQUENCE_OPTIONS,
+    CONSEQUENCE_TERMS,
+    PHYLOP_BANDS,
+    SCORE_COLUMN,
+    SPLINE_DF,
+    VARIANT_TYPE_OPTIONS,
+    ConservationValidation,
+    build_conservation_cohort,
+    compute_conservation_validation,
 )
 from analytics.core.negative_controls import NegativeControlAnalysis, build_negative_controls
 from analytics.core.variant_summary import StrategyOverlap, VariantSummary, build_variant_summary
@@ -114,15 +115,11 @@ class RunInputs:
 
 
 @dataclass(frozen=True)
-class IntronicConservationAnalysis:
+class ConservationAnalysis:
     annotations_path: Path
     manifest_path: Path
     manifest: dict
-    score_columns: list[str]
-    cohort_summary: dict[str, int]
-    bin_results: pd.DataFrame
-    adjusted_results: pd.DataFrame
-    continuous_results: pd.DataFrame
+    validation: ConservationValidation
 
 
 def parse_args() -> argparse.Namespace:
@@ -142,14 +139,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--report-name",
         help="Short report file name inside <run-dir>/reports. '.html' is added if omitted.",
-    )
-    parser.add_argument(
-        "--conservation-tracks",
-        default=DEFAULT_TRACK_NAMES,
-        help=(
-            "Comma-separated conservation tracks for intronic validation. "
-            f"Default: {DEFAULT_TRACK_NAMES}; GERP and phastCons are opt-in sensitivity tracks."
-        ),
     )
     parser.add_argument(
         "--negative-control-sample-size",
@@ -563,88 +552,102 @@ def validation_method_table() -> pd.DataFrame:
     )
 
 
-def intronic_conservation_method_table() -> pd.DataFrame:
+def validation_consequence_grouping_table() -> pd.DataFrame:
+    rows = []
+    for key, label in CONSEQUENCE_OPTIONS:
+        if key == "all":
+            continue
+        terms = CONSEQUENCE_TERMS.get(key)
+        rows.append(
+            {
+                "Consequence subset": label,
+                "ClinVar MC terms": ", ".join(sorted(terms))
+                if terms
+                else "Missing MC or any MC term not assigned to a named subset.",
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def conservation_validation_method_table(analysis: ConservationAnalysis | None) -> pd.DataFrame:
+    versions = analysis.validation.r_versions if analysis is not None else {}
     return pd.DataFrame(
         [
             {
                 "Step": "Variant set",
                 "Definition": (
-                    "Clean B/LB and P/LP ClinVar SNVs from the normalized validation universe. INDELs are excluded "
-                    "because a single-position conservation score is not an allele-level summary for an indel."
+                    "Clean B/LB and P/LP ClinVar SNVs and simple INDELs from the normalized target-locus universe. "
+                    "ALT_observed=0 means that the strategy did not report that exact normalized ALT; no callability "
+                    "filter or covariate is applied."
                 ),
             },
             {
-                "Step": "Intronic restriction",
+                "Step": "Consequence subsets",
                 "Definition": (
-                    "A position must fall in an intron from fetch/target_features.tsv.gz and in no exon of any "
-                    "overlapping target-gene context. Target introns are the gene body minus the collapsed exon union."
+                    "Subsets use ClinVar MC Sequence Ontology terms. A record with terms from multiple groups enters "
+                    "each matching group once and also enters All consequences; consequence-view counts are not additive."
                 ),
             },
             {
                 "Step": "Conservation annotation",
-                "Definition": "Each SNV position is annotated once from remote bigWig tracks and cached under <run-dir>/analytics/.",
+                "Definition": (
+                    "phyloP100way is read from the hg38 UCSC bigWig. SNVs use the substituted base; deletions use "
+                    "the mean across deleted reference bases excluding the VCF padding base; insertions use the mean "
+                    "of the two flanking reference bases. All required bases must have a score."
+                ),
             },
             {
-                "Step": "phyloP categories",
+                "Step": "Fixed bands",
                 "Definition": (
                     "<= -1.30103 nominal acceleration band; (-1.30103, 1.30103) central band; "
                     ">= 1.30103 nominal conservation band. The cutoffs equal signed -log10(0.05) "
-                    "and are descriptive, not genome-wide significance claims."
+                    "for a single-base phyloP score and are descriptive, not genome-wide significance claims."
                 ),
             },
             {
-                "Step": "phastCons categories",
-                "Definition": "< 0.5 lower and >= 0.5 higher posterior conservation probability.",
-            },
-            {
-                "Step": "GERP RS categories",
+                "Step": "Fixed-band statistics",
                 "Definition": (
-                    "<= 0 no constraint/substitution surplus; (0, 2) weak; [2, 4) moderate; >= 4 strong constraint. "
-                    "These are prespecified descriptive bands, not GERP significance thresholds."
-                ),
-            },
-            {
-                "Step": "Categorical analysis",
-                "Definition": (
-                    "Each category receives a B/LB-vs-P/LP ALT-observed 2x2 table, OR, 95% CI, and two-sided Fisher "
-                    "test. A Mantel-Haenszel common OR and CMH test summarize the association across categories. "
-                    "This is a descriptive sensitivity analysis; continuous phyloP adjustment is primary."
+                    "Each band receives a B/LB-vs-P/LP ALT-observed 2x2 table, OR, approximate 95% CI, and two-sided "
+                    "Fisher test. A Mantel-Haenszel common OR and CMH test summarize across bands. This is a "
+                    "sensitivity analysis because residual phyloP differences can remain within a band."
                 ),
             },
             {
                 "Step": "Continuous analysis",
                 "Definition": (
-                    "For each strategy and score separately: logit P(B/LB) = intercept + beta_ALT*ALT_observed + "
-                    "natural cubic spline(score, df=3). exp(beta_ALT) is the continuous-score-adjusted OR; its "
-                    "95% CI and p-value use the fitted model's Wald covariance."
+                    f"Firth logistic regression: logit P(B/LB) = intercept + beta_ALT*ALT_observed + natural "
+                    f"spline(phyloP100way, df={SPLINE_DF}). exp(beta_ALT) is the adjusted OR. The 95% CI and p-value "
+                    "use profile penalized likelihood, not a Wald approximation."
                 ),
             },
             {
-                "Step": "Sparse data",
+                "Step": "Continuous estimability",
                 "Definition": (
-                    "A result is marked not estimable when either clinical class or ALT-observed group is absent, "
-                    "the spline lacks score support, or fitting is rank-deficient/non-finite/numerically separated."
+                    "Both clinical classes, both ALT-observed groups, at least four distinct scores, and overlap "
+                    "between the groups' observed phyloP ranges are required. Complete outcome separation is handled "
+                    "by Firth penalization rather than by discarding the view."
                 ),
             },
             {
                 "Step": "Multiplicity",
                 "Definition": (
-                    "Benjamini-Hochberg correction is applied separately to category-level Fisher tests, "
-                    "score-by-strategy CMH tests, and continuous-model Wald tests within each cohort scope."
+                    "Benjamini-Hochberg correction is applied as three prespecified families across displayed "
+                    "selector combinations: per-band Fisher tests, pooled CMH tests, and continuous-model PLR tests."
                 ),
             },
             {
-                "Step": "Splice sensitivity",
+                "Step": "INDEL interpretation",
                 "Definition": (
-                    "The primary cohort includes all intronic positions. A supporting analysis excludes the first "
-                    f"and last {SPLICE_PROXIMAL_BP} bases of each intron."
+                    "The fixed thresholds have their nominal single-base p-value interpretation only for SNVs. "
+                    "INDEL, insertion, deletion, and All-variant views apply the same bands to an aggregate score "
+                    "for descriptive comparability."
                 ),
             },
             {
-                "Step": "Callability limitation",
+                "Step": "Software",
                 "Definition": (
-                    "ALT_observed=0 means the normalized allele is absent from that strategy's event output. "
-                    "This analytics-only analysis does not yet exclude positions lacking per-position ortholog callability."
+                    f"R {versions.get('R', 'not recorded')}; logistf {versions.get('logistf', 'not recorded')}. "
+                    "The report does not fall back to ordinary maximum-likelihood logistic regression."
                 ),
             },
         ]
@@ -1356,463 +1359,240 @@ def build_validation_kind_sections(results: pd.DataFrame, variant_kind: str, inc
     return sections
 
 
-def build_intronic_conservation_analysis(
+def build_conservation_analysis(
     *,
     inputs: RunInputs,
     validation,
     strategies: list[str],
-    track_names: str,
-) -> IntronicConservationAnalysis:
+) -> ConservationAnalysis:
     conservation = build_conservation_annotations(
         universe=validation.universe,
         universe_path=validation.universe_path,
         analytics_dir=inputs.run_dir / "analytics",
-        track_names=track_names,
+        track_names=DEFAULT_TRACK_NAMES,
     )
-    cohort = build_intronic_cohort(
+    cohort = build_conservation_cohort(
         universe=validation.universe,
         conservation=conservation.annotations,
-        target_features_tsv=inputs.target_features_tsv,
-        score_columns=conservation.score_columns,
     )
-    bin_results, adjusted_results = compute_categorical_enrichment(
-        cohort=cohort.variants,
+    results = compute_conservation_validation(
+        cohort=cohort,
         observed_by_strategy_type=validation.observed_by_strategy_type,
         strategies=strategies,
-        score_columns=conservation.score_columns,
+        analytics_dir=inputs.run_dir / "analytics",
     )
-    continuous_results = compute_continuous_enrichment(
-        cohort=cohort.variants,
-        observed_by_strategy_type=validation.observed_by_strategy_type,
-        strategies=strategies,
-        score_columns=conservation.score_columns,
-    )
-    return IntronicConservationAnalysis(
+    return ConservationAnalysis(
         annotations_path=conservation.annotations_path,
         manifest_path=conservation.manifest_path,
         manifest=conservation.manifest,
-        score_columns=conservation.score_columns,
-        cohort_summary=cohort.summary,
-        bin_results=bin_results,
-        adjusted_results=adjusted_results,
-        continuous_results=continuous_results,
+        validation=results,
     )
 
 
-def build_categorical_conservation_sections(
-    analysis: IntronicConservationAnalysis,
-    include_plotly: bool,
+def build_fixed_conservation_sections(
+    analysis: ConservationAnalysis,
 ) -> list[str]:
-    sections = ["<h2>Intronic Conservation Categories: Sensitivity Analysis</h2>"]
+    summary = analysis.validation.cohort.summary
+    sections = ["<h2>ClinVar Enrichment Within Fixed phyloP Bands</h2>"]
     sections.append(
-        "<p class=\"lead\">ClinVar B/LB and P/LP SNVs are restricted to target introns, then stratified by "
-        "prespecified conservation-score thresholds. Mantel-Haenszel summaries are descriptive checks for the "
-        "primary continuous-score model; categories do not remove all within-band conservation differences.</p>"
+        "<p class=\"lead\">This sensitivity analysis repeats the B/LB-versus-P/LP enrichment test within "
+        "three prespecified phyloP100way bands. The Mantel-Haenszel estimate pools the band-specific 2x2 tables; "
+        "it reduces, but cannot eliminate, residual conservation differences inside each band.</p>"
     )
-    sections.append(intronic_cohort_cards(analysis))
-
-    include_js = include_plotly
-    for score in analysis.score_columns:
-        adjusted = analysis.adjusted_results[
-            (analysis.adjusted_results["scope"] == PRIMARY_SCOPE)
-            & (analysis.adjusted_results["score"].astype(str) == score)
-        ].copy()
-        bins = analysis.bin_results[
-            (analysis.bin_results["scope"] == PRIMARY_SCOPE)
-            & (analysis.bin_results["score"].astype(str) == score)
-        ].copy()
-        sections.append(f"<h3>{score}</h3>")
-        if bins.empty:
-            sections.append(f"<p>No intronic ClinVar SNVs with {score} were available.</p>")
-            continue
-
-        fig_adjusted = conservation_adjusted_figure(adjusted, score)
-        if fig_adjusted is not None:
-            sections.append(fig_html(fig_adjusted, include_plotlyjs=include_js))
-            include_js = False
-        fig_heatmap = conservation_bin_heatmap(bins, adjusted, score)
-        if fig_heatmap is not None:
-            sections.append(fig_html(fig_heatmap, include_plotlyjs=include_js))
-            include_js = False
-
-        if not bool((adjusted["status"] == "estimated").any()):
-            reason = adjusted["reason"].dropna().astype(str).replace("", np.nan).dropna()
-            message = reason.iloc[0] if not reason.empty else "The adjusted effect is not estimable."
-            sections.append(f"<p><strong>Not estimable:</strong> {message}</p>")
-        sections.append("<h4>Categorical Adjusted Summary</h4>")
-        sections.append(table_html(conservation_adjusted_table(adjusted), classes="table table-sm table-striped"))
-        if bool((adjusted["status"] == "estimated").any()):
-            sections.append("<details><summary>Per-bin 2x2 tables</summary>")
-            sections.append(table_html(conservation_bin_detail_table(bins), classes="table table-sm table-striped"))
-            sections.append("</details>")
-        else:
-            sections.append(
-                "<p>Per-bin ORs, confidence intervals, and p-values are suppressed because the required "
-                "B/LB and P/LP outcome classes are not both present.</p>"
-            )
-
-    sensitivity_adjusted = analysis.adjusted_results[
-        analysis.adjusted_results["scope"] == SENSITIVITY_SCOPE
-    ].copy()
-    sensitivity_bins = analysis.bin_results[analysis.bin_results["scope"] == SENSITIVITY_SCOPE].copy()
+    sections.append(conservation_cohort_cards(summary))
     sections.append(
-        f"<details><summary>Sensitivity: {SCOPE_LABELS[SENSITIVITY_SCOPE]}</summary>"
-    )
-    sections.append(
-        "<p class=\"lead\">This repeats the categorical analysis after excluding splice-proximal intronic "
-        "positions; it is supporting evidence, not a separately selected primary cohort.</p>"
-    )
-    sections.append(table_html(conservation_adjusted_table(sensitivity_adjusted), classes="table table-sm table-striped"))
-    if bool((sensitivity_adjusted["status"] == "estimated").any()):
-        sections.append("<details><summary>Per-bin sensitivity tables</summary>")
-        sections.append(table_html(conservation_bin_detail_table(sensitivity_bins), classes="table table-sm table-striped"))
-        sections.append("</details>")
-    else:
-        sections.append("<p>Per-bin inference is not estimable in this sensitivity cohort.</p>")
-    sections.append("</details>")
-    return sections
-
-
-def build_continuous_conservation_sections(
-    analysis: IntronicConservationAnalysis,
-    include_plotly: bool,
-) -> list[str]:
-    sections = ["<h2>Intronic Validation with Continuous Conservation</h2>"]
-    sections.append(
-        "<p class=\"lead\">Each conservation score is modeled separately as a continuous nonlinear covariate "
-        "using a three-degree-of-freedom natural cubic spline. The reported OR estimates the association of "
-        "ALT observation with B/LB classification at the same modeled conservation score.</p>"
-    )
-    sections.append(intronic_cohort_cards(analysis))
-
-    primary = analysis.continuous_results[
-        analysis.continuous_results["scope"] == PRIMARY_SCOPE
-    ].copy()
-    figure = continuous_conservation_figure(primary)
-    if figure is not None:
-        sections.append(fig_html(figure, include_plotlyjs=include_plotly))
-    if primary.empty or not bool((primary["status"] == "estimated").any()):
-        sections.append(
-            "<p><strong>No continuous adjusted effect is currently estimable.</strong> "
-            "The table states the data condition that prevents each model fit.</p>"
+        conservation_selector_view(
+            view_id="fixed-conservation",
+            strategies=analysis.validation.fixed_adjusted["strategy"].drop_duplicates().tolist(),
+            primary=analysis.validation.fixed_adjusted,
+            detail=analysis.validation.fixed_bins,
+            mode="fixed",
         )
-    sections.append("<h3>Continuous Adjusted Models</h3>")
-    sections.append(table_html(continuous_conservation_table(primary), classes="table table-sm table-striped"))
-
-    sensitivity = analysis.continuous_results[
-        analysis.continuous_results["scope"] == SENSITIVITY_SCOPE
-    ].copy()
-    sections.append(
-        f"<details><summary>Sensitivity: {SCOPE_LABELS[SENSITIVITY_SCOPE]}</summary>"
     )
-    sections.append(table_html(continuous_conservation_table(sensitivity), classes="table table-sm table-striped"))
-    sections.append("</details>")
     return sections
 
 
-def intronic_cohort_cards(analysis: IntronicConservationAnalysis) -> str:
-    summary = analysis.cohort_summary
+def build_continuous_firth_sections(
+    analysis: ConservationAnalysis,
+) -> list[str]:
+    summary = analysis.validation.cohort.summary
+    sections = ["<h2>ClinVar Enrichment with Continuous phyloP Adjustment</h2>"]
+    sections.append(
+        "<p class=\"lead\">The primary model uses Firth logistic regression with a three-degree-of-freedom "
+        "natural spline for phyloP100way. The adjusted OR asks whether exact ALT observation remains associated "
+        "with B/LB classification after modeling the continuous, potentially nonlinear conservation relationship.</p>"
+    )
+    sections.append(conservation_cohort_cards(summary))
+    sections.append(
+        conservation_selector_view(
+            view_id="continuous-conservation",
+            strategies=analysis.validation.continuous["strategy"].drop_duplicates().tolist(),
+            primary=analysis.validation.continuous,
+            detail=analysis.validation.distributions,
+            mode="continuous",
+        )
+    )
+    return sections
+
+
+def conservation_cohort_cards(summary: dict[str, int]) -> str:
     return metric_cards(
         [
-            ("Usable ClinVar SNVs", format_int(summary.get("usable_snv_count", 0))),
-            ("Intronic SNVs", format_int(summary.get("intronic_snv_count", 0))),
-            ("Intronic B/LB", format_int(summary.get("intronic_benign_count", 0))),
-            ("Intronic P/LP", format_int(summary.get("intronic_pathogenic_count", 0))),
-            ("Splice-proximal intronic", format_int(summary.get("splice_proximal_count", 0))),
+            ("ClinVar B/LB + P/LP alleles", format_int(summary.get("allele_count", 0))),
+            ("With phyloP100way", format_int(summary.get("scored_allele_count", 0))),
+            ("SNVs", format_int(summary.get("snv_count", 0))),
+            ("Insertions", format_int(summary.get("insertion_count", 0))),
+            ("Deletions", format_int(summary.get("deletion_count", 0))),
         ]
     )
 
 
-def conservation_adjusted_figure(adjusted: pd.DataFrame, score: str):
-    plot_df = adjusted[adjusted["status"] == "estimated"].dropna(subset=["ci_low", "ci_high"]).copy()
-    plot_df = plot_df[(plot_df["ci_low"] > 0) & (plot_df["ci_high"] > 0)]
-    if plot_df.empty:
-        return None
-    plot_df["Strategy"] = plot_df["strategy"].map(strategy_label)
-    plot_df["plot_odds_ratio"] = plot_df["odds_ratio_mh"]
-    infinite_or = ~np.isfinite(plot_df["plot_odds_ratio"])
-    plot_df.loc[infinite_or, "plot_odds_ratio"] = np.sqrt(
-        plot_df.loc[infinite_or, "ci_low"] * plot_df.loc[infinite_or, "ci_high"]
+def conservation_selector_view(
+    *,
+    view_id: str,
+    strategies: list[str],
+    primary: pd.DataFrame,
+    detail: pd.DataFrame,
+    mode: str,
+) -> str:
+    indel_note = (
+        "phyloP thresholds have a nominal single-base p-value interpretation only for SNVs. This view applies "
+        "them to the prespecified INDEL aggregate score for descriptive comparability."
+        if mode == "fixed"
+        else "INDEL phyloP is an aggregate allele score (deleted-base mean or insertion-flank mean), not a "
+        "single-base phyloP value. Interpret the adjusted INDEL association separately from the primary SNV view."
     )
-    plot_df = plot_df[np.isfinite(plot_df["plot_odds_ratio"]) & (plot_df["plot_odds_ratio"] > 0)]
-    if plot_df.empty:
-        return None
-    plot_df = plot_df.sort_values("plot_odds_ratio", ascending=False)
-    fig = go.Figure(
-        data=go.Scatter(
-            x=plot_df["plot_odds_ratio"],
-            y=plot_df["Strategy"],
-            mode="markers",
-            marker={"size": 10, "color": "#2f6f62"},
-            error_x={
-                "type": "data",
-                "symmetric": False,
-                "array": plot_df["ci_high"] - plot_df["plot_odds_ratio"],
-                "arrayminus": plot_df["plot_odds_ratio"] - plot_df["ci_low"],
-                "thickness": 1.4,
-            },
-            hovertemplate=(
-                "%{y}<br>MH OR: %{customdata[0]}<br>"
-                "95% CI: %{customdata[1]:.3g}-%{customdata[2]:.3g}<br>"
-                "CMH p: %{customdata[3]:.3g}<br>"
-                "BH q: %{customdata[4]:.3g}<extra></extra>"
-            ),
-            customdata=np.stack(
-                [
-                    plot_df["odds_ratio_mh"].map(format_ratio),
-                    plot_df["ci_low"],
-                    plot_df["ci_high"],
-                    plot_df["cmh_p"],
-                    plot_df["cmh_q"],
-                ],
-                axis=-1,
-            ),
-        )
-    )
-    fig.add_vline(x=1.0, line_dash="dash", line_color="#8c8c8c")
-    fig.update_layout(
-        title=f"{score}: intronic enrichment adjusted across fixed categories",
-        xaxis_title="Mantel-Haenszel odds ratio (log scale)",
-        yaxis_title="",
-        xaxis_type="log",
-        height=360,
-        margin={"l": 140, "r": 30, "t": 52, "b": 58},
-        template="plotly_white",
-    )
-    fig.update_yaxes(categoryorder="array", categoryarray=plot_df["Strategy"].tolist()[::-1])
-    return fig
-
-
-def conservation_bin_heatmap(bins: pd.DataFrame, adjusted: pd.DataFrame, score: str):
-    work = bins.copy()
-    work["Strategy"] = work["strategy"].map(strategy_label)
-    work["Bin"] = work["bin_label"].astype(str)
-    finite_positive = np.isfinite(work["odds_ratio"]) & (work["odds_ratio"] > 0)
-    infinite_positive = np.isposinf(work["odds_ratio"])
-    if not bool(finite_positive.any() or infinite_positive.any()):
-        return None
-    work["log2_or"] = np.nan
-    work.loc[finite_positive, "log2_or"] = np.log2(work.loc[finite_positive, "odds_ratio"])
-    finite_abs = float(np.nanmax(np.abs(work.loc[finite_positive, "log2_or"]))) if bool(finite_positive.any()) else 1.0
-    zmax = min(max(finite_abs, 0.5), 4.0)
-    work.loc[infinite_positive, "log2_or"] = zmax
-
-    adjusted_order = adjusted.copy()
-    adjusted_order["Strategy"] = adjusted_order["strategy"].map(strategy_label)
-    adjusted_order["plot_order"] = adjusted_order["odds_ratio_mh"].replace([np.inf, -np.inf], np.nan)
-    strategy_order = adjusted_order.sort_values("plot_order", ascending=False, na_position="last")["Strategy"].tolist()
-    definitions = CATEGORY_DEFINITIONS.get(score, [])
-    bin_order = [definition.label for definition in definitions]
-    pivot = work.pivot_table(index="Strategy", columns="Bin", values="log2_or", aggfunc="first")
-    text = work.pivot_table(index="Strategy", columns="Bin", values="odds_ratio", aggfunc="first")
-    pvalues = work.pivot_table(index="Strategy", columns="Bin", values="fisher_p", aggfunc="first")
-    qvalues = work.pivot_table(index="Strategy", columns="Bin", values="fisher_q", aggfunc="first")
-    counts = work.pivot_table(index="Strategy", columns="Bin", values="row_count", aggfunc="first")
-    ranges = work.pivot_table(
-        index="Strategy",
-        columns="Bin",
-        values="bin_range",
-        aggfunc="first",
-    ) if "bin_range" in work.columns else None
-
-    pivot = pivot.reindex(index=strategy_order, columns=bin_order)
-    text = text.reindex(index=strategy_order, columns=bin_order)
-    pvalues = pvalues.reindex(index=strategy_order, columns=bin_order)
-    qvalues = qvalues.reindex(index=strategy_order, columns=bin_order)
-    counts = counts.reindex(index=strategy_order, columns=bin_order)
-    text_values = text.apply(lambda column: column.map(format_ratio)).to_numpy()
-    if ranges is not None:
-        ranges = ranges.reindex(index=strategy_order, columns=bin_order)
-        range_values = ranges.fillna("").to_numpy()
-    else:
-        range_values = np.full(text_values.shape, "", dtype=object)
-    customdata = np.dstack(
-        [text_values, pvalues.to_numpy(), qvalues.to_numpy(), counts.to_numpy(), range_values]
-    )
-    fig = go.Figure(
-        data=go.Heatmap(
-            z=pivot.to_numpy(),
-            x=bin_order,
-            y=pivot.index.tolist(),
-            text=text_values,
-            customdata=customdata,
-            colorscale="RdYlGn",
-            zmid=0,
-            zmin=-zmax,
-            zmax=zmax,
-            colorbar={"title": "log2 OR"},
-            hovertemplate=(
-                "%{y}, %{x}<br>"
-                "Range: %{customdata[4]}<br>"
-                "OR: %{customdata[0]}<br>"
-                "Fisher p: %{customdata[1]:.3g}<br>"
-                "BH q: %{customdata[2]:.3g}<br>"
-                "N: %{customdata[3]:.0f}<extra></extra>"
-            ),
-        )
-    )
-    fig.update_traces(texttemplate="%{text}", textfont_size=11)
-    fig.update_layout(
-        title=f"{score}: within-category odds ratios",
-        height=360,
-        margin={"l": 140, "r": 30, "t": 52, "b": 58},
-        template="plotly_white",
-    )
-    fig.update_xaxes(title_text="Conservation category, low to high", tickangle=-18)
-    fig.update_yaxes(title_text="")
-    return fig
-
-
-def conservation_adjusted_table(adjusted: pd.DataFrame) -> pd.DataFrame:
-    if adjusted.empty:
-        return pd.DataFrame(
-            columns=["Strategy", "Usable SNVs", "Categories", "MH adjusted OR", "95% CI", "CMH p", "BH q", "Status"]
-        )
-    table = adjusted.sort_values("odds_ratio_mh", ascending=False, na_position="last").copy()
-    table["Strategy"] = table["strategy"].map(strategy_label)
-    table["MH adjusted OR"] = table["odds_ratio_mh"].map(format_ratio)
-    table["95% CI"] = table.apply(lambda row: format_ci(row["ci_low"], row["ci_high"]), axis=1)
-    table["CMH p"] = table["cmh_p"].map(format_pvalue)
-    table["BH q"] = table["cmh_q"].map(format_pvalue)
-    table["Status"] = table.apply(
-        lambda row: "Estimated" if row["status"] == "estimated" else str(row["reason"]),
-        axis=1,
-    )
-    table = table.rename(columns={"usable_rows": "Usable SNVs", "bin_count": "Categories"})
-    return table[
-        ["Strategy", "Usable SNVs", "Categories", "MH adjusted OR", "95% CI", "CMH p", "BH q", "Status"]
-    ]
-
-
-def conservation_bin_detail_table(bins: pd.DataFrame) -> pd.DataFrame:
-    if bins.empty:
-        return pd.DataFrame()
-    table = bins.sort_values(["strategy", "bin_index"], kind="mergesort").copy()
-    table["Strategy"] = table["strategy"].map(strategy_label)
-    table["Bin"] = table["bin_label"]
-    table["Range"] = table["bin_range"]
-    table["OR"] = table["odds_ratio"].map(format_ratio)
-    table["95% CI"] = table.apply(lambda row: format_ci(row["ci_low"], row["ci_high"]), axis=1)
-    table["Fisher p"] = table["fisher_p"].map(format_pvalue)
-    table["BH q"] = table["fisher_q"].map(format_pvalue)
-    estimable = (
-        ((table["benign_observed"] + table["benign_not_observed"]) > 0)
-        & ((table["pathogenic_observed"] + table["pathogenic_not_observed"]) > 0)
-        & ((table["benign_observed"] + table["pathogenic_observed"]) > 0)
-        & ((table["benign_not_observed"] + table["pathogenic_not_observed"]) > 0)
-    )
-    table.loc[~estimable, ["OR", "95% CI", "Fisher p", "BH q"]] = ""
-    table["Status"] = np.where(estimable, "Estimated", "Not estimable")
-    return table[
-        [
-            "Strategy",
-            "Bin",
-            "Range",
-            "row_count",
-            "benign_observed",
-            "pathogenic_observed",
-            "benign_not_observed",
-            "pathogenic_not_observed",
-            "OR",
-            "95% CI",
-            "Fisher p",
-            "BH q",
-            "Status",
-        ]
-    ].rename(
-        columns={
-            "row_count": "N",
-            "benign_observed": "B/LB observed",
-            "pathogenic_observed": "P/LP observed",
-            "benign_not_observed": "B/LB not observed",
-            "pathogenic_not_observed": "P/LP not observed",
-        }
-    )
-
-
-def continuous_conservation_figure(results: pd.DataFrame):
-    plot_df = results[
-        (results["status"] == "estimated")
-        & results["ci_low"].notna()
-        & results["ci_high"].notna()
-        & (results["ci_low"] > 0)
-        & (results["ci_high"] > 0)
-    ].copy()
-    if plot_df.empty:
-        return None
-    plot_df["Strategy"] = plot_df["strategy"].map(strategy_label)
-    plot_df["Model"] = plot_df["Strategy"] + " · " + plot_df["score"].astype(str)
-    plot_df = plot_df.sort_values("odds_ratio", ascending=False)
-    colors = {
-        "phyloP100way": "#2f6f62",
-        "phastCons100way": "#376a9e",
-        "GERP_RS_92mammals": "#9a5f24",
+    payload = {
+        "viewId": view_id,
+        "mode": mode,
+        "strategies": [{"key": value, "label": strategy_label(value)} for value in strategies],
+        "variantTypes": [{"key": key, "label": label} for key, label in VARIANT_TYPE_OPTIONS],
+        "consequences": [{"key": key, "label": label} for key, label in CONSEQUENCE_OPTIONS],
+        "primary": dataframe_records(primary),
+        "detail": dataframe_records(detail),
     }
-    fig = go.Figure()
-    for score, group in plot_df.groupby("score", sort=False):
-        fig.add_trace(
-            go.Scatter(
-                x=group["odds_ratio"],
-                y=group["Model"],
-                mode="markers",
-                name=str(score),
-                marker={"size": 9, "color": colors.get(str(score), "#52606d")},
-                error_x={
-                    "type": "data",
-                    "symmetric": False,
-                    "array": group["ci_high"] - group["odds_ratio"],
-                    "arrayminus": group["odds_ratio"] - group["ci_low"],
-                    "thickness": 1.3,
-                },
-                customdata=np.stack([group["ci_low"], group["ci_high"], group["wald_p"], group["wald_q"]], axis=-1),
-                hovertemplate=(
-                    "%{y}<br>Adjusted OR: %{x:.3g}<br>95% CI: %{customdata[0]:.3g}-%{customdata[1]:.3g}<br>"
-                    "Wald p: %{customdata[2]:.3g}<br>BH q: %{customdata[3]:.3g}<extra></extra>"
-                ),
-            )
-        )
-    fig.add_vline(x=1.0, line_dash="dash", line_color="#8c8c8c")
-    fig.update_layout(
-        title="ALT-observed association after continuous conservation adjustment",
-        xaxis_title="Spline-adjusted odds ratio (log scale)",
-        yaxis_title="",
-        xaxis_type="log",
-        height=max(380, 28 * len(plot_df) + 110),
-        margin={"l": 210, "r": 30, "t": 55, "b": 58},
-        template="plotly_white",
-        legend_title_text="Conservation score",
-    )
-    fig.update_yaxes(categoryorder="array", categoryarray=plot_df["Model"].tolist()[::-1])
-    return fig
+    payload_json = json.dumps(payload, separators=(",", ":"), allow_nan=False).replace("</", "<\\/")
+    return f"""
+    <div class="analysis-controls" id="{view_id}-controls">
+      <label>Strategy<select data-role="strategy"></select></label>
+      <label>Variant type<select data-role="variant-type"></select></label>
+      <label>Consequence subset<select data-role="consequence"></select></label>
+    </div>
+    <div id="{view_id}-indel-note" class="analysis-note" hidden>
+      {indel_note}
+    </div>
+    <div id="{view_id}-status" class="analysis-note" hidden></div>
+    <div id="{view_id}-metrics" class="metric-grid"></div>
+    <div id="{view_id}-plot" class="analysis-plot"></div>
+    <div id="{view_id}-table"></div>
+    <script>
+    (() => {{
+      const config = {payload_json};
+      const root = document.getElementById(config.viewId + '-controls');
+      const strategySelect = root.querySelector('[data-role="strategy"]');
+      const variantSelect = root.querySelector('[data-role="variant-type"]');
+      const consequenceSelect = root.querySelector('[data-role="consequence"]');
+      const addOptions = (select, values) => values.forEach(value => {{
+        const option = document.createElement('option');
+        option.value = value.key; option.textContent = value.label; select.appendChild(option);
+      }});
+      addOptions(strategySelect, config.strategies);
+      addOptions(variantSelect, config.variantTypes);
+      addOptions(consequenceSelect, config.consequences);
+      variantSelect.value = 'snv';
+      consequenceSelect.value = 'missense';
+
+      const finite = value => value !== null && Number.isFinite(Number(value));
+      const number = value => finite(value) ? Number(value) : null;
+      const fmt = value => {{
+        if (value === 'inf') return '∞';
+        if (value === '-inf') return '-∞';
+        const item = number(value);
+        if (item === null) return 'NA';
+        if (item === 0) return '0';
+        if (Math.abs(item) < 0.001 || Math.abs(item) >= 1000) return item.toExponential(2);
+        return item.toPrecision(3);
+      }};
+      const count = value => number(value) === null ? '0' : Math.round(Number(value)).toLocaleString('en-US').replaceAll(',', ' ');
+      const ci = row => finite(row.ci_low) && finite(row.ci_high) ? `${{fmt(row.ci_low)}}–${{fmt(row.ci_high)}}` : 'NA';
+      const metric = (label, value) => `<div class="metric-card"><div class="metric-label">${{label}}</div><div class="metric-value">${{value}}</div></div>`;
+      const matches = row => row.strategy === strategySelect.value && row.variant_type === variantSelect.value && row.consequence === consequenceSelect.value;
+      const cell = value => `<td>${{value}}</td>`;
+
+      function renderFixed(row, detailRows) {{
+        document.getElementById(config.viewId + '-metrics').innerHTML = [
+          metric('MH adjusted OR', fmt(row?.odds_ratio_mh)),
+          metric('95% CI', row ? ci(row) : 'NA'),
+          metric('CMH p', fmt(row?.cmh_p)),
+          metric('BH q', fmt(row?.cmh_q)),
+          metric('Scored alleles', count(row?.usable_rows)),
+        ].join('');
+        const plotRows = detailRows.filter(item => finite(item.odds_ratio) && number(item.odds_ratio) > 0 && finite(item.ci_low) && finite(item.ci_high));
+        Plotly.react(config.viewId + '-plot', [{{
+          type: 'scatter', mode: 'markers',
+          x: plotRows.map(item => number(item.odds_ratio)),
+          y: plotRows.map(item => item.band_label),
+          error_x: {{type: 'data', symmetric: false,
+            array: plotRows.map(item => number(item.ci_high) - number(item.odds_ratio)),
+            arrayminus: plotRows.map(item => number(item.odds_ratio) - number(item.ci_low))}},
+          marker: {{size: 10, color: '#2f6f62'}},
+          customdata: plotRows.map(item => [ci(item), fmt(item.fisher_p), fmt(item.fisher_q), count(item.row_count)]),
+          hovertemplate: '%{{y}}<br>OR: %{{x:.3g}}<br>95% CI: %{{customdata[0]}}<br>Fisher p: %{{customdata[1]}}<br>BH q: %{{customdata[2]}}<br>N: %{{customdata[3]}}<extra></extra>'
+        }}], {{title: 'Band-specific enrichment', template: 'plotly_white', height: 330, margin: {{l: 155, r: 25, t: 50, b: 55}}, xaxis: {{title: 'Odds ratio (log scale)', type: 'log'}}, yaxis: {{title: ''}}, shapes: [{{type: 'line', x0: 1, x1: 1, y0: 0, y1: 1, yref: 'paper', line: {{dash: 'dash', color: '#8c8c8c'}}}}]}}, {{responsive: true}});
+        const rows = detailRows.map(item => `<tr>${{cell(item.band_label)}}${{cell(item.band_range)}}${{cell(count(item.row_count))}}${{cell(count(item.benign_observed))}}${{cell(count(item.pathogenic_observed))}}${{cell(count(item.benign_not_observed))}}${{cell(count(item.pathogenic_not_observed))}}${{cell(fmt(item.odds_ratio))}}${{cell(ci(item))}}${{cell(fmt(item.fisher_p))}}${{cell(fmt(item.fisher_q))}}${{cell(item.status === 'estimated' ? 'Estimated' : item.reason)}}</tr>`).join('');
+        document.getElementById(config.viewId + '-table').innerHTML = `<h3>Band-specific 2x2 Tables</h3><table><thead><tr><th>Band</th><th>Range</th><th>N</th><th>B/LB observed</th><th>P/LP observed</th><th>B/LB not observed</th><th>P/LP not observed</th><th>OR</th><th>95% CI</th><th>Fisher p</th><th>BH q</th><th>Status</th></tr></thead><tbody>${{rows}}</tbody></table>`;
+      }}
+
+      function renderContinuous(row, detailRows) {{
+        document.getElementById(config.viewId + '-metrics').innerHTML = [
+          metric('Firth adjusted OR', fmt(row?.odds_ratio)),
+          metric('95% profile CI', row ? ci(row) : 'NA'),
+          metric('PLR p', fmt(row?.plr_p)),
+          metric('BH q', fmt(row?.plr_q)),
+          metric('Scored alleles', count(row?.usable_rows)),
+        ].join('');
+        const groups = ['ALT observed', 'ALT not observed'];
+        const colors = {{'ALT observed': '#2166ac', 'ALT not observed': '#8c8c8c'}};
+        const traces = groups.map(group => {{
+          const values = detailRows.filter(item => item.group === group);
+          return {{type: 'scatter', mode: 'lines', name: group, x: values.map(item => item.score), y: values.map(item => item.ecdf), line: {{color: colors[group], width: 2}}, hovertemplate: 'phyloP: %{{x:.3g}}<br>Cumulative fraction: %{{y:.1%}}<extra>' + group + '</extra>'}};
+        }}).filter(trace => trace.x.length);
+        Plotly.react(config.viewId + '-plot', traces, {{title: 'phyloP100way distributions', template: 'plotly_white', height: 350, margin: {{l: 65, r: 25, t: 50, b: 55}}, xaxis: {{title: 'phyloP100way'}}, yaxis: {{title: 'Cumulative fraction', tickformat: '.0%'}}, legend: {{orientation: 'h', y: 1.12}}}}, {{responsive: true}});
+        const overlap = row && finite(row.overlap_low) && finite(row.overlap_high) ? `${{fmt(row.overlap_low)}}–${{fmt(row.overlap_high)}}` : 'None';
+        const status = row?.status === 'estimated' ? 'Estimated' : (row?.reason || 'Not estimable');
+        document.getElementById(config.viewId + '-table').innerHTML = `<h3>Model Data and Estimability</h3><table><thead><tr><th>N</th><th>B/LB</th><th>P/LP</th><th>ALT observed</th><th>ALT not observed</th><th>Score range</th><th>Range overlap</th><th>Status</th></tr></thead><tbody><tr>${{cell(count(row?.usable_rows))}}${{cell(count(row?.benign_rows))}}${{cell(count(row?.pathogenic_rows))}}${{cell(count(row?.observed_rows))}}${{cell(count(row?.not_observed_rows))}}${{cell(row ? `${{fmt(row.score_min)}}–${{fmt(row.score_max)}}` : 'NA')}}${{cell(overlap)}}${{cell(status)}}</tr></tbody></table>`;
+      }}
+
+      function render() {{
+        const row = config.primary.find(matches);
+        const detailRows = config.detail.filter(matches);
+        const indelNote = document.getElementById(config.viewId + '-indel-note');
+        indelNote.hidden = variantSelect.value === 'snv';
+        const status = document.getElementById(config.viewId + '-status');
+        const messages = [];
+        if (row && row.status !== 'estimated') messages.push(`<strong>Not estimable:</strong> ${{row.reason || 'insufficient data'}}`);
+        if (config.mode === 'continuous' && row?.overlap_warning) messages.push('The ALT groups overlap across less than 10% of their combined phyloP range; the adjusted estimate relies on limited common support.');
+        status.innerHTML = messages.join('<br>'); status.hidden = messages.length === 0;
+        if (config.mode === 'fixed') renderFixed(row, detailRows); else renderContinuous(row, detailRows);
+      }}
+      [strategySelect, variantSelect, consequenceSelect].forEach(select => select.addEventListener('change', render));
+      render();
+    }})();
+    </script>
+    """
 
 
-def continuous_conservation_table(results: pd.DataFrame) -> pd.DataFrame:
-    if results.empty:
-        return pd.DataFrame(
-            columns=["Strategy", "Score", "N", "B/LB", "P/LP", "Observed", "Adjusted OR", "95% CI", "Wald p", "BH q", "Status"]
-        )
-    table = results.sort_values("odds_ratio", ascending=False, na_position="last").copy()
-    table["Strategy"] = table["strategy"].map(strategy_label)
-    table["Score"] = table["score"]
-    table["Adjusted OR"] = table["odds_ratio"].map(format_ratio)
-    table["95% CI"] = table.apply(lambda row: format_ci(row["ci_low"], row["ci_high"]), axis=1)
-    table["Wald p"] = table["wald_p"].map(format_pvalue)
-    table["BH q"] = table["wald_q"].map(format_pvalue)
-    table["Status"] = table.apply(
-        lambda row: "Estimated" if row["status"] == "estimated" else str(row["reason"]),
-        axis=1,
-    )
-    table = table.rename(
-        columns={
-            "usable_rows": "N",
-            "benign_rows": "B/LB",
-            "pathogenic_rows": "P/LP",
-            "observed_rows": "Observed",
-        }
-    )
-    return table[
-        ["Strategy", "Score", "N", "B/LB", "P/LP", "Observed", "Adjusted OR", "95% CI", "Wald p", "BH q", "Status"]
-    ]
+def dataframe_records(frame: pd.DataFrame) -> list[dict[str, object]]:
+    if frame.empty:
+        return []
+    records = frame.to_dict(orient="records")
+    for row in records:
+        for key, value in row.items():
+            if value is None or pd.isna(value):
+                row[key] = None
+            elif isinstance(value, (float, np.floating)) and math.isinf(float(value)):
+                row[key] = "inf" if float(value) > 0 else "-inf"
+    return records
 
 
 def format_ci(low, high) -> str:
@@ -2068,7 +1848,7 @@ def build_methods_sections(
     annotation_manifest: dict,
     alignment_manifest: dict,
     validation=None,
-    conservation_analysis: IntronicConservationAnalysis | None = None,
+    conservation_analysis: ConservationAnalysis | None = None,
     negative_controls: NegativeControlAnalysis | None = None,
 ) -> list[str]:
     files = [
@@ -2149,11 +1929,14 @@ def build_methods_sections(
     )
     sections.append(table_html(validation_method_table(), classes="table table-sm table-striped"))
     sections.append("</details>")
-    sections.append("<details><summary>Intronic conservation validation method</summary>")
+    sections.append("<details><summary>Conservation-adjusted ClinVar validation method</summary>")
     sections.append(
-        "<p class=\"lead\">These blocks test ALT-observed enrichment within introns while treating site-level conservation categorically and continuously.</p>"
+        "<p class=\"lead\">The two conservation tabs use the same normalized ClinVar allele universe and "
+        "differ only in whether phyloP100way is represented by fixed bands or a continuous spline.</p>"
     )
-    sections.append(table_html(intronic_conservation_method_table(), classes="table table-sm table-striped"))
+    sections.append(table_html(conservation_validation_method_table(conservation_analysis), classes="table table-sm table-striped"))
+    sections.append("<h4>ClinVar MC consequence subsets</h4>")
+    sections.append(table_html(validation_consequence_grouping_table(), classes="table table-sm table-striped"))
     sections.append("</details>")
     sections.append("<details><summary>Negative-control construction</summary>")
     sections.append(
@@ -2191,7 +1974,7 @@ def build_methods_sections(
         sections.append("</details>")
     if conservation_analysis is not None:
         conservation_files = [
-            ("Conservation SNV annotations", conservation_analysis.annotations_path),
+            ("Conservation allele annotations", conservation_analysis.annotations_path),
             ("Conservation annotation manifest", conservation_analysis.manifest_path),
         ]
         sections.append("<details><summary>Conservation cache files</summary>")
@@ -2212,6 +1995,8 @@ def build_methods_sections(
                 "Status": item.get("status", ""),
                 "Annotated positions": item.get("annotated_positions", ""),
                 "Unique positions": item.get("unique_positions", ""),
+                "Annotated alleles": item.get("annotated_variants", ""),
+                "Missing alleles": item.get("missing_variants", ""),
                 "Blocks": item.get("block_count", ""),
                 "Failed blocks": item.get("failed_block_count", ""),
                 "Open seconds": item.get("open_seconds", ""),
@@ -2345,6 +2130,35 @@ def render_html(sections: list[tuple[str, str, list[str]]]) -> str:
             }}
             summary {{ cursor: pointer; font-weight: 600; }}
             .plotly-graph-div {{ min-height: 300px; }}
+            .analysis-controls {{
+                display: grid;
+                grid-template-columns: repeat(3, minmax(180px, 260px));
+                gap: 12px;
+                margin: 12px 0;
+            }}
+            .analysis-controls label {{ color: #52606d; font-size: 13px; }}
+            .analysis-controls select {{
+                display: block;
+                width: 100%;
+                margin-top: 4px;
+                padding: 7px 8px;
+                border: 1px solid #cbd2d9;
+                border-radius: 4px;
+                background: white;
+                color: #1f2933;
+            }}
+            .analysis-note {{
+                margin: 10px 0;
+                padding: 9px 11px;
+                border-left: 3px solid #d99b2b;
+                background: #fff8e8;
+                color: #594a2a;
+                font-size: 13px;
+            }}
+            .analysis-plot {{ min-height: 330px; max-width: 980px; }}
+            @media (max-width: 760px) {{
+                .analysis-controls {{ grid-template-columns: 1fr; }}
+            }}
         </style>
     </head>
     <body>
@@ -2403,12 +2217,11 @@ def main() -> None:
         strategies=strategies,
     )
 
-    print("Computing intronic conservation validation...")
-    conservation_analysis = build_intronic_conservation_analysis(
+    print("Computing conservation-adjusted ClinVar validation...")
+    conservation_analysis = build_conservation_analysis(
         inputs=inputs,
         validation=validation,
         strategies=strategies,
-        track_names=args.conservation_tracks,
     )
 
     negative_controls = None
@@ -2462,14 +2275,14 @@ def main() -> None:
         ),
         ("clinvar-enrichment", "ClinVar Enrichment", build_validation_sections(validation, include_plotly=True)),
         (
-            "intronic-conservation-continuous",
-            "Conservation + Introns: Primary",
-            build_continuous_conservation_sections(conservation_analysis, include_plotly=True),
+            "conservation-fixed",
+            "Conservation: Fixed Bands",
+            build_fixed_conservation_sections(conservation_analysis),
         ),
         (
-            "intronic-conservation-categories",
-            "Conservation + Introns: Sensitivity",
-            build_categorical_conservation_sections(conservation_analysis, include_plotly=True),
+            "conservation-continuous",
+            "Conservation: Continuous",
+            build_continuous_firth_sections(conservation_analysis),
         ),
         (
             "qc",

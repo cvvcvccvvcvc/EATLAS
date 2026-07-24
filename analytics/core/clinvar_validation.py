@@ -35,9 +35,11 @@ UNIVERSE_FIELDS = [
     "label_class",
     "clinvar_ids",
     "clinvar_sigs",
+    "clinvar_mc_so_ids",
+    "clinvar_mc_terms",
     "gene_ids",
 ]
-CACHE_VERSION = 2
+CACHE_VERSION = 3
 VALIDATION_TYPES = ["snv", "indel"]
 
 
@@ -158,6 +160,12 @@ def build_or_load_clinvar_universe(
         "ambiguous_mixed_label_snv_count": counts["ambiguous_mixed_label_snv_count"],
         "ambiguous_mixed_label_indel_count": counts["ambiguous_mixed_label_indel_count"],
         "duplicate_usable_key_count": counts["duplicate_usable_key_count"],
+        "missing_molecular_consequence_count": sum(
+            1 for row in rows if not row["clinvar_mc_terms"]
+        ),
+        "multiple_molecular_consequence_count": sum(
+            1 for row in rows if len(str(row["clinvar_mc_terms"]).split("|")) > 1
+        ),
         "regions_bed": str(regions_path),
         "universe_tsv": str(universe_path),
     }
@@ -250,6 +258,7 @@ def query_clinvar_variant_universe(
         pos = int(pos_text)
         ref = ref.upper()
         sig = info_value(info_text, "CLNSIG")
+        molecular_consequences = parse_molecular_consequences(info_value(info_text, "MC"))
         label = clinvar_label(sig)
         for alt in alt_text.split(","):
             alt = alt.upper()
@@ -286,6 +295,8 @@ def query_clinvar_variant_universe(
                         "labels": set(),
                         "clinvar_ids": set(),
                         "clinvar_sigs": set(),
+                        "clinvar_mc_so_ids": set(),
+                        "clinvar_mc_terms": set(),
                         "gene_ids": set(),
                     },
                 )
@@ -294,6 +305,11 @@ def query_clinvar_variant_universe(
                     entry["clinvar_ids"].add(rec_id)
                 if sig:
                     entry["clinvar_sigs"].add(sig)
+                for so_id, term in molecular_consequences:
+                    if so_id:
+                        entry["clinvar_mc_so_ids"].add(so_id)
+                    if term:
+                        entry["clinvar_mc_terms"].add(term)
                 entry["gene_ids"].add(str(context["gene_id"]))
 
     rows = []
@@ -320,6 +336,8 @@ def query_clinvar_variant_universe(
                 "label_class": label_class,
                 "clinvar_ids": "|".join(sorted(entry["clinvar_ids"])),
                 "clinvar_sigs": "|".join(sorted(entry["clinvar_sigs"])),
+                "clinvar_mc_so_ids": "|".join(sorted(entry["clinvar_mc_so_ids"])),
+                "clinvar_mc_terms": "|".join(sorted(entry["clinvar_mc_terms"])),
                 "gene_ids": "|".join(sorted(entry["gene_ids"], key=gene_sort_key)),
             }
         )
@@ -357,6 +375,22 @@ def info_value(info_text: str, key: str) -> str:
         if item.startswith(prefix):
             return item[len(prefix) :]
     return ""
+
+
+def parse_molecular_consequences(value: str) -> list[tuple[str, str]]:
+    """Parse ClinVar's comma-separated MC values into SO identifier/term pairs."""
+    consequences = []
+    for item in str(value or "").split(","):
+        item = item.strip()
+        if not item or item == ".":
+            continue
+        so_id, separator, term = item.partition("|")
+        if not separator:
+            so_id, term = "", so_id
+        pair = (so_id.strip(), term.strip())
+        if pair not in consequences:
+            consequences.append(pair)
+    return consequences
 
 
 def clinvar_label(clnsig: str) -> str:

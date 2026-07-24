@@ -57,8 +57,17 @@ DEFAULT_TRACKS = {
     ),
 }
 DEFAULT_TRACK_NAMES = "phyloP100way"
-CACHE_VERSION = 2
-CONSERVATION_FIELDS = ["variant_key", "chrom", "pos"]
+CACHE_VERSION = 3
+CONSERVATION_FIELDS = [
+    "variant_key",
+    "variant_type",
+    "chrom",
+    "pos",
+    "ref",
+    "alt",
+    "score_basis",
+    "score_position_count",
+]
 
 
 def build_conservation_annotations(
@@ -75,8 +84,8 @@ def build_conservation_annotations(
 ) -> ConservationAnnotations:
     tracks = parse_tracks(track_names)
     analytics_dir.mkdir(parents=True, exist_ok=True)
-    annotations_path = analytics_dir / "clinvar_universe.snv.conservation.tsv.gz"
-    manifest_path = analytics_dir / "clinvar_universe.snv.conservation.manifest.json"
+    annotations_path = analytics_dir / "clinvar_universe.snv_indel.conservation.tsv.gz"
+    manifest_path = analytics_dir / "clinvar_universe.snv_indel.conservation.manifest.json"
     score_columns = [track.name for track in tracks]
     expected_inputs = {
         "cache_version": CACHE_VERSION,
@@ -100,7 +109,7 @@ def build_conservation_annotations(
     rows = (
         read_annotation_rows(annotations_path, score_columns)
         if previous_manifest is not None
-        else snv_universe_rows(universe)
+        else universe_rows(universe)
     )
     previous_summaries = {
         str(summary.get("track")): summary
@@ -112,7 +121,7 @@ def build_conservation_annotations(
         if previous_summary and previous_summary.get("status") == "complete":
             summaries.append(previous_summary)
             continue
-        print(f"Annotating ClinVar SNVs with {track.name}: {track.url}", file=sys.stderr)
+        print(f"Annotating ClinVar alleles with {track.name}: {track.url}", file=sys.stderr)
         try:
             summary = annotate_track(
                 rows=rows,
@@ -162,17 +171,64 @@ def parse_tracks(raw_names: str) -> list[Track]:
     return tracks
 
 
-def snv_universe_rows(universe: pd.DataFrame) -> list[dict[str, str]]:
-    required = {"variant_key", "variant_type", "chrom", "pos"}
+def universe_rows(universe: pd.DataFrame) -> list[dict[str, str]]:
+    required = {"variant_key", "variant_type", "chrom", "pos", "ref", "alt"}
     missing = required - set(universe.columns)
     if missing:
         raise ValueError(f"ClinVar universe missing required columns: {', '.join(sorted(missing))}")
-    snv = universe[universe["variant_type"].astype(str) == "snv"][["variant_key", "chrom", "pos"]].copy()
-    snv = snv.drop_duplicates("variant_key").sort_values(["chrom", "pos", "variant_key"], kind="mergesort")
-    return [
-        {"variant_key": str(row.variant_key), "chrom": str(row.chrom), "pos": str(int(row.pos))}
-        for row in snv.itertuples(index=False)
-    ]
+    alleles = universe[universe["variant_type"].astype(str).isin({"snv", "indel"})][
+        ["variant_key", "variant_type", "chrom", "pos", "ref", "alt"]
+    ].copy()
+    alleles = alleles.drop_duplicates("variant_key").sort_values(
+        ["chrom", "pos", "variant_key"], kind="mergesort"
+    )
+    rows = []
+    for row in alleles.itertuples(index=False):
+        positions, score_basis = score_positions(int(row.pos), str(row.ref), str(row.alt))
+        rows.append(
+            {
+                "variant_key": str(row.variant_key),
+                "variant_type": str(row.variant_type),
+                "chrom": str(row.chrom),
+                "pos": str(int(row.pos)),
+                "ref": str(row.ref),
+                "alt": str(row.alt),
+                "score_basis": score_basis,
+                "score_position_count": str(len(positions)),
+            }
+        )
+    return rows
+
+
+def score_positions(pos1: int, ref: str, alt: str) -> tuple[list[int], str]:
+    """Return zero-based bases used to represent one normalized allele's score."""
+    ref = str(ref).upper()
+    alt = str(alt).upper()
+    pos0 = int(pos1) - 1
+    if len(ref) == len(alt) == 1:
+        return [pos0], "substituted_base"
+
+    prefix = 0
+    while prefix < min(len(ref), len(alt)) and ref[prefix] == alt[prefix]:
+        prefix += 1
+    suffix = 0
+    while (
+        suffix < min(len(ref) - prefix, len(alt) - prefix)
+        and ref[len(ref) - suffix - 1] == alt[len(alt) - suffix - 1]
+    ):
+        suffix += 1
+    ref_end = len(ref) - suffix if suffix else len(ref)
+    alt_end = len(alt) - suffix if suffix else len(alt)
+    ref_changed = ref[prefix:ref_end]
+    alt_changed = alt[prefix:alt_end]
+
+    if ref_changed and not alt_changed:
+        start0 = pos0 + prefix
+        return list(range(start0, start0 + len(ref_changed))), "deleted_reference_bases_mean"
+    if alt_changed and not ref_changed:
+        boundary0 = pos0 + prefix
+        return [boundary0 - 1, boundary0], "insertion_flanks_mean"
+    return [], "unsupported_complex_allele"
 
 
 def open_text(path: Path, mode: str = "rt"):
@@ -264,7 +320,7 @@ def annotate_track(
     if pyBigWig is None:
         raise RuntimeError("pyBigWig is required for conservation annotation.")
 
-    positions_by_chrom, row_indices_by_position = build_position_index(rows, track)
+    positions_by_chrom, required_positions_by_row = build_position_index(rows, track)
     for row in rows:
         row[track.name] = ""
 
@@ -277,6 +333,7 @@ def annotate_track(
     read_retry_count = 0
     failed_block_count = 0
     first_error = ""
+    values_by_position: dict[tuple[str, int], float] = {}
 
     for chrom in sorted(positions_by_chrom):
         if chrom not in chrom_sizes:
@@ -314,9 +371,14 @@ def annotate_track(
                     missing_positions += 1
                     continue
                 annotated_positions += 1
-                for row_index in row_indices_by_position.get((chrom, pos0), []):
-                    rows[row_index][track.name] = text
+                values_by_position[(chrom, pos0)] = float(text)
     bw.close()
+    annotated_variants = 0
+    for row_index, required_positions in required_positions_by_row.items():
+        values = [values_by_position.get(position) for position in required_positions]
+        if values and all(value is not None for value in values):
+            rows[row_index][track.name] = value_to_text(sum(values) / len(values), precision)
+            annotated_variants += 1
     return {
         "track": track.name,
         "status": "complete" if failed_block_count == 0 else "partial",
@@ -332,6 +394,8 @@ def annotate_track(
         "unique_positions": sum(len(items) for items in positions_by_chrom.values()),
         "annotated_positions": annotated_positions,
         "missing_positions": missing_positions,
+        "annotated_variants": annotated_variants,
+        "missing_variants": len(rows) - annotated_variants,
     }
 
 
@@ -360,21 +424,23 @@ def failed_track_summary(
         "unique_positions": unique_positions,
         "annotated_positions": 0,
         "missing_positions": unique_positions,
+        "annotated_variants": 0,
+        "missing_variants": len(rows),
     }
 
 
 def build_position_index(
     rows: list[dict[str, str]], track: Track
-) -> tuple[dict[str, set[int]], dict[tuple[str, int], list[int]]]:
+) -> tuple[dict[str, set[int]], dict[int, list[tuple[str, int]]]]:
     positions_by_chrom: dict[str, set[int]] = {}
-    row_indices_by_position: dict[tuple[str, int], list[int]] = {}
+    required_positions_by_row: dict[int, list[tuple[str, int]]] = {}
     for index, row in enumerate(rows):
         chrom = format_chrom(row.get("chrom", ""), track.chrom_style)
-        pos1 = int(row["pos"])
-        pos0 = pos1 - 1
-        positions_by_chrom.setdefault(chrom, set()).add(pos0)
-        row_indices_by_position.setdefault((chrom, pos0), []).append(index)
-    return positions_by_chrom, row_indices_by_position
+        positions, _score_basis = score_positions(int(row["pos"]), row.get("ref", ""), row.get("alt", ""))
+        required = [(chrom, pos0) for pos0 in positions if pos0 >= 0]
+        required_positions_by_row[index] = required
+        positions_by_chrom.setdefault(chrom, set()).update(pos0 for _chrom, pos0 in required)
+    return positions_by_chrom, required_positions_by_row
 
 
 def value_to_text(value: float | None, precision: int) -> str:
