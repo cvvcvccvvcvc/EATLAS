@@ -34,9 +34,9 @@ class ConservationCategory:
 
 CATEGORY_DEFINITIONS = {
     "phyloP100way": [
-        ConservationCategory("Significant acceleration", "<= -1.30103"),
-        ConservationCategory("No significant departure", "-1.30103 to 1.30103"),
-        ConservationCategory("Significant conservation", ">= 1.30103"),
+        ConservationCategory("Nominal acceleration band", "<= -1.30103"),
+        ConservationCategory("Central phyloP band", "-1.30103 to 1.30103"),
+        ConservationCategory("Nominal conservation band", ">= 1.30103"),
     ],
     "phastCons100way": [
         ConservationCategory("Lower conservation probability", "< 0.5"),

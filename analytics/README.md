@@ -20,7 +20,8 @@ micromamba run -n gaph-v2-analytics python -m analytics.strategy_report \
 
 The report computes ClinVar enrichment, categorical and continuous
 conservation-adjusted validation within target introns, and two sampled SNV
-negative controls by default. Conservation tracks can be selected with:
+background comparators by default. `phyloP100way` is the primary and default
+conservation track. GERP and phastCons can be requested as sensitivity tracks:
 
 ```bash
 micromamba run -n gaph-v2-analytics python -m analytics.strategy_report \
@@ -60,12 +61,13 @@ ClinVar universe and requested tracks are unchanged. Successful track columns
 are retained when another remote track fails; later runs retry only failed or
 partial tracks until the cache is complete.
 
-Negative controls are shown in separate report tabs:
+Background comparators are shown in separate report tabs:
 
-- `Matched Callable Null` compares GAPH SNVs with unobserved SNVs matched by
+- `Matched Callable Background` compares GAPH SNVs with unobserved SNVs matched by
   gene, target context, REF, and callable-species depth bin;
-- `Same-Position ALT Null` compares the exact GAPH ALT with other unobserved
-  SNV ALTs at the same position.
+- `Same-Position ALT: Raw` compares the exact GAPH ALT with other unobserved
+  SNV ALTs at the same position. This view is descriptive because it does not
+  yet adjust for transition/transversion class or context-specific mutability.
 
 Their bounded, deterministic samples and annotations are cached under:
 
@@ -73,13 +75,19 @@ Their bounded, deterministic samples and annotations are cached under:
 <run-dir>/analytics/negative_control/
 ```
 
-The default limit is 25,000 focal SNVs per strategy with 1,000 matched-null
+The default limit is 25,000 focal SNVs per strategy with 1,000 matched-background
 resamples. For a faster exploratory run, use
 `--negative-control-sample-size` and `--negative-control-permutations`; changing
 only the number of resamples reuses the prepared control tables.
 
-Raw p-values remain visible in the report. ClinVar Fisher tests use
-Benjamini-Hochberg correction separately within the SNV and INDEL families.
+The sample size is an engineering cap, not a fixed scientific cohort size. A
+run uses every eligible focal SNV when fewer than the cap are available. The
+report shows full focal-weighted phyloP ECDFs and descriptive background
+resampling intervals; it does not report an inferential p-value for these
+comparators.
+
+Raw p-values remain visible for the formal validation analyses. ClinVar Fisher
+tests use Benjamini-Hochberg correction separately within the SNV and INDEL families.
 Within the intronic analysis, fixed-category Fisher tests, score-by-strategy CMH
 tests, and continuous-model Wald tests are corrected as separate families.
 Mantel-Haenszel confidence intervals use the Robins-Breslow-Greenland variance

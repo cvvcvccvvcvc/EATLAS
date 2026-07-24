@@ -5,6 +5,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+from analytics.core.conservation import DEFAULT_TRACK_NAMES
 from analytics.core.intronic_conservation import (
     PRIMARY_SCOPE,
     assign_conservation_category,
@@ -12,6 +13,10 @@ from analytics.core.intronic_conservation import (
     compute_categorical_enrichment,
     compute_continuous_enrichment,
 )
+
+
+def test_phyloP_is_the_default_conservation_track() -> None:
+    assert DEFAULT_TRACK_NAMES == "phyloP100way"
 
 
 def test_intronic_cohort_uses_gene_aware_intervals_and_splice_distance(tmp_path: Path) -> None:
@@ -66,10 +71,10 @@ def test_prespecified_conservation_category_boundaries() -> None:
         pd.Series([-1.30103, -1.0, 1.301029, 1.30103]), "phyloP100way"
     ).astype(str).tolist()
     assert phylo == [
-        "Significant acceleration",
-        "No significant departure",
-        "No significant departure",
-        "Significant conservation",
+        "Nominal acceleration band",
+        "Central phyloP band",
+        "Central phyloP band",
+        "Nominal conservation band",
     ]
 
     phastcons = assign_conservation_category(pd.Series([0.499999, 0.5]), "phastCons100way")

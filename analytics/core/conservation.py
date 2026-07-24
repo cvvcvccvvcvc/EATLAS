@@ -56,7 +56,7 @@ DEFAULT_TRACKS = {
         chrom_style="ensembl",
     ),
 }
-DEFAULT_TRACK_NAMES = ",".join(DEFAULT_TRACKS)
+DEFAULT_TRACK_NAMES = "phyloP100way"
 CACHE_VERSION = 2
 CONSERVATION_FIELDS = ["variant_key", "chrom", "pos"]
 

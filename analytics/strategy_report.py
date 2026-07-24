@@ -146,13 +146,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--conservation-tracks",
         default=DEFAULT_TRACK_NAMES,
-        help=f"Comma-separated conservation tracks for stratified validation. Default: {DEFAULT_TRACK_NAMES}",
+        help=(
+            "Comma-separated conservation tracks for intronic validation. "
+            f"Default: {DEFAULT_TRACK_NAMES}; GERP and phastCons are opt-in sensitivity tracks."
+        ),
     )
     parser.add_argument(
         "--negative-control-sample-size",
         type=int,
         default=25_000,
-        help="Maximum deterministic SNV sample per strategy for each negative control.",
+        help="Maximum deterministic focal-SNV sample per strategy for each background comparator.",
     )
     parser.add_argument(
         "--negative-control-permutations",
@@ -583,7 +586,11 @@ def intronic_conservation_method_table() -> pd.DataFrame:
             },
             {
                 "Step": "phyloP categories",
-                "Definition": "<= -1.30103 acceleration; (-1.30103, 1.30103) no significant departure; >= 1.30103 conservation. The cutoffs equal signed -log10(0.05).",
+                "Definition": (
+                    "<= -1.30103 nominal acceleration band; (-1.30103, 1.30103) central band; "
+                    ">= 1.30103 nominal conservation band. The cutoffs equal signed -log10(0.05) "
+                    "and are descriptive, not genome-wide significance claims."
+                ),
             },
             {
                 "Step": "phastCons categories",
@@ -600,7 +607,8 @@ def intronic_conservation_method_table() -> pd.DataFrame:
                 "Step": "Categorical analysis",
                 "Definition": (
                     "Each category receives a B/LB-vs-P/LP ALT-observed 2x2 table, OR, 95% CI, and two-sided Fisher "
-                    "test. A Mantel-Haenszel common OR and CMH test summarize the association across categories."
+                    "test. A Mantel-Haenszel common OR and CMH test summarize the association across categories. "
+                    "This is a descriptive sensitivity analysis; continuous phyloP adjustment is primary."
                 ),
             },
             {
@@ -647,7 +655,7 @@ def negative_control_method_table() -> pd.DataFrame:
     return pd.DataFrame(
         [
             {
-                "Control": "Matched callable",
+                "Comparator": "Matched callable background",
                 "Definition": (
                     "For each sampled GAPH SNV, up to five ALT-unobserved SNVs are sampled from the same gene, "
                     "CDS/UTR/other-exon/intron context, REF base, and callable-species depth bin "
@@ -656,23 +664,24 @@ def negative_control_method_table() -> pd.DataFrame:
                 "Question": "Do GAPH SNVs differ in phyloP from the technically observable background?",
             },
             {
-                "Control": "Same-position ALT",
+                "Comparator": "Same-position ALT (unadjusted)",
                 "Definition": (
                     "The other possible SNV ALTs at the exact GAPH position are retained only when that strategy "
-                    "did not observe them."
+                    "did not observe them. Mutation class and context-specific mutation probability are not yet "
+                    "matched, so the displayed rates are descriptive."
                 ),
-                "Question": "Does the exact observed ALT carry external evidence beyond the site itself?",
+                "Question": "Raw diagnostic for whether the exact ALT may carry evidence beyond the site itself.",
             },
             {
-                "Control": "Sampling",
+                "Comparator": "Sampling",
                 "Definition": (
-                    "Candidates are selected by a stable hash per strategy. Null intervals and empirical two-sided "
-                    "p-values come from deterministic matched resampling; p-values are exploratory and unadjusted."
+                    "Candidates are selected by a stable hash per strategy up to the configured cap. Control "
+                    "resampling intervals describe the sampled background; no inferential p-value is reported."
                 ),
                 "Question": "Bounded memory and reproducible results without materializing every possible allele.",
             },
             {
-                "Control": "Callability",
+                "Comparator": "Callability",
                 "Definition": (
                     "Primary alignment intervals are merged within species before depth is counted; low-MAPQ, "
                     "non-primary, and ambiguous rows are excluded."
@@ -1394,11 +1403,11 @@ def build_categorical_conservation_sections(
     analysis: IntronicConservationAnalysis,
     include_plotly: bool,
 ) -> list[str]:
-    sections = ["<h2>Intronic Validation by Conservation Category</h2>"]
+    sections = ["<h2>Intronic Conservation Categories: Sensitivity Analysis</h2>"]
     sections.append(
         "<p class=\"lead\">ClinVar B/LB and P/LP SNVs are restricted to target introns, then stratified by "
-        "prespecified conservation-score thresholds. The primary result is the Mantel-Haenszel odds ratio "
-        "across categories.</p>"
+        "prespecified conservation-score thresholds. Mantel-Haenszel summaries are descriptive checks for the "
+        "primary continuous-score model; categories do not remove all within-band conservation differences.</p>"
     )
     sections.append(intronic_cohort_cards(analysis))
 
@@ -1432,9 +1441,15 @@ def build_categorical_conservation_sections(
             sections.append(f"<p><strong>Not estimable:</strong> {message}</p>")
         sections.append("<h4>Categorical Adjusted Summary</h4>")
         sections.append(table_html(conservation_adjusted_table(adjusted), classes="table table-sm table-striped"))
-        sections.append("<details><summary>Per-bin 2x2 tables</summary>")
-        sections.append(table_html(conservation_bin_detail_table(bins), classes="table table-sm table-striped"))
-        sections.append("</details>")
+        if bool((adjusted["status"] == "estimated").any()):
+            sections.append("<details><summary>Per-bin 2x2 tables</summary>")
+            sections.append(table_html(conservation_bin_detail_table(bins), classes="table table-sm table-striped"))
+            sections.append("</details>")
+        else:
+            sections.append(
+                "<p>Per-bin ORs, confidence intervals, and p-values are suppressed because the required "
+                "B/LB and P/LP outcome classes are not both present.</p>"
+            )
 
     sensitivity_adjusted = analysis.adjusted_results[
         analysis.adjusted_results["scope"] == SENSITIVITY_SCOPE
@@ -1448,9 +1463,13 @@ def build_categorical_conservation_sections(
         "positions; it is supporting evidence, not a separately selected primary cohort.</p>"
     )
     sections.append(table_html(conservation_adjusted_table(sensitivity_adjusted), classes="table table-sm table-striped"))
-    sections.append("<details><summary>Per-bin sensitivity tables</summary>")
-    sections.append(table_html(conservation_bin_detail_table(sensitivity_bins), classes="table table-sm table-striped"))
-    sections.append("</details></details>")
+    if bool((sensitivity_adjusted["status"] == "estimated").any()):
+        sections.append("<details><summary>Per-bin sensitivity tables</summary>")
+        sections.append(table_html(conservation_bin_detail_table(sensitivity_bins), classes="table table-sm table-striped"))
+        sections.append("</details>")
+    else:
+        sections.append("<p>Per-bin inference is not estimable in this sensitivity cohort.</p>")
+    sections.append("</details>")
     return sections
 
 
@@ -1676,6 +1695,14 @@ def conservation_bin_detail_table(bins: pd.DataFrame) -> pd.DataFrame:
     table["95% CI"] = table.apply(lambda row: format_ci(row["ci_low"], row["ci_high"]), axis=1)
     table["Fisher p"] = table["fisher_p"].map(format_pvalue)
     table["BH q"] = table["fisher_q"].map(format_pvalue)
+    estimable = (
+        ((table["benign_observed"] + table["benign_not_observed"]) > 0)
+        & ((table["pathogenic_observed"] + table["pathogenic_not_observed"]) > 0)
+        & ((table["benign_observed"] + table["pathogenic_observed"]) > 0)
+        & ((table["benign_not_observed"] + table["pathogenic_not_observed"]) > 0)
+    )
+    table.loc[~estimable, ["OR", "95% CI", "Fisher p", "BH q"]] = ""
+    table["Status"] = np.where(estimable, "Estimated", "Not estimable")
     return table[
         [
             "Strategy",
@@ -1690,6 +1717,7 @@ def conservation_bin_detail_table(bins: pd.DataFrame) -> pd.DataFrame:
             "95% CI",
             "Fisher p",
             "BH q",
+            "Status",
         ]
     ].rename(
         columns={
@@ -1818,10 +1846,14 @@ def build_matched_callable_sections(
     sections.append(
         metric_cards(
             [
+                (
+                    "Sample cap per strategy",
+                    format_int(analysis.manifest.get("inputs", {}).get("sample_size_per_strategy", 0)),
+                ),
                 ("Sampled GAPH SNVs", format_int(analysis.manifest.get("focal_candidate_count", 0))),
                 ("Matched focal SNVs", format_int(analysis.manifest.get("matched_focal_count", 0))),
                 ("Scored focal SNVs", format_int(annotated)),
-                ("Null resamples", format_int(analysis.permutations)),
+                ("Control resamples", format_int(analysis.permutations)),
             ]
         )
     )
@@ -1829,6 +1861,30 @@ def build_matched_callable_sections(
     if conservation_status != "complete":
         error = analysis.manifest.get("conservation", {}).get("error", "")
         sections.append(f"<p>phyloP annotation was incomplete: {error or conservation_status}</p>")
+
+    sections.append(
+        "<p>The ECDF is the primary distribution view: at each phyloP value, it shows the fraction of SNVs "
+        "at or below that value. A GAPH curve shifted upward and left indicates lower phyloP than its matched "
+        "callable background.</p>"
+    )
+    ecdf = analysis.matched_ecdf.copy()
+    if not ecdf.empty:
+        ecdf["Strategy"] = ecdf["strategy"].map(strategy_label)
+        fig_ecdf = px.line(
+            ecdf,
+            x="phyloP100way",
+            y="fraction_leq",
+            color="set",
+            facet_col="Strategy",
+            facet_col_wrap=2,
+            title="Full phyloP distributions: GAPH and focal-weighted matched background",
+            labels={"fraction_leq": "Cumulative fraction", "set": ""},
+            color_discrete_map={"GAPH": "#2166ac", "Matched callable": "#8c8c8c"},
+        )
+        fig_ecdf.for_each_annotation(lambda item: item.update(text=item.text.split("=")[-1]))
+        fig_ecdf.update_yaxes(tickformat=".0%")
+        compact_figure(fig_ecdf, height=max(420, 260 * math.ceil(ecdf["Strategy"].nunique() / 2)))
+        sections.append(fig_html(fig_ecdf, include_plotlyjs=include_plotly))
 
     plot = summary.copy()
     plot["Strategy"] = plot["strategy"].map(strategy_label)
@@ -1847,7 +1903,7 @@ def build_matched_callable_sections(
                 "arrayminus": plot["null_median"] - plot["null_ci_low"],
                 "color": "#8c8c8c",
             },
-            name="Matched null median (95% null interval)",
+            name="Matched-background median (95% resampling interval)",
         )
     )
     fig.add_trace(
@@ -1860,46 +1916,26 @@ def build_matched_callable_sections(
         )
     )
     fig.update_layout(
-        title="phyloP median relative to matched callable background",
+        title="Descriptive phyloP median summary",
         xaxis_title="phyloP100way",
         yaxis={"categoryorder": "array", "categoryarray": plot["Strategy"].tolist()[::-1]},
     )
     compact_figure(fig, height=max(360, 52 * len(plot) + 120), show_x_title=True)
-    sections.append(fig_html(fig, include_plotlyjs=include_plotly))
-
-    ecdf = analysis.matched_ecdf.copy()
-    if not ecdf.empty:
-        ecdf["Strategy"] = ecdf["strategy"].map(strategy_label)
-        fig_ecdf = px.line(
-            ecdf,
-            x="phyloP100way",
-            y="fraction_leq",
-            color="set",
-            facet_col="Strategy",
-            facet_col_wrap=2,
-            title="phyloP distributions: GAPH and focal-weighted matched controls",
-            labels={"fraction_leq": "Cumulative fraction", "set": ""},
-            color_discrete_map={"GAPH": "#2166ac", "Matched callable": "#8c8c8c"},
-        )
-        fig_ecdf.for_each_annotation(lambda item: item.update(text=item.text.split("=")[-1]))
-        fig_ecdf.update_yaxes(tickformat=".0%")
-        compact_figure(fig_ecdf, height=max(420, 260 * math.ceil(ecdf["Strategy"].nunique() / 2)))
-        sections.append(fig_html(fig_ecdf))
+    sections.append(fig_html(fig, include_plotlyjs=False if not ecdf.empty else include_plotly))
 
     table = summary.rename(
         columns={
             "strategy": "Strategy",
             "matched_focals": "Matched SNVs",
             "observed_median": "GAPH median",
-            "null_median": "Null median",
-            "null_ci_low": "Null 2.5%",
-            "null_ci_high": "Null 97.5%",
+            "null_median": "Background median",
+            "null_ci_low": "Background median Q2.5",
+            "null_ci_high": "Background median Q97.5",
             "median_difference": "Median difference",
-            "empirical_p": "Empirical p",
         }
     )
     table["Strategy"] = table["Strategy"].map(strategy_label)
-    table["Empirical p"] = table["Empirical p"].map(format_pvalue)
+    table = table.drop(columns=["empirical_p"], errors="ignore")
     sections.append("<h3>Strategy Summary</h3>")
     sections.append(table_html(table, classes="table table-sm table-striped"))
 
@@ -1911,22 +1947,19 @@ def build_matched_callable_sections(
                 "context": "Target context",
                 "matched_focals": "Matched SNVs",
                 "observed_median": "GAPH median",
-                "null_median": "Null median",
+                "null_median": "Background median",
                 "median_difference": "Median difference",
-                "empirical_p": "Empirical p",
             }
         )
         context["Strategy"] = context["Strategy"].map(strategy_label)
-        context["Empirical p"] = context["Empirical p"].map(format_pvalue)
         context = context[
             [
                 "Strategy",
                 "Target context",
                 "Matched SNVs",
                 "GAPH median",
-                "Null median",
+                "Background median",
                 "Median difference",
-                "Empirical p",
             ]
         ]
         sections.append("<details><summary>CDS, UTR, other-exon, and intron results</summary>")
@@ -1939,10 +1972,12 @@ def build_same_position_sections(
     analysis: NegativeControlAnalysis | None,
     include_plotly: bool,
 ) -> list[str]:
-    sections = ["<h2>Same-Position Alternative ALT</h2>"]
+    sections = ["<h2>Same-Position ALT Comparator: Unadjusted</h2>"]
     sections.append(
         "<p class=\"lead\">Each exact GAPH ALT is compared with SNV ALTs at the same position that the same "
-        "strategy did not observe. Position, callability, local context, and conservation are therefore identical.</p>"
+        "strategy did not observe. Position, callability, local context, and conservation are therefore identical. "
+        "The raw comparison does not match transition/transversion class or context-specific mutation probability, "
+        "so it is descriptive and must not be interpreted as adjusted allele-specific enrichment.</p>"
     )
     if analysis is None:
         sections.append("<p>No negative-control analysis is available for this run.</p>")
@@ -1985,7 +2020,7 @@ def build_same_position_sections(
             go.Bar(
                 x=plot["Strategy"],
                 y=plot["null_rate"],
-                name="Same-position ALT null",
+                name="Other same-position ALT",
                 marker_color="#8c8c8c",
                 error_y={
                     "type": "data",
@@ -2011,16 +2046,15 @@ def build_same_position_sections(
             "metric": "Metric",
             "matched_focals": "Matched SNVs",
             "observed_rate": "GAPH rate",
-            "null_rate": "Null rate",
-            "null_ci_low": "Null 2.5%",
-            "null_ci_high": "Null 97.5%",
+            "null_rate": "Comparator rate",
+            "null_ci_low": "Comparator rate Q2.5",
+            "null_ci_high": "Comparator rate Q97.5",
             "enrichment_ratio": "Enrichment ratio",
-            "empirical_p": "Empirical p",
         }
     )
     table["Strategy"] = table["Strategy"].map(strategy_label)
-    table["Empirical p"] = table["Empirical p"].map(format_pvalue)
-    sections.append("<h3>Matched Comparison</h3>")
+    table = table.drop(columns=["empirical_p"], errors="ignore")
+    sections.append("<h3>Raw Matched Comparison</h3>")
     sections.append(table_html(table, classes="table table-sm table-striped"))
     return sections
 
@@ -2386,7 +2420,7 @@ def main() -> None:
         and clinvar_regions is not None
         and clinvar_regions.exists()
     ):
-        print("Computing matched negative controls...")
+        print("Computing matched background comparators...")
         negative_controls = build_negative_controls(
             run_dir=inputs.run_dir,
             variant_annotations_tsv=inputs.variant_annotations_tsv,
@@ -2403,7 +2437,7 @@ def main() -> None:
         )
     else:
         print(
-            "Skipping matched negative controls: alignment segments, target features, "
+            "Skipping matched background comparators: alignment segments, target features, "
             "or ClinVar target regions are unavailable."
         )
 
@@ -2418,24 +2452,24 @@ def main() -> None:
         ("coverage", "Feature Coverage", build_feature_sections(cov, include_plotly=True)),
         (
             "matched-callable",
-            "Matched Callable Null",
+            "Matched Callable Background",
             build_matched_callable_sections(negative_controls, include_plotly=True),
         ),
         (
             "same-position-alt",
-            "Same-Position ALT Null",
+            "Same-Position ALT: Raw",
             build_same_position_sections(negative_controls, include_plotly=True),
         ),
         ("clinvar-enrichment", "ClinVar Enrichment", build_validation_sections(validation, include_plotly=True)),
         (
-            "intronic-conservation-categories",
-            "Conservation + Introns: Categories",
-            build_categorical_conservation_sections(conservation_analysis, include_plotly=True),
+            "intronic-conservation-continuous",
+            "Conservation + Introns: Primary",
+            build_continuous_conservation_sections(conservation_analysis, include_plotly=True),
         ),
         (
-            "intronic-conservation-continuous",
-            "Conservation + Introns: Continuous",
-            build_continuous_conservation_sections(conservation_analysis, include_plotly=True),
+            "intronic-conservation-categories",
+            "Conservation + Introns: Sensitivity",
+            build_categorical_conservation_sections(conservation_analysis, include_plotly=True),
         ),
         (
             "qc",
