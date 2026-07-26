@@ -32,6 +32,7 @@ CONTROL_VERSION = 2
 MATCHED_POOL_SIZE = 5
 CANDIDATE_POOL_SIZE = MATCHED_POOL_SIZE * 3
 CANDIDATE_FOCAL_CHUNK_SIZE = 2_000
+RESAMPLE_BLOCK_SIZE = 16
 
 
 @dataclass(frozen=True)
@@ -727,40 +728,61 @@ def _group_key(values: object) -> tuple[object, ...]:
     return values if isinstance(values, tuple) else (values,)
 
 
-def _paired_values(frame: pd.DataFrame, value_column: str) -> tuple[np.ndarray, list[np.ndarray]]:
-    observed = []
-    controls = []
-    for _focal_id, group in frame.groupby("focal_id", sort=False):
-        focal_values = pd.to_numeric(
-            group.loc[group["role"] == "observed", value_column], errors="coerce"
-        ).dropna()
-        control_values = pd.to_numeric(
-            group.loc[group["role"] == "control", value_column], errors="coerce"
-        ).dropna()
-        if focal_values.empty or control_values.empty:
-            continue
-        observed.append(float(focal_values.iloc[0]))
-        controls.append(control_values.to_numpy(dtype=float))
-    return np.asarray(observed, dtype=float), controls
+def _paired_values(frame: pd.DataFrame, value_column: str) -> tuple[np.ndarray, np.ndarray]:
+    working = frame[["focal_id", "role", value_column]].copy()
+    working["value"] = pd.to_numeric(working.pop(value_column), errors="coerce")
+
+    observed = (
+        working.loc[working["role"].eq("observed") & working["value"].notna(), ["focal_id", "value"]]
+        .drop_duplicates("focal_id")
+        .set_index("focal_id")["value"]
+    )
+    controls = working.loc[
+        working["role"].eq("control") & working["value"].notna(),
+        ["focal_id", "value"],
+    ].copy()
+    if observed.empty or controls.empty:
+        return np.array([], dtype=float), np.empty((0, 0), dtype=float)
+
+    controls["control_index"] = controls.groupby("focal_id", sort=False).cumcount()
+    control_matrix = controls.pivot(
+        index="focal_id",
+        columns="control_index",
+        values="value",
+    )
+    paired = observed.rename("observed").to_frame().join(control_matrix, how="inner")
+    if paired.empty:
+        return np.array([], dtype=float), np.empty((0, 0), dtype=float)
+    return (
+        paired.pop("observed").to_numpy(dtype=float),
+        paired.to_numpy(dtype=float),
+    )
 
 
 def _resampled_statistics(
     observed: np.ndarray,
-    controls: list[np.ndarray],
+    controls: np.ndarray,
     resamples: int,
     seed: int,
 ) -> tuple[float, np.ndarray]:
-    if observed.size == 0 or not controls:
+    if observed.size == 0 or controls.size == 0:
         return math.nan, np.array([], dtype=float)
+    control_counts = np.isfinite(controls).sum(axis=1)
+    if np.any(control_counts == 0):
+        raise ValueError("Every paired focal must have at least one finite control value.")
+
     rng = np.random.default_rng(seed)
     null = np.empty(resamples, dtype=float)
-    for index in range(resamples):
-        draw = np.fromiter(
-            (values[int(rng.integers(0, len(values)))] for values in controls),
-            dtype=float,
-            count=len(controls),
+    focal_indices = np.arange(len(controls))[None, :]
+    for start in range(0, resamples, RESAMPLE_BLOCK_SIZE):
+        stop = min(resamples, start + RESAMPLE_BLOCK_SIZE)
+        control_indices = rng.integers(
+            0,
+            control_counts,
+            size=(stop - start, len(controls)),
         )
-        null[index] = float(np.median(draw))
+        draws = controls[focal_indices, control_indices]
+        null[start:stop] = np.median(draws, axis=1)
     return float(np.median(observed)), null
 
 
@@ -814,7 +836,9 @@ def _matched_ecdf(frame: pd.DataFrame) -> pd.DataFrame:
         observed, controls = _paired_values(group, "phyloP100way")
         if observed.size == 0:
             continue
-        pooled_controls = np.concatenate(controls)
+        finite_controls = np.isfinite(controls)
+        control_counts = finite_controls.sum(axis=1)
+        pooled_controls = controls[finite_controls]
         combined = np.concatenate([observed, pooled_controls])
         low, high = np.quantile(combined, [0.005, 0.995])
         if not np.isfinite(low) or not np.isfinite(high):
@@ -822,10 +846,17 @@ def _matched_ecdf(frame: pd.DataFrame) -> pd.DataFrame:
         grid = np.linspace(low, high, 121) if high > low else np.array([low])
         observed_ordered = np.sort(observed)
         observed_fractions = np.searchsorted(observed_ordered, grid, side="right") / len(observed)
-        control_fractions = np.mean(
-            [np.searchsorted(np.sort(values), grid, side="right") / len(values) for values in controls],
-            axis=0,
-        )
+        control_weights = np.broadcast_to(
+            (1.0 / control_counts)[:, None],
+            controls.shape,
+        )[finite_controls]
+        order = np.argsort(pooled_controls, kind="mergesort")
+        ordered_controls = pooled_controls[order]
+        cumulative_weights = np.cumsum(control_weights[order])
+        positions = np.searchsorted(ordered_controls, grid, side="right")
+        control_fractions = np.zeros(len(grid), dtype=float)
+        present = positions > 0
+        control_fractions[present] = cumulative_weights[positions[present] - 1] / len(observed)
         for label, fractions in (
             ("GAPH", observed_fractions),
             ("Matched target-space null", control_fractions),

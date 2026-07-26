@@ -18,8 +18,17 @@ micromamba run -n gaph-v2-analytics python -m analytics.strategy_report \
   --run-dir "$RUN"
 ```
 
-The report computes ClinVar enrichment, fixed-band and continuous
-phyloP100way-adjusted validation, and two sampled SNV background comparators.
+The report computes ClinVar enrichment and fixed-band and continuous
+phyloP100way-adjusted validation. The consequence-matched target-space null is
+an explicit opt-in because it uses Ensembl REST VEP and can take hours:
+
+```bash
+micromamba run -n gaph-v2-analytics python -m analytics.strategy_report \
+  --run-dir "$RUN" \
+  --target-space-null \
+  --target-space-null-sample-size 5000
+```
+
 The conservation analyses support strategy, variant-type, and ClinVar MC
 consequence selectors. The primary view is SNV / Missense.
 
@@ -68,9 +77,9 @@ Its bounded, deterministic samples and annotations are cached under:
 <run-dir>/analytics/negative_control/
 ```
 
-The default limit is 25,000 focal SNVs per strategy with 1,000 target-space-null
-resamples. For a faster exploratory run, use
-`--negative-control-sample-size` and `--negative-control-permutations`; changing
+When enabled, the default limit is 25,000 focal SNVs per strategy with 1,000
+target-space-null resamples. For a faster exploratory run, use
+`--target-space-null-sample-size` and `--target-space-null-resamples`; changing
 only the number of resamples reuses the prepared control tables.
 
 The sample size is an engineering cap, not a fixed scientific cohort size. A

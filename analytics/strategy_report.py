@@ -141,19 +141,25 @@ def parse_args() -> argparse.Namespace:
         help="Short report file name inside <run-dir>/reports. '.html' is added if omitted.",
     )
     parser.add_argument(
-        "--negative-control-sample-size",
+        "--target-space-null",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Build the consequence-matched target-space null. Disabled by default because it uses Ensembl REST VEP.",
+    )
+    parser.add_argument(
+        "--target-space-null-sample-size",
         type=int,
         default=25_000,
         help="Maximum deterministic focal-SNV sample per strategy for the target-space null.",
     )
     parser.add_argument(
-        "--negative-control-permutations",
+        "--target-space-null-resamples",
         type=int,
         default=1_000,
         help="Target-space-null resampling iterations. Default: 1000.",
     )
     parser.add_argument(
-        "--negative-control-seed",
+        "--target-space-null-seed",
         type=int,
         default=20_260_721,
         help="Deterministic target-space-null seed.",
@@ -1599,6 +1605,8 @@ def format_ci(low, high) -> str:
 def build_target_space_null_sections(
     analysis: TargetSpaceNullAnalysis | None,
     include_plotly: bool,
+    *,
+    enabled: bool = True,
 ) -> list[str]:
     sections = ["<h2>Target-Space Null</h2>"]
     sections.append(
@@ -1606,6 +1614,12 @@ def build_target_space_null_sections(
         "with the same genomic REF&gt;ALT substitution and the same primary RefSeq VEP consequence. Controls "
         "observed by that GAPH strategy are excluded. phyloP is the outcome and is not used for matching.</p>"
     )
+    if not enabled:
+        sections.append(
+            "<p>Target-Space Null was disabled for this report run. Enable it with "
+            "<code>--target-space-null</code>; this analysis uses Ensembl REST VEP and may take hours.</p>"
+        )
+        return sections
     if analysis is None:
         sections.append("<p>No target-space-null analysis is available for this run.</p>")
         return sections
@@ -2092,10 +2106,10 @@ def render_html(sections: list[tuple[str, str, list[str]]]) -> str:
 
 def main() -> None:
     args = parse_args()
-    if args.negative_control_sample_size < 1:
-        raise ValueError("--negative-control-sample-size must be >= 1")
-    if args.negative_control_permutations < 100:
-        raise ValueError("--negative-control-permutations must be >= 100")
+    if args.target_space_null and args.target_space_null_sample_size < 1:
+        raise ValueError("--target-space-null-sample-size must be >= 1")
+    if args.target_space_null and args.target_space_null_resamples < 100:
+        raise ValueError("--target-space-null-resamples must be >= 100")
     inputs = resolve_run_inputs(args.run_dir)
     out_html = resolve_out_html(args, inputs.run_dir)
 
@@ -2144,18 +2158,20 @@ def main() -> None:
         strategies=strategies,
     )
 
-    print("Computing consequence-matched target-space null...")
-    negative_controls = build_target_space_null(
-        run_dir=inputs.run_dir,
-        variant_annotations_tsv=inputs.variant_annotations_tsv,
-        target_features_tsv=inputs.target_features_tsv,
-        genes_tsv=inputs.genes_tsv,
-        target_sequences_dir=inputs.target_sequences_dir,
-        strategies=strategies,
-        sample_size_per_strategy=args.negative_control_sample_size,
-        resamples=args.negative_control_permutations,
-        seed=args.negative_control_seed,
-    )
+    negative_controls = None
+    if args.target_space_null:
+        print("Computing consequence-matched target-space null...")
+        negative_controls = build_target_space_null(
+            run_dir=inputs.run_dir,
+            variant_annotations_tsv=inputs.variant_annotations_tsv,
+            target_features_tsv=inputs.target_features_tsv,
+            genes_tsv=inputs.genes_tsv,
+            target_sequences_dir=inputs.target_sequences_dir,
+            strategies=strategies,
+            sample_size_per_strategy=args.target_space_null_sample_size,
+            resamples=args.target_space_null_resamples,
+            seed=args.target_space_null_seed,
+        )
 
     sections = [
         ("overview", "Overview", build_overview(variant_summary, cov, strategy_stats, annotation_manifest, alignment_manifest)),
@@ -2169,7 +2185,11 @@ def main() -> None:
         (
             "target-space-null",
             "Target-Space Null",
-            build_target_space_null_sections(negative_controls, include_plotly=True),
+            build_target_space_null_sections(
+                negative_controls,
+                include_plotly=True,
+                enabled=args.target_space_null,
+            ),
         ),
         ("clinvar-enrichment", "ClinVar Enrichment", build_validation_sections(validation, include_plotly=True)),
         (

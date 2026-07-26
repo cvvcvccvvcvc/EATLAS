@@ -53,6 +53,19 @@ def test_target_space_null_section_reports_consequence_matched_design(tmp_path: 
     assert "Same-Position" not in html
 
 
+def test_target_space_null_section_reports_disabled_state() -> None:
+    html = "".join(
+        build_target_space_null_sections(
+            None,
+            include_plotly=False,
+            enabled=False,
+        )
+    )
+
+    assert "was disabled for this report run" in html
+    assert "--target-space-null" in html
+
+
 def test_phyloP_quantiles_are_not_formatted_as_percentages() -> None:
     frame = pd.DataFrame(
         {
