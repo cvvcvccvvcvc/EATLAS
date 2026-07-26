@@ -39,7 +39,9 @@ directory.
 The report reads `annotation/variant_annotations.tsv.gz` in chunks. It uses a
 temporary SQLite file under `<run-dir>/analytics/` to deduplicate
 variant-strategy records without loading the full annotation table into memory;
-the file is removed when aggregation finishes or fails.
+the file is removed when aggregation finishes or fails. The compact final
+aggregation is cached as `<run-dir>/analytics/variant_summary.json.gz` and is
+reused while the annotation input and summary schema remain unchanged.
 The report requires the canonical `alignment/strategy_summary.tsv.gz`; it does
 not reconstruct that aggregate from a raw per-ortholog table.
 

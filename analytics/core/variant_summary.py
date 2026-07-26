@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import gzip
+import json
 import math
 import sqlite3
 import tempfile
@@ -37,6 +39,9 @@ VARIANT_USECOLS = [
     "gnomad_csq",
 ]
 VARIANT_REQUIRED = {"variant_key", "gene_id", "event_type", "strategies"}
+SUMMARY_CACHE_VERSION = 1
+SUMMARY_CACHE_NAME = "variant_summary.json.gz"
+SPECIAL_FLOAT_KEY = "__gaph_float__"
 
 
 @dataclass(frozen=True)
@@ -67,6 +72,189 @@ class VariantSummary:
     consequence_counts: pd.DataFrame
     pathogenic_consequence_counts: pd.DataFrame
     pathogenic_rows: pd.DataFrame
+    cache_hit: bool = False
+
+
+def _input_metadata(path: Path) -> dict[str, object]:
+    stat = path.stat()
+    return {
+        "path": str(path.resolve()),
+        "size_bytes": stat.st_size,
+        "mtime_ns": stat.st_mtime_ns,
+    }
+
+
+def _encode_scalar(value: object) -> object:
+    if value is None or value is pd.NA:
+        return None
+    if isinstance(value, (bool, np.bool_)):
+        return bool(value)
+    if isinstance(value, (int, np.integer)):
+        return int(value)
+    if isinstance(value, (float, np.floating)):
+        numeric = float(value)
+        if math.isnan(numeric):
+            return None
+        if math.isinf(numeric):
+            return {SPECIAL_FLOAT_KEY: "inf" if numeric > 0 else "-inf"}
+        return numeric
+    if isinstance(value, str):
+        return value
+    raise TypeError(f"Unsupported VariantSummary cache value: {type(value).__name__}")
+
+
+def _decode_scalar(value: object) -> object:
+    if isinstance(value, dict) and set(value) == {SPECIAL_FLOAT_KEY}:
+        return float(str(value[SPECIAL_FLOAT_KEY]))
+    return value
+
+
+def _frame_payload(frame: pd.DataFrame) -> dict[str, object]:
+    return {
+        "columns": frame.columns.astype(str).tolist(),
+        "data": [
+            [_encode_scalar(value) for value in row]
+            for row in frame.itertuples(index=False, name=None)
+        ],
+    }
+
+
+def _frame_from_payload(payload: dict[str, object]) -> pd.DataFrame:
+    columns = [str(value) for value in payload["columns"]]
+    data = [
+        [_decode_scalar(value) for value in row]
+        for row in payload["data"]
+    ]
+    return pd.DataFrame(data, columns=columns)
+
+
+def _summary_payload(
+    summary: VariantSummary,
+    source: Path,
+    strategy_label: Callable[[str], str],
+) -> dict[str, object]:
+    overlap = None
+    if summary.overlap is not None:
+        overlap = {
+            "strategies": summary.overlap.strategies,
+            "intersections": summary.overlap.intersections.tolist(),
+            "unions": summary.overlap.unions.tolist(),
+            "jaccard": summary.overlap.jaccard.tolist(),
+        }
+    frame_names = [
+        "strategy_stats",
+        "unique_contribution",
+        "event_counts",
+        "clinvar_counts",
+        "gnomad_bins",
+        "pathogenic_star_counts",
+        "consequence_counts",
+        "pathogenic_consequence_counts",
+        "pathogenic_rows",
+    ]
+    return {
+        "cache_version": SUMMARY_CACHE_VERSION,
+        "input": _input_metadata(source),
+        "strategy_labels": {
+            strategy: strategy_label(strategy)
+            for strategy in summary.strategies
+        },
+        "summary": {
+            "input_row_count": summary.input_row_count,
+            "unique_variant_count": summary.unique_variant_count,
+            "strategy_record_count": summary.strategy_record_count,
+            "gene_count": summary.gene_count,
+            "clinvar_found": summary.clinvar_found,
+            "clinvar_classified": summary.clinvar_classified,
+            "gnomad_found": summary.gnomad_found,
+            "strategies": summary.strategies,
+            "overlap": overlap,
+            "frames": {
+                name: _frame_payload(getattr(summary, name))
+                for name in frame_names
+            },
+        },
+    }
+
+
+def _summary_from_payload(payload: dict[str, object]) -> VariantSummary:
+    summary = payload["summary"]
+    overlap_payload = summary["overlap"]
+    overlap = None
+    if overlap_payload is not None:
+        overlap = StrategyOverlap(
+            strategies=[str(value) for value in overlap_payload["strategies"]],
+            intersections=np.asarray(overlap_payload["intersections"], dtype=np.int64),
+            unions=np.asarray(overlap_payload["unions"], dtype=np.int64),
+            jaccard=np.asarray(overlap_payload["jaccard"], dtype=float),
+        )
+    frames = summary["frames"]
+    return VariantSummary(
+        input_row_count=int(summary["input_row_count"]),
+        unique_variant_count=int(summary["unique_variant_count"]),
+        strategy_record_count=int(summary["strategy_record_count"]),
+        gene_count=int(summary["gene_count"]),
+        clinvar_found=int(summary["clinvar_found"]),
+        clinvar_classified=int(summary["clinvar_classified"]),
+        gnomad_found=int(summary["gnomad_found"]),
+        strategies=[str(value) for value in summary["strategies"]],
+        strategy_stats=_frame_from_payload(frames["strategy_stats"]),
+        unique_contribution=_frame_from_payload(frames["unique_contribution"]),
+        event_counts=_frame_from_payload(frames["event_counts"]),
+        overlap=overlap,
+        clinvar_counts=_frame_from_payload(frames["clinvar_counts"]),
+        gnomad_bins=_frame_from_payload(frames["gnomad_bins"]),
+        pathogenic_star_counts=_frame_from_payload(frames["pathogenic_star_counts"]),
+        consequence_counts=_frame_from_payload(frames["consequence_counts"]),
+        pathogenic_consequence_counts=_frame_from_payload(frames["pathogenic_consequence_counts"]),
+        pathogenic_rows=_frame_from_payload(frames["pathogenic_rows"]),
+        cache_hit=True,
+    )
+
+
+def _load_summary_cache(
+    cache_path: Path,
+    source: Path,
+    strategy_label: Callable[[str], str],
+) -> VariantSummary | None:
+    if not cache_path.exists():
+        return None
+    try:
+        with gzip.open(cache_path, "rt") as handle:
+            payload = json.load(handle)
+        if payload.get("cache_version") != SUMMARY_CACHE_VERSION:
+            return None
+        if payload.get("input") != _input_metadata(source):
+            return None
+        labels = payload.get("strategy_labels", {})
+        if any(strategy_label(strategy) != label for strategy, label in labels.items()):
+            return None
+        return _summary_from_payload(payload)
+    except (OSError, EOFError, json.JSONDecodeError, KeyError, TypeError, ValueError):
+        return None
+
+
+def _write_summary_cache(
+    cache_path: Path,
+    summary: VariantSummary,
+    source: Path,
+    strategy_label: Callable[[str], str],
+) -> None:
+    payload = _summary_payload(summary, source, strategy_label)
+    with tempfile.NamedTemporaryFile(
+        prefix=f".{cache_path.name}.",
+        suffix=".tmp",
+        dir=cache_path.parent,
+        delete=False,
+    ) as handle:
+        temporary_path = Path(handle.name)
+    try:
+        with gzip.open(temporary_path, "wt") as handle:
+            json.dump(payload, handle, allow_nan=False, separators=(",", ":"))
+        temporary_path.chmod(0o644)
+        temporary_path.replace(cache_path)
+    finally:
+        temporary_path.unlink(missing_ok=True)
 
 
 def _header(path: Path) -> list[str]:
@@ -346,12 +534,28 @@ def build_variant_summary(
     chunk_size: int = 100_000,
 ) -> VariantSummary:
     """Aggregate a variant annotation table without retaining row-level data in memory."""
+    work_dir.mkdir(parents=True, exist_ok=True)
+    cache_path = work_dir / SUMMARY_CACHE_NAME
+    cached = _load_summary_cache(cache_path, path, strategy_label)
+    if cached is not None:
+        return cached
+
+    summary = _compute_variant_summary(path, work_dir, strategy_label, chunk_size)
+    _write_summary_cache(cache_path, summary, path, strategy_label)
+    return summary
+
+
+def _compute_variant_summary(
+    path: Path,
+    work_dir: Path,
+    strategy_label: Callable[[str], str],
+    chunk_size: int,
+) -> VariantSummary:
     header = _header(path)
     missing = VARIANT_REQUIRED - set(header)
     if missing:
         raise ValueError(f"Variant annotations missing required columns: {', '.join(sorted(missing))}")
     usecols = [column for column in VARIANT_USECOLS if column in header]
-    work_dir.mkdir(parents=True, exist_ok=True)
     with tempfile.NamedTemporaryFile(
         prefix=".strategy_report_variants.",
         suffix=".sqlite3",
@@ -395,22 +599,47 @@ def build_variant_summary(
             pathogenic_rows = _keep_top_pathogenic(pathogenic_rows, chunk)
 
             records = []
-            for row in chunk.itertuples(index=False):
-                strategies = [item.strip() for item in str(row.strategies).split(",") if item.strip()]
+            record_columns = [
+                "variant_id",
+                "strategies",
+                "gene_id",
+                "event_type",
+                "clinvar_found",
+                "clinvar_classified",
+                "clinvar_category",
+                "gnomad_af",
+                "titv_kind",
+                "review_stars",
+                "gnomad_csq",
+            ]
+            for (
+                variant_id,
+                strategy_text,
+                gene_id,
+                event_type,
+                clinvar_found_value,
+                clinvar_classified_value,
+                clinvar_category,
+                gnomad_af,
+                titv_kind,
+                review_stars,
+                gnomad_csq,
+            ) in chunk[record_columns].itertuples(index=False, name=None):
+                strategies = [item.strip() for item in str(strategy_text).split(",") if item.strip()]
                 for strategy in strategies:
                     records.append(
                         (
-                            str(row.variant_id),
+                            str(variant_id),
                             strategy,
-                            str(row.gene_id),
-                            str(row.event_type),
-                            int(row.clinvar_found),
-                            int(row.clinvar_classified),
-                            str(row.clinvar_category),
-                            None if pd.isna(row.gnomad_af) else float(row.gnomad_af),
-                            str(row.titv_kind),
-                            str(row.review_stars),
-                            str(row.gnomad_csq),
+                            str(gene_id),
+                            str(event_type),
+                            int(clinvar_found_value),
+                            int(clinvar_classified_value),
+                            str(clinvar_category),
+                            None if pd.isna(gnomad_af) else float(gnomad_af),
+                            str(titv_kind),
+                            str(review_stars),
+                            str(gnomad_csq),
                         )
                     )
             connection.executemany(insert_sql, records)

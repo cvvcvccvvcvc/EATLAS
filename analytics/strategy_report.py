@@ -7,7 +7,10 @@ import argparse
 import json
 import math
 import re
+import time
 import warnings
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -169,6 +172,21 @@ def parse_args() -> argparse.Namespace:
 
 def project_root() -> Path:
     return Path(__file__).resolve().parents[1]
+
+
+@contextmanager
+def timed_stage(name: str, timings: list[dict[str, object]]) -> Iterator[dict[str, object]]:
+    entry: dict[str, object] = {"Stage": name, "Status": "completed", "Details": ""}
+    started = time.perf_counter()
+    try:
+        yield entry
+    except Exception:
+        entry["Status"] = "failed"
+        raise
+    finally:
+        entry["Seconds"] = round(time.perf_counter() - started, 3)
+        timings.append(entry)
+        print(f"{name}: {entry['Status']} in {entry['Seconds']:.3f} s")
 
 
 def safe_report_name(name: str) -> str:
@@ -1784,6 +1802,7 @@ def build_methods_sections(
     validation=None,
     conservation_analysis: ConservationAnalysis | None = None,
     negative_controls: TargetSpaceNullAnalysis | None = None,
+    report_timings: list[dict[str, object]] | None = None,
 ) -> list[str]:
     files = [
         ("Run Dir", inputs.run_dir),
@@ -1820,6 +1839,18 @@ def build_methods_sections(
     if not failures.empty:
         sections.append("<h3>Annotation Failures</h3>")
         sections.append(table_html(failures, classes="table table-sm table-striped", max_rows=50))
+    if report_timings:
+        sections.append("<details><summary>Report computation timing</summary>")
+        sections.append(
+            "<p>Durations describe this report invocation; cache status is shown where the stage exposes it directly.</p>"
+        )
+        sections.append(
+            table_html(
+                pd.DataFrame(report_timings),
+                classes="table table-sm table-striped",
+            )
+        )
+        sections.append("</details>")
     sections.append("<details><summary>Input files and loaded row counts</summary>")
     sections.append(table_html(pd.DataFrame(file_rows), classes="table table-sm table-striped"))
     sections.append(
@@ -2112,65 +2143,86 @@ def main() -> None:
         raise ValueError("--target-space-null-resamples must be >= 100")
     inputs = resolve_run_inputs(args.run_dir)
     out_html = resolve_out_html(args, inputs.run_dir)
+    report_started = time.perf_counter()
+    timings: list[dict[str, object]] = []
 
     print(f"Streaming {inputs.variant_annotations_tsv}...")
-    variant_summary = build_variant_summary(
-        inputs.variant_annotations_tsv,
-        inputs.run_dir / "analytics",
-        strategy_label,
-    )
-    cov = read_feature_coverage(inputs.feature_coverage_tsv)
-    alignment_summary = read_strategy_summary(inputs.strategy_summary_tsv)
-    failures = read_failures(inputs.annotation_failures_tsv)
-    annotation_manifest = read_json(inputs.annotation_manifest_json)
-    alignment_manifest = read_json(inputs.alignment_manifest_json)
+    with timed_stage("Variant summary", timings) as timing:
+        variant_summary = build_variant_summary(
+            inputs.variant_annotations_tsv,
+            inputs.run_dir / "analytics",
+            strategy_label,
+        )
+        timing["Details"] = "cache hit" if variant_summary.cache_hit else "cache miss"
+
+    with timed_stage("Run summary inputs", timings):
+        cov = read_feature_coverage(inputs.feature_coverage_tsv)
+        alignment_summary = read_strategy_summary(inputs.strategy_summary_tsv)
+        failures = read_failures(inputs.annotation_failures_tsv)
+        annotation_manifest = read_json(inputs.annotation_manifest_json)
+        alignment_manifest = read_json(inputs.alignment_manifest_json)
 
     print("Computing strategy metrics...")
-    strategy_stats_full = merge_alignment_summary(variant_summary.strategy_stats, alignment_summary)
-    summary_columns = [
-        "Strategy",
-        "Unique Variants",
-        "Ti/Tv",
-        "Found in ClinVar",
-        "ClinVar found %",
-        "gnomAD Found",
-        "gnomAD found %",
-        "Aligned support records %",
-        "Raw support events",
-    ]
-    strategy_stats = strategy_stats_full[[column for column in summary_columns if column in strategy_stats_full.columns]]
-    strategies = variant_summary.strategies
+    with timed_stage("Strategy metrics", timings):
+        strategy_stats_full = merge_alignment_summary(variant_summary.strategy_stats, alignment_summary)
+        summary_columns = [
+            "Strategy",
+            "Unique Variants",
+            "Ti/Tv",
+            "Found in ClinVar",
+            "ClinVar found %",
+            "gnomAD Found",
+            "gnomAD found %",
+            "Aligned support records %",
+            "Raw support events",
+        ]
+        strategy_stats = strategy_stats_full[
+            [column for column in summary_columns if column in strategy_stats_full.columns]
+        ]
+        strategies = variant_summary.strategies
 
     print("Computing ClinVar enrichment...")
-    validation = build_validation(
-        run_dir=inputs.run_dir,
-        variant_annotations_tsv=inputs.variant_annotations_tsv,
-        genes_tsv=inputs.genes_tsv,
-        target_sequences_dir=inputs.target_sequences_dir,
-        clinvar_vcf=args.clinvar_vcf.expanduser().resolve(),
-        strategies=strategies,
-    )
+    with timed_stage("ClinVar enrichment", timings):
+        validation = build_validation(
+            run_dir=inputs.run_dir,
+            variant_annotations_tsv=inputs.variant_annotations_tsv,
+            genes_tsv=inputs.genes_tsv,
+            target_sequences_dir=inputs.target_sequences_dir,
+            clinvar_vcf=args.clinvar_vcf.expanduser().resolve(),
+            strategies=strategies,
+        )
 
     print("Computing conservation-adjusted ClinVar validation...")
-    conservation_analysis = build_conservation_analysis(
-        inputs=inputs,
-        validation=validation,
-        strategies=strategies,
-    )
+    with timed_stage("Conservation-adjusted validation", timings):
+        conservation_analysis = build_conservation_analysis(
+            inputs=inputs,
+            validation=validation,
+            strategies=strategies,
+        )
 
     negative_controls = None
     if args.target_space_null:
         print("Computing consequence-matched target-space null...")
-        negative_controls = build_target_space_null(
-            run_dir=inputs.run_dir,
-            variant_annotations_tsv=inputs.variant_annotations_tsv,
-            target_features_tsv=inputs.target_features_tsv,
-            genes_tsv=inputs.genes_tsv,
-            target_sequences_dir=inputs.target_sequences_dir,
-            strategies=strategies,
-            sample_size_per_strategy=args.target_space_null_sample_size,
-            resamples=args.target_space_null_resamples,
-            seed=args.target_space_null_seed,
+        with timed_stage("Target-space null", timings):
+            negative_controls = build_target_space_null(
+                run_dir=inputs.run_dir,
+                variant_annotations_tsv=inputs.variant_annotations_tsv,
+                target_features_tsv=inputs.target_features_tsv,
+                genes_tsv=inputs.genes_tsv,
+                target_sequences_dir=inputs.target_sequences_dir,
+                strategies=strategies,
+                sample_size_per_strategy=args.target_space_null_sample_size,
+                resamples=args.target_space_null_resamples,
+                seed=args.target_space_null_seed,
+            )
+    else:
+        timings.append(
+            {
+                "Stage": "Target-space null",
+                "Status": "disabled",
+                "Details": "Enable with --target-space-null",
+                "Seconds": 0.0,
+            }
         )
 
     sections = [
@@ -2216,6 +2268,7 @@ def main() -> None:
                 validation,
                 conservation_analysis,
                 negative_controls,
+                timings,
             ),
         ),
     ]
@@ -2223,7 +2276,7 @@ def main() -> None:
     print(f"Writing report to {out_html}...")
     out_html.parent.mkdir(parents=True, exist_ok=True)
     out_html.write_text(render_html(sections))
-    print("Done!")
+    print(f"Done in {time.perf_counter() - report_started:.3f} s")
 
 
 if __name__ == "__main__":

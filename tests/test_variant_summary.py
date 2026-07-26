@@ -82,3 +82,46 @@ def test_variant_summary_accepts_compact_annotation_schema(tmp_path: Path) -> No
     assert by_strategy.loc["s2", "Ti/Tv"] == float("inf")
     assert summary.clinvar_found == 2
     assert summary.gnomad_found == 1
+
+    cached = build_variant_summary(
+        annotations,
+        tmp_path / "analytics",
+        strategy_label=lambda value: value,
+    )
+    assert cached.cache_hit
+    assert cached.strategy_stats.set_index("Strategy").loc["s2", "Ti/Tv"] == float("inf")
+    assert (tmp_path / "analytics" / "variant_summary.json.gz").stat().st_mode & 0o777 == 0o644
+
+
+def test_variant_summary_rebuilds_a_corrupt_cache(tmp_path: Path) -> None:
+    annotations = tmp_path / "variant_annotations.tsv.gz"
+    with gzip.open(annotations, "wt", newline="") as handle:
+        writer = csv.DictWriter(
+            handle,
+            fieldnames=VARIANT_USECOLS,
+            delimiter="\t",
+            lineterminator="\n",
+        )
+        writer.writeheader()
+        writer.writerow(
+            {
+                field: value
+                for field, value in {
+                    "variant_key": "1:100:A>G",
+                    "gene_id": "1",
+                    "event_type": "snv",
+                    "ref": "A",
+                    "alt": "G",
+                    "strategies": "s1",
+                }.items()
+            }
+        )
+
+    work_dir = tmp_path / "analytics"
+    first = build_variant_summary(annotations, work_dir, strategy_label=str)
+    assert not first.cache_hit
+    (work_dir / "variant_summary.json.gz").write_bytes(b"not a gzip stream")
+
+    rebuilt = build_variant_summary(annotations, work_dir, strategy_label=str)
+    assert not rebuilt.cache_hit
+    assert rebuilt.unique_variant_count == 1
