@@ -252,6 +252,54 @@ def resolve_run_inputs(run_dir: Path) -> RunInputs:
     return inputs
 
 
+def validate_report_inputs(inputs: RunInputs) -> None:
+    """Fail before expensive work when a production table contract is incompatible."""
+    contracts = {
+        inputs.variant_annotations_tsv: {
+            "variant_key",
+            "gene_id",
+            "event_type",
+            "ref",
+            "alt",
+            "lookup_status",
+            "strategies",
+            "support_row_count",
+            "support_ortholog_count",
+            "clinvar_id",
+            "clinvar_sig",
+            "clinvar_review_stars",
+            "clinvar_scv_count",
+            "gnomad_af",
+            "gnomad_csq",
+        },
+        inputs.genes_tsv: {"gene_id", "chromosome", "begin", "end", "sequence_length"},
+        inputs.target_features_tsv: {
+            "gene_id",
+            "feature_type",
+            "target_start0",
+            "target_end0",
+        },
+        inputs.feature_coverage_tsv: {"gene_id", "strategy", "feature_type"},
+        inputs.strategy_summary_tsv: {
+            "strategy",
+            "gene_count",
+            "summary_row_count",
+            "aligned_summary_row_count",
+            "event_count",
+        },
+    }
+    for path, required in contracts.items():
+        if not path.exists():
+            raise FileNotFoundError(f"Missing report input: {path}")
+        compression = "gzip" if path.suffix == ".gz" else None
+        header = set(pd.read_csv(path, sep="\t", compression=compression, nrows=0).columns)
+        missing = required - header
+        if missing:
+            raise ValueError(
+                f"Report input {path} is missing required columns: {', '.join(sorted(missing))}"
+            )
+
+
 def resolve_out_html(args: argparse.Namespace, run_dir: Path) -> Path:
     if args.out_html:
         return args.out_html.expanduser().resolve()
@@ -2832,6 +2880,7 @@ def main() -> None:
     if args.target_space_null and args.target_space_null_resamples < 100:
         raise ValueError("--target-space-null-resamples must be >= 100")
     inputs = resolve_run_inputs(args.run_dir)
+    validate_report_inputs(inputs)
     out_html = resolve_out_html(args, inputs.run_dir)
     report_started = time.perf_counter()
     timings: list[dict[str, object]] = []
@@ -2843,6 +2892,7 @@ def main() -> None:
             inputs.run_dir / "analytics",
             strategy_label,
             target_features_path=inputs.target_features_tsv,
+            genes_path=inputs.genes_tsv,
         )
         timing["Details"] = "cache hit" if variant_summary.cache_hit else "cache miss"
 

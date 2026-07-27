@@ -72,6 +72,37 @@ def variant_key_text(key: tuple[str, int, str, str] | None) -> str:
     return f"{chrom}:{pos}:{ref}>{alt}"
 
 
+def parse_variant_key(value: object) -> tuple[str, int, str, str] | None:
+    """Parse a canonical ``chrom:pos:ref>alt`` key."""
+    chrom, separator, remainder = str(value or "").partition(":")
+    if not separator:
+        return None
+    pos_text, separator, alleles = remainder.partition(":")
+    if not separator:
+        return None
+    ref, separator, alt = alleles.partition(">")
+    chrom = normalize_chrom(chrom)
+    ref = ref.upper()
+    alt = alt.upper()
+    if not chrom or not pos_text.isdigit() or not ref or not alt:
+        return None
+    if not set(ref) <= DNA_BASES or not set(alt) <= DNA_BASES:
+        return None
+    pos = int(pos_text)
+    return (chrom, pos, ref, alt) if pos > 0 else None
+
+
+def changed_target_position(key: tuple[str, int, str, str], gene_begin: int) -> int:
+    """Return the zero-based target position affected after VCF padding."""
+    _chrom, pos, ref, alt = key
+    shared_prefix = 0
+    for ref_base, alt_base in zip(ref, alt):
+        if ref_base != alt_base:
+            break
+        shared_prefix += 1
+    return pos - int(gene_begin) + shared_prefix
+
+
 def variant_type(ref: str, alt: str) -> str:
     ref = str(ref or "").upper()
     alt = str(alt or "").upper()

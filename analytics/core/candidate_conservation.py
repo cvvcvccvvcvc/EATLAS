@@ -21,17 +21,14 @@ from .conservation import (
     read_position_scores,
     score_positions,
 )
+from .variant_keys import parse_variant_key
 
 
-CACHE_VERSION = 2
+CACHE_VERSION = 3
 QUANTILES = np.linspace(0.0, 1.0, 101)
 MAX_HISTOGRAM_BINS = 80
 REQUIRED_COLUMNS = {
     "variant_key",
-    "lookup_chrom",
-    "lookup_pos",
-    "lookup_ref",
-    "lookup_alt",
     "lookup_status",
     "strategies",
     "gnomad_af",
@@ -185,14 +182,17 @@ def _candidate_positions(
         sep="\t",
         compression="gzip",
         keep_default_na=False,
-        usecols=["lookup_chrom", "lookup_pos", "lookup_ref", "lookup_alt", "lookup_status"],
+        usecols=["variant_key", "lookup_status"],
         chunksize=chunk_size,
     ):
         row_count += len(chunk)
         chunk = chunk[chunk["lookup_status"].astype(str).eq("ok")]
-        for chrom, pos, ref, alt in chunk[
-            ["lookup_chrom", "lookup_pos", "lookup_ref", "lookup_alt"]
-        ].itertuples(index=False, name=None):
+        for variant_key in chunk["variant_key"]:
+            parsed = parse_variant_key(variant_key)
+            if parsed is None:
+                unsupported_allele_count += 1
+                continue
+            chrom, pos, ref, alt = parsed
             positions, _basis = score_positions(int(pos), str(ref), str(alt))
             positions = [position for position in positions if position >= 0]
             if not positions:
@@ -259,11 +259,15 @@ def _aggregate_distributions(
             for row, af in zip(chunk.itertuples(index=False), gnomad_af):
                 if str(row.lookup_status) != "ok":
                     continue
+                parsed = parse_variant_key(row.variant_key)
+                if parsed is None:
+                    continue
+                chrom, pos, ref, alt = parsed
                 required = _required_positions(
-                    row.lookup_chrom,
-                    row.lookup_pos,
-                    row.lookup_ref,
-                    row.lookup_alt,
+                    chrom,
+                    pos,
+                    ref,
+                    alt,
                     position_scores.track.chrom_style,
                 )
                 if not required:

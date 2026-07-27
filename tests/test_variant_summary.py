@@ -132,9 +132,10 @@ def test_variant_summary_rebuilds_a_corrupt_cache(tmp_path: Path) -> None:
 def test_variant_summary_aggregates_target_context_and_gnomad_strata(tmp_path: Path) -> None:
     annotations = tmp_path / "variant_annotations.tsv.gz"
     features = tmp_path / "target_features.tsv.gz"
+    genes = tmp_path / "genes.tsv.gz"
     rows = [
-        {"variant_key": "1:1:A>G", "gene_id": "1", "target_start0": "1", "event_type": "snv", "ref": "A", "alt": "G", "strategies": "s1", "gnomad_af": "0.01"},
-        {"variant_key": "1:7:C>T", "gene_id": "1", "target_start0": "7", "event_type": "snv", "ref": "C", "alt": "T", "strategies": "s1", "gnomad_af": ""},
+        {"variant_key": "1:1:A>G", "gene_id": "1", "event_type": "snv", "ref": "A", "alt": "G", "lookup_status": "ok", "strategies": "s1", "gnomad_af": "0.01"},
+        {"variant_key": "1:7:C>T", "gene_id": "1", "event_type": "snv", "ref": "C", "alt": "T", "lookup_status": "ok", "strategies": "s1", "gnomad_af": ""},
     ]
     with gzip.open(annotations, "wt", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=VARIANT_USECOLS, delimiter="\t", lineterminator="\n")
@@ -152,12 +153,17 @@ def test_variant_summary_aggregates_target_context_and_gnomad_strata(tmp_path: P
                 {"gene_id": "1", "feature_type": "intron", "target_start0": 5, "target_end0": 10},
             ]
         )
+    with gzip.open(genes, "wt", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=["gene_id", "begin"], delimiter="\t", lineterminator="\n")
+        writer.writeheader()
+        writer.writerow({"gene_id": "1", "begin": 1})
 
     summary = build_variant_summary(
         annotations,
         tmp_path / "analytics",
         strategy_label=str,
         target_features_path=features,
+        genes_path=genes,
     )
 
     contexts = summary.target_context_counts.set_index("target_context")["Variant_Count"].to_dict()

@@ -26,11 +26,12 @@ from .clinvar_validation import directory_metadata, path_metadata, split_strateg
 from .conservation import annotate_track, parse_tracks
 from .external_evidence import build_external_evidence
 from .target_context import context_at, read_disjoint_contexts
+from .variant_keys import changed_target_position, parse_variant_key
 from .vep_consequences import annotate_vep_consequences
 
 
 DNA_BASES = ("A", "C", "G", "T")
-CONTROL_VERSION = 2
+CONTROL_VERSION = 3
 MATCHED_POOL_SIZE = 5
 CANDIDATE_POOL_SIZE = MATCHED_POOL_SIZE * 3
 CANDIDATE_FOCAL_CHUNK_SIZE = 2_000
@@ -122,6 +123,7 @@ def build_target_space_null(
     focal = _sample_focal_snvs(
         variant_annotations_tsv,
         contexts,
+        genes,
         strategies,
         sample_size_per_strategy,
         seed,
@@ -271,6 +273,7 @@ def _stable_rank(seed: int, *parts: object) -> int:
 def _sample_focal_snvs(
     path: Path,
     contexts: dict[str, list[tuple[int, int, str]]],
+    genes: dict[str, dict[str, object]],
     strategies: list[str],
     limit: int,
     seed: int,
@@ -280,8 +283,6 @@ def _sample_focal_snvs(
         "variant_key",
         "gene_id",
         "event_type",
-        "target_start0",
-        "genomic_start1",
         "ref",
         "alt",
         "strategies",
@@ -310,14 +311,20 @@ def _sample_focal_snvs(
             chunk = chunk[chunk["lookup_status"].astype(str).eq("ok")]
         for row in chunk.itertuples(index=False):
             gene_id = str(row.gene_id)
-            target_pos = int(row.target_start0)
+            parsed = parse_variant_key(row.variant_key)
+            gene = genes.get(gene_id)
+            if parsed is None or gene is None:
+                continue
+            chrom, pos, ref, alt = parsed
+            target_pos = changed_target_position(parsed, int(gene["begin"]))
             record_base = {
                 "gene_id": gene_id,
                 "variant_key": str(row.variant_key),
                 "target_pos": target_pos,
-                "pos": int(row.genomic_start1),
-                "ref": str(row.ref).upper(),
-                "alt": str(row.alt).upper(),
+                "chrom": chrom,
+                "pos": pos,
+                "ref": ref,
+                "alt": alt,
                 "context": context_at(contexts.get(gene_id, []), target_pos),
             }
             for strategy in split_strategies(str(row.strategies)):

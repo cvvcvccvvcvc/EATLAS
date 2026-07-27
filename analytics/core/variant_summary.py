@@ -17,15 +17,16 @@ import numpy as np
 import pandas as pd
 
 from .target_context import context_at, read_disjoint_contexts
+from .variant_keys import changed_target_position, parse_variant_key
 
 
 VARIANT_USECOLS = [
     "variant_key",
     "gene_id",
-    "target_start0",
     "event_type",
     "ref",
     "alt",
+    "lookup_status",
     "strategies",
     "support_row_count",
     "support_ortholog_count",
@@ -42,7 +43,7 @@ VARIANT_USECOLS = [
     "gnomad_csq",
 ]
 VARIANT_REQUIRED = {"variant_key", "gene_id", "event_type", "strategies"}
-SUMMARY_CACHE_VERSION = 3
+SUMMARY_CACHE_VERSION = 4
 SUMMARY_CACHE_NAME = "variant_summary.json.gz"
 SPECIAL_FLOAT_KEY = "__gaph_float__"
 
@@ -139,6 +140,7 @@ def _summary_payload(
     summary: VariantSummary,
     source: Path,
     target_features: Path | None,
+    genes: Path | None,
     strategy_label: Callable[[str], str],
 ) -> dict[str, object]:
     overlap = None
@@ -167,6 +169,7 @@ def _summary_payload(
         "cache_version": SUMMARY_CACHE_VERSION,
         "input": _input_metadata(source),
         "target_features": _input_metadata(target_features) if target_features is not None else None,
+        "genes": _input_metadata(genes) if genes is not None else None,
         "strategy_labels": {
             strategy: strategy_label(strategy)
             for strategy in summary.strategies
@@ -233,6 +236,7 @@ def _load_summary_cache(
     cache_path: Path,
     source: Path,
     target_features: Path | None,
+    genes: Path | None,
     strategy_label: Callable[[str], str],
 ) -> VariantSummary | None:
     if not cache_path.exists():
@@ -247,6 +251,9 @@ def _load_summary_cache(
         expected_features = _input_metadata(target_features) if target_features is not None else None
         if payload.get("target_features") != expected_features:
             return None
+        expected_genes = _input_metadata(genes) if genes is not None else None
+        if payload.get("genes") != expected_genes:
+            return None
         labels = payload.get("strategy_labels", {})
         if any(strategy_label(strategy) != label for strategy, label in labels.items()):
             return None
@@ -260,9 +267,10 @@ def _write_summary_cache(
     summary: VariantSummary,
     source: Path,
     target_features: Path | None,
+    genes: Path | None,
     strategy_label: Callable[[str], str],
 ) -> None:
-    payload = _summary_payload(summary, source, target_features, strategy_label)
+    payload = _summary_payload(summary, source, target_features, genes, strategy_label)
     with tempfile.NamedTemporaryFile(
         prefix=f".{cache_path.name}.",
         suffix=".tmp",
@@ -299,7 +307,10 @@ def _categorize_clinvar(values: pd.Series) -> pd.Series:
     return category
 
 
-def _normalize_chunk(df: pd.DataFrame) -> pd.DataFrame:
+def _normalize_chunk(
+    df: pd.DataFrame,
+    gene_begins: dict[str, int] | None = None,
+) -> pd.DataFrame:
     for column in VARIANT_USECOLS:
         if column not in df.columns:
             df[column] = ""
@@ -318,7 +329,18 @@ def _normalize_chunk(df: pd.DataFrame) -> pd.DataFrame:
         )
 
     df["gnomad_af"] = pd.to_numeric(df["gnomad_af"], errors="coerce")
-    df["target_start0"] = pd.to_numeric(df["target_start0"], errors="coerce")
+    parsed_keys = df["variant_key"].map(parse_variant_key)
+    if gene_begins is not None:
+        df["target_start0"] = [
+            changed_target_position(key, gene_begins[str(gene_id)])
+            if key is not None and str(gene_id) in gene_begins
+            else pd.NA
+            for key, gene_id in zip(parsed_keys, df["gene_id"])
+        ]
+    elif "target_start0" in df.columns:
+        df["target_start0"] = pd.to_numeric(df["target_start0"], errors="coerce")
+    else:
+        df["target_start0"] = pd.NA
     for column in ["support_row_count", "support_ortholog_count", "clinvar_scv_count"]:
         df[column] = pd.to_numeric(df[column], errors="coerce").fillna(0).astype("int64")
     df["clinvar_found"] = df["clinvar_id"].astype(str) != ""
@@ -575,22 +597,44 @@ def _gene_lengths_from_features(path: Path) -> dict[str, int]:
     }
 
 
+def _gene_begins(path: Path) -> dict[str, int]:
+    frame = pd.read_csv(
+        path,
+        sep="\t",
+        compression="gzip" if path.suffix == ".gz" else None,
+        keep_default_na=False,
+        usecols=["gene_id", "begin"],
+    )
+    return {
+        str(row.gene_id): int(row.begin)
+        for row in frame.itertuples(index=False)
+    }
+
+
 def build_variant_summary(
     path: Path,
     work_dir: Path,
     strategy_label: Callable[[str], str],
     target_features_path: Path | None = None,
+    genes_path: Path | None = None,
     chunk_size: int = 100_000,
 ) -> VariantSummary:
     """Aggregate a variant annotation table without retaining row-level data in memory."""
     work_dir.mkdir(parents=True, exist_ok=True)
     cache_path = work_dir / SUMMARY_CACHE_NAME
-    cached = _load_summary_cache(cache_path, path, target_features_path, strategy_label)
+    cached = _load_summary_cache(cache_path, path, target_features_path, genes_path, strategy_label)
     if cached is not None:
         return cached
 
-    summary = _compute_variant_summary(path, work_dir, target_features_path, strategy_label, chunk_size)
-    _write_summary_cache(cache_path, summary, path, target_features_path, strategy_label)
+    summary = _compute_variant_summary(
+        path,
+        work_dir,
+        target_features_path,
+        genes_path,
+        strategy_label,
+        chunk_size,
+    )
+    _write_summary_cache(cache_path, summary, path, target_features_path, genes_path, strategy_label)
     return summary
 
 
@@ -598,6 +642,7 @@ def _compute_variant_summary(
     path: Path,
     work_dir: Path,
     target_features_path: Path | None,
+    genes_path: Path | None,
     strategy_label: Callable[[str], str],
     chunk_size: int,
 ) -> VariantSummary:
@@ -606,11 +651,16 @@ def _compute_variant_summary(
     if missing:
         raise ValueError(f"Variant annotations missing required columns: {', '.join(sorted(missing))}")
     usecols = [column for column in VARIANT_USECOLS if column in header]
+    if "target_start0" in header:
+        usecols.append("target_start0")
     contexts: dict[str, list[tuple[int, int, str]]] = {}
     context_starts: dict[str, list[int]] = {}
+    gene_begins = _gene_begins(genes_path) if genes_path is not None else None
     if target_features_path is not None:
-        if "target_start0" not in header:
-            raise ValueError("Variant annotations need target_start0 for target-context reporting.")
+        if gene_begins is None and "target_start0" not in header:
+            raise ValueError(
+                "Target-context reporting needs genes.tsv.gz or a legacy target_start0 column."
+            )
         contexts = read_disjoint_contexts(
             target_features_path,
             _gene_lengths_from_features(target_features_path),
@@ -653,9 +703,7 @@ def _compute_variant_summary(
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """
         for chunk in reader:
-            chunk = _normalize_chunk(chunk)
-            if target_features_path is not None and chunk["target_start0"].isna().any():
-                raise ValueError("Variant annotations contain missing target_start0 values.")
+            chunk = _normalize_chunk(chunk, gene_begins)
             chunk["target_context"] = [
                 context_at(
                     contexts.get(str(gene_id), []),

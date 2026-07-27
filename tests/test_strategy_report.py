@@ -7,6 +7,7 @@ import pandas as pd
 
 from analytics.core.negative_controls import TargetSpaceNullAnalysis
 from analytics.strategy_report import (
+    RunInputs,
     build_variant_sections,
     build_target_space_null_sections,
     build_target_space_null_qc_sections,
@@ -14,7 +15,50 @@ from analytics.strategy_report import (
     dataframe_records,
     format_table_dataframe,
     gnomad_stratification_figure,
+    validate_report_inputs,
 )
+
+
+def test_report_preflight_accepts_compact_production_contract(tmp_path: Path) -> None:
+    def write_table(name: str, columns: list[str]) -> Path:
+        path = tmp_path / name
+        pd.DataFrame(columns=columns).to_csv(path, sep="\t", index=False, compression="gzip")
+        return path
+
+    annotations = write_table(
+        "annotations.tsv.gz",
+        [
+            "variant_key", "gene_id", "event_type", "ref", "alt", "lookup_status",
+            "strategies", "support_row_count", "support_ortholog_count", "clinvar_id",
+            "clinvar_sig", "clinvar_review_stars", "clinvar_scv_count", "gnomad_af", "gnomad_csq",
+        ],
+    )
+    genes = write_table("genes.tsv.gz", ["gene_id", "chromosome", "begin", "end", "sequence_length"])
+    features = write_table(
+        "features.tsv.gz", ["gene_id", "feature_type", "target_start0", "target_end0"]
+    )
+    coverage = write_table("coverage.tsv.gz", ["gene_id", "strategy", "feature_type"])
+    summary = write_table(
+        "summary.tsv.gz",
+        ["strategy", "gene_count", "summary_row_count", "aligned_summary_row_count", "event_count"],
+    )
+    targets = tmp_path / "targets"
+    targets.mkdir()
+    inputs = RunInputs(
+        tmp_path,
+        genes,
+        features,
+        targets,
+        annotations,
+        tmp_path / "annotation_manifest.json",
+        tmp_path / "annotation_failures.tsv.gz",
+        coverage,
+        tmp_path / "alignment_segments.tsv.gz",
+        tmp_path / "alignment_manifest.json",
+        summary,
+    )
+
+    validate_report_inputs(inputs)
 
 
 def test_single_strategy_candidate_profile_loads_plotly_without_overlap() -> None:

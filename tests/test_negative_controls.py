@@ -51,8 +51,6 @@ def test_build_target_space_null_end_to_end_with_mocked_annotations(
                 "variant_key": "1:100:A>G",
                 "gene_id": "1",
                 "event_type": "snv",
-                "target_start0": 0,
-                "genomic_start1": 100,
                 "ref": "A",
                 "alt": "G",
                 "strategies": "s1",
