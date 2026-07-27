@@ -30,6 +30,55 @@ def test_target_space_null_section_reports_consequence_matched_design(tmp_path: 
         ),
         consequence_summary=pd.DataFrame(),
         ecdf=pd.DataFrame(),
+        gnomad_summary=pd.DataFrame(
+            [
+                {
+                    "strategy": "s1",
+                    "metric": "found_fraction",
+                    "observed_value": 0.4,
+                    "null_value": 0.2,
+                    "null_ci_low": 0.1,
+                    "null_ci_high": 0.3,
+                },
+                {
+                    "strategy": "s1",
+                    "metric": "median_af",
+                    "observed_value": 0.001,
+                    "null_value": 0.0005,
+                    "null_ci_low": 0.0001,
+                    "null_ci_high": 0.002,
+                },
+            ]
+        ),
+        clinvar_summary=pd.DataFrame(
+            [
+                {
+                    "strategy": "s1",
+                    "observed_value": 0.1,
+                    "null_value": 0.05,
+                    "null_ci_low": 0.02,
+                    "null_ci_high": 0.08,
+                }
+            ]
+        ),
+        clinvar_class_summary=pd.DataFrame(
+            [
+                {
+                    "strategy": "s1",
+                    "clinvar_class": category,
+                    "observed_value": observed,
+                    "null_value": null,
+                    "null_ci_low": max(0.0, null - 0.05),
+                    "null_ci_high": min(1.0, null + 0.05),
+                }
+                for category, observed, null in [
+                    ("B/LB", 0.5, 0.4),
+                    ("P/LP", 0.1, 0.2),
+                    ("VUS", 0.3, 0.3),
+                    ("Other", 0.1, 0.1),
+                ]
+            ]
+        ),
         manifest={
             "inputs": {"sample_size_per_strategy": 25_000},
             "sampled_focal_count": 2,
@@ -37,11 +86,14 @@ def test_target_space_null_section_reports_consequence_matched_design(tmp_path: 
             "matched_focal_count": 2,
             "focal_vep": {"release": "116"},
             "conservation": {"status": "complete"},
+            "external_evidence": {"gnomad": {"failed_region_count": 0}},
         },
         manifest_path=tmp_path / "manifest.json",
         matched_path=tmp_path / "target_space_null.snv.tsv.gz",
         conservation_path=tmp_path / "target_space_null.phyloP100way.tsv.gz",
         vep_cache_path=tmp_path / "vep.sqlite",
+        external_evidence_path=tmp_path / "target_space_null.external_evidence.tsv.gz",
+        external_evidence_manifest_path=tmp_path / "target_space_null.external_evidence.manifest.json",
         resamples=1_000,
     )
 
@@ -51,6 +103,11 @@ def test_target_space_null_section_reports_consequence_matched_design(tmp_path: 
     assert "same genomic REF&gt;ALT substitution" in html
     assert "Matched Callable" not in html
     assert "Same-Position" not in html
+    assert "<details><summary>Strategy Summary</summary>" in html
+    assert "Exact alleles found in gnomAD" in html
+    assert "gnomAD allele frequency among exact hits" in html
+    assert "Exact alleles found in ClinVar" in html
+    assert "ClinVar class composition" in html
 
 
 def test_target_space_null_section_reports_disabled_state() -> None:

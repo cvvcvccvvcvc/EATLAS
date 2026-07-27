@@ -18,6 +18,7 @@ import numpy as np
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 
 from analytics.core.clinvar_validation import build_validation
 from analytics.core.conservation import DEFAULT_TRACK_NAMES, build_conservation_annotations
@@ -147,7 +148,10 @@ def parse_args() -> argparse.Namespace:
         "--target-space-null",
         action=argparse.BooleanOptionalAction,
         default=False,
-        help="Build the consequence-matched target-space null. Disabled by default because it uses Ensembl REST VEP.",
+        help=(
+            "Build the consequence-matched target-space null. Disabled by default because it uses Ensembl REST "
+            "VEP and the gnomAD GraphQL API."
+        ),
     )
     parser.add_argument(
         "--target-space-null-sample-size",
@@ -704,10 +708,19 @@ def negative_control_method_table() -> pd.DataFrame:
                 ),
             },
             {
-                "Step": "Outcome",
+                "Step": "Outcomes",
                 "Definition": (
-                    "phyloP100way is compared as a focal-weighted ECDF and a descriptive median summary. "
-                    "Conservation and GAPH callability are not matching variables, and no inferential p-value is reported."
+                    "The same matched sets compare phyloP100way, exact-allele gnomAD overlap and AF, and exact-allele "
+                    "ClinVar overlap and class composition. Conservation and external evidence are outcomes, not "
+                    "matching variables."
+                ),
+            },
+            {
+                "Step": "Resampling",
+                "Definition": (
+                    "Each iteration samples one available control per focal SNV. The report shows descriptive 95% "
+                    "resampling intervals and no inferential p-value. ClinVar class proportions exclude records with "
+                    "missing CLNSIG; failed gnomAD regions remain missing rather than absent."
                 ),
             },
         ]
@@ -1620,6 +1633,124 @@ def format_ci(low, high) -> str:
     return f"{format_ratio(low)}-{format_ratio(high)}"
 
 
+def target_null_interval_figure(
+    frame: pd.DataFrame,
+    *,
+    title: str,
+    xaxis_title: str,
+    observed_name: str,
+    null_name: str,
+    tickformat: str | None = None,
+    log_x: bool = False,
+) -> go.Figure:
+    plot = frame.copy()
+    plot["Strategy"] = plot["strategy"].map(strategy_label)
+    plot["difference"] = plot["observed_value"] - plot["null_value"]
+    plot = plot.sort_values("difference", ascending=False, kind="mergesort")
+    fig = go.Figure()
+    fig.add_trace(
+        go.Scatter(
+            x=plot["null_value"],
+            y=plot["Strategy"],
+            mode="markers",
+            marker={"color": "#8c8c8c", "size": 8},
+            error_x={
+                "type": "data",
+                "symmetric": False,
+                "array": plot["null_ci_high"] - plot["null_value"],
+                "arrayminus": plot["null_value"] - plot["null_ci_low"],
+                "color": "#8c8c8c",
+            },
+            name=null_name,
+        )
+    )
+    fig.add_trace(
+        go.Scatter(
+            x=plot["observed_value"],
+            y=plot["Strategy"],
+            mode="markers",
+            marker={"color": "#2166ac", "size": 10, "symbol": "diamond"},
+            name=observed_name,
+        )
+    )
+    xaxis: dict[str, object] = {"title": xaxis_title}
+    if tickformat:
+        xaxis["tickformat"] = tickformat
+    if log_x:
+        xaxis["type"] = "log"
+    fig.update_layout(
+        title=title,
+        xaxis=xaxis,
+        yaxis={"categoryorder": "array", "categoryarray": plot["Strategy"].tolist()[::-1]},
+    )
+    compact_figure(fig, height=max(360, 52 * len(plot) + 120), show_x_title=True)
+    return fig
+
+
+def clinvar_class_null_figure(frame: pd.DataFrame) -> go.Figure:
+    class_order = ["B/LB", "P/LP", "VUS", "Other"]
+    colors = [CLINVAR_COLORS[category] for category in class_order]
+    benign = frame[frame["clinvar_class"].eq("B/LB")].copy()
+    benign["difference"] = benign["observed_value"] - benign["null_value"]
+    strategies = benign.sort_values("difference", ascending=False, kind="mergesort")["strategy"].tolist()
+    if not strategies:
+        strategies = sorted(frame["strategy"].astype(str).unique())
+    columns = 2 if len(strategies) > 1 else 1
+    rows = math.ceil(len(strategies) / columns)
+    fig = make_subplots(
+        rows=rows,
+        cols=columns,
+        subplot_titles=[strategy_label(strategy) for strategy in strategies],
+        shared_yaxes=True,
+        vertical_spacing=min(0.16, 0.35 / max(rows, 1)),
+    )
+    for index, strategy in enumerate(strategies):
+        row = index // columns + 1
+        column = index % columns + 1
+        values = frame[frame["strategy"].eq(strategy)].set_index("clinvar_class").reindex(class_order)
+        fig.add_trace(
+            go.Bar(
+                x=class_order,
+                y=values["observed_value"],
+                marker_color=colors,
+                name="GAPH",
+                showlegend=index == 0,
+                hovertemplate="%{x}<br>GAPH: %{y:.1%}<extra></extra>",
+            ),
+            row=row,
+            col=column,
+        )
+        fig.add_trace(
+            go.Scatter(
+                x=class_order,
+                y=values["null_value"],
+                mode="markers",
+                marker={"color": "#4d4d4d", "size": 8},
+                error_y={
+                    "type": "data",
+                    "symmetric": False,
+                    "array": values["null_ci_high"] - values["null_value"],
+                    "arrayminus": values["null_value"] - values["null_ci_low"],
+                    "color": "#4d4d4d",
+                },
+                name="Matched null (95% resampling interval)",
+                showlegend=index == 0,
+                hovertemplate="%{x}<br>Matched null: %{y:.1%}<extra></extra>",
+            ),
+            row=row,
+            col=column,
+        )
+    fig.update_yaxes(tickformat=".0%", rangemode="tozero", title_text="Classified ClinVar hits")
+    fig.update_layout(
+        title="ClinVar class composition",
+        barmode="group",
+        height=max(390, 265 * rows),
+        margin={"l": 65, "r": 25, "t": 75, "b": 45},
+        legend={"orientation": "h", "y": 1.08},
+    )
+    return fig
+
+
 def build_target_space_null_sections(
     analysis: TargetSpaceNullAnalysis | None,
     include_plotly: bool,
@@ -1667,6 +1798,7 @@ def build_target_space_null_sections(
         error = analysis.manifest.get("conservation", {}).get("error", "")
         sections.append(f"<p>phyloP annotation was incomplete: {error or conservation_status}</p>")
 
+    sections.append("<h3>phyloP100way</h3>")
     sections.append(
         "<p>The ECDF is the primary distribution view. At each phyloP value it shows the fraction of SNVs at or "
         "below that value. A GAPH curve shifted upward and left indicates lower conservation than its matched "
@@ -1740,8 +1872,67 @@ def build_target_space_null_sections(
         }
     )
     table["Strategy"] = table["Strategy"].map(strategy_label)
-    sections.append("<h3>Strategy Summary</h3>")
+    sections.append("<details><summary>Strategy Summary</summary>")
     sections.append(table_html(table, classes="table table-sm table-striped"))
+    sections.append("</details>")
+
+    gnomad = analysis.gnomad_summary.copy()
+    if not gnomad.empty:
+        sections.append("<h3>gnomAD</h3>")
+        sections.append(
+            "<p>Exact-allele gnomAD overlap is compared within the same consequence-matched focal-control sets. "
+            "Allele frequency uses the same source priority as pipeline annotation: joint, then exome, then genome; "
+            "the AF median excludes alleles without a positive reported AF.</p>"
+        )
+        found = gnomad[gnomad["metric"].eq("found_fraction")]
+        if not found.empty:
+            fig_gnomad_found = target_null_interval_figure(
+                found,
+                title="Exact alleles found in gnomAD",
+                xaxis_title="Fraction found",
+                observed_name="GAPH fraction",
+                null_name="Matched-null fraction (95% resampling interval)",
+                tickformat=".0%",
+            )
+            sections.append(fig_html(fig_gnomad_found, include_plotlyjs=False))
+        af = gnomad[gnomad["metric"].eq("median_af")]
+        if not af.empty and (af[["observed_value", "null_value"]].gt(0).any(axis=None)):
+            fig_gnomad_af = target_null_interval_figure(
+                af,
+                title="gnomAD allele frequency among exact hits",
+                xaxis_title="Median allele frequency (log scale)",
+                observed_name="GAPH median AF",
+                null_name="Matched-null median AF (95% resampling interval)",
+                log_x=True,
+            )
+            sections.append(fig_html(fig_gnomad_af, include_plotlyjs=False))
+        gnomad_manifest = analysis.manifest.get("external_evidence", {}).get("gnomad", {})
+        if gnomad_manifest.get("failed_region_count", 0):
+            sections.append(
+                f"<p>gnomAD evidence is incomplete: {format_int(gnomad_manifest['failed_region_count'])} "
+                "region request(s) failed. Failed regions were treated as missing, not as absence.</p>"
+            )
+
+    clinvar = analysis.clinvar_summary.copy()
+    if not clinvar.empty:
+        sections.append("<h3>ClinVar</h3>")
+        sections.append(
+            "<p>ClinVar overlap uses exact alleles. Class composition is calculated only among hits with a "
+            "non-empty CLNSIG value; records without a classification remain unclassified and are excluded from "
+            "the class denominator.</p>"
+        )
+        fig_clinvar_found = target_null_interval_figure(
+            clinvar,
+            title="Exact alleles found in ClinVar",
+            xaxis_title="Fraction found",
+            observed_name="GAPH fraction",
+            null_name="Matched-null fraction (95% resampling interval)",
+            tickformat=".0%",
+        )
+        sections.append(fig_html(fig_clinvar_found, include_plotlyjs=False))
+        if not analysis.clinvar_class_summary.empty:
+            fig_clinvar_class = clinvar_class_null_figure(analysis.clinvar_class_summary)
+            sections.append(fig_html(fig_clinvar_class, include_plotlyjs=False))
 
     matching = pd.DataFrame(analysis.manifest.get("matching_by_consequence", []))
     if not matching.empty:
@@ -1980,6 +2171,8 @@ def build_methods_sections(
             ("Target-space-null rows", negative_controls.matched_path),
             ("Target-space-null phyloP annotations", negative_controls.conservation_path),
             ("VEP consequence cache", negative_controls.vep_cache_path),
+            ("Target-space-null external evidence", negative_controls.external_evidence_path),
+            ("External-evidence manifest", negative_controls.external_evidence_manifest_path),
         ]
         sections.append("<details><summary>Negative-control cache files</summary>")
         sections.append(
@@ -2210,6 +2403,7 @@ def main() -> None:
                 target_features_tsv=inputs.target_features_tsv,
                 genes_tsv=inputs.genes_tsv,
                 target_sequences_dir=inputs.target_sequences_dir,
+                clinvar_vcf=args.clinvar_vcf.expanduser().resolve(),
                 strategies=strategies,
                 sample_size_per_strategy=args.target_space_null_sample_size,
                 resamples=args.target_space_null_resamples,

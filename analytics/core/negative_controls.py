@@ -14,6 +14,7 @@ import hashlib
 import heapq
 import json
 import math
+import warnings
 from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
@@ -23,6 +24,7 @@ import pandas as pd
 
 from .clinvar_validation import directory_metadata, path_metadata, split_strategies
 from .conservation import annotate_track, parse_tracks
+from .external_evidence import build_external_evidence
 from .vep_consequences import annotate_vep_consequences
 
 
@@ -40,11 +42,16 @@ class TargetSpaceNullAnalysis:
     summary: pd.DataFrame
     consequence_summary: pd.DataFrame
     ecdf: pd.DataFrame
+    gnomad_summary: pd.DataFrame
+    clinvar_summary: pd.DataFrame
+    clinvar_class_summary: pd.DataFrame
     manifest: dict
     manifest_path: Path
     matched_path: Path
     conservation_path: Path
     vep_cache_path: Path
+    external_evidence_path: Path
+    external_evidence_manifest_path: Path
     resamples: int
 
 
@@ -55,6 +62,7 @@ def build_target_space_null(
     target_features_tsv: Path,
     genes_tsv: Path,
     target_sequences_dir: Path,
+    clinvar_vcf: Path,
     strategies: list[str],
     sample_size_per_strategy: int = 25_000,
     resamples: int = 1_000,
@@ -73,6 +81,8 @@ def build_target_space_null(
     conservation_path = outdir / "target_space_null.phyloP100way.tsv.gz"
     vep_cache_path = outdir / "vep_consequences.sqlite"
     manifest_path = outdir / "manifest.json"
+    external_evidence_path = outdir / "target_space_null.external_evidence.tsv.gz"
+    external_evidence_manifest_path = outdir / "target_space_null.external_evidence.manifest.json"
 
     expected_inputs = {
         "version": CONTROL_VERSION,
@@ -99,6 +109,9 @@ def build_target_space_null(
             manifest_path,
             resamples,
             seed,
+            clinvar_vcf,
+            external_evidence_path,
+            external_evidence_manifest_path,
         )
 
     genes = _read_genes(genes_tsv)
@@ -181,6 +194,9 @@ def build_target_space_null(
         vep_cache_path,
         resamples,
         seed,
+        clinvar_vcf,
+        external_evidence_path,
+        external_evidence_manifest_path,
     )
 
 
@@ -202,6 +218,9 @@ def _load_analysis(
     manifest_path: Path,
     resamples: int,
     seed: int,
+    clinvar_vcf: Path,
+    external_evidence_path: Path,
+    external_evidence_manifest_path: Path,
 ) -> TargetSpaceNullAnalysis:
     matched = pd.read_csv(matched_path, sep="\t", compression="gzip", keep_default_na=False)
     matched["phyloP100way"] = pd.to_numeric(matched["phyloP100way"], errors="coerce")
@@ -214,6 +233,9 @@ def _load_analysis(
         vep_cache_path,
         resamples,
         seed,
+        clinvar_vcf,
+        external_evidence_path,
+        external_evidence_manifest_path,
     )
 
 
@@ -703,9 +725,79 @@ def _summarize_analysis(
     vep_cache_path: Path,
     resamples: int,
     seed: int,
+    clinvar_vcf: Path,
+    external_evidence_path: Path,
+    external_evidence_manifest_path: Path,
 ) -> TargetSpaceNullAnalysis:
     matched = matched.copy()
     matched["phyloP100way"] = pd.to_numeric(matched["phyloP100way"], errors="coerce")
+    evidence, evidence_manifest = build_external_evidence(
+        matched=matched,
+        matched_path=matched_path,
+        clinvar_vcf=clinvar_vcf,
+        output_path=external_evidence_path,
+        manifest_path=external_evidence_manifest_path,
+    )
+    matched = matched.merge(evidence, on="variant_key", how="left", validate="many_to_one")
+    matched["gnomad_found_value"] = np.where(
+        matched["gnomad_status"].eq("ok"),
+        matched["gnomad_found"].astype(float),
+        np.nan,
+    )
+    matched["gnomad_af_value"] = pd.to_numeric(matched["gnomad_af"], errors="coerce").where(
+        matched["gnomad_status"].eq("ok") & pd.to_numeric(matched["gnomad_af"], errors="coerce").gt(0)
+    )
+    matched["clinvar_found_value"] = matched["clinvar_found"].astype(float)
+
+    gnomad_found = _matched_metric_summary(
+        matched,
+        ["strategy"],
+        "gnomad_found_value",
+        "mean",
+        resamples,
+        seed + 2,
+        status_column="gnomad_status",
+    )
+    gnomad_found.insert(1, "metric", "found_fraction")
+    gnomad_af = _matched_metric_summary(
+        matched,
+        ["strategy"],
+        "gnomad_af_value",
+        "median",
+        resamples,
+        seed + 3,
+        status_column="gnomad_status",
+    )
+    gnomad_af.insert(1, "metric", "median_af")
+    clinvar_found = _matched_metric_summary(
+        matched,
+        ["strategy"],
+        "clinvar_found_value",
+        "mean",
+        resamples,
+        seed + 4,
+    )
+
+    clinvar_classes = []
+    for index, category in enumerate(["B/LB", "P/LP", "VUS", "Other"]):
+        value_column = f"clinvar_class_{index}"
+        matched[value_column] = np.where(
+            matched["clinvar_classified"].astype(bool),
+            matched["clinvar_class"].eq(category).astype(float),
+            np.nan,
+        )
+        category_summary = _matched_metric_summary(
+            matched,
+            ["strategy"],
+            value_column,
+            "mean",
+            resamples,
+            seed + 10 + index,
+        )
+        category_summary.insert(1, "clinvar_class", category)
+        clinvar_classes.append(category_summary)
+
+    analysis_manifest = {**manifest, "external_evidence": evidence_manifest}
     return TargetSpaceNullAnalysis(
         summary=_matched_summary(matched, ["strategy"], resamples, seed),
         consequence_summary=_matched_summary(
@@ -715,11 +807,16 @@ def _summarize_analysis(
             seed + 1,
         ),
         ecdf=_matched_ecdf(matched),
-        manifest=manifest,
+        gnomad_summary=pd.concat([gnomad_found, gnomad_af], ignore_index=True),
+        clinvar_summary=clinvar_found,
+        clinvar_class_summary=pd.concat(clinvar_classes, ignore_index=True),
+        manifest=analysis_manifest,
         manifest_path=manifest_path,
         matched_path=matched_path,
         conservation_path=conservation_path,
         vep_cache_path=vep_cache_path,
+        external_evidence_path=external_evidence_path,
+        external_evidence_manifest_path=external_evidence_manifest_path,
         resamples=resamples,
     )
 
@@ -784,6 +881,134 @@ def _resampled_statistics(
         draws = controls[focal_indices, control_indices]
         null[start:stop] = np.median(draws, axis=1)
     return float(np.median(observed)), null
+
+
+def _paired_metric_values(
+    frame: pd.DataFrame,
+    value_column: str,
+    status_column: str | None = None,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    columns = ["focal_id", "role", value_column]
+    if status_column:
+        columns.append(status_column)
+    working = frame[columns].copy()
+    if status_column:
+        working = working[working[status_column].eq("ok")]
+    working["value"] = pd.to_numeric(working.pop(value_column), errors="coerce")
+
+    observed = (
+        working.loc[working["role"].eq("observed"), ["focal_id", "value"]]
+        .drop_duplicates("focal_id")
+        .set_index("focal_id")["value"]
+    )
+    controls = working.loc[working["role"].eq("control"), ["focal_id", "value"]].copy()
+    if observed.empty or controls.empty:
+        return np.array([], dtype=float), np.empty((0, 0), dtype=float), np.array([], dtype=int)
+
+    controls["control_index"] = controls.groupby("focal_id", sort=False).cumcount()
+    control_counts = controls.groupby("focal_id", sort=False).size().rename("control_count")
+    control_matrix = controls.pivot(index="focal_id", columns="control_index", values="value")
+    paired = (
+        observed.rename("observed")
+        .to_frame()
+        .join(control_counts, how="inner")
+        .join(control_matrix, how="inner")
+    )
+    if paired.empty:
+        return np.array([], dtype=float), np.empty((0, 0), dtype=float), np.array([], dtype=int)
+    observed_values = paired.pop("observed").to_numpy(dtype=float)
+    counts = paired.pop("control_count").to_numpy(dtype=int)
+    return observed_values, paired.to_numpy(dtype=float), counts
+
+
+def _metric_statistic(values: np.ndarray, statistic: str, axis: int | None = None):
+    function = np.nanmean if statistic == "mean" else np.nanmedian
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", category=RuntimeWarning)
+        return function(values, axis=axis)
+
+
+def _resampled_metric_statistics(
+    observed: np.ndarray,
+    controls: np.ndarray,
+    control_counts: np.ndarray,
+    statistic: str,
+    resamples: int,
+    seed: int,
+) -> tuple[float, np.ndarray, np.ndarray]:
+    if observed.size == 0 or controls.size == 0:
+        return math.nan, np.array([], dtype=float), np.array([], dtype=float)
+    rng = np.random.default_rng(seed)
+    null = np.empty(resamples, dtype=float)
+    null_nonmissing = np.empty(resamples, dtype=float)
+    focal_indices = np.arange(len(controls))[None, :]
+    for start in range(0, resamples, RESAMPLE_BLOCK_SIZE):
+        stop = min(resamples, start + RESAMPLE_BLOCK_SIZE)
+        control_indices = rng.integers(
+            0,
+            control_counts,
+            size=(stop - start, len(controls)),
+        )
+        draws = controls[focal_indices, control_indices]
+        null[start:stop] = _metric_statistic(draws, statistic, axis=1)
+        null_nonmissing[start:stop] = np.isfinite(draws).sum(axis=1)
+    return float(_metric_statistic(observed, statistic)), null, null_nonmissing
+
+
+def _matched_metric_summary(
+    frame: pd.DataFrame,
+    group_columns: list[str],
+    value_column: str,
+    statistic: str,
+    resamples: int,
+    seed: int,
+    *,
+    status_column: str | None = None,
+) -> pd.DataFrame:
+    columns = [
+        *group_columns,
+        "matched_focals",
+        "observed_value",
+        "null_value",
+        "null_ci_low",
+        "null_ci_high",
+        "observed_nonmissing",
+        "null_nonmissing_median",
+        "valid_resamples",
+    ]
+    rows = []
+    grouper = group_columns[0] if len(group_columns) == 1 else group_columns
+    for raw_key, group in frame.groupby(grouper, sort=True):
+        key = _group_key(raw_key)
+        observed, controls, control_counts = _paired_metric_values(
+            group,
+            value_column,
+            status_column,
+        )
+        observed_value, null, null_nonmissing = _resampled_metric_statistics(
+            observed,
+            controls,
+            control_counts,
+            statistic,
+            resamples,
+            _stable_rank(seed, *key),
+        )
+        finite_null = null[np.isfinite(null)]
+        row = dict(zip(group_columns, key))
+        row.update(
+            {
+                "matched_focals": len(observed),
+                "observed_value": observed_value,
+                "null_value": float(np.median(finite_null)) if finite_null.size else math.nan,
+                "null_ci_low": float(np.quantile(finite_null, 0.025)) if finite_null.size else math.nan,
+                "null_ci_high": float(np.quantile(finite_null, 0.975)) if finite_null.size else math.nan,
+                "observed_nonmissing": int(np.isfinite(observed).sum()),
+                "null_nonmissing_median": float(np.median(null_nonmissing)) if null_nonmissing.size else math.nan,
+                "valid_resamples": int(finite_null.size),
+            }
+        )
+        rows.append(row)
+    return pd.DataFrame(rows, columns=columns)
 
 
 def _matched_summary(

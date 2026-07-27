@@ -71,7 +71,7 @@ def _joint_af_metrics(variant: dict) -> tuple[int | None, int | None, float | No
         return an, ac, None
     return an, ac, ac / an
 
-def _select_af_metrics(variant: dict):
+def select_af_metrics(variant: dict):
     exome = variant.get("exome")
     genome = variant.get("genome")
     af_exome = _to_float(exome.get("af")) if isinstance(exome, dict) else None
@@ -85,6 +85,9 @@ def _select_af_metrics(variant: dict):
     if af_genome is not None:
         return af_genome, "genome", af_exome, af_genome, af_joint, an_joint, ac_joint
     return None, None, af_exome, af_genome, af_joint, an_joint, ac_joint
+
+
+_select_af_metrics = select_af_metrics
 
 def execute_graphql(query: str, variables: dict) -> dict:
     req = urllib.request.Request(

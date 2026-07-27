@@ -20,7 +20,8 @@ micromamba run -n gaph-v2-analytics python -m analytics.strategy_report \
 
 The report computes ClinVar enrichment and fixed-band and continuous
 phyloP100way-adjusted validation. The consequence-matched target-space null is
-an explicit opt-in because it uses Ensembl REST VEP and can take hours:
+an explicit opt-in because it uses Ensembl REST VEP and the gnomAD GraphQL API
+and can take hours:
 
 ```bash
 micromamba run -n gaph-v2-analytics python -m analytics.strategy_report \
@@ -73,6 +74,18 @@ consequence. GAPH callability and conservation are not matching variables.
 Ensembl REST VEP annotations are cached batch by batch so interrupted runs can
 resume without downloading a local VEP cache.
 
+The same matched focal-control sets are also compared descriptively for exact
+allele overlap with gnomAD and ClinVar, gnomAD AF among exact hits, and ClinVar
+class composition among records with non-empty CLNSIG. These annotations are
+stored once per unique matched allele in:
+
+```text
+<run-dir>/analytics/negative_control/target_space_null.external_evidence.tsv.gz
+<run-dir>/analytics/negative_control/target_space_null.external_evidence.manifest.json
+```
+
+Failed gnomAD regions remain missing and are never interpreted as absence.
+
 Its bounded, deterministic samples and annotations are cached under:
 
 ```text
@@ -87,8 +100,8 @@ only the number of resamples reuses the prepared control tables.
 The sample size is an engineering cap, not a fixed scientific cohort size. A
 run uses every eligible focal SNV when fewer than the cap are available. The
 report shows full focal-weighted phyloP ECDFs and descriptive target-space
-resampling intervals; it does not report an inferential p-value for these
-comparators.
+resampling intervals for all target-space-null outcomes; it does not report an
+inferential p-value for these comparators.
 
 Raw p-values remain visible for the formal validation analyses. ClinVar Fisher
 tests use Benjamini-Hochberg correction separately within the SNV and INDEL families.

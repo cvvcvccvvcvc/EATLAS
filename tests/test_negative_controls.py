@@ -10,6 +10,7 @@ from analytics.core.negative_controls import (
     _build_matched_rows,
     _generate_candidate_controls,
     _matched_ecdf,
+    _matched_metric_summary,
     _matched_summary,
     _read_disjoint_contexts,
 )
@@ -82,8 +83,22 @@ def test_build_target_space_null_end_to_end_with_mocked_annotations(
         unique.to_csv(output_path, sep="\t", index=False, compression="gzip")
         return unique, {"status": "complete", "track": "phyloP100way"}
 
+    def fake_external_evidence(*, matched, output_path, manifest_path, **_kwargs):
+        evidence = matched[["variant_key"]].drop_duplicates().copy()
+        evidence["clinvar_found"] = False
+        evidence["clinvar_classified"] = False
+        evidence["clinvar_class"] = ""
+        evidence["gnomad_status"] = "ok"
+        evidence["gnomad_found"] = False
+        evidence["gnomad_af"] = np.nan
+        evidence.to_csv(output_path, sep="\t", index=False, compression="gzip")
+        manifest = {"complete": True, "gnomad": {"failed_region_count": 0}}
+        manifest_path.write_text("{}\n")
+        return evidence, manifest
+
     monkeypatch.setattr(controls, "annotate_vep_consequences", fake_vep)
     monkeypatch.setattr(controls, "_annotate_conservation", fake_conservation)
+    monkeypatch.setattr(controls, "build_external_evidence", fake_external_evidence)
 
     analysis = controls.build_target_space_null(
         run_dir=run_dir,
@@ -91,6 +106,7 @@ def test_build_target_space_null_end_to_end_with_mocked_annotations(
         target_features_tsv=features_path,
         genes_tsv=genes_path,
         target_sequences_dir=target_dir,
+        clinvar_vcf=tmp_path / "clinvar.vcf.gz",
         strategies=["s1"],
         sample_size_per_strategy=10,
         resamples=100,
@@ -248,6 +264,24 @@ def test_matched_summary_uses_paired_control_options_deterministically() -> None
     assert first.loc[0, "matched_focals"] == 2
     assert first.loc[0, "observed_median"] == 3.0
     assert "empirical_p" not in first.columns
+
+
+def test_matched_metric_summary_resamples_one_control_per_focal() -> None:
+    frame = pd.DataFrame(
+        [
+            {"focal_id": "f1", "strategy": "s1", "role": "observed", "found": 1.0},
+            {"focal_id": "f1", "strategy": "s1", "role": "control", "found": 0.0},
+            {"focal_id": "f1", "strategy": "s1", "role": "control", "found": 1.0},
+            {"focal_id": "f2", "strategy": "s1", "role": "observed", "found": 0.0},
+            {"focal_id": "f2", "strategy": "s1", "role": "control", "found": 0.0},
+        ]
+    )
+
+    summary = _matched_metric_summary(frame, ["strategy"], "found", "mean", 200, 7)
+
+    assert summary.loc[0, "matched_focals"] == 2
+    assert summary.loc[0, "observed_value"] == 0.5
+    assert summary.loc[0, "valid_resamples"] == 200
 
 
 def test_matched_ecdf_weights_each_focal_equally() -> None:

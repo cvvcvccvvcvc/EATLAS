@@ -119,7 +119,8 @@ stories:
 - per-strategy callability and ortholog-depth distributions;
 - gene-level and full consequence-class counts;
 - fixed-band conservation sensitivity results and selector-level cohort counts;
-- target-space-null construction, matching yield, and consequence-specific counts;
+- target-space-null construction, matching yield, consequence-specific counts,
+  and descriptive phyloP, gnomAD, and ClinVar comparisons;
 - strategy overlap, runtime, storage, and alignment QC;
 - additional matching or robustness analyses only if overlap diagnostics make
   them necessary.
