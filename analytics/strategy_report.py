@@ -2110,8 +2110,8 @@ def clinvar_class_null_figure(frame: pd.DataFrame) -> go.Figure:
         title="ClinVar class composition",
         barmode="group",
         height=max(390, 265 * rows),
-        margin={"l": 65, "r": 25, "t": 75, "b": 45},
-        legend={"orientation": "h", "y": 1.08},
+        margin={"l": 65, "r": 25, "t": 75, "b": 90},
+        legend={"orientation": "h", "x": 0.5, "xanchor": "center", "y": -0.14, "yanchor": "top"},
     )
     return fig
 
@@ -2122,15 +2122,10 @@ def build_target_space_null_sections(
     *,
     enabled: bool = True,
 ) -> list[str]:
-    sections = ["<h2>Target-Space Null</h2>"]
-    sections.append(
-        "<p class=\"lead\">Each sampled GAPH SNV is compared with SNVs from the same gene and target context, "
-        "with the same genomic REF&gt;ALT substitution and the same primary RefSeq VEP consequence. Controls "
-        "observed by that GAPH strategy are excluded. phyloP is the outcome and is not used for matching.</p>"
-    )
+    sections = ["<h2>Matched Control</h2>"]
     if not enabled:
         sections.append(
-            "<p>Target-Space Null was disabled for this report run. Enable it with "
+            "<p>Matched Control was disabled for this report run. Enable it with "
             "<code>--target-space-null</code>; this analysis uses Ensembl REST VEP and may take hours.</p>"
         )
         return sections
@@ -2142,19 +2137,17 @@ def build_target_space_null_sections(
         sections.append("<p>No consequence-matched target-space controls could be constructed.</p>")
         return sections
 
-    focal_vep = analysis.manifest.get("focal_vep", {})
+    sampled = analysis.manifest.get("sampled_focal_count", 0)
+    matched = analysis.manifest.get("matched_focal_count", 0)
     sections.append(
         metric_cards(
             [
                 (
-                    "Sample cap per strategy",
+                    "Sample cap per strategy (input)",
                     format_int(analysis.manifest.get("inputs", {}).get("sample_size_per_strategy", 0)),
                 ),
-                ("Sampled GAPH SNVs", format_int(analysis.manifest.get("sampled_focal_count", 0))),
-                ("VEP-annotated focal SNVs", format_int(analysis.manifest.get("vep_annotated_focal_count", 0))),
-                ("Matched focal SNVs", format_int(analysis.manifest.get("matched_focal_count", 0))),
-                ("VEP release", str(focal_vep.get("release", ""))),
-                ("Control resamples", format_int(analysis.resamples)),
+                ("Sampled / matched focal SNVs", f"{format_int(sampled)} / {format_int(matched)}"),
+                ("Control resamples (input)", format_int(analysis.resamples)),
             ]
         )
     )
@@ -2163,15 +2156,11 @@ def build_target_space_null_sections(
         error = analysis.manifest.get("conservation", {}).get("error", "")
         sections.append(f"<p>phyloP annotation was incomplete: {error or conservation_status}</p>")
 
-    sections.append("<h3>phyloP100way</h3>")
-    sections.append(
-        "<p>The ECDF is the primary distribution view. At each phyloP value it shows the fraction of SNVs at or "
-        "below that value. A GAPH curve shifted upward and left indicates lower conservation than its matched "
-        "target-space null.</p>"
-    )
+    sections.append("<h3>Conservation</h3>")
     ecdf = analysis.ecdf.copy()
     if not ecdf.empty:
         ecdf["Strategy"] = ecdf["strategy"].map(strategy_label)
+        ecdf["set"] = ecdf["set"].replace({"Matched target-space null": "Matched control"})
         fig_ecdf = px.line(
             ecdf,
             x="phyloP100way",
@@ -2179,9 +2168,9 @@ def build_target_space_null_sections(
             color="set",
             facet_col="Strategy",
             facet_col_wrap=2,
-            title="phyloP distributions: GAPH and consequence-matched target-space null",
+            title="phyloP100way distributions: GAPH and matched control",
             labels={"fraction_leq": "Cumulative fraction", "set": ""},
-            color_discrete_map={"GAPH": "#2166ac", "Matched target-space null": "#8c8c8c"},
+            color_discrete_map={"GAPH": "#2166ac", "Matched control": "#8c8c8c"},
         )
         fig_ecdf.for_each_annotation(lambda item: item.update(text=item.text.split("=")[-1]))
         fig_ecdf.update_yaxes(tickformat=".0%")
@@ -2192,6 +2181,17 @@ def build_target_space_null_sections(
     plot["Strategy"] = plot["strategy"].map(strategy_label)
     plot = plot.sort_values("median_difference", ascending=False, kind="mergesort")
     fig = go.Figure()
+    for row in plot.itertuples(index=False):
+        fig.add_trace(
+            go.Scatter(
+                x=[row.null_median, row.observed_median],
+                y=[row.Strategy, row.Strategy],
+                mode="lines",
+                line={"color": "#c7c7c7", "width": 2},
+                hoverinfo="skip",
+                showlegend=False,
+            )
+        )
     fig.add_trace(
         go.Scatter(
             x=plot["null_median"],
@@ -2205,7 +2205,7 @@ def build_target_space_null_sections(
                 "arrayminus": plot["null_median"] - plot["null_ci_low"],
                 "color": "#8c8c8c",
             },
-            name="Target-space-null median (95% resampling interval)",
+            name="Matched-control median (95% resampling interval)",
         )
     )
     fig.add_trace(
@@ -2218,37 +2218,16 @@ def build_target_space_null_sections(
         )
     )
     fig.update_layout(
-        title="Descriptive phyloP median summary",
+        title="phyloP100way median: GAPH vs matched control",
         xaxis_title="phyloP100way",
         yaxis={"categoryorder": "array", "categoryarray": plot["Strategy"].tolist()[::-1]},
     )
     compact_figure(fig, height=max(360, 52 * len(plot) + 120), show_x_title=True)
     sections.append(fig_html(fig, include_plotlyjs=False if not ecdf.empty else include_plotly))
 
-    table = summary.rename(
-        columns={
-            "strategy": "Strategy",
-            "matched_focals": "Matched SNVs",
-            "observed_median": "GAPH median",
-            "null_median": "Target-space median",
-            "null_ci_low": "Target-space median Q2.5",
-            "null_ci_high": "Target-space median Q97.5",
-            "median_difference": "Median difference",
-        }
-    )
-    table["Strategy"] = table["Strategy"].map(strategy_label)
-    sections.append("<details><summary>Strategy Summary</summary>")
-    sections.append(table_html(table, classes="table table-sm table-striped"))
-    sections.append("</details>")
-
     gnomad = analysis.gnomad_summary.copy()
     if not gnomad.empty:
         sections.append("<h3>gnomAD</h3>")
-        sections.append(
-            "<p>Exact-allele gnomAD overlap is compared within the same consequence-matched focal-control sets. "
-            "Allele frequency uses the same source priority as pipeline annotation: joint, then exome, then genome; "
-            "the AF median excludes alleles without a positive reported AF.</p>"
-        )
         found = gnomad[gnomad["metric"].eq("found_fraction")]
         if not found.empty:
             fig_gnomad_found = target_null_interval_figure(
@@ -2281,11 +2260,6 @@ def build_target_space_null_sections(
     clinvar = analysis.clinvar_summary.copy()
     if not clinvar.empty:
         sections.append("<h3>ClinVar</h3>")
-        sections.append(
-            "<p>ClinVar overlap uses exact alleles. Class composition is calculated only among hits with a "
-            "non-empty CLNSIG value; records without a classification remain unclassified and are excluded from "
-            "the class denominator.</p>"
-        )
         fig_clinvar_found = target_null_interval_figure(
             clinvar,
             title="Exact alleles found in ClinVar",
@@ -2299,6 +2273,43 @@ def build_target_space_null_sections(
             fig_clinvar_class = clinvar_class_null_figure(analysis.clinvar_class_summary)
             sections.append(fig_html(fig_clinvar_class, include_plotlyjs=False))
 
+    return sections
+
+
+def build_target_space_null_qc_sections(analysis: TargetSpaceNullAnalysis) -> list[str]:
+    sections = ["<details><summary>Matched-control QC</summary>"]
+    focal_vep = analysis.manifest.get("focal_vep", {})
+    sections.append(
+        table_html(
+            pd.DataFrame(
+                [
+                    {"Metric": "VEP release", "Value": focal_vep.get("release", "")},
+                    {
+                        "Metric": "VEP-annotated focal SNVs",
+                        "Value": analysis.manifest.get("vep_annotated_focal_count", 0),
+                    },
+                ]
+            ),
+            classes="table table-sm table-striped",
+        )
+    )
+
+    table = analysis.summary.rename(
+        columns={
+            "strategy": "Strategy",
+            "matched_focals": "Matched SNVs",
+            "observed_median": "GAPH median",
+            "null_median": "Matched-control median",
+            "null_ci_low": "Matched-control median Q2.5",
+            "null_ci_high": "Matched-control median Q97.5",
+            "median_difference": "Median difference",
+        }
+    )
+    if not table.empty:
+        table["Strategy"] = table["Strategy"].map(strategy_label)
+        sections.append("<h4>Strategy summary</h4>")
+        sections.append(table_html(table, classes="table table-sm table-striped"))
+
     matching = pd.DataFrame(analysis.manifest.get("matching_by_consequence", []))
     if not matching.empty:
         matching = matching.rename(
@@ -2311,12 +2322,8 @@ def build_target_space_null_sections(
             }
         )
         matching["Strategy"] = matching["Strategy"].map(strategy_label)
-        sections.append("<details><summary>Matching yield by consequence</summary>")
-        sections.append(
-            "<p>Low match yield identifies consequence classes for which the target-space comparison is poorly supported.</p>"
-        )
+        sections.append("<h4>Matching yield by consequence</h4>")
         sections.append(table_html(matching, classes="table table-sm table-striped"))
-        sections.append("</details>")
 
     consequence = analysis.consequence_summary.copy()
     if not consequence.empty:
@@ -2341,9 +2348,9 @@ def build_target_space_null_sections(
                 "Median difference",
             ]
         ]
-        sections.append("<details><summary>Results by primary VEP consequence</summary>")
+        sections.append("<h4>Results by primary VEP consequence</h4>")
         sections.append(table_html(consequence, classes="table table-sm table-striped"))
-        sections.append("</details>")
+    sections.append("</details>")
     return sections
 
 
@@ -2584,6 +2591,7 @@ def build_methods_sections(
             sections.append(table_html(pd.DataFrame(track_rows), classes="table table-sm table-striped"))
         sections.append("</details>")
     if negative_controls is not None:
+        sections.extend(build_target_space_null_qc_sections(negative_controls))
         control_files = [
             ("Negative-control manifest", negative_controls.manifest_path),
             ("Target-space-null rows", negative_controls.matched_path),
@@ -2862,7 +2870,7 @@ def main() -> None:
         ),
         (
             "target-space-null",
-            "Target-Space Null",
+            "Matched Control",
             build_target_space_null_sections(
                 negative_controls,
                 include_plotly=True,

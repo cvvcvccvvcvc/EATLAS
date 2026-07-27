@@ -9,6 +9,7 @@ from analytics.core.negative_controls import TargetSpaceNullAnalysis
 from analytics.strategy_report import (
     build_variant_sections,
     build_target_space_null_sections,
+    build_target_space_null_qc_sections,
     conservation_selector_view,
     dataframe_records,
     format_table_dataframe,
@@ -117,15 +118,22 @@ def test_target_space_null_section_reports_consequence_matched_design(tmp_path: 
 
     html = "".join(build_target_space_null_sections(analysis, include_plotly=False))
 
-    assert "Target-Space Null" in html
-    assert "same genomic REF&gt;ALT substitution" in html
+    assert "Matched Control" in html
+    assert "Sampled / matched focal SNVs" in html
+    assert "2 / 2" in html
     assert "Matched Callable" not in html
     assert "Same-Position" not in html
-    assert "<details><summary>Strategy Summary</summary>" in html
+    assert "Strategy Summary" not in html
+    assert "VEP release" not in html
     assert "Exact alleles found in gnomAD" in html
     assert "gnomAD allele frequency among exact hits" in html
     assert "Exact alleles found in ClinVar" in html
     assert "ClinVar class composition" in html
+
+    qc_html = "".join(build_target_space_null_qc_sections(analysis))
+    assert "Matched-control QC" in qc_html
+    assert "Strategy summary" in qc_html
+    assert "VEP release" in qc_html
 
 
 def test_target_space_null_section_reports_disabled_state() -> None:
