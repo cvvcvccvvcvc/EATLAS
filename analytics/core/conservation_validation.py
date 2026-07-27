@@ -140,7 +140,11 @@ def build_conservation_cohort(
         "label_class",
         "clinvar_mc_terms",
     ]
+    if "gene_ids" in universe.columns:
+        columns.append("gene_ids")
     base = universe[columns].drop_duplicates("variant_key").copy()
+    if "gene_ids" not in base.columns:
+        base["gene_ids"] = ""
     scores = conservation[["variant_key", score_column]].drop_duplicates("variant_key").copy()
     base = base.merge(scores, on="variant_key", how="left", validate="one_to_one")
     base[score_column] = pd.to_numeric(base[score_column], errors="coerce")
@@ -211,23 +215,27 @@ def compute_conservation_validation(
     observed_by_strategy_type: dict[tuple[str, str], set[str]],
     strategies: list[str],
     analytics_dir: Path,
+    eligible_gene_ids_by_strategy: dict[str, set[str]] | None = None,
     rscript: str | None = None,
 ) -> ConservationValidation:
     unadjusted = compute_unadjusted_enrichment(
         cohort=cohort.variants,
         observed_by_strategy_type=observed_by_strategy_type,
         strategies=strategies,
+        eligible_gene_ids_by_strategy=eligible_gene_ids_by_strategy,
     )
     fixed_bins, fixed_adjusted = compute_fixed_band_enrichment(
         cohort=cohort.variants,
         observed_by_strategy_type=observed_by_strategy_type,
         strategies=strategies,
+        eligible_gene_ids_by_strategy=eligible_gene_ids_by_strategy,
     )
     continuous, distributions, versions = compute_continuous_firth(
         cohort=cohort.variants,
         observed_by_strategy_type=observed_by_strategy_type,
         strategies=strategies,
         analytics_dir=analytics_dir,
+        eligible_gene_ids_by_strategy=eligible_gene_ids_by_strategy,
         rscript=rscript,
     )
     return ConservationValidation(
@@ -246,10 +254,11 @@ def compute_unadjusted_enrichment(
     cohort: pd.DataFrame,
     observed_by_strategy_type: dict[tuple[str, str], set[str]],
     strategies: list[str],
+    eligible_gene_ids_by_strategy: dict[str, set[str]] | None = None,
 ) -> pd.DataFrame:
     rows = []
     for strategy, variant_key, consequence_key, working in selector_frames(
-        cohort, observed_by_strategy_type, strategies
+        cohort, observed_by_strategy_type, strategies, eligible_gene_ids_by_strategy
     ):
         result = enrichment_for_subset(working, strategy)
         reason = two_by_two_estimability_reason(working)
@@ -281,11 +290,12 @@ def compute_fixed_band_enrichment(
     cohort: pd.DataFrame,
     observed_by_strategy_type: dict[tuple[str, str], set[str]],
     strategies: list[str],
+    eligible_gene_ids_by_strategy: dict[str, set[str]] | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     bin_rows: list[dict[str, object]] = []
     adjusted_rows: list[dict[str, object]] = []
     for strategy, variant_key, consequence_key, working in selector_frames(
-        cohort, observed_by_strategy_type, strategies
+        cohort, observed_by_strategy_type, strategies, eligible_gene_ids_by_strategy
     ):
         working = working[np.isfinite(working[SCORE_COLUMN])].copy()
         working["band"] = assign_phylop_band(working[SCORE_COLUMN])
@@ -362,11 +372,20 @@ def selector_frames(
     cohort: pd.DataFrame,
     observed_by_strategy_type: dict[tuple[str, str], set[str]],
     strategies: Iterable[str],
+    eligible_gene_ids_by_strategy: dict[str, set[str]] | None = None,
 ):
     for strategy in strategies:
         observed_keys = set(observed_by_strategy_type.get((strategy, "snv"), set()))
         observed_keys.update(observed_by_strategy_type.get((strategy, "indel"), set()))
-        strategy_frame = cohort.copy()
+        strategy_frame = cohort
+        if eligible_gene_ids_by_strategy is not None:
+            eligible = eligible_gene_ids_by_strategy.get(strategy, set())
+            strategy_frame = strategy_frame[
+                strategy_frame["gene_ids"].map(
+                    lambda value: bool(eligible.intersection(str(value).split("|")))
+                )
+            ]
+        strategy_frame = strategy_frame.copy()
         strategy_frame["ALT_observed"] = strategy_frame["variant_key"].astype(str).isin(observed_keys).astype(int)
         for variant_key, _variant_label in VARIANT_TYPE_OPTIONS:
             type_frame = filter_variant_type(strategy_frame, variant_key)
@@ -461,6 +480,7 @@ def compute_continuous_firth(
     observed_by_strategy_type: dict[tuple[str, str], set[str]],
     strategies: list[str],
     analytics_dir: Path,
+    eligible_gene_ids_by_strategy: dict[str, set[str]] | None = None,
     rscript: str | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame, dict[str, str]]:
     model_rows: list[dict[str, object]] = []
@@ -468,15 +488,30 @@ def compute_continuous_firth(
     fit_specs: list[dict[str, str]] = []
     model_data = cohort[np.isfinite(cohort[SCORE_COLUMN])].copy()
     observation_columns: dict[str, str] = {}
+    eligibility_columns: dict[str, str] = {}
     for index, strategy in enumerate(strategies):
-        column = f"observed_{index}"
-        observation_columns[strategy] = column
+        observation_column = f"observed_{index}"
+        eligibility_column = f"eligible_{index}"
+        observation_columns[strategy] = observation_column
+        eligibility_columns[strategy] = eligibility_column
         keys = set(observed_by_strategy_type.get((strategy, "snv"), set()))
         keys.update(observed_by_strategy_type.get((strategy, "indel"), set()))
-        model_data[column] = model_data["variant_key"].astype(str).isin(keys).astype(int)
+        model_data[observation_column] = model_data["variant_key"].astype(str).isin(keys).astype(int)
+        if eligible_gene_ids_by_strategy is None:
+            model_data[eligibility_column] = 1
+        else:
+            eligible = eligible_gene_ids_by_strategy.get(strategy, set())
+            model_data[eligibility_column] = model_data["gene_ids"].map(
+                lambda value: int(bool(eligible.intersection(str(value).split("|"))))
+            )
 
     for analysis_index, (strategy, variant_key, consequence_key, working) in enumerate(
-        selector_frames(cohort, observed_by_strategy_type, strategies)
+        selector_frames(
+            cohort,
+            observed_by_strategy_type,
+            strategies,
+            eligible_gene_ids_by_strategy,
+        )
     ):
         working = working[np.isfinite(working[SCORE_COLUMN])].copy()
         analysis_id = f"model_{analysis_index}"
@@ -505,6 +540,7 @@ def compute_continuous_firth(
                     "analysis_id": analysis_id,
                     "strategy": strategy,
                     "observation_column": observation_columns[strategy],
+                    "eligibility_column": eligibility_columns[strategy],
                     "variant_type": variant_key,
                     "consequence": consequence_key,
                 }
@@ -675,6 +711,7 @@ def run_firth_models(
         "consequence_groups",
         SCORE_COLUMN,
         *specs["observation_column"].drop_duplicates().tolist(),
+        *specs["eligibility_column"].drop_duplicates().tolist(),
     ]
     export = model_data[columns].copy()
     export = export.rename(columns={SCORE_COLUMN: "score"})

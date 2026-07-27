@@ -21,10 +21,10 @@ from .conservation import (
     read_position_scores,
     score_positions,
 )
-from .variant_keys import parse_variant_key
+from .variant_keys import gnomad_lookup_status, parse_variant_key, read_failed_regions
 
 
-CACHE_VERSION = 3
+CACHE_VERSION = 4
 QUANTILES = np.linspace(0.0, 1.0, 101)
 MAX_HISTOGRAM_BINS = 80
 REQUIRED_COLUMNS = {
@@ -53,6 +53,7 @@ def build_candidate_conservation(
     *,
     variant_annotations_tsv: Path,
     analytics_dir: Path,
+    annotation_failures_tsv: Path | None = None,
     additional_rows: list[dict[str, str]] | None = None,
     track_names: str = DEFAULT_TRACK_NAMES,
     max_block_bp: int = 250_000,
@@ -76,6 +77,9 @@ def build_candidate_conservation(
     expected_inputs = {
         "cache_version": CACHE_VERSION,
         "variant_annotations": path_metadata(variant_annotations_tsv),
+        "annotation_failures": (
+            path_metadata(annotation_failures_tsv) if annotation_failures_tsv is not None else None
+        ),
         "track": asdict(track),
         "max_block_bp": max_block_bp,
         "max_gap_bp": max_gap_bp,
@@ -87,10 +91,12 @@ def build_candidate_conservation(
     if cached is not None:
         return cached
 
+    gnomad_failed_regions = read_failed_regions(annotation_failures_tsv, "gnomad")
     positions_by_chrom, scan_summary = _candidate_positions(
         variant_annotations_tsv,
         track.chrom_style,
         chunk_size,
+        gnomad_failed_regions,
     )
     _add_positions(positions_by_chrom, additional_rows or [], track.chrom_style)
     position_scores = read_position_scores(
@@ -107,6 +113,7 @@ def build_candidate_conservation(
         position_scores,
         analytics_dir,
         chunk_size,
+        gnomad_failed_regions,
     )
     _write_frame(distributions_path, distributions)
     _write_frame(histograms_path, histograms)
@@ -168,6 +175,7 @@ def _candidate_positions(
     path: Path,
     chrom_style: str,
     chunk_size: int,
+    gnomad_failed_regions,
 ) -> tuple[dict[str, set[int]], dict[str, int]]:
     header = pd.read_csv(path, sep="\t", compression="gzip", nrows=0).columns.tolist()
     missing = REQUIRED_COLUMNS - set(header)
@@ -182,14 +190,24 @@ def _candidate_positions(
         sep="\t",
         compression="gzip",
         keep_default_na=False,
-        usecols=["variant_key", "lookup_status"],
+        usecols=["variant_key", "lookup_status", "gnomad_af"],
         chunksize=chunk_size,
     ):
         row_count += len(chunk)
         chunk = chunk[chunk["lookup_status"].astype(str).eq("ok")]
-        for variant_key in chunk["variant_key"]:
+        af_values = pd.to_numeric(chunk["gnomad_af"], errors="coerce")
+        for variant_key, lookup_status, af in zip(
+            chunk["variant_key"],
+            chunk["lookup_status"],
+            af_values,
+        ):
             parsed = parse_variant_key(variant_key)
-            if parsed is None:
+            if gnomad_lookup_status(
+                key=parsed,
+                lookup_status=lookup_status,
+                found=not pd.isna(af),
+                failed_regions=gnomad_failed_regions,
+            ) == "lookup_failed":
                 unsupported_allele_count += 1
                 continue
             chrom, pos, ref, alt = parsed
@@ -225,6 +243,7 @@ def _aggregate_distributions(
     position_scores: PositionScores,
     analytics_dir: Path,
     chunk_size: int,
+    gnomad_failed_regions,
 ) -> tuple[pd.DataFrame, pd.DataFrame, list[dict[str, object]], dict[str, int]]:
     with tempfile.NamedTemporaryFile(
         prefix=".candidate_phylop.", suffix=".sqlite3", dir=analytics_dir, delete=False
@@ -245,6 +264,7 @@ def _aggregate_distributions(
         ) WITHOUT ROWID;
         """
     )
+    lookup_failed_count = 0
     try:
         for chunk in pd.read_csv(
             path,
@@ -257,9 +277,16 @@ def _aggregate_distributions(
             records = []
             gnomad_af = pd.to_numeric(chunk["gnomad_af"], errors="coerce")
             for row, af in zip(chunk.itertuples(index=False), gnomad_af):
-                if str(row.lookup_status) != "ok":
-                    continue
                 parsed = parse_variant_key(row.variant_key)
+                status = gnomad_lookup_status(
+                    key=parsed,
+                    lookup_status=row.lookup_status,
+                    found=not pd.isna(af),
+                    failed_regions=gnomad_failed_regions,
+                )
+                if status == "lookup_failed":
+                    lookup_failed_count += 1
+                    continue
                 if parsed is None:
                     continue
                 chrom, pos, ref, alt = parsed
@@ -274,7 +301,6 @@ def _aggregate_distributions(
                     continue
                 values = [position_scores.values.get(position) for position in required]
                 score = float(np.mean(values)) if all(value is not None for value in values) else None
-                status = "found" if not pd.isna(af) else "not_found"
                 for strategy in split_strategies(str(row.strategies)):
                     records.append((str(row.variant_key), strategy, status, score))
             connection.executemany(
@@ -364,6 +390,7 @@ def _aggregate_distributions(
     return pd.DataFrame(distribution_rows), pd.DataFrame(histogram_rows), groups, {
         "unique_usable_allele_count": unique_alleles,
         "strategy_variant_membership_count": membership_count,
+        "lookup_failed_allele_context_count": lookup_failed_count,
     }
 
 

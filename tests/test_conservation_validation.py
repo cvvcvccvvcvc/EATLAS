@@ -9,6 +9,7 @@ import pandas as pd
 import pytest
 
 from analytics.core import conservation as conservation_module
+from analytics.core import conservation_validation as validation_module
 from analytics.core.clinvar_validation import parse_molecular_consequences
 from analytics.core.conservation import DEFAULT_TRACK_NAMES, PositionScores, Track, annotate_track, score_positions
 from analytics.core.stats import benjamini_hochberg
@@ -196,6 +197,27 @@ def test_unadjusted_enrichment_supports_shared_selectors_and_strategy_level_fdr(
     )
 
 
+def test_unadjusted_enrichment_uses_strategy_specific_gene_denominator() -> None:
+    cohort = synthetic_cohort(120)
+    cohort["gene_ids"] = np.where(cohort.index < 60, "1", "2")
+    observed = set(cohort.loc[cohort.index % 3 == 0, "variant_key"])
+
+    results = compute_unadjusted_enrichment(
+        cohort=cohort,
+        observed_by_strategy_type={
+            ("s1", "snv"): observed,
+            ("s1", "indel"): set(),
+        },
+        strategies=["s1"],
+        eligible_gene_ids_by_strategy={"s1": {"1"}},
+    )
+
+    selected = results[
+        results["variant_type"].eq("snv") & results["consequence"].eq("missense")
+    ].iloc[0]
+    assert selected["usable_rows"] == 60
+
+
 def test_continuous_precheck_rejects_nonoverlapping_score_ranges(tmp_path: Path) -> None:
     cohort = synthetic_cohort(80)
     observed_keys = set(cohort.loc[cohort[SCORE_COLUMN] > 0, "variant_key"])
@@ -225,6 +247,47 @@ def test_continuous_precheck_rejects_nonoverlapping_score_ranges(tmp_path: Path)
         "upper_whisker",
     }.issubset(distributions.columns)
     assert versions == {}
+
+
+def test_continuous_model_exports_strategy_eligibility_mask(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cohort = synthetic_cohort(120)
+    cohort["gene_ids"] = np.where(cohort.index < 60, "1", "2")
+    observed_keys = set(cohort.loc[cohort.index % 3 != 0, "variant_key"])
+    captured = {}
+
+    def fake_run_firth_models(*, model_data, specs, **_kwargs):
+        captured["model_data"] = model_data
+        captured["specs"] = specs
+        fitted = specs[["analysis_id"]].copy()
+        fitted["odds_ratio"] = 1.0
+        fitted["ci_low"] = 0.5
+        fitted["ci_high"] = 2.0
+        fitted["plr_p"] = 1.0
+        fitted["status"] = "estimated"
+        fitted["reason"] = ""
+        return fitted, {"R": "test", "logistf": "test"}
+
+    monkeypatch.setattr(validation_module, "run_firth_models", fake_run_firth_models)
+    results, _distributions, _versions = compute_continuous_firth(
+        cohort=cohort,
+        observed_by_strategy_type={
+            ("s1", "snv"): observed_keys,
+            ("s1", "indel"): set(),
+        },
+        strategies=["s1"],
+        analytics_dir=tmp_path,
+        eligible_gene_ids_by_strategy={"s1": {"1"}},
+    )
+
+    assert captured["model_data"]["eligible_0"].sum() == 60
+    assert set(captured["specs"]["eligibility_column"]) == {"eligible_0"}
+    selected = results[
+        results["variant_type"].eq("snv") & results["consequence"].eq("missense")
+    ].iloc[0]
+    assert selected["usable_rows"] == 60
 
 
 def test_firth_model_returns_profile_likelihood_result_when_r_is_available(tmp_path: Path) -> None:

@@ -15,6 +15,7 @@ from analytics.strategy_report import (
     dataframe_records,
     format_table_dataframe,
     gnomad_stratification_figure,
+    overview_strategy_table,
     validate_report_inputs,
 )
 
@@ -42,20 +43,32 @@ def test_report_preflight_accepts_compact_production_contract(tmp_path: Path) ->
         "summary.tsv.gz",
         ["strategy", "gene_count", "summary_row_count", "aligned_summary_row_count", "event_count"],
     )
+    support = write_table(
+        "support.tsv.gz",
+        [
+            "variant_key",
+            "gene_id",
+            "strategy",
+            "alt_support_row_count",
+            "alt_support_ortholog_count",
+        ],
+    )
     targets = tmp_path / "targets"
     targets.mkdir()
     inputs = RunInputs(
-        tmp_path,
-        genes,
-        features,
-        targets,
-        annotations,
-        tmp_path / "annotation_manifest.json",
-        tmp_path / "annotation_failures.tsv.gz",
-        coverage,
-        tmp_path / "alignment_segments.tsv.gz",
-        tmp_path / "alignment_manifest.json",
-        summary,
+        run_dir=tmp_path,
+        fetch_manifest_json=tmp_path / "fetch_manifest.json",
+        genes_tsv=genes,
+        target_features_tsv=features,
+        target_sequences_dir=targets,
+        variant_annotations_tsv=annotations,
+        variant_strategy_support_tsv=support,
+        annotation_manifest_json=tmp_path / "annotation_manifest.json",
+        annotation_failures_tsv=tmp_path / "annotation_failures.tsv.gz",
+        feature_coverage_tsv=coverage,
+        alignment_segments_tsv=tmp_path / "alignment_segments.tsv.gz",
+        alignment_manifest_json=tmp_path / "alignment_manifest.json",
+        strategy_summary_tsv=summary,
     )
 
     validate_report_inputs(inputs)
@@ -75,6 +88,41 @@ def test_single_strategy_candidate_profile_loads_plotly_without_overlap() -> Non
 
     assert "cdn.plot.ly" in html
     assert "Variant type composition by strategy" in html
+
+
+def test_overview_reports_strategy_gene_completeness_and_gnomad_eligible_denominator() -> None:
+    summary = SimpleNamespace(
+        unique_contribution=pd.DataFrame([{"Strategy": "s1", "Unique To Strategy": 2}])
+    )
+    coverage = pd.DataFrame(
+        [
+            {
+                "strategy": "s1",
+                "feature_type": "gene",
+                "length_bp": 100,
+                "covered_bases": 80,
+            }
+        ]
+    )
+    stats = pd.DataFrame(
+        [
+            {
+                "Strategy": "s1",
+                "Unique Variants": 10,
+                "gnomAD Found": 4,
+                "gnomAD Eligible": 8,
+                "Found in ClinVar": 3,
+                "Orthologs aligned": 7,
+                "Orthologs evaluated": 10,
+                "Genes with result": 9,
+            }
+        ]
+    )
+
+    table = overview_strategy_table(summary, coverage, stats, input_gene_count=10)
+
+    assert table.loc[0, "Genes with result"] == "9 / 10 (90.0%)"
+    assert table.loc[0, "gnomAD matches"] == "4 (50.0%)"
 
 
 def test_gnomad_stratification_places_found_and_not_found_bars_side_by_side() -> None:

@@ -7,7 +7,7 @@ import json
 import math
 import sqlite3
 import tempfile
-from collections import Counter
+from collections import Counter, defaultdict
 from dataclasses import dataclass
 from itertools import combinations_with_replacement
 from pathlib import Path
@@ -17,7 +17,13 @@ import numpy as np
 import pandas as pd
 
 from .target_context import context_at, read_disjoint_contexts
-from .variant_keys import changed_target_position, parse_variant_key
+from .variant_keys import (
+    RegionIndex,
+    changed_target_position,
+    gnomad_lookup_status,
+    parse_variant_key,
+    read_failed_regions,
+)
 
 
 VARIANT_USECOLS = [
@@ -43,7 +49,7 @@ VARIANT_USECOLS = [
     "gnomad_csq",
 ]
 VARIANT_REQUIRED = {"variant_key", "gene_id", "event_type", "strategies"}
-SUMMARY_CACHE_VERSION = 4
+SUMMARY_CACHE_VERSION = 6
 SUMMARY_CACHE_NAME = "variant_summary.json.gz"
 SPECIAL_FLOAT_KEY = "__gaph_float__"
 
@@ -66,6 +72,8 @@ class VariantSummary:
     clinvar_found: int
     clinvar_classified: int
     gnomad_found: int
+    gnomad_lookup_failed: int
+    pathogenic_variant_count: int
     strategies: list[str]
     strategy_stats: pd.DataFrame
     unique_contribution: pd.DataFrame
@@ -141,6 +149,8 @@ def _summary_payload(
     source: Path,
     target_features: Path | None,
     genes: Path | None,
+    annotation_failures: Path | None,
+    variant_strategy_support: Path | None,
     strategy_label: Callable[[str], str],
 ) -> dict[str, object]:
     overlap = None
@@ -170,6 +180,14 @@ def _summary_payload(
         "input": _input_metadata(source),
         "target_features": _input_metadata(target_features) if target_features is not None else None,
         "genes": _input_metadata(genes) if genes is not None else None,
+        "annotation_failures": (
+            _input_metadata(annotation_failures) if annotation_failures is not None else None
+        ),
+        "variant_strategy_support": (
+            _input_metadata(variant_strategy_support)
+            if variant_strategy_support is not None
+            else None
+        ),
         "strategy_labels": {
             strategy: strategy_label(strategy)
             for strategy in summary.strategies
@@ -183,6 +201,8 @@ def _summary_payload(
             "clinvar_found": summary.clinvar_found,
             "clinvar_classified": summary.clinvar_classified,
             "gnomad_found": summary.gnomad_found,
+            "gnomad_lookup_failed": summary.gnomad_lookup_failed,
+            "pathogenic_variant_count": summary.pathogenic_variant_count,
             "strategies": summary.strategies,
             "overlap": overlap,
             "frames": {
@@ -214,6 +234,8 @@ def _summary_from_payload(payload: dict[str, object]) -> VariantSummary:
         clinvar_found=int(summary["clinvar_found"]),
         clinvar_classified=int(summary["clinvar_classified"]),
         gnomad_found=int(summary["gnomad_found"]),
+        gnomad_lookup_failed=int(summary["gnomad_lookup_failed"]),
+        pathogenic_variant_count=int(summary["pathogenic_variant_count"]),
         strategies=[str(value) for value in summary["strategies"]],
         strategy_stats=_frame_from_payload(frames["strategy_stats"]),
         unique_contribution=_frame_from_payload(frames["unique_contribution"]),
@@ -237,6 +259,8 @@ def _load_summary_cache(
     source: Path,
     target_features: Path | None,
     genes: Path | None,
+    annotation_failures: Path | None,
+    variant_strategy_support: Path | None,
     strategy_label: Callable[[str], str],
 ) -> VariantSummary | None:
     if not cache_path.exists():
@@ -254,6 +278,18 @@ def _load_summary_cache(
         expected_genes = _input_metadata(genes) if genes is not None else None
         if payload.get("genes") != expected_genes:
             return None
+        expected_failures = (
+            _input_metadata(annotation_failures) if annotation_failures is not None else None
+        )
+        if payload.get("annotation_failures") != expected_failures:
+            return None
+        expected_support = (
+            _input_metadata(variant_strategy_support)
+            if variant_strategy_support is not None
+            else None
+        )
+        if payload.get("variant_strategy_support") != expected_support:
+            return None
         labels = payload.get("strategy_labels", {})
         if any(strategy_label(strategy) != label for strategy, label in labels.items()):
             return None
@@ -268,9 +304,19 @@ def _write_summary_cache(
     source: Path,
     target_features: Path | None,
     genes: Path | None,
+    annotation_failures: Path | None,
+    variant_strategy_support: Path | None,
     strategy_label: Callable[[str], str],
 ) -> None:
-    payload = _summary_payload(summary, source, target_features, genes, strategy_label)
+    payload = _summary_payload(
+        summary,
+        source,
+        target_features,
+        genes,
+        annotation_failures,
+        variant_strategy_support,
+        strategy_label,
+    )
     with tempfile.NamedTemporaryFile(
         prefix=f".{cache_path.name}.",
         suffix=".tmp",
@@ -310,6 +356,7 @@ def _categorize_clinvar(values: pd.Series) -> pd.Series:
 def _normalize_chunk(
     df: pd.DataFrame,
     gene_begins: dict[str, int] | None = None,
+    gnomad_failed_regions: RegionIndex | None = None,
 ) -> pd.DataFrame:
     for column in VARIANT_USECOLS:
         if column not in df.columns:
@@ -330,6 +377,16 @@ def _normalize_chunk(
 
     df["gnomad_af"] = pd.to_numeric(df["gnomad_af"], errors="coerce")
     parsed_keys = df["variant_key"].map(parse_variant_key)
+    failed_regions = gnomad_failed_regions or {}
+    df["gnomad_status"] = [
+        gnomad_lookup_status(
+            key=key,
+            lookup_status=status,
+            found=not pd.isna(af),
+            failed_regions=failed_regions,
+        )
+        for key, status, af in zip(parsed_keys, df["lookup_status"], df["gnomad_af"])
+    ]
     if gene_begins is not None:
         df["target_start0"] = [
             changed_target_position(key, gene_begins[str(gene_id)])
@@ -378,6 +435,7 @@ def _create_database(path: Path) -> sqlite3.Connection:
             clinvar_classified INTEGER NOT NULL,
             clinvar_category TEXT NOT NULL,
             gnomad_af REAL,
+            gnomad_status TEXT NOT NULL,
             titv_kind TEXT NOT NULL,
             review_stars TEXT NOT NULL,
             gnomad_csq TEXT NOT NULL,
@@ -394,11 +452,50 @@ def _keep_top_pathogenic(current: pd.DataFrame, chunk: pd.DataFrame, limit: int 
         return current
     pathogenic["_star_rank"] = pd.to_numeric(pathogenic["review_stars"], errors="coerce").fillna(-1)
     keep = pd.concat([current, pathogenic], ignore_index=True) if not current.empty else pathogenic
-    return keep.sort_values(
-        ["_star_rank", "support_ortholog_count", "support_row_count"],
-        ascending=False,
+    keep = keep.sort_values(
+        ["_star_rank", "clinvar_scv_count", "variant_id"],
+        ascending=[False, False, True],
         kind="mergesort",
-    ).head(limit)
+    ).drop_duplicates("variant_id", keep="first")
+    return keep.head(limit)
+
+
+def _add_pathogenic_strategy_support(path: Path | None, variants: pd.DataFrame) -> pd.DataFrame:
+    variants = variants.copy()
+    for column in ["support_ortholog_mean", "support_ortholog_min", "support_ortholog_max"]:
+        variants[column] = np.nan
+    if path is None or variants.empty:
+        return variants
+
+    keys = {str(value).encode() for value in variants["variant_id"]}
+    support: dict[str, list[int]] = defaultdict(list)
+    with gzip.open(path, "rb") as handle:
+        header = handle.readline().rstrip(b"\r\n").split(b"\t")
+        required = [b"variant_key", b"alt_support_ortholog_count"]
+        if any(column not in header for column in required):
+            raise ValueError(
+                "Variant strategy support table needs variant_key and alt_support_ortholog_count."
+            )
+        key_index = header.index(b"variant_key")
+        count_index = header.index(b"alt_support_ortholog_count")
+        for line in handle:
+            fields = line.rstrip(b"\r\n").split(b"\t")
+            if len(fields) <= max(key_index, count_index) or fields[key_index] not in keys:
+                continue
+            try:
+                count = int(fields[count_index])
+            except ValueError:
+                continue
+            support[fields[key_index].decode()].append(count)
+
+    for index, variant_id in variants["variant_id"].items():
+        values = support.get(str(variant_id), [])
+        if not values:
+            continue
+        variants.at[index, "support_ortholog_mean"] = float(np.mean(values))
+        variants.at[index, "support_ortholog_min"] = min(values)
+        variants.at[index, "support_ortholog_max"] = max(values)
+    return variants
 
 
 def _strategy_stats(connection: sqlite3.Connection, strategy_label: Callable[[str], str]) -> pd.DataFrame:
@@ -411,7 +508,9 @@ def _strategy_stats(connection: sqlite3.Connection, strategy_label: Callable[[st
                SUM(titv_kind = 'tv') AS tv,
                SUM(clinvar_found) AS "Found in ClinVar",
                SUM(clinvar_classified) AS "ClinVar classified",
-               SUM(gnomad_af IS NOT NULL) AS "gnomAD Found",
+               SUM(gnomad_status = 'found') AS "gnomAD Found",
+               SUM(gnomad_status IN ('found', 'not_found')) AS "gnomAD Eligible",
+               SUM(gnomad_status = 'lookup_failed') AS "gnomAD lookup failed",
                SUM(clinvar_category = 'P/LP') AS "P/LP",
                SUM(clinvar_category = 'B/LB') AS "B/LB",
                SUM(clinvar_category = 'VUS') AS "VUS",
@@ -445,10 +544,11 @@ def _strategy_stats(connection: sqlite3.Connection, strategy_label: Callable[[st
         np.nan if tv == 0 and ti == 0 else (float("inf") if tv == 0 else round(ti / tv, 3))
         for ti, tv in zip(stats.pop("ti"), stats.pop("tv"))
     ]
-    denominator = stats["Unique Variants"].replace(0, np.nan)
-    stats["ClinVar found %"] = stats["Found in ClinVar"] / denominator
-    stats["ClinVar classified %"] = stats["ClinVar classified"] / denominator
-    stats["gnomAD found %"] = stats["gnomAD Found"] / denominator
+    variant_denominator = stats["Unique Variants"].replace(0, np.nan)
+    gnomad_denominator = stats["gnomAD Eligible"].replace(0, np.nan)
+    stats["ClinVar found %"] = stats["Found in ClinVar"] / variant_denominator
+    stats["ClinVar classified %"] = stats["ClinVar classified"] / variant_denominator
+    stats["gnomAD found %"] = stats["gnomAD Found"] / gnomad_denominator
     stats["Strategy"] = stats.pop("strategy").map(strategy_label)
     columns = [
         "Strategy",
@@ -460,6 +560,8 @@ def _strategy_stats(connection: sqlite3.Connection, strategy_label: Callable[[st
         "ClinVar classified",
         "ClinVar classified %",
         "gnomAD Found",
+        "gnomAD Eligible",
+        "gnomAD lookup failed",
         "gnomAD found %",
         "P/LP",
         "B/LB",
@@ -617,12 +719,22 @@ def build_variant_summary(
     strategy_label: Callable[[str], str],
     target_features_path: Path | None = None,
     genes_path: Path | None = None,
+    annotation_failures_path: Path | None = None,
+    variant_strategy_support_path: Path | None = None,
     chunk_size: int = 100_000,
 ) -> VariantSummary:
     """Aggregate a variant annotation table without retaining row-level data in memory."""
     work_dir.mkdir(parents=True, exist_ok=True)
     cache_path = work_dir / SUMMARY_CACHE_NAME
-    cached = _load_summary_cache(cache_path, path, target_features_path, genes_path, strategy_label)
+    cached = _load_summary_cache(
+        cache_path,
+        path,
+        target_features_path,
+        genes_path,
+        annotation_failures_path,
+        variant_strategy_support_path,
+        strategy_label,
+    )
     if cached is not None:
         return cached
 
@@ -631,10 +743,21 @@ def build_variant_summary(
         work_dir,
         target_features_path,
         genes_path,
+        annotation_failures_path,
+        variant_strategy_support_path,
         strategy_label,
         chunk_size,
     )
-    _write_summary_cache(cache_path, summary, path, target_features_path, genes_path, strategy_label)
+    _write_summary_cache(
+        cache_path,
+        summary,
+        path,
+        target_features_path,
+        genes_path,
+        annotation_failures_path,
+        variant_strategy_support_path,
+        strategy_label,
+    )
     return summary
 
 
@@ -643,6 +766,8 @@ def _compute_variant_summary(
     work_dir: Path,
     target_features_path: Path | None,
     genes_path: Path | None,
+    annotation_failures_path: Path | None,
+    variant_strategy_support_path: Path | None,
     strategy_label: Callable[[str], str],
     chunk_size: int,
 ) -> VariantSummary:
@@ -656,6 +781,7 @@ def _compute_variant_summary(
     contexts: dict[str, list[tuple[int, int, str]]] = {}
     context_starts: dict[str, list[int]] = {}
     gene_begins = _gene_begins(genes_path) if genes_path is not None else None
+    gnomad_failed_regions = read_failed_regions(annotation_failures_path, "gnomad")
     if target_features_path is not None:
         if gene_begins is None and "target_start0" not in header:
             raise ValueError(
@@ -681,6 +807,7 @@ def _compute_variant_summary(
     clinvar_found = 0
     clinvar_classified = 0
     gnomad_found = 0
+    gnomad_lookup_failed = 0
     genes: set[str] = set()
     pathogenic_rows = pd.DataFrame(columns=[*VARIANT_USECOLS, "variant_id", "clinvar_category", "review_stars"])
 
@@ -698,12 +825,12 @@ def _compute_variant_summary(
         insert_sql = """
             INSERT OR IGNORE INTO memberships (
                 variant_id, strategy, gene_id, event_type, target_context, clinvar_found,
-                clinvar_classified, clinvar_category, gnomad_af, titv_kind,
+                clinvar_classified, clinvar_category, gnomad_af, gnomad_status, titv_kind,
                 review_stars, gnomad_csq
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """
         for chunk in reader:
-            chunk = _normalize_chunk(chunk, gene_begins)
+            chunk = _normalize_chunk(chunk, gene_begins, gnomad_failed_regions)
             chunk["target_context"] = [
                 context_at(
                     contexts.get(str(gene_id), []),
@@ -717,6 +844,7 @@ def _compute_variant_summary(
             clinvar_found += int(chunk["clinvar_found"].sum())
             clinvar_classified += int(chunk["clinvar_classified"].sum())
             gnomad_found += int(chunk["gnomad_af"].notna().sum())
+            gnomad_lookup_failed += int(chunk["gnomad_status"].eq("lookup_failed").sum())
             genes.update(chunk["gene_id"].astype(str))
             pathogenic_rows = _keep_top_pathogenic(pathogenic_rows, chunk)
 
@@ -731,6 +859,7 @@ def _compute_variant_summary(
                 "clinvar_classified",
                 "clinvar_category",
                 "gnomad_af",
+                "gnomad_status",
                 "titv_kind",
                 "review_stars",
                 "gnomad_csq",
@@ -745,6 +874,7 @@ def _compute_variant_summary(
                 clinvar_classified_value,
                 clinvar_category,
                 gnomad_af,
+                gnomad_status,
                 titv_kind,
                 review_stars,
                 gnomad_csq,
@@ -762,6 +892,7 @@ def _compute_variant_summary(
                             int(clinvar_classified_value),
                             str(clinvar_category),
                             None if pd.isna(gnomad_af) else float(gnomad_af),
+                            str(gnomad_status),
                             str(titv_kind),
                             str(review_stars),
                             str(gnomad_csq),
@@ -795,17 +926,21 @@ def _compute_variant_summary(
         )
         gnomad_event_counts = pd.read_sql_query(
             """
-            SELECT strategy, CASE WHEN gnomad_af IS NULL THEN 'not_found' ELSE 'found' END AS gnomad_status,
+            SELECT strategy, gnomad_status,
                    event_type, COUNT(*) AS Variant_Count
-            FROM memberships GROUP BY strategy, gnomad_status, event_type
+            FROM memberships
+            WHERE gnomad_status IN ('found', 'not_found')
+            GROUP BY strategy, gnomad_status, event_type
             """,
             connection,
         )
         gnomad_context_counts = pd.read_sql_query(
             """
-            SELECT strategy, CASE WHEN gnomad_af IS NULL THEN 'not_found' ELSE 'found' END AS gnomad_status,
+            SELECT strategy, gnomad_status,
                    target_context, COUNT(*) AS Variant_Count
-            FROM memberships GROUP BY strategy, gnomad_status, target_context
+            FROM memberships
+            WHERE gnomad_status IN ('found', 'not_found')
+            GROUP BY strategy, gnomad_status, target_context
             """,
             connection,
         )
@@ -834,10 +969,21 @@ def _compute_variant_summary(
             "gnomad_af IS NOT NULL AND clinvar_category = 'P/LP'",
         )
         strategy_record_count = int(sum(totals.values()))
+        pathogenic_variant_count = int(
+            connection.execute(
+                "SELECT COUNT(DISTINCT variant_id) FROM memberships "
+                "WHERE clinvar_category = 'P/LP'"
+            ).fetchone()[0]
+        )
         gnomad_af_summary = _gnomad_af_summary(connection, strategy_label)
     finally:
         connection.close()
         database_path.unlink(missing_ok=True)
+
+    pathogenic_rows = _add_pathogenic_strategy_support(
+        variant_strategy_support_path,
+        pathogenic_rows,
+    )
 
     return VariantSummary(
         input_row_count=input_row_count,
@@ -848,6 +994,8 @@ def _compute_variant_summary(
         clinvar_found=clinvar_found,
         clinvar_classified=clinvar_classified,
         gnomad_found=gnomad_found,
+        gnomad_lookup_failed=gnomad_lookup_failed,
+        pathogenic_variant_count=pathogenic_variant_count,
         strategies=strategies,
         strategy_stats=strategy_stats,
         unique_contribution=unique_contribution,

@@ -8,9 +8,11 @@ import gzip
 import re
 from collections import defaultdict
 from pathlib import Path
+from typing import TypeAlias
 
 
 DNA_BASES = set("ACGT")
+RegionIndex: TypeAlias = dict[str, tuple[list[int], list[tuple[int, int]]]]
 
 
 def open_text(path: Path):
@@ -101,6 +103,57 @@ def changed_target_position(key: tuple[str, int, str, str], gene_begin: int) -> 
             break
         shared_prefix += 1
     return pos - int(gene_begin) + shared_prefix
+
+
+def read_failed_regions(path: Path | None, source: str) -> RegionIndex:
+    if path is None or not path.exists():
+        return {}
+    intervals_by_chrom: dict[str, list[tuple[int, int]]] = defaultdict(list)
+    with open_text(path) as handle:
+        reader = csv.DictReader(handle, delimiter="\t")
+        for row in reader:
+            if str(row.get("source", "")) != source or str(row.get("scope", "")) != "region":
+                continue
+            chrom = normalize_chrom(row.get("chrom"))
+            try:
+                start = int(row.get("start", ""))
+                end = int(row.get("end", ""))
+            except (TypeError, ValueError):
+                continue
+            if chrom and start > 0 and end >= start:
+                intervals_by_chrom[chrom].append((start, end))
+
+    index: RegionIndex = {}
+    for chrom, intervals in intervals_by_chrom.items():
+        merged: list[tuple[int, int]] = []
+        for start, end in sorted(intervals):
+            if merged and start <= merged[-1][1] + 1:
+                merged[-1] = (merged[-1][0], max(merged[-1][1], end))
+            else:
+                merged.append((start, end))
+        index[chrom] = ([start for start, _end in merged], merged)
+    return index
+
+
+def position_in_failed_region(index: RegionIndex, chrom: str, pos: int) -> bool:
+    starts, intervals = index.get(normalize_chrom(chrom) or "", ([], []))
+    interval_index = bisect.bisect_right(starts, int(pos)) - 1
+    return interval_index >= 0 and int(pos) <= intervals[interval_index][1]
+
+
+def gnomad_lookup_status(
+    *,
+    key: tuple[str, int, str, str] | None,
+    lookup_status: object,
+    found: bool,
+    failed_regions: RegionIndex,
+) -> str:
+    if found:
+        return "found"
+    if str(lookup_status or "") not in {"", "ok"} or key is None:
+        return "lookup_failed"
+    chrom, pos, _ref, _alt = key
+    return "lookup_failed" if position_in_failed_region(failed_regions, chrom, pos) else "not_found"
 
 
 def variant_type(ref: str, alt: str) -> str:

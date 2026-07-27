@@ -21,7 +21,8 @@ matches_consequence <- function(values, selector) {
 }
 
 fit_one <- function(spec) {
-  keep <- matches_variant_type(cohort$variant_subtype, spec$variant_type) &
+  keep <- cohort[[spec$eligibility_column]] == 1 &
+    matches_variant_type(cohort$variant_subtype, spec$variant_type) &
     matches_consequence(cohort$consequence_groups, spec$consequence)
   model_data <- data.frame(
     benign = cohort$benign[keep],

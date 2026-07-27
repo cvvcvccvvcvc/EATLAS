@@ -124,10 +124,12 @@ STRATEGY_LABELS = {
 @dataclass(frozen=True)
 class RunInputs:
     run_dir: Path
+    fetch_manifest_json: Path
     genes_tsv: Path
     target_features_tsv: Path
     target_sequences_dir: Path
     variant_annotations_tsv: Path
+    variant_strategy_support_tsv: Path
     annotation_manifest_json: Path
     annotation_failures_tsv: Path
     feature_coverage_tsv: Path
@@ -227,10 +229,12 @@ def resolve_run_inputs(run_dir: Path) -> RunInputs:
 
     inputs = RunInputs(
         run_dir=run_dir,
+        fetch_manifest_json=run_dir / "fetch" / "manifest.json",
         genes_tsv=run_dir / "fetch" / "genes.tsv.gz",
         target_features_tsv=run_dir / "fetch" / "target_features.tsv.gz",
         target_sequences_dir=run_dir / "fetch" / "sequences" / "targets",
         variant_annotations_tsv=run_dir / "annotation" / "variant_annotations.tsv.gz",
+        variant_strategy_support_tsv=run_dir / "annotation" / "variant_strategy_support.tsv.gz",
         annotation_manifest_json=run_dir / "annotation" / "manifest.json",
         annotation_failures_tsv=run_dir / "annotation" / "failures.tsv.gz",
         feature_coverage_tsv=run_dir / "alignment" / "feature_coverage.tsv.gz",
@@ -286,6 +290,13 @@ def validate_report_inputs(inputs: RunInputs) -> None:
             "summary_row_count",
             "aligned_summary_row_count",
             "event_count",
+        },
+        inputs.variant_strategy_support_tsv: {
+            "variant_key",
+            "gene_id",
+            "strategy",
+            "alt_support_row_count",
+            "alt_support_ortholog_count",
         },
     }
     for path, required in contracts.items():
@@ -435,6 +446,11 @@ def read_strategy_summary(path: Path) -> pd.DataFrame:
     return summary
 
 
+def read_input_gene_count(path: Path) -> int:
+    genes = pd.read_csv(path, sep="\t", compression="gzip", usecols=["gene_id"])
+    return int(genes["gene_id"].astype(str).nunique())
+
+
 def read_failures(path: Path) -> pd.DataFrame:
     if not path.exists():
         return pd.DataFrame()
@@ -446,6 +462,8 @@ def alignment_summary_for_report(summary: pd.DataFrame) -> pd.DataFrame:
     if summary.empty:
         return pd.DataFrame()
     report = pd.DataFrame({"Strategy": summary["strategy"].map(strategy_label)})
+    if "gene_count" in summary.columns:
+        report["Genes with result"] = summary["gene_count"]
     report["Orthologs aligned %"] = (
         summary["aligned_summary_row_count"] / summary["summary_row_count"].replace(0, np.nan)
     )
@@ -462,6 +480,15 @@ def merge_alignment_summary(strategy_stats: pd.DataFrame, summary: pd.DataFrame)
     if report_summary.empty:
         return strategy_stats
     return strategy_stats.merge(report_summary, on="Strategy", how="left")
+
+
+def alignment_gene_ids_by_strategy(cov: pd.DataFrame) -> dict[str, set[str]]:
+    if cov.empty or not {"strategy", "gene_id"}.issubset(cov.columns):
+        return {}
+    return {
+        str(strategy): set(group["gene_id"].astype(str))
+        for strategy, group in cov.groupby("strategy", sort=False)
+    }
 
 
 def strategy_overlap_figure(overlap: StrategyOverlap | None):
@@ -686,8 +713,9 @@ def conservation_validation_method_table(analysis: ConservationAnalysis | None) 
                 "Step": "Variant set",
                 "Definition": (
                     "Clean B/LB and P/LP ClinVar SNVs and simple INDELs from the normalized target-locus universe. "
-                    "ALT_observed=0 means that the strategy did not report that exact normalized ALT; no callability "
-                    "filter or covariate is applied."
+                    "For each strategy, the denominator is restricted to genes with an alignment result for that "
+                    "strategy. Within those genes, ALT_observed=0 means that the strategy did not report that exact "
+                    "normalized ALT; no per-base callability filter is applied."
                 ),
             },
             {
@@ -910,6 +938,17 @@ def pathogenic_variant_table(variants: pd.DataFrame) -> pd.DataFrame:
     pathogenic["Disease"] = pathogenic["clinvar_disease"].map(compact_list_text)
     pathogenic["HGVS"] = pathogenic["clinvar_hgvs"].map(lambda value: compact_list_text(value, max_items=1, max_chars=70))
     pathogenic["gnomAD AF"] = pathogenic["gnomad_af"]
+    pathogenic["Ortholog support / strategy"] = pathogenic.apply(
+        lambda row: (
+            ""
+            if pd.isna(row.get("support_ortholog_mean"))
+            else (
+                f"{float(row['support_ortholog_mean']):.1f} "
+                f"({int(row['support_ortholog_min'])}-{int(row['support_ortholog_max'])})"
+            )
+        ),
+        axis=1,
+    )
     table = pd.DataFrame(
         {
             "Key": pathogenic["variant_id"],
@@ -926,14 +965,17 @@ def pathogenic_variant_table(variants: pd.DataFrame) -> pd.DataFrame:
             "ClinVar type": pathogenic["clinvar_variant_type"],
             "gnomAD AF": pathogenic["gnomAD AF"],
             "gnomAD consequence": pathogenic["gnomad_csq"],
-            "Orthologs": pathogenic["support_ortholog_count"],
-            "Support events": pathogenic["support_row_count"],
+            "Ortholog support / strategy": pathogenic["Ortholog support / strategy"],
             "Strategies": pathogenic["Strategies"],
         }
     )
     star_rank = table["Stars"].map({star: index for index, star in enumerate(REVIEW_STAR_ORDER[::-1])}).fillna(-1)
     table["_star_rank"] = star_rank
-    table = table.sort_values(["_star_rank", "Orthologs", "Support events"], ascending=False).drop(columns=["_star_rank"])
+    table = table.sort_values(
+        ["_star_rank", "SCVs", "Key"],
+        ascending=[False, False, True],
+        kind="mergesort",
+    ).drop(columns=["_star_rank"])
     return table
 
 
@@ -1045,6 +1087,7 @@ def overview_strategy_table(
     variant_summary: VariantSummary,
     cov: pd.DataFrame,
     strategy_stats: pd.DataFrame,
+    input_gene_count: int,
 ) -> pd.DataFrame:
     stats = strategy_stats.merge(variant_summary.unique_contribution, on="Strategy", how="left")
     stats = stats.merge(target_gene_coverage_for_report(cov), on="Strategy", how="left")
@@ -1054,6 +1097,10 @@ def overview_strategy_table(
     table = pd.DataFrame(
         {
             "Strategy": stats["Strategy"],
+            "Genes with result": [
+                format_count_ratio(count, input_gene_count)
+                for count in stats["Genes with result"]
+            ],
             "Candidate variants": stats["Unique Variants"],
             "Only this strategy": [
                 format_count_share(count, total)
@@ -1061,7 +1108,7 @@ def overview_strategy_table(
             ],
             "gnomAD matches": [
                 format_count_share(count, total)
-                for count, total in zip(stats["gnomAD Found"], stats["Unique Variants"])
+                for count, total in zip(stats["gnomAD Found"], stats["gnomAD Eligible"])
             ],
             "ClinVar matches": [
                 format_count_share(count, total)
@@ -1082,21 +1129,26 @@ def build_overview(
     cov: pd.DataFrame,
     strategy_stats: pd.DataFrame,
     annotation_manifest: dict,
+    input_gene_count: int,
 ) -> list[str]:
     unique_variant_count = variant_summary.unique_variant_count
-    gene_count = cov["gene_id"].nunique() if "gene_id" in cov.columns and not cov.empty else variant_summary.gene_count
     all_strategy_count = variant_summary.all_strategy_variant_count
     annotation_warnings = int(annotation_manifest.get("failure_count", 0) or 0)
     cards = [
         ("Unique candidate variants", format_int(unique_variant_count)),
         ("Strategies", format_int(len(variant_summary.strategies))),
-        ("Genes", format_int(gene_count)),
+        ("Input genes", format_int(input_gene_count)),
         ("Candidates found by all strategies", format_count_share(all_strategy_count, unique_variant_count)),
         ("Annotation warnings", format_int(annotation_warnings)),
     ]
     sections = [metric_cards(cards)]
     sections.append("<h2>Strategies</h2>")
-    sections.append(table_html(overview_strategy_table(variant_summary, cov, strategy_stats), classes="table overview-table"))
+    sections.append(
+        table_html(
+            overview_strategy_table(variant_summary, cov, strategy_stats, input_gene_count),
+            classes="table overview-table",
+        )
+    )
     return sections
 
 
@@ -1182,7 +1234,9 @@ def build_clinvar_gnomad_sections(
     sections = ["<h2>Population Evidence</h2>"]
     gnomad_rate = sort_by_metric(strategy_stats[["Strategy", "gnomAD found %"]], "gnomAD found %")
     gnomad_rate = gnomad_rate.merge(
-        strategy_stats[["Strategy", "gnomAD Found", "Unique Variants"]], on="Strategy", how="left"
+        strategy_stats[["Strategy", "gnomAD Found", "gnomAD Eligible"]],
+        on="Strategy",
+        how="left",
     )
     fig_gnomad_rate = px.bar(
         gnomad_rate,
@@ -1190,13 +1244,13 @@ def build_clinvar_gnomad_sections(
         y="gnomAD found %",
         title="gnomAD hit rate by strategy",
         category_orders={"Strategy": gnomad_rate["Strategy"].tolist()},
-        custom_data=["gnomAD Found", "Unique Variants"],
+        custom_data=["gnomAD Found", "gnomAD Eligible"],
     )
     fig_gnomad_rate.update_layout(yaxis_tickformat=".1%")
     fig_gnomad_rate.update_traces(
         hovertemplate=(
             "%{x}<br>Found in gnomAD: %{customdata[0]:,}<br>"
-            "Candidate variants: %{customdata[1]:,}<br>Hit rate: %{y:.2%}<extra></extra>"
+            "Completed lookups: %{customdata[1]:,}<br>Hit rate: %{y:.2%}<extra></extra>"
         )
     )
     compact_figure(fig_gnomad_rate)
@@ -1366,11 +1420,6 @@ def build_clinvar_gnomad_sections(
         compact_figure(fig_path_conseq, height=320)
         sections.append(fig_html(fig_path_conseq))
 
-    pathogenic_table = pathogenic_variant_table(variant_summary.pathogenic_rows)
-    if not pathogenic_table.empty:
-        sections.append("<h3>Pathogenic ClinVar Variants Found</h3>")
-        sections.append(table_html(pathogenic_table, classes="table table-sm table-striped", max_rows=100))
-
     return sections
 
 
@@ -1490,7 +1539,6 @@ def gnomad_stratification_figure(
 def build_gnomad_stratification_sections(
     variant_summary: VariantSummary,
     strategy_stats: pd.DataFrame,
-    annotation_manifest: dict,
     candidate_conservation: CandidateConservation,
     include_plotly: bool,
 ) -> list[str]:
@@ -1499,12 +1547,6 @@ def build_gnomad_stratification_sections(
         "<p class=\"lead\">Descriptive comparison of candidate alleles found and not found in gnomAD. "
         "This is not a matched-control analysis.</p>",
     ]
-    failure_count = int(annotation_manifest.get("gnomad_region_failure_count", 0) or 0)
-    if failure_count:
-        sections.append(
-            f"<p class=\"analysis-note\"><strong>Interpret with caution:</strong> {format_int(failure_count)} "
-            "gnomAD region request failed. The not-found stratum can therefore contain alleles without a completed lookup.</p>"
-        )
     strategy_order = sort_by_metric(
         strategy_stats[["Strategy", "gnomAD found %"]], "gnomAD found %"
     )["Strategy"].tolist()
@@ -1786,10 +1828,12 @@ def build_conservation_analysis(
     inputs: RunInputs,
     validation,
     strategies: list[str],
+    eligible_gene_ids_by_strategy: dict[str, set[str]],
 ) -> ConservationAnalysis:
     candidate = build_candidate_conservation(
         variant_annotations_tsv=inputs.variant_annotations_tsv,
         analytics_dir=inputs.run_dir / "analytics",
+        annotation_failures_tsv=inputs.annotation_failures_tsv,
         additional_rows=universe_rows(validation.universe),
         track_names=DEFAULT_TRACK_NAMES,
     )
@@ -1809,6 +1853,7 @@ def build_conservation_analysis(
         observed_by_strategy_type=validation.observed_by_strategy_type,
         strategies=strategies,
         analytics_dir=inputs.run_dir / "analytics",
+        eligible_gene_ids_by_strategy=eligible_gene_ids_by_strategy,
     )
     return ConservationAnalysis(
         annotations_path=conservation.annotations_path,
@@ -2470,7 +2515,9 @@ def build_methods_sections(
 ) -> list[str]:
     files = [
         ("Run Dir", inputs.run_dir),
+        ("Fetch Manifest", inputs.fetch_manifest_json),
         ("Variant Annotations", inputs.variant_annotations_tsv),
+        ("Variant Strategy Support", inputs.variant_strategy_support_tsv),
         ("Target Features", inputs.target_features_tsv),
         ("Target Sequences", inputs.target_sequences_dir),
         ("Feature Coverage", inputs.feature_coverage_tsv),
@@ -2502,6 +2549,7 @@ def build_methods_sections(
                 ("Event keys normalized", format_int(ok_events)),
                 ("Missing left anchor", format_int(missing_left_anchor)),
                 ("gnomAD regions failed", format_int(annotation_manifest.get("gnomad_region_failure_count", 0))),
+                ("Candidate contexts excluded from gnomAD", format_int(variant_summary.gnomad_lookup_failed)),
                 ("ClinVar cached variants", format_int(annotation_manifest.get("clinvar_cached_variant_count", 0))),
                 ("gnomAD cached variants", format_int(annotation_manifest.get("gnomad_cached_variant_count", 0))),
                 ("Feature coverage rows", format_int(len(cov))),
@@ -2511,6 +2559,21 @@ def build_methods_sections(
     if not failures.empty:
         sections.append("<h3>Annotation Failures</h3>")
         sections.append(table_html(failures, classes="table table-sm table-striped", max_rows=50))
+    pathogenic_table = pathogenic_variant_table(variant_summary.pathogenic_rows)
+    if not pathogenic_table.empty:
+        shown = min(len(pathogenic_table), 100)
+        sections.append(
+            "<details><summary>Top "
+            f"{format_int(shown)} of {format_int(variant_summary.pathogenic_variant_count)} "
+            "unique P/LP variants</summary>"
+        )
+        sections.append(
+            "<p>Sorted by ClinVar review stars, then supporting SCV count.</p>"
+        )
+        sections.append(
+            table_html(pathogenic_table, classes="table table-sm table-striped", max_rows=100)
+        )
+        sections.append("</details>")
     if report_timings:
         sections.append("<details><summary>Report computation timing</summary>")
         sections.append(
@@ -2612,7 +2675,8 @@ def build_methods_sections(
                     {
                         "Step": "Unit and strata",
                         "Definition": (
-                            "Unique variant_key x strategy records, split by presence of an exact gnomAD AF annotation."
+                            "Unique variant_key x strategy records with a completed gnomAD lookup, split by presence "
+                            "of an exact gnomAD AF annotation. Failed lookups are excluded from both strata."
                         ),
                     },
                     {
@@ -2893,12 +2957,18 @@ def main() -> None:
             strategy_label,
             target_features_path=inputs.target_features_tsv,
             genes_path=inputs.genes_tsv,
+            annotation_failures_path=inputs.annotation_failures_tsv,
+            variant_strategy_support_path=inputs.variant_strategy_support_tsv,
         )
         timing["Details"] = "cache hit" if variant_summary.cache_hit else "cache miss"
 
     with timed_stage("Run summary inputs", timings):
         cov = read_feature_coverage(inputs.feature_coverage_tsv)
         alignment_summary = read_strategy_summary(inputs.strategy_summary_tsv)
+        fetch_manifest = read_json(inputs.fetch_manifest_json)
+        input_gene_count = int(
+            fetch_manifest.get("unique_gene_count") or read_input_gene_count(inputs.genes_tsv)
+        )
         failures = read_failures(inputs.annotation_failures_tsv)
         annotation_manifest = read_json(inputs.annotation_manifest_json)
         alignment_manifest = read_json(inputs.alignment_manifest_json)
@@ -2913,7 +2983,10 @@ def main() -> None:
             "Found in ClinVar",
             "ClinVar found %",
             "gnomAD Found",
+            "gnomAD Eligible",
+            "gnomAD lookup failed",
             "gnomAD found %",
+            "Genes with result",
             "Orthologs evaluated",
             "Orthologs aligned",
             "Orthologs aligned %",
@@ -2940,6 +3013,7 @@ def main() -> None:
             inputs=inputs,
             validation=validation,
             strategies=strategies,
+            eligible_gene_ids_by_strategy=alignment_gene_ids_by_strategy(cov),
         )
 
     negative_controls = None
@@ -2974,7 +3048,17 @@ def main() -> None:
     )
     candidate_sections.extend(build_feature_sections(cov, include_plotly=False))
     sections = [
-        ("overview", "Overview", build_overview(variant_summary, cov, strategy_stats, annotation_manifest)),
+        (
+            "overview",
+            "Overview",
+            build_overview(
+                variant_summary,
+                cov,
+                strategy_stats,
+                annotation_manifest,
+                input_gene_count,
+            ),
+        ),
         ("candidates", "Candidate Profile", candidate_sections),
         (
             "gnomad-stratification",
@@ -2982,7 +3066,6 @@ def main() -> None:
             build_gnomad_stratification_sections(
                 variant_summary,
                 strategy_stats_full,
-                annotation_manifest,
                 conservation_analysis.candidate,
                 include_plotly=True,
             ),

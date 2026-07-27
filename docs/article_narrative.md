@@ -57,6 +57,11 @@ consequence class. Compute an odds ratio only where both B/LB and P/LP are
 represented; missense SNVs are the primary comparable class unless the final
 cohort supports another prespecified class.
 
+For each strategy, restrict the ClinVar denominator to genes for which that
+strategy produced an alignment result. No additional per-base callability
+filter is applied; within those genes, absence of the exact ALT is treated as
+`ALT_observed=0`.
+
 For each reported analysis show the four cell counts, odds ratio, 95% confidence
 interval, and Fisher exact p-value. The scientific emphasis is the effect size
 and its uncertainty, not significance alone.
@@ -121,6 +126,8 @@ stories:
 - fixed-band conservation sensitivity results and selector-level cohort counts;
 - target-space-null construction, matching yield, consequence-specific counts,
   and descriptive phyloP, gnomAD, and ClinVar comparisons;
+- gnomAD found-versus-not-found summaries with failed region lookups excluded
+  from both the numerator and denominator;
 - strategy overlap, runtime, storage, and alignment QC;
 - additional matching or robustness analyses only if overlap diagnostics make
   them necessary.

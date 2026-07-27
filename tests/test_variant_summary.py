@@ -129,6 +129,57 @@ def test_variant_summary_rebuilds_a_corrupt_cache(tmp_path: Path) -> None:
     assert rebuilt.unique_variant_count == 1
 
 
+def test_variant_summary_adds_per_strategy_pathogenic_support(tmp_path: Path) -> None:
+    annotations = tmp_path / "variant_annotations.tsv.gz"
+    support = tmp_path / "variant_strategy_support.tsv.gz"
+    with gzip.open(annotations, "wt", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=VARIANT_USECOLS, delimiter="\t", lineterminator="\n")
+        writer.writeheader()
+        writer.writerow(
+            {
+                "variant_key": "1:100:A>G",
+                "gene_id": "1",
+                "event_type": "snv",
+                "ref": "A",
+                "alt": "G",
+                "lookup_status": "ok",
+                "strategies": "s1,s2",
+                "clinvar_sig": "Pathogenic",
+                "clinvar_review_stars": "2",
+                "clinvar_scv_count": "7",
+            }
+        )
+    pd_rows = [
+        ["1:100:A>G", "1", "s1", "5", "3"],
+        ["1:100:A>G", "1", "s2", "9", "7"],
+    ]
+    with gzip.open(support, "wt", newline="") as handle:
+        writer = csv.writer(handle, delimiter="\t", lineterminator="\n")
+        writer.writerow(
+            [
+                "variant_key",
+                "gene_id",
+                "strategy",
+                "alt_support_row_count",
+                "alt_support_ortholog_count",
+            ]
+        )
+        writer.writerows(pd_rows)
+
+    summary = build_variant_summary(
+        annotations,
+        tmp_path / "analytics",
+        strategy_label=str,
+        variant_strategy_support_path=support,
+    )
+
+    row = summary.pathogenic_rows.iloc[0]
+    assert summary.pathogenic_variant_count == 1
+    assert row["support_ortholog_mean"] == 5.0
+    assert row["support_ortholog_min"] == 3
+    assert row["support_ortholog_max"] == 7
+
+
 def test_variant_summary_aggregates_target_context_and_gnomad_strata(tmp_path: Path) -> None:
     annotations = tmp_path / "variant_annotations.tsv.gz"
     features = tmp_path / "target_features.tsv.gz"
@@ -171,3 +222,41 @@ def test_variant_summary_aggregates_target_context_and_gnomad_strata(tmp_path: P
     strata = summary.gnomad_context_counts.set_index(["gnomad_status", "target_context"])["Variant_Count"].to_dict()
     assert strata == {("found", "cds"): 1, ("not_found", "intron"): 1}
     assert summary.gnomad_af_summary.iloc[0]["Median"] == -2.0
+
+
+def test_variant_summary_excludes_failed_gnomad_lookups_from_denominator(tmp_path: Path) -> None:
+    annotations = tmp_path / "variant_annotations.tsv.gz"
+    failures = tmp_path / "failures.tsv.gz"
+    rows = [
+        {"variant_key": "1:100:A>G", "gene_id": "1", "event_type": "snv", "ref": "A", "alt": "G", "lookup_status": "ok", "strategies": "s1", "gnomad_af": "0.01"},
+        {"variant_key": "1:200:C>T", "gene_id": "1", "event_type": "snv", "ref": "C", "alt": "T", "lookup_status": "ok", "strategies": "s1", "gnomad_af": ""},
+        {"variant_key": "1:300:G>A", "gene_id": "1", "event_type": "snv", "ref": "G", "alt": "A", "lookup_status": "ok", "strategies": "s1", "gnomad_af": ""},
+        {"variant_key": "raw", "gene_id": "1", "event_type": "del", "ref": "A", "alt": "", "lookup_status": "missing_left_anchor", "strategies": "s1", "gnomad_af": ""},
+    ]
+    with gzip.open(annotations, "wt", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=VARIANT_USECOLS, delimiter="\t", lineterminator="\n")
+        writer.writeheader()
+        for row in rows:
+            writer.writerow({field: row.get(field, "") for field in VARIANT_USECOLS})
+    with gzip.open(failures, "wt", newline="") as handle:
+        fields = ["source", "scope", "chrom", "start", "end", "failure_type", "message"]
+        writer = csv.DictWriter(handle, fieldnames=fields, delimiter="\t", lineterminator="\n")
+        writer.writeheader()
+        writer.writerow(
+            {"source": "gnomad", "scope": "region", "chrom": "1", "start": 190, "end": 210}
+        )
+
+    summary = build_variant_summary(
+        annotations,
+        tmp_path / "analytics",
+        strategy_label=str,
+        annotation_failures_path=failures,
+    )
+
+    stats = summary.strategy_stats.iloc[0]
+    assert stats["gnomAD Found"] == 1
+    assert stats["gnomAD Eligible"] == 2
+    assert stats["gnomAD lookup failed"] == 2
+    assert stats["gnomAD found %"] == 0.5
+    assert summary.gnomad_lookup_failed == 2
+    assert set(summary.gnomad_event_counts["gnomad_status"]) == {"found", "not_found"}
