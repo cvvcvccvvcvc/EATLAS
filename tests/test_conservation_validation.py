@@ -10,7 +10,7 @@ import pytest
 
 from analytics.core import conservation as conservation_module
 from analytics.core.clinvar_validation import parse_molecular_consequences
-from analytics.core.conservation import DEFAULT_TRACK_NAMES, Track, annotate_track, score_positions
+from analytics.core.conservation import DEFAULT_TRACK_NAMES, PositionScores, Track, annotate_track, score_positions
 from analytics.core.conservation_validation import (
     SCORE_COLUMN,
     assign_phylop_band,
@@ -76,6 +76,31 @@ def test_track_annotation_averages_all_required_indel_bases(monkeypatch: pytest.
 
     assert [float(row["test"]) for row in rows] == [99.0, 100.5, 99.5]
     assert summary["annotated_variants"] == 3
+
+
+def test_track_annotation_reuses_precomputed_position_scores() -> None:
+    track = Track("test", "memory://test", "ucsc")
+    rows = [{"variant_key": "1:100:A>G", "chrom": "1", "pos": "100", "ref": "A", "alt": "G"}]
+    scores = PositionScores(
+        track,
+        {("chr1", 99): 2.5},
+        {"status": "complete", "failed_block_count": 0},
+    )
+
+    summary = annotate_track(
+        rows=rows,
+        track=track,
+        max_block_bp=1_000,
+        max_gap_bp=1_000,
+        remote_retries=1,
+        retry_sleep_seconds=0,
+        precision=6,
+        position_scores=scores,
+    )
+
+    assert rows[0]["test"] == "2.5"
+    assert summary["source"] == "shared_position_read"
+    assert summary["annotated_variants"] == 1
 
 
 def test_consequence_membership_is_nonexclusive() -> None:

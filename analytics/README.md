@@ -68,6 +68,19 @@ use the mean across deleted reference bases without the VCF padding base, and
 insertions use the mean of their two flanking bases. All required bases must be
 scored.
 
+Candidate-wide phyloP is summarized separately under:
+
+```text
+<run-dir>/analytics/candidate_variants.phyloP100way.distributions.tsv.gz
+<run-dir>/analytics/candidate_variants.phyloP100way.manifest.json
+```
+
+The report stores exact one-percentile distribution curves per strategy and
+gnomAD-hit stratum, not millions of allele-level score rows. On a cold run it
+reads the union of candidate and ClinVar-required positions from the remote
+bigWig once and reuses that positional map for both candidate stratification
+and ClinVar conservation validation.
+
 `Target-Space Null` compares GAPH SNVs with unobserved possible SNVs matched by
 gene, target context, exact genomic REF>ALT substitution, and primary RefSeq VEP
 consequence. GAPH callability and conservation are not matching variables.

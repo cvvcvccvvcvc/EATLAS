@@ -35,6 +35,13 @@ class ConservationAnnotations:
     score_columns: list[str]
 
 
+@dataclass(frozen=True)
+class PositionScores:
+    track: Track
+    values: dict[tuple[str, int], float]
+    summary: dict[str, object]
+
+
 DEFAULT_TRACKS = {
     "phyloP100way": Track(
         name="phyloP100way",
@@ -81,6 +88,7 @@ def build_conservation_annotations(
     remote_retries: int = 3,
     retry_sleep_seconds: float = 5.0,
     precision: int = 6,
+    position_scores: PositionScores | None = None,
 ) -> ConservationAnnotations:
     tracks = parse_tracks(track_names)
     analytics_dir.mkdir(parents=True, exist_ok=True)
@@ -131,6 +139,7 @@ def build_conservation_annotations(
                 remote_retries=remote_retries,
                 retry_sleep_seconds=retry_sleep_seconds,
                 precision=precision,
+                position_scores=position_scores if position_scores and position_scores.track.name == track.name else None,
             )
         except RuntimeError as exc:
             summary = failed_track_summary(rows, track, str(exc), remote_retries)
@@ -316,13 +325,71 @@ def annotate_track(
     remote_retries: int,
     retry_sleep_seconds: float,
     precision: int,
+    position_scores: PositionScores | None = None,
 ) -> dict[str, object]:
-    if pyBigWig is None:
-        raise RuntimeError("pyBigWig is required for conservation annotation.")
-
     positions_by_chrom, required_positions_by_row = build_position_index(rows, track)
     for row in rows:
         row[track.name] = ""
+
+    if position_scores is None:
+        position_scores = read_position_scores(
+            positions_by_chrom=positions_by_chrom,
+            track=track,
+            max_block_bp=max_block_bp,
+            max_gap_bp=max_gap_bp,
+            remote_retries=remote_retries,
+            retry_sleep_seconds=retry_sleep_seconds,
+            precision=precision,
+        )
+        summary = dict(position_scores.summary)
+    else:
+        if position_scores.track != track:
+            raise ValueError(f"Position scores for {position_scores.track.name} cannot annotate {track.name}.")
+        required = {
+            (chrom, position)
+            for chrom, positions in positions_by_chrom.items()
+            for position in positions
+        }
+        annotated = sum(position in position_scores.values for position in required)
+        summary = {
+            "track": track.name,
+            "status": position_scores.summary.get("status", "complete"),
+            "error": position_scores.summary.get("error", ""),
+            "url": track.url,
+            "chrom_style": track.chrom_style,
+            "source": "shared_position_read",
+            "open_seconds": 0.0,
+            "open_attempts": 0,
+            "read_seconds": 0.0,
+            "read_retry_count": 0,
+            "block_count": 0,
+            "failed_block_count": position_scores.summary.get("failed_block_count", 0),
+            "unique_positions": len(required),
+            "annotated_positions": annotated,
+            "missing_positions": len(required) - annotated,
+        }
+
+    annotated_variants = apply_position_scores(rows, required_positions_by_row, track, position_scores.values, precision)
+    return {
+        **summary,
+        "annotated_variants": annotated_variants,
+        "missing_variants": len(rows) - annotated_variants,
+    }
+
+
+def read_position_scores(
+    *,
+    positions_by_chrom: dict[str, set[int]],
+    track: Track,
+    max_block_bp: int,
+    max_gap_bp: int,
+    remote_retries: int,
+    retry_sleep_seconds: float,
+    precision: int,
+) -> PositionScores:
+    """Read selected genomic positions from one remote bigWig in contiguous blocks."""
+    if pyBigWig is None:
+        raise RuntimeError("pyBigWig is required for conservation annotation.")
 
     bw, open_attempts, open_seconds = open_bigwig_with_retries(track, remote_retries, retry_sleep_seconds)
     chrom_sizes = bw.chroms()
@@ -373,13 +440,7 @@ def annotate_track(
                 annotated_positions += 1
                 values_by_position[(chrom, pos0)] = float(text)
     bw.close()
-    annotated_variants = 0
-    for row_index, required_positions in required_positions_by_row.items():
-        values = [values_by_position.get(position) for position in required_positions]
-        if values and all(value is not None for value in values):
-            rows[row_index][track.name] = value_to_text(sum(values) / len(values), precision)
-            annotated_variants += 1
-    return {
+    summary = {
         "track": track.name,
         "status": "complete" if failed_block_count == 0 else "partial",
         "error": first_error,
@@ -394,9 +455,24 @@ def annotate_track(
         "unique_positions": sum(len(items) for items in positions_by_chrom.values()),
         "annotated_positions": annotated_positions,
         "missing_positions": missing_positions,
-        "annotated_variants": annotated_variants,
-        "missing_variants": len(rows) - annotated_variants,
     }
+    return PositionScores(track, values_by_position, summary)
+
+
+def apply_position_scores(
+    rows: list[dict[str, str]],
+    required_positions_by_row: dict[int, list[tuple[str, int]]],
+    track: Track,
+    values_by_position: dict[tuple[str, int], float],
+    precision: int,
+) -> int:
+    annotated_variants = 0
+    for row_index, required_positions in required_positions_by_row.items():
+        values = [values_by_position.get(position) for position in required_positions]
+        if values and all(value is not None for value in values):
+            rows[row_index][track.name] = value_to_text(sum(values) / len(values), precision)
+            annotated_variants += 1
+    return annotated_variants
 
 
 def failed_track_summary(

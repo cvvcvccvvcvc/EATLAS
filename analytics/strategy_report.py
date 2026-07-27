@@ -23,7 +23,8 @@ from scipy.cluster.hierarchy import leaves_list, linkage
 from scipy.spatial.distance import squareform
 
 from analytics.core.clinvar_validation import build_validation
-from analytics.core.conservation import DEFAULT_TRACK_NAMES, build_conservation_annotations
+from analytics.core.candidate_conservation import CandidateConservation, build_candidate_conservation
+from analytics.core.conservation import DEFAULT_TRACK_NAMES, build_conservation_annotations, universe_rows
 from analytics.core.conservation_validation import (
     CONSEQUENCE_OPTIONS,
     CONSEQUENCE_TERMS,
@@ -141,6 +142,7 @@ class ConservationAnalysis:
     manifest_path: Path
     manifest: dict
     validation: ConservationValidation
+    candidate: CandidateConservation
 
 
 def parse_args() -> argparse.Namespace:
@@ -1428,6 +1430,7 @@ def build_gnomad_stratification_sections(
     variant_summary: VariantSummary,
     strategy_stats: pd.DataFrame,
     annotation_manifest: dict,
+    candidate_conservation: CandidateConservation,
     include_plotly: bool,
 ) -> list[str]:
     sections = [
@@ -1478,16 +1481,114 @@ def build_gnomad_stratification_sections(
     if context_fig is not None:
         sections.append(fig_html(context_fig, include_plotlyjs=plotly_pending))
 
+    sections.append("<h3>Conservation</h3>")
+    phylop_fig = candidate_phylop_figure(candidate_conservation, strategy_order)
+    if phylop_fig is not None:
+        sections.append(
+            "<p class=\"lead\">Candidate phyloP100way distributions are shown separately for exact gnomAD hits "
+            "and alleles without a gnomAD hit. Select one strategy to compare the two strata.</p>"
+        )
+        sections.append(fig_html(phylop_fig, include_plotlyjs=plotly_pending))
+        plotly_pending = False
+    else:
+        sections.append("<p>No candidate-wide phyloP100way scores were available.</p>")
+
     sections.extend(
         [
             "<h3>Functional Consequence</h3>",
             "<p class=\"analysis-note\">Not computed. A defensible comparison requires the same VEP release, "
             "transcript set, and consequence-selection rule for both gnomAD strata.</p>",
-            "<h3>Conservation</h3>",
-            "<p class=\"analysis-note\">Not computed. Candidate-wide phyloP annotation was not requested for this report.</p>",
         ]
     )
     return sections
+
+
+def candidate_phylop_figure(
+    analysis: CandidateConservation,
+    strategy_order: list[str],
+):
+    distributions = analysis.distributions.copy()
+    if distributions.empty:
+        return None
+    distributions["Strategy"] = distributions["strategy"].astype(str).map(strategy_label)
+    available = set(distributions["Strategy"])
+    ordered = [strategy for strategy in strategy_order if strategy in available]
+    ordered += sorted(available - set(ordered))
+    status_styles = {
+        "found": ("Found in gnomAD", "#2166ac"),
+        "not_found": ("Not found in gnomAD", "#b2182b"),
+    }
+    fig = go.Figure()
+    trace_strategies = []
+    for strategy_index, strategy in enumerate(ordered):
+        for status, (label, color) in status_styles.items():
+            subset = distributions[
+                distributions["Strategy"].eq(strategy)
+                & distributions["gnomad_status"].astype(str).eq(status)
+            ].sort_values("quantile")
+            if subset.empty:
+                continue
+            coverage = subset["scored_count"].iloc[0] / subset["variant_count"].iloc[0]
+            fig.add_trace(
+                go.Scatter(
+                    x=subset["phyloP100way"],
+                    y=subset["quantile"],
+                    mode="lines",
+                    name=label,
+                    line={"color": color, "width": 3},
+                    visible=strategy_index == 0,
+                    customdata=np.column_stack(
+                        [
+                            np.repeat(subset["scored_count"].iloc[0], len(subset)),
+                            np.repeat(subset["variant_count"].iloc[0], len(subset)),
+                            np.repeat(coverage, len(subset)),
+                        ]
+                    ),
+                    hovertemplate=(
+                        label + "<br>phyloP100way: %{x:.3f}<br>Percentile: %{y:.0%}<br>"
+                        "Scored variants: %{customdata[0]:,} / %{customdata[1]:,} "
+                        "(%{customdata[2]:.1%})<extra></extra>"
+                    ),
+                )
+            )
+            trace_strategies.append(strategy)
+    if not fig.data:
+        return None
+    buttons = []
+    for strategy in ordered:
+        visible = [trace_strategy == strategy for trace_strategy in trace_strategies]
+        if any(visible):
+            buttons.append(
+                {
+                    "label": strategy,
+                    "method": "update",
+                    "args": [
+                        {"visible": visible},
+                        {"title": f"Candidate phyloP100way distribution: {strategy}"},
+                    ],
+                }
+            )
+    first_strategy = buttons[0]["label"] if buttons else ""
+    fig.update_layout(
+        title=f"Candidate phyloP100way distribution: {first_strategy}",
+        xaxis_title="phyloP100way",
+        yaxis_title="Cumulative fraction",
+        yaxis_tickformat=".0%",
+        updatemenus=[
+            {
+                "buttons": buttons,
+                "direction": "down",
+                "showactive": True,
+                "x": 1.0,
+                "xanchor": "right",
+                "y": 1.18,
+                "yanchor": "top",
+            }
+        ],
+    )
+    fig.add_vline(x=0.0, line_dash="dot", line_color="#8c8c8c")
+    compact_figure(fig, height=420, show_x_title=True)
+    return fig
 
 
 def validation_excluded_count(manifest: dict, variant_kind: str) -> int:
@@ -1653,11 +1754,18 @@ def build_conservation_analysis(
     validation,
     strategies: list[str],
 ) -> ConservationAnalysis:
+    candidate = build_candidate_conservation(
+        variant_annotations_tsv=inputs.variant_annotations_tsv,
+        analytics_dir=inputs.run_dir / "analytics",
+        additional_rows=universe_rows(validation.universe),
+        track_names=DEFAULT_TRACK_NAMES,
+    )
     conservation = build_conservation_annotations(
         universe=validation.universe,
         universe_path=validation.universe_path,
         analytics_dir=inputs.run_dir / "analytics",
         track_names=DEFAULT_TRACK_NAMES,
+        position_scores=candidate.position_scores,
     )
     cohort = build_conservation_cohort(
         universe=validation.universe,
@@ -1674,6 +1782,7 @@ def build_conservation_analysis(
         manifest_path=conservation.manifest_path,
         manifest=conservation.manifest,
         validation=results,
+        candidate=candidate.without_position_scores(),
     )
 
 
@@ -2263,6 +2372,13 @@ def build_methods_sections(
         ("Alignment Manifest", inputs.alignment_manifest_json),
         ("Output HTML", out_html),
     ]
+    if conservation_analysis is not None:
+        files.extend(
+            [
+                ("Candidate phyloP distributions", conservation_analysis.candidate.distributions_path),
+                ("Candidate phyloP manifest", conservation_analysis.candidate.manifest_path),
+            ]
+        )
     file_rows = [
         {"Key": label, "Path": str(path), "Exists": path.exists(), "Size": file_size_label(path)}
         for label, path in files
@@ -2356,6 +2472,45 @@ def build_methods_sections(
     sections.append(table_html(conservation_validation_method_table(conservation_analysis), classes="table table-sm table-striped"))
     sections.append("<h4>ClinVar MC consequence subsets</h4>")
     sections.append(table_html(validation_consequence_grouping_table(), classes="table table-sm table-striped"))
+    sections.append("</details>")
+    sections.append("<details><summary>Candidate-wide phyloP stratification</summary>")
+    sections.append(
+        table_html(
+            pd.DataFrame(
+                [
+                    {
+                        "Step": "Eligible candidate alleles",
+                        "Definition": "Normalized lookup_status=ok SNVs and indels with a defined phyloP score basis.",
+                    },
+                    {
+                        "Step": "Allele score",
+                        "Definition": (
+                            "SNV substituted base; deletion mean across deleted reference bases without VCF padding; "
+                            "insertion mean across the two flanking bases. All required bases must have a score."
+                        ),
+                    },
+                    {
+                        "Step": "Unit and strata",
+                        "Definition": (
+                            "Unique variant_key x strategy records, split by presence of an exact gnomAD AF annotation."
+                        ),
+                    },
+                    {
+                        "Step": "Distribution",
+                        "Definition": "Exact phyloP100way percentiles from 0 through 100 in one-percent increments.",
+                    },
+                    {
+                        "Step": "Shared read",
+                        "Definition": (
+                            "A cold report reads the union of candidate and ClinVar-required positions from bigWig once; "
+                            "both analyses reuse that positional score map."
+                        ),
+                    },
+                ]
+            ),
+            classes="table table-sm table-striped",
+        )
+    )
     sections.append("</details>")
     sections.append("<details><summary>Negative-control construction</summary>")
     sections.append(
@@ -2701,6 +2856,7 @@ def main() -> None:
                 variant_summary,
                 strategy_stats_full,
                 annotation_manifest,
+                conservation_analysis.candidate,
                 include_plotly=True,
             ),
         ),
