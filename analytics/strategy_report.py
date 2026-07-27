@@ -379,10 +379,11 @@ def alignment_summary_for_report(summary: pd.DataFrame) -> pd.DataFrame:
     if summary.empty:
         return pd.DataFrame()
     report = pd.DataFrame({"Strategy": summary["strategy"].map(strategy_label)})
-    report["Aligned support records %"] = (
+    report["Orthologs aligned %"] = (
         summary["aligned_summary_row_count"] / summary["summary_row_count"].replace(0, np.nan)
     )
-    report["Aligned support records"] = summary["aligned_summary_row_count"]
+    report["Orthologs evaluated"] = summary["summary_row_count"]
+    report["Orthologs aligned"] = summary["aligned_summary_row_count"]
     report["Raw support events"] = summary["event_count"]
     if "aligned_target_bp" in summary.columns:
         report["Aligned target bp"] = summary["aligned_target_bp"]
@@ -918,35 +919,108 @@ def metric_cards(items: list[tuple[str, object]]) -> str:
     return f"<div class=\"metric-grid\">{''.join(cards)}</div>"
 
 
+def format_count_share(count: object, total: object) -> str:
+    if pd.isna(count) or pd.isna(total):
+        return "n/a"
+    count_value = int(count)
+    total_value = int(total)
+    if total_value == 0:
+        return f"{format_int(count_value)} (n/a)"
+    fraction = count_value / total_value
+    percent_digits = 1 if fraction == 0 else 3 if fraction < 0.001 else 2 if fraction < 0.01 else 1
+    return f"{format_int(count_value)} ({format_percent(fraction, percent_digits)})"
+
+
+def format_count_ratio(count: object, total: object) -> str:
+    if pd.isna(count) or pd.isna(total):
+        return "n/a"
+    count_value = int(count)
+    total_value = int(total)
+    if total_value == 0:
+        return f"{format_int(count_value)} / 0 (n/a)"
+    fraction = count_value / total_value
+    return f"{format_int(count_value)} / {format_int(total_value)} ({format_percent(fraction)})"
+
+
+def target_gene_coverage_for_report(cov: pd.DataFrame) -> pd.DataFrame:
+    required = {"strategy", "feature_type", "length_bp", "covered_bases"}
+    if cov.empty or not required.issubset(cov.columns):
+        return pd.DataFrame(columns=["Strategy", "Target bases covered %"])
+    genes = cov[cov["feature_type"].astype(str).str.lower().eq("gene")]
+    if genes.empty:
+        return pd.DataFrame(columns=["Strategy", "Target bases covered %"])
+    coverage = (
+        genes.groupby("strategy", as_index=False)
+        .agg(Target_Length_bp=("length_bp", "sum"), Covered_Bases=("covered_bases", "sum"))
+    )
+    coverage["Target bases covered %"] = (
+        coverage["Covered_Bases"] / coverage["Target_Length_bp"].replace(0, np.nan)
+    )
+    coverage["Strategy"] = coverage["strategy"].map(strategy_label)
+    return coverage[["Strategy", "Target bases covered %"]]
+
+
+def overview_strategy_table(
+    variant_summary: VariantSummary,
+    cov: pd.DataFrame,
+    strategy_stats: pd.DataFrame,
+) -> pd.DataFrame:
+    stats = strategy_stats.merge(variant_summary.unique_contribution, on="Strategy", how="left")
+    stats = stats.merge(target_gene_coverage_for_report(cov), on="Strategy", how="left")
+    stats["Unique To Strategy"] = stats["Unique To Strategy"].fillna(0)
+    stats = stats.sort_values("Unique Variants", ascending=False, kind="mergesort")
+
+    table = pd.DataFrame(
+        {
+            "Strategy": stats["Strategy"],
+            "Candidate variants": stats["Unique Variants"],
+            "Only this strategy": [
+                format_count_share(count, total)
+                for count, total in zip(stats["Unique To Strategy"], stats["Unique Variants"])
+            ],
+            "gnomAD matches": [
+                format_count_share(count, total)
+                for count, total in zip(stats["gnomAD Found"], stats["Unique Variants"])
+            ],
+            "ClinVar matches": [
+                format_count_share(count, total)
+                for count, total in zip(stats["Found in ClinVar"], stats["Unique Variants"])
+            ],
+            "Orthologs aligned": [
+                format_count_ratio(count, total)
+                for count, total in zip(stats["Orthologs aligned"], stats["Orthologs evaluated"])
+            ],
+            "Target bases covered %": stats["Target bases covered %"],
+        }
+    )
+    return table.reset_index(drop=True)
+
+
 def build_overview(
     variant_summary: VariantSummary,
     cov: pd.DataFrame,
     strategy_stats: pd.DataFrame,
     annotation_manifest: dict,
-    alignment_manifest: dict,
 ) -> list[str]:
     unique_variant_count = variant_summary.unique_variant_count
-    event_row_count = annotation_manifest.get("event_row_count") or alignment_manifest.get("raw_alignment_event_count") or ""
-    clinvar_found = variant_summary.clinvar_found
-    clinvar_classified = variant_summary.clinvar_classified
-    gnomad_found = variant_summary.gnomad_found
+    gene_count = cov["gene_id"].nunique() if "gene_id" in cov.columns and not cov.empty else variant_summary.gene_count
+    all_strategy_count = variant_summary.all_strategy_variant_count
     annotation_warnings = int(annotation_manifest.get("failure_count", 0) or 0)
     cards = [
-        ("Raw support events", format_int(event_row_count) if event_row_count != "" else "n/a"),
         ("Unique candidate variants", format_int(unique_variant_count)),
         ("Strategies", format_int(len(variant_summary.strategies))),
-        ("Genes", format_int(variant_summary.gene_count)),
-        ("Found in ClinVar", f"{format_int(clinvar_found)} ({format_percent(clinvar_found / unique_variant_count)})"),
-        (
-            "ClinVar with CLNSIG",
-            f"{format_int(clinvar_classified)} ({format_percent(clinvar_classified / unique_variant_count)})",
-        ),
-        ("Found in gnomAD", f"{format_int(gnomad_found)} ({format_percent(gnomad_found / unique_variant_count)})"),
+        ("Genes", format_int(gene_count)),
+        ("Candidates found by all strategies", format_count_share(all_strategy_count, unique_variant_count)),
         ("Annotation warnings", format_int(annotation_warnings)),
     ]
     sections = [metric_cards(cards)]
-    sections.append("<h2>Strategy Summary</h2>")
-    sections.append(table_html(strategy_stats))
+    sections.append("<h2>Strategies</h2>")
+    sections.append(
+        "<p class=\"analysis-note\"><strong>Orthologs aligned</strong> counts gene-ortholog inputs that produced "
+        "at least one alignment segment. <strong>Target bases covered</strong> is the length-weighted fraction of "
+        "target gene bases covered by one or more orthologs.</p>"
+    )
+    sections.append(table_html(overview_strategy_table(variant_summary, cov, strategy_stats), classes="table overview-table"))
     return sections
 
 
@@ -2279,6 +2353,8 @@ def render_html(sections: list[tuple[str, str, list[str]]]) -> str:
             th, td {{ border: 1px solid #d5d9df; padding: 6px 8px; text-align: center; }}
             th {{ background: #f5f7fa; }}
             td:first-child, th:first-child {{ text-align: left; }}
+            .overview-table {{ width: 100%; font-size: 14px; }}
+            .overview-table th, .overview-table td {{ padding: 9px 10px; }}
             details {{
                 margin: 16px 0;
                 border: 1px solid #d5d9df;
@@ -2366,8 +2442,9 @@ def main() -> None:
             "ClinVar found %",
             "gnomAD Found",
             "gnomAD found %",
-            "Aligned support records %",
-            "Raw support events",
+            "Orthologs evaluated",
+            "Orthologs aligned",
+            "Orthologs aligned %",
         ]
         strategy_stats = strategy_stats_full[
             [column for column in summary_columns if column in strategy_stats_full.columns]
@@ -2420,7 +2497,7 @@ def main() -> None:
         )
 
     sections = [
-        ("overview", "Overview", build_overview(variant_summary, cov, strategy_stats, annotation_manifest, alignment_manifest)),
+        ("overview", "Overview", build_overview(variant_summary, cov, strategy_stats, annotation_manifest)),
         ("variants", "Variant Profile", build_variant_sections(variant_summary, strategy_stats, include_plotly=True)),
         (
             "external-evidence",

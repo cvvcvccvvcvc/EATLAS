@@ -39,7 +39,7 @@ VARIANT_USECOLS = [
     "gnomad_csq",
 ]
 VARIANT_REQUIRED = {"variant_key", "gene_id", "event_type", "strategies"}
-SUMMARY_CACHE_VERSION = 1
+SUMMARY_CACHE_VERSION = 2
 SUMMARY_CACHE_NAME = "variant_summary.json.gz"
 SPECIAL_FLOAT_KEY = "__gaph_float__"
 
@@ -56,6 +56,7 @@ class StrategyOverlap:
 class VariantSummary:
     input_row_count: int
     unique_variant_count: int
+    all_strategy_variant_count: int
     strategy_record_count: int
     gene_count: int
     clinvar_found: int
@@ -162,6 +163,7 @@ def _summary_payload(
         "summary": {
             "input_row_count": summary.input_row_count,
             "unique_variant_count": summary.unique_variant_count,
+            "all_strategy_variant_count": summary.all_strategy_variant_count,
             "strategy_record_count": summary.strategy_record_count,
             "gene_count": summary.gene_count,
             "clinvar_found": summary.clinvar_found,
@@ -192,6 +194,7 @@ def _summary_from_payload(payload: dict[str, object]) -> VariantSummary:
     return VariantSummary(
         input_row_count=int(summary["input_row_count"]),
         unique_variant_count=int(summary["unique_variant_count"]),
+        all_strategy_variant_count=int(summary["all_strategy_variant_count"]),
         strategy_record_count=int(summary["strategy_record_count"]),
         gene_count=int(summary["gene_count"]),
         clinvar_found=int(summary["clinvar_found"]),
@@ -450,18 +453,21 @@ def _overlap_summary(
     connection: sqlite3.Connection,
     strategies: list[str],
     totals: dict[str, int],
-) -> tuple[int, dict[str, int], StrategyOverlap | None]:
+) -> tuple[int, dict[str, int], int, StrategyOverlap | None]:
     intersections: Counter[tuple[str, str]] = Counter()
     unique_counts: Counter[str] = Counter()
     unique_variant_count = 0
+    all_strategy_variant_count = 0
     current_variant = None
     current_strategies: list[str] = []
 
     def consume_group(group: list[str]) -> None:
-        nonlocal unique_variant_count
+        nonlocal all_strategy_variant_count, unique_variant_count
         if not group:
             return
         unique_variant_count += 1
+        if len(group) == len(strategies):
+            all_strategy_variant_count += 1
         if len(group) == 1:
             unique_counts[group[0]] += 1
         intersections.update(combinations_with_replacement(group, 2))
@@ -477,7 +483,7 @@ def _overlap_summary(
 
     ordered = sorted(strategies, key=lambda strategy: (-totals.get(strategy, 0), strategy))
     if len(ordered) < 2:
-        return unique_variant_count, dict(unique_counts), None
+        return unique_variant_count, dict(unique_counts), all_strategy_variant_count, None
     size = len(ordered)
     shared = np.zeros((size, size), dtype=np.int64)
     unions = np.zeros((size, size), dtype=np.int64)
@@ -490,7 +496,12 @@ def _overlap_summary(
             shared[row_index, col_index] = count
             unions[row_index, col_index] = union
             jaccard[row_index, col_index] = count / union if union else 0.0
-    return unique_variant_count, dict(unique_counts), StrategyOverlap(ordered, shared, unions, jaccard)
+    return (
+        unique_variant_count,
+        dict(unique_counts),
+        all_strategy_variant_count,
+        StrategyOverlap(ordered, shared, unions, jaccard),
+    )
 
 
 def _gnomad_bins(
@@ -651,7 +662,11 @@ def _compute_variant_summary(
         )
         strategies = raw_stats["strategy"].astype(str).tolist()
         totals = dict(zip(raw_stats["strategy"], raw_stats["count"].astype(int)))
-        unique_variant_count, unique_counts, overlap = _overlap_summary(connection, strategies, totals)
+        unique_variant_count, unique_counts, all_strategy_variant_count, overlap = _overlap_summary(
+            connection,
+            strategies,
+            totals,
+        )
         strategy_stats = _strategy_stats(connection, strategy_label)
         unique_contribution = pd.DataFrame(
             {
@@ -691,6 +706,7 @@ def _compute_variant_summary(
     return VariantSummary(
         input_row_count=input_row_count,
         unique_variant_count=unique_variant_count,
+        all_strategy_variant_count=all_strategy_variant_count,
         strategy_record_count=strategy_record_count,
         gene_count=len(genes),
         clinvar_found=clinvar_found,

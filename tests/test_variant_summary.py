@@ -75,6 +75,7 @@ def test_variant_summary_accepts_compact_annotation_schema(tmp_path: Path) -> No
 
     assert summary.input_row_count == 3
     assert summary.unique_variant_count == 3
+    assert summary.all_strategy_variant_count == 1
     assert summary.strategy_record_count == 4
     assert summary.strategies == ["s1", "s2"]
     by_strategy = summary.strategy_stats.set_index("Strategy")
@@ -89,6 +90,7 @@ def test_variant_summary_accepts_compact_annotation_schema(tmp_path: Path) -> No
         strategy_label=lambda value: value,
     )
     assert cached.cache_hit
+    assert cached.all_strategy_variant_count == 1
     assert cached.strategy_stats.set_index("Strategy").loc["s2", "Ti/Tv"] == float("inf")
     assert (tmp_path / "analytics" / "variant_summary.json.gz").stat().st_mode & 0o777 == 0o644
 
