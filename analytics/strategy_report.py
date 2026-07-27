@@ -19,6 +19,8 @@ import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
+from scipy.cluster.hierarchy import leaves_list, linkage
+from scipy.spatial.distance import squareform
 
 from analytics.core.clinvar_validation import build_validation
 from analytics.core.conservation import DEFAULT_TRACK_NAMES, build_conservation_annotations
@@ -42,7 +44,22 @@ warnings.filterwarnings("ignore", r"Mean of empty slice")
 
 
 FEATURE_ORDER = ["gene", "exon", "cds", "utr", "intron"]
-DISJOINT_FEATURE_ORDER = ["cds", "utr", "intron"]
+PROFILE_FEATURE_ORDER = ["cds", "utr", "intron"]
+TARGET_CONTEXT_ORDER = ["cds", "utr", "other_exon", "intron", "other"]
+TARGET_CONTEXT_LABELS = {
+    "cds": "CDS",
+    "utr": "UTR",
+    "other_exon": "Other exon",
+    "intron": "Intron",
+    "other": "Other",
+}
+TARGET_CONTEXT_COLORS = {
+    "CDS": "#2166ac",
+    "UTR": "#67a9cf",
+    "Other exon": "#d1e5f0",
+    "Intron": "#ef8a62",
+    "Other": "#bdbdbd",
+}
 CLINVAR_ORDER = ["P/LP", "B/LB", "VUS", "Other", "Not Found"]
 CLINVAR_COLORS = {
     "B/LB": "#2ca25f",
@@ -400,15 +417,27 @@ def merge_alignment_summary(strategy_stats: pd.DataFrame, summary: pd.DataFrame)
 def strategy_overlap_figure(overlap: StrategyOverlap | None):
     if overlap is None:
         return None
-    labels = [strategy_label(strategy) for strategy in overlap.strategies]
+    order = np.arange(len(overlap.strategies))
+    if len(order) > 2:
+        distance = np.clip(1.0 - overlap.jaccard, 0.0, 1.0)
+        np.fill_diagonal(distance, 0.0)
+        order = leaves_list(linkage(squareform(distance, checks=False), method="average", optimal_ordering=True))
+        left, right = int(order[0]), int(order[-1])
+        mean_distance = distance.mean(axis=1)
+        if (mean_distance[left], overlap.strategies[left]) < (mean_distance[right], overlap.strategies[right]):
+            order = order[::-1]
+    labels = [strategy_label(overlap.strategies[index]) for index in order]
+    jaccard = overlap.jaccard[np.ix_(order, order)]
+    intersections = overlap.intersections[np.ix_(order, order)]
+    unions = overlap.unions[np.ix_(order, order)]
 
     fig = go.Figure(
         data=go.Heatmap(
-            z=overlap.jaccard,
+            z=jaccard,
             x=labels,
             y=labels,
-            text=np.vectorize(lambda value: f"{value:.0%}")(overlap.jaccard),
-            customdata=np.dstack([overlap.intersections, overlap.unions]),
+            text=np.vectorize(lambda value: f"{value:.0%}")(jaccard),
+            customdata=np.dstack([intersections, unions]),
             colorscale="Blues",
             zmin=0,
             zmax=1,
@@ -739,7 +768,7 @@ def feature_coverage_formula_table() -> pd.DataFrame:
             {
                 "Metric": "Weighted breadth",
                 "Formula": "sum(covered_bases) / sum(length_bp)",
-                "Notes": "Length-weighted aggregate used for feature breadth ranges.",
+                "Notes": "Length-weighted aggregate used in the target-bases-covered plot.",
             },
             {
                 "Metric": "Per-feature mean depth",
@@ -749,7 +778,7 @@ def feature_coverage_formula_table() -> pd.DataFrame:
             {
                 "Metric": "Weighted mean ortholog depth",
                 "Formula": "sum(depth_bases) / sum(length_bp)",
-                "Notes": "Main Feature Coverage plot metric.",
+                "Notes": "Main ortholog-depth plot metric.",
             },
             {
                 "Metric": "Median feature metrics",
@@ -759,7 +788,7 @@ def feature_coverage_formula_table() -> pd.DataFrame:
             {
                 "Metric": "Main feature classes",
                 "Formula": "CDS, UTR, intron",
-                "Notes": "The main plot uses disjoint target feature classes to avoid exon/gene aggregates dominating interpretation.",
+                "Notes": "Exon and gene aggregates are omitted because they overlap CDS/UTR/intron and would be redundant.",
             },
         ]
     )
@@ -1015,11 +1044,6 @@ def build_overview(
     ]
     sections = [metric_cards(cards)]
     sections.append("<h2>Strategies</h2>")
-    sections.append(
-        "<p class=\"analysis-note\"><strong>Orthologs aligned</strong> counts gene-ortholog inputs that produced "
-        "at least one alignment segment. <strong>Target bases covered</strong> is the length-weighted fraction of "
-        "target gene bases covered by one or more orthologs.</p>"
-    )
     sections.append(table_html(overview_strategy_table(variant_summary, cov, strategy_stats), classes="table overview-table"))
     return sections
 
@@ -1029,46 +1053,14 @@ def build_variant_sections(
     strategy_stats: pd.DataFrame,
     include_plotly: bool,
 ) -> list[str]:
-    sections = ["<h2>Variant Profile</h2>"]
-    variant_volume = sort_by_metric(strategy_stats[["Strategy", "Unique Variants"]], "Unique Variants")
-    fig_volume = px.bar(
-        variant_volume,
-        x="Strategy",
-        y="Unique Variants",
-        title="Unique candidate variants by strategy",
-        category_orders={"Strategy": variant_volume["Strategy"].tolist()},
-    )
-    compact_figure(fig_volume)
-    sections.append(fig_html(fig_volume, include_plotlyjs=include_plotly))
-
-    titv = sort_by_metric(strategy_stats[["Strategy", "Ti/Tv"]], "Ti/Tv")
-    fig_titv = px.bar(
-        titv,
-        x="Strategy",
-        y="Ti/Tv",
-        title="Ti/Tv by strategy",
-        category_orders={"Strategy": titv["Strategy"].tolist()},
-    )
-    compact_figure(fig_titv)
-    sections.append(fig_html(fig_titv))
-
-    unique_contrib = variant_summary.unique_contribution
-    unique_contrib_plot = sort_by_metric(unique_contrib[["Strategy", "Unique To Strategy"]], "Unique To Strategy")
-    fig_unique = px.bar(
-        unique_contrib_plot,
-        x="Strategy",
-        y="Unique To Strategy",
-        title="Variants found only by one strategy",
-        category_orders={"Strategy": unique_contrib_plot["Strategy"].tolist()},
-    )
-    compact_figure(fig_unique)
-    sections.append(fig_html(fig_unique))
-
+    sections = ["<h2>Strategy Concordance</h2>"]
+    plotly_pending = include_plotly
     fig_overlap = strategy_overlap_figure(variant_summary.overlap)
     if fig_overlap is not None:
-        sections.append("<h3>Strategy Overlap</h3>")
-        sections.append(fig_html(fig_overlap))
+        sections.append(fig_html(fig_overlap, include_plotlyjs=plotly_pending))
+        plotly_pending = False
 
+    sections.append("<h2>Variant Composition</h2>")
     counts = variant_summary.event_counts.copy()
     totals = counts.groupby("strategy", observed=True)["Variant_Count"].transform("sum")
     counts["Fraction"] = counts["Variant_Count"] / totals.replace(0, np.nan)
@@ -1078,7 +1070,8 @@ def build_variant_sections(
         ["strategy"]
         .tolist()
     )
-    order = snv_order + [strategy for strategy in variant_volume["Strategy"].tolist() if strategy not in snv_order]
+    all_strategies = strategy_stats["Strategy"].tolist()
+    order = snv_order + [strategy for strategy in all_strategies if strategy not in snv_order]
     fig_events = px.bar(
         counts,
         x="strategy",
@@ -1091,7 +1084,41 @@ def build_variant_sections(
     )
     fig_events.update_layout(yaxis_tickformat=".0%")
     compact_figure(fig_events, height=360)
-    sections.append(fig_html(fig_events))
+    sections.append(fig_html(fig_events, include_plotlyjs=plotly_pending))
+    plotly_pending = False
+
+    contexts = variant_summary.target_context_counts.copy()
+    if not contexts.empty:
+        totals = contexts.groupby("strategy", observed=True)["Variant_Count"].transform("sum")
+        contexts["Fraction"] = contexts["Variant_Count"] / totals.replace(0, np.nan)
+        contexts["Target context"] = contexts["target_context"].map(TARGET_CONTEXT_LABELS).fillna("Other")
+        cds_order = (
+            contexts[contexts["target_context"].astype(str).eq("cds")]
+            .sort_values("Fraction", ascending=False)["strategy"]
+            .tolist()
+        )
+        context_order = cds_order + [strategy for strategy in all_strategies if strategy not in cds_order]
+        fig_context = px.bar(
+            contexts,
+            x="strategy",
+            y="Fraction",
+            color="Target context",
+            barmode="stack",
+            title="Target context composition by strategy",
+            category_orders={
+                "strategy": context_order,
+                "Target context": [TARGET_CONTEXT_LABELS[item] for item in TARGET_CONTEXT_ORDER],
+            },
+            color_discrete_map=TARGET_CONTEXT_COLORS,
+            labels={"strategy": "", "Fraction": "Variant fraction"},
+            custom_data=["Variant_Count"],
+        )
+        fig_context.update_layout(yaxis_tickformat=".0%")
+        fig_context.update_traces(
+            hovertemplate="%{x}<br>%{fullData.name}: %{customdata[0]:,} (%{y:.1%})<extra></extra>"
+        )
+        compact_figure(fig_context, height=360)
+        sections.append(fig_html(fig_context))
     return sections
 
 
@@ -1100,40 +1127,104 @@ def build_clinvar_gnomad_sections(
     strategy_stats: pd.DataFrame,
     include_plotly: bool,
 ) -> list[str]:
-    sections = ["<h2>External Evidence</h2>"]
-    sections.append(
-        metric_cards(
-            [
-                ("Found in ClinVar", format_int(variant_summary.clinvar_found)),
-                ("ClinVar with CLNSIG", format_int(variant_summary.clinvar_classified)),
-                ("Found in gnomAD", format_int(variant_summary.gnomad_found)),
-            ]
-        )
-    )
-
-    clinvar_rate = sort_by_metric(strategy_stats[["Strategy", "ClinVar found %"]], "ClinVar found %")
-    fig_clin_rate = px.bar(
-        clinvar_rate,
-        x="Strategy",
-        y="ClinVar found %",
-        title="ClinVar hit rate by strategy",
-        category_orders={"Strategy": clinvar_rate["Strategy"].tolist()},
-    )
-    fig_clin_rate.update_layout(yaxis_tickformat=".2%")
-    compact_figure(fig_clin_rate)
-    sections.append(fig_html(fig_clin_rate, include_plotlyjs=include_plotly))
-
+    sections = ["<h2>Population Evidence</h2>"]
     gnomad_rate = sort_by_metric(strategy_stats[["Strategy", "gnomAD found %"]], "gnomAD found %")
+    gnomad_rate = gnomad_rate.merge(
+        strategy_stats[["Strategy", "gnomAD Found", "Unique Variants"]], on="Strategy", how="left"
+    )
     fig_gnomad_rate = px.bar(
         gnomad_rate,
         x="Strategy",
         y="gnomAD found %",
         title="gnomAD hit rate by strategy",
         category_orders={"Strategy": gnomad_rate["Strategy"].tolist()},
+        custom_data=["gnomAD Found", "Unique Variants"],
     )
     fig_gnomad_rate.update_layout(yaxis_tickformat=".1%")
+    fig_gnomad_rate.update_traces(
+        hovertemplate=(
+            "%{x}<br>Found in gnomAD: %{customdata[0]:,}<br>"
+            "Candidate variants: %{customdata[1]:,}<br>Hit rate: %{y:.2%}<extra></extra>"
+        )
+    )
     compact_figure(fig_gnomad_rate)
-    sections.append(fig_html(fig_gnomad_rate))
+    sections.append(fig_html(fig_gnomad_rate, include_plotlyjs=include_plotly))
+
+    af_summary = variant_summary.gnomad_af_summary.sort_values("Median", ascending=False)
+    if not af_summary.empty:
+        fig_af = go.Figure()
+        for width, low, high, color, name in [
+            (3, "Q05", "Q95", "#9ecae1", "5-95% interval"),
+            (10, "Q25", "Q75", "#3182bd", "Interquartile interval"),
+        ]:
+            x_values, y_values = [], []
+            for row in af_summary.itertuples(index=False):
+                x_values.extend([getattr(row, low), getattr(row, high), None])
+                y_values.extend([row.Strategy, row.Strategy, None])
+            fig_af.add_trace(go.Scatter(
+                x=x_values, y=y_values, mode="lines", line={"width": width, "color": color},
+                name=name, hoverinfo="skip",
+            ))
+        fig_af.add_trace(go.Scatter(
+            x=af_summary["Median"],
+            y=af_summary["Strategy"],
+            mode="markers",
+            marker={"size": 9, "color": "#08306b"},
+            name="Median",
+            customdata=af_summary[["Count", "Q05", "Q25", "Q75", "Q95"]],
+            hovertemplate=(
+                "%{y}<br>Variants with AF &gt; 0: %{customdata[0]:,}<br>"
+                "5th percentile: %{customdata[1]:.3f}<br>Q1: %{customdata[2]:.3f}<br>"
+                "Median: %{x:.3f}<br>Q3: %{customdata[3]:.3f}<br>"
+                "95th percentile: %{customdata[4]:.3f}<extra></extra>"
+            ),
+        ))
+        fig_af.update_layout(title="gnomAD allele frequency among exact hits", xaxis_title="log10 gnomAD AF")
+        compact_figure(fig_af, height=380, show_x_title=True)
+        sections.append(fig_html(fig_af))
+    else:
+        sections.append("<p>No non-zero gnomAD AF values were found.</p>")
+
+    consequence_counts = group_consequence_counts(variant_summary.consequence_counts)
+    if not consequence_counts.empty:
+        order = consequence_strategy_order(consequence_counts)
+        fig_conseq = px.bar(
+            consequence_counts,
+            x="Strategy",
+            y="Fraction",
+            color="Consequence group",
+            barmode="stack",
+            title="gnomAD consequence mix among gnomAD hits",
+            category_orders={"Strategy": order, "Consequence group": CONSEQUENCE_GROUP_ORDER},
+            color_discrete_map=CONSEQUENCE_GROUP_COLORS,
+            labels={"Strategy": "", "Fraction": "Within-strategy fraction", "Consequence group": "Consequence group"},
+        )
+        fig_conseq.update_layout(yaxis_tickformat=".0%")
+        compact_figure(fig_conseq, height=360)
+        sections.append(fig_html(fig_conseq))
+
+    sections.append("<h2>Clinical Evidence</h2>")
+    clinvar_rate = sort_by_metric(strategy_stats[["Strategy", "ClinVar found %"]], "ClinVar found %")
+    clinvar_rate = clinvar_rate.merge(
+        strategy_stats[["Strategy", "Found in ClinVar", "Unique Variants"]], on="Strategy", how="left"
+    )
+    fig_clin_rate = px.bar(
+        clinvar_rate,
+        x="Strategy",
+        y="ClinVar found %",
+        title="ClinVar hit rate by strategy",
+        category_orders={"Strategy": clinvar_rate["Strategy"].tolist()},
+        custom_data=["Found in ClinVar", "Unique Variants"],
+    )
+    fig_clin_rate.update_layout(yaxis_tickformat=".2%")
+    fig_clin_rate.update_traces(
+        hovertemplate=(
+            "%{x}<br>Found in ClinVar: %{customdata[0]:,}<br>"
+            "Candidate variants: %{customdata[1]:,}<br>Hit rate: %{y:.3%}<extra></extra>"
+        )
+    )
+    compact_figure(fig_clin_rate)
+    sections.append(fig_html(fig_clin_rate))
 
     clin_counts = variant_summary.clinvar_counts.copy()
     clin_plot = clin_counts[clin_counts["clinvar_category"].astype(str) != "Not Found"].copy()
@@ -1161,29 +1252,19 @@ def build_clinvar_gnomad_sections(
     compact_figure(fig_clin, height=360)
     sections.append(fig_html(fig_clin))
 
-    gnomad_bins = variant_summary.gnomad_bins
-    if not gnomad_bins.empty:
-        fig_af = px.bar(
-            gnomad_bins,
-            x="bin_mid",
-            y="Density",
-            color="strategy",
-            barmode="overlay",
-            opacity=0.65,
-            title="gnomAD AF Distribution by Strategy",
-            labels={"bin_mid": "log10 gnomAD AF", "Density": "Within-strategy density", "strategy": ""},
-        )
-        fig_af.update_layout(yaxis_title="Within-strategy density", xaxis_title="log10 gnomAD AF")
-        fig_af.update_traces(marker_line_width=0)
-        compact_figure(fig_af, height=380, show_x_title=True)
-        sections.append("<h3>gnomAD AF Distribution</h3>")
-        sections.append(fig_html(fig_af))
-    else:
-        sections.append("<p>No non-zero gnomAD AF values were found.</p>")
-
     star_counts = variant_summary.pathogenic_star_counts.copy()
     if not star_counts.empty:
-        present_stars = [star for star in REVIEW_STAR_ORDER if star in set(star_counts["Review stars"].astype(str))]
+        present_stars = [star for star in REVIEW_STAR_ORDER if star != "Unmapped"]
+        if "Unmapped" in set(star_counts["Review stars"].astype(str)):
+            present_stars.append("Unmapped")
+        complete_index = pd.MultiIndex.from_product(
+            [strategy_stats["Strategy"].tolist(), present_stars], names=["Strategy", "Review stars"]
+        )
+        star_counts = (
+            star_counts.set_index(["Strategy", "Review stars"])
+            .reindex(complete_index, fill_value=0)
+            .reset_index()
+        )
         totals = star_counts.groupby("Strategy", observed=True)["Variant_Count"].sum()
         high_conf = star_counts[star_counts["Review stars"].astype(str).isin(["4", "3", "2"])]
         high_conf_totals = high_conf.groupby("Strategy", observed=True)["Variant_Count"].sum()
@@ -1210,27 +1291,6 @@ def build_clinvar_gnomad_sections(
     else:
         sections.append("<h3>Pathogenic ClinVar Evidence</h3>")
         sections.append("<p>No P/LP ClinVar variants were found in the candidate set.</p>")
-
-    consequence_counts = group_consequence_counts(variant_summary.consequence_counts)
-    if not consequence_counts.empty:
-        order = consequence_strategy_order(consequence_counts)
-        fig_conseq = px.bar(
-            consequence_counts,
-            x="Strategy",
-            y="Fraction",
-            color="Consequence group",
-            barmode="stack",
-            title="gnomAD consequence mix among gnomAD hits",
-            category_orders={"Strategy": order, "Consequence group": CONSEQUENCE_GROUP_ORDER},
-            color_discrete_map=CONSEQUENCE_GROUP_COLORS,
-            labels={"Strategy": "", "Fraction": "Within-strategy fraction", "Consequence group": "Consequence group"},
-        )
-        fig_conseq.update_layout(yaxis_tickformat=".0%")
-        compact_figure(fig_conseq, height=360)
-        sections.append("<h3>gnomAD Consequence Profile</h3>")
-        sections.append(fig_html(fig_conseq))
-    else:
-        sections.append("<p>No gnomAD consequences were found.</p>")
 
     pathogenic_consequence_counts = group_consequence_counts(variant_summary.pathogenic_consequence_counts)
     if not pathogenic_consequence_counts.empty:
@@ -1263,40 +1323,44 @@ def build_clinvar_gnomad_sections(
 
 
 def build_feature_sections(cov: pd.DataFrame, include_plotly: bool) -> list[str]:
-    sections = ["<h2>Target Feature Coverage</h2>"]
+    sections = ["<h2>Alignment Coverage</h2>"]
     if cov.empty:
         sections.append("<p>No feature coverage table was found.</p>")
         return sections
 
-    disjoint_summary = coverage_summary(cov, DISJOINT_FEATURE_ORDER)
-    if disjoint_summary.empty:
+    profile_summary = coverage_summary(cov, PROFILE_FEATURE_ORDER)
+    if profile_summary.empty:
         sections.append("<p>No CDS/UTR/intron coverage rows were found.</p>")
         return sections
 
-    breadth_cards = []
-    for feature_type in DISJOINT_FEATURE_ORDER:
-        feature = disjoint_summary[disjoint_summary["feature_type"].astype(str) == feature_type]
-        if feature.empty:
-            continue
-        min_breadth = feature["Breadth_Weighted"].min()
-        max_breadth = feature["Breadth_Weighted"].max()
-        breadth_cards.append((f"{feature_type.upper()} breadth range", f"{format_percent(min_breadth)}-{format_percent(max_breadth)}"))
-    sections.append(metric_cards(breadth_cards))
-
     cds_depth = (
-        disjoint_summary[disjoint_summary["feature_type"].astype(str) == "cds"]
+        profile_summary[profile_summary["feature_type"].astype(str) == "cds"]
         .sort_values("Mean_Depth_Weighted", ascending=False)
     )
-    strategy_order = cds_depth["strategy"].tolist() or sorted(disjoint_summary["strategy"].unique())
+    strategy_order = cds_depth["strategy"].tolist() or sorted(profile_summary["strategy"].unique())
+
+    fig_breadth = px.bar(
+        profile_summary,
+        x="strategy",
+        y="Breadth_Weighted",
+        color="feature_type",
+        barmode="group",
+        title="Target bases covered by one or more orthologs",
+        category_orders={"strategy": strategy_order, "feature_type": PROFILE_FEATURE_ORDER},
+        labels={"strategy": "", "Breadth_Weighted": "Target bases covered", "feature_type": "Feature"},
+    )
+    fig_breadth.update_layout(yaxis_tickformat=".0%")
+    compact_figure(fig_breadth, height=360)
+    sections.append(fig_html(fig_breadth, include_plotlyjs=include_plotly))
 
     fig_depth = px.bar(
-        disjoint_summary,
+        profile_summary,
         x="strategy",
         y="Mean_Depth_Weighted",
         color="feature_type",
         barmode="group",
         title="Weighted mean ortholog depth by target feature",
-        category_orders={"strategy": strategy_order, "feature_type": DISJOINT_FEATURE_ORDER},
+        category_orders={"strategy": strategy_order, "feature_type": PROFILE_FEATURE_ORDER},
         labels={
             "strategy": "",
             "Mean_Depth_Weighted": "Weighted mean ortholog depth",
@@ -1305,6 +1369,124 @@ def build_feature_sections(cov: pd.DataFrame, include_plotly: bool) -> list[str]
     )
     compact_figure(fig_depth, height=360)
     sections.append(fig_html(fig_depth, include_plotlyjs=include_plotly))
+    return sections
+
+
+def gnomad_stratification_figure(
+    counts: pd.DataFrame,
+    category_column: str,
+    category_order: list[str],
+    strategy_order: list[str],
+    title: str,
+    color_map: dict[str, str] | None = None,
+):
+    if counts.empty:
+        return None
+    plot = counts.copy()
+    totals = plot.groupby(["strategy", "gnomad_status"], observed=True)["Variant_Count"].transform("sum")
+    plot["Fraction"] = plot["Variant_Count"] / totals.replace(0, np.nan)
+    plot["Total"] = totals
+    statuses = [("found", "Found in gnomAD"), ("not_found", "Not found in gnomAD")]
+    fig = make_subplots(rows=2, cols=1, shared_xaxes=True, subplot_titles=[label for _, label in statuses])
+    for row_index, (status, _label) in enumerate(statuses, start=1):
+        status_data = plot[plot["gnomad_status"].astype(str).eq(status)]
+        for category in category_order:
+            category_data = (
+                status_data[status_data[category_column].astype(str).eq(category)]
+                .set_index("strategy")
+                .reindex(strategy_order)
+            )
+            fig.add_trace(
+                go.Bar(
+                    x=strategy_order,
+                    y=category_data["Fraction"],
+                    name=category,
+                    legendgroup=category,
+                    showlegend=row_index == 1,
+                    marker_color=(color_map or {}).get(category),
+                    customdata=np.column_stack(
+                        [
+                            category_data["Variant_Count"].fillna(0),
+                            category_data["Total"].fillna(0),
+                        ]
+                    ),
+                    hovertemplate=(
+                        "%{x}<br>" + category + ": %{customdata[0]:,} / %{customdata[1]:,} "
+                        "(%{y:.1%})<extra></extra>"
+                    ),
+                ),
+                row=row_index,
+                col=1,
+            )
+    fig.update_layout(title=title, barmode="stack", height=620)
+    fig.update_yaxes(tickformat=".0%", title_text="Within-stratum fraction")
+    compact_figure(fig, height=620)
+    return fig
+
+
+def build_gnomad_stratification_sections(
+    variant_summary: VariantSummary,
+    strategy_stats: pd.DataFrame,
+    annotation_manifest: dict,
+    include_plotly: bool,
+) -> list[str]:
+    sections = [
+        "<h2>gnomAD Stratification</h2>",
+        "<p class=\"lead\">Descriptive comparison of candidate alleles found and not found in gnomAD. "
+        "This is not a matched-control analysis.</p>",
+    ]
+    failure_count = int(annotation_manifest.get("gnomad_region_failure_count", 0) or 0)
+    if failure_count:
+        sections.append(
+            f"<p class=\"analysis-note\"><strong>Interpret with caution:</strong> {format_int(failure_count)} "
+            "gnomAD region request failed. The not-found stratum can therefore contain alleles without a completed lookup.</p>"
+        )
+    strategy_order = sort_by_metric(
+        strategy_stats[["Strategy", "gnomAD found %"]], "gnomAD found %"
+    )["Strategy"].tolist()
+
+    event_counts = variant_summary.gnomad_event_counts.copy()
+    event_order = [
+        item for item in ["snv", "ins", "del", "mnv", "complex"]
+        if item in set(event_counts.get("event_type", pd.Series(dtype=str)).astype(str))
+    ]
+    event_order += sorted(set(event_counts.get("event_type", pd.Series(dtype=str)).astype(str)) - set(event_order))
+    plotly_pending = include_plotly
+    event_fig = gnomad_stratification_figure(
+        event_counts,
+        "event_type",
+        event_order,
+        strategy_order,
+        "Variant type: gnomAD hits versus non-hits",
+    )
+    if event_fig is not None:
+        sections.append(fig_html(event_fig, include_plotlyjs=plotly_pending))
+        plotly_pending = False
+
+    context_counts = variant_summary.gnomad_context_counts.copy()
+    context_counts["Target context"] = context_counts.get("target_context", pd.Series(dtype=str)).map(
+        TARGET_CONTEXT_LABELS
+    ).fillna("Other")
+    context_fig = gnomad_stratification_figure(
+        context_counts,
+        "Target context",
+        [TARGET_CONTEXT_LABELS[item] for item in TARGET_CONTEXT_ORDER],
+        strategy_order,
+        "Target context: gnomAD hits versus non-hits",
+        TARGET_CONTEXT_COLORS,
+    )
+    if context_fig is not None:
+        sections.append(fig_html(context_fig, include_plotlyjs=plotly_pending))
+
+    sections.extend(
+        [
+            "<h3>Functional Consequence</h3>",
+            "<p class=\"analysis-note\">Not computed. A defensible comparison requires the same VEP release, "
+            "transcript set, and consequence-selection rule for both gnomAD strata.</p>",
+            "<h3>Conservation</h3>",
+            "<p class=\"analysis-note\">Not computed. Candidate-wide phyloP annotation was not requested for this report.</p>",
+        ]
+    )
     return sections
 
 
@@ -2148,14 +2330,21 @@ def build_methods_sections(
     sections.append("</details>")
     sections.append("<details><summary>gnomAD consequence grouping</summary>")
     sections.append(
-        "<p class=\"lead\">The External Evidence consequence plots group raw values from the "
+        "<p class=\"lead\">The Candidate Profile consequence plots group raw values from the "
         "<code>gnomad_csq</code> annotation column as follows.</p>"
     )
     sections.append(table_html(consequence_grouping_table(), classes="table table-sm table-striped"))
     sections.append("</details>")
+    sections.append("<details><summary>Target-context assignment</summary>")
+    sections.append(
+        "<p class=\"lead\">Candidate positions are assigned to one exclusive target context. "
+        "Overlapping transcript features use the precedence CDS &gt; UTR &gt; exon &gt; intron; exon sequence "
+        "outside CDS/UTR is labelled Other exon, and remaining target sequence is labelled Other.</p>"
+    )
+    sections.append("</details>")
     sections.append("<details><summary>ClinVar validation denominator and statistics</summary>")
     sections.append(
-        "<p class=\"lead\">The ClinVar Enrichment tab intentionally uses a stricter ClinVar subset than External Evidence hit-rate plots.</p>"
+        "<p class=\"lead\">The ClinVar Enrichment tab intentionally uses a stricter ClinVar subset than Candidate Profile hit-rate plots.</p>"
     )
     sections.append(table_html(validation_method_table(), classes="table table-sm table-striped"))
     sections.append("</details>")
@@ -2177,7 +2366,7 @@ def build_methods_sections(
     sections.append("</details>")
     sections.append("<details><summary>Feature coverage formulas</summary>")
     sections.append(
-        "<p class=\"lead\">Feature Coverage uses the normalized feature-level table emitted by the alignment stage.</p>"
+        "<p class=\"lead\">Candidate Profile coverage plots use the normalized feature-level table emitted by the alignment stage.</p>"
     )
     sections.append(table_html(feature_coverage_formula_table(), classes="table table-sm table-striped"))
     sections.append("</details>")
@@ -2421,6 +2610,7 @@ def main() -> None:
             inputs.variant_annotations_tsv,
             inputs.run_dir / "analytics",
             strategy_label,
+            target_features_path=inputs.target_features_tsv,
         )
         timing["Details"] = "cache hit" if variant_summary.cache_hit else "cache miss"
 
@@ -2496,15 +2686,24 @@ def main() -> None:
             }
         )
 
+    candidate_sections = build_variant_sections(variant_summary, strategy_stats, include_plotly=True)
+    candidate_sections.extend(
+        build_clinvar_gnomad_sections(variant_summary, strategy_stats_full, include_plotly=False)
+    )
+    candidate_sections.extend(build_feature_sections(cov, include_plotly=False))
     sections = [
         ("overview", "Overview", build_overview(variant_summary, cov, strategy_stats, annotation_manifest)),
-        ("variants", "Variant Profile", build_variant_sections(variant_summary, strategy_stats, include_plotly=True)),
+        ("candidates", "Candidate Profile", candidate_sections),
         (
-            "external-evidence",
-            "External Evidence",
-            build_clinvar_gnomad_sections(variant_summary, strategy_stats_full, include_plotly=True),
+            "gnomad-stratification",
+            "gnomAD Stratification",
+            build_gnomad_stratification_sections(
+                variant_summary,
+                strategy_stats_full,
+                annotation_manifest,
+                include_plotly=True,
+            ),
         ),
-        ("coverage", "Feature Coverage", build_feature_sections(cov, include_plotly=True)),
         (
             "target-space-null",
             "Target-Space Null",

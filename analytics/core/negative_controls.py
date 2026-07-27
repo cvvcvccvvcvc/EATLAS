@@ -25,11 +25,11 @@ import pandas as pd
 from .clinvar_validation import directory_metadata, path_metadata, split_strategies
 from .conservation import annotate_track, parse_tracks
 from .external_evidence import build_external_evidence
+from .target_context import context_at, read_disjoint_contexts
 from .vep_consequences import annotate_vep_consequences
 
 
 DNA_BASES = ("A", "C", "G", "T")
-CONTEXT_PRIORITY = ("cds", "utr", "exon", "intron")
 CONTROL_VERSION = 2
 MATCHED_POOL_SIZE = 5
 CANDIDATE_POOL_SIZE = MATCHED_POOL_SIZE * 3
@@ -115,7 +115,10 @@ def build_target_space_null(
         )
 
     genes = _read_genes(genes_tsv)
-    contexts = _read_disjoint_contexts(target_features_tsv, genes)
+    contexts = read_disjoint_contexts(
+        target_features_tsv,
+        {gene_id: int(gene["length"]) for gene_id, gene in genes.items()},
+    )
     focal = _sample_focal_snvs(
         variant_annotations_tsv,
         contexts,
@@ -260,57 +263,6 @@ def _read_genes(path: Path) -> dict[str, dict[str, object]]:
     }
 
 
-def _read_disjoint_contexts(
-    path: Path,
-    genes: dict[str, dict[str, object]],
-) -> dict[str, list[tuple[int, int, str]]]:
-    frame = pd.read_csv(
-        path,
-        sep="\t",
-        compression="gzip",
-        keep_default_na=False,
-        usecols=["gene_id", "feature_type", "target_start0", "target_end0"],
-    )
-    by_gene: dict[str, dict[str, list[tuple[int, int]]]] = defaultdict(lambda: defaultdict(list))
-    for row in frame.itertuples(index=False):
-        feature = str(row.feature_type).lower()
-        if feature in CONTEXT_PRIORITY:
-            by_gene[str(row.gene_id)][feature].append((int(row.target_start0), int(row.target_end0)))
-
-    result = {}
-    for gene_id, gene in genes.items():
-        feature_intervals = by_gene.get(gene_id, {})
-        boundaries = {0, int(gene["length"])}
-        for intervals in feature_intervals.values():
-            for start, end in intervals:
-                boundaries.add(max(0, start))
-                boundaries.add(min(int(gene["length"]), end))
-        ordered = sorted(boundaries)
-        disjoint = []
-        for start, end in zip(ordered, ordered[1:]):
-            if end <= start:
-                continue
-            context = "other"
-            for candidate in CONTEXT_PRIORITY:
-                if any(left < end and right > start for left, right in feature_intervals.get(candidate, [])):
-                    context = "other_exon" if candidate == "exon" else candidate
-                    break
-            if disjoint and disjoint[-1][2] == context and disjoint[-1][1] == start:
-                disjoint[-1] = (disjoint[-1][0], end, context)
-            else:
-                disjoint.append((start, end, context))
-        result[gene_id] = disjoint
-    return result
-
-
-def _context_at(intervals: list[tuple[int, int, str]], position: int) -> str:
-    starts = [item[0] for item in intervals]
-    index = bisect.bisect_right(starts, position) - 1
-    if index >= 0 and intervals[index][0] <= position < intervals[index][1]:
-        return intervals[index][2]
-    return "other"
-
-
 def _stable_rank(seed: int, *parts: object) -> int:
     payload = "|".join([str(seed), *(str(part) for part in parts)]).encode()
     return int.from_bytes(hashlib.blake2b(payload, digest_size=8).digest(), "big")
@@ -366,7 +318,7 @@ def _sample_focal_snvs(
                 "pos": int(row.genomic_start1),
                 "ref": str(row.ref).upper(),
                 "alt": str(row.alt).upper(),
-                "context": _context_at(contexts.get(gene_id, []), target_pos),
+                "context": context_at(contexts.get(gene_id, []), target_pos),
             }
             for strategy in split_strategies(str(row.strategies)):
                 if strategy_set and strategy not in strategy_set:

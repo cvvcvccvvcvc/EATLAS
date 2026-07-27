@@ -1,16 +1,34 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
 import pandas as pd
 
 from analytics.core.negative_controls import TargetSpaceNullAnalysis
 from analytics.strategy_report import (
+    build_variant_sections,
     build_target_space_null_sections,
     conservation_selector_view,
     dataframe_records,
     format_table_dataframe,
 )
+
+
+def test_single_strategy_candidate_profile_loads_plotly_without_overlap() -> None:
+    summary = SimpleNamespace(
+        overlap=None,
+        event_counts=pd.DataFrame(
+            [{"strategy": "s1", "event_type": "snv", "Variant_Count": 10}]
+        ),
+        target_context_counts=pd.DataFrame(),
+    )
+    stats = pd.DataFrame([{"Strategy": "s1", "Unique Variants": 10}])
+
+    html = "".join(build_variant_sections(summary, stats, include_plotly=True))
+
+    assert "cdn.plot.ly" in html
+    assert "Variant type composition by strategy" in html
 
 
 def test_target_space_null_section_reports_consequence_matched_design(tmp_path: Path) -> None:

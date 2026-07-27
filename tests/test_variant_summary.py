@@ -127,3 +127,41 @@ def test_variant_summary_rebuilds_a_corrupt_cache(tmp_path: Path) -> None:
     rebuilt = build_variant_summary(annotations, work_dir, strategy_label=str)
     assert not rebuilt.cache_hit
     assert rebuilt.unique_variant_count == 1
+
+
+def test_variant_summary_aggregates_target_context_and_gnomad_strata(tmp_path: Path) -> None:
+    annotations = tmp_path / "variant_annotations.tsv.gz"
+    features = tmp_path / "target_features.tsv.gz"
+    rows = [
+        {"variant_key": "1:1:A>G", "gene_id": "1", "target_start0": "1", "event_type": "snv", "ref": "A", "alt": "G", "strategies": "s1", "gnomad_af": "0.01"},
+        {"variant_key": "1:7:C>T", "gene_id": "1", "target_start0": "7", "event_type": "snv", "ref": "C", "alt": "T", "strategies": "s1", "gnomad_af": ""},
+    ]
+    with gzip.open(annotations, "wt", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=VARIANT_USECOLS, delimiter="\t", lineterminator="\n")
+        writer.writeheader()
+        for row in rows:
+            writer.writerow({field: row.get(field, "") for field in VARIANT_USECOLS})
+    with gzip.open(features, "wt", newline="") as handle:
+        fields = ["gene_id", "feature_type", "target_start0", "target_end0"]
+        writer = csv.DictWriter(handle, fieldnames=fields, delimiter="\t", lineterminator="\n")
+        writer.writeheader()
+        writer.writerows(
+            [
+                {"gene_id": "1", "feature_type": "gene", "target_start0": 0, "target_end0": 10},
+                {"gene_id": "1", "feature_type": "cds", "target_start0": 0, "target_end0": 5},
+                {"gene_id": "1", "feature_type": "intron", "target_start0": 5, "target_end0": 10},
+            ]
+        )
+
+    summary = build_variant_summary(
+        annotations,
+        tmp_path / "analytics",
+        strategy_label=str,
+        target_features_path=features,
+    )
+
+    contexts = summary.target_context_counts.set_index("target_context")["Variant_Count"].to_dict()
+    assert contexts == {"cds": 1, "intron": 1}
+    strata = summary.gnomad_context_counts.set_index(["gnomad_status", "target_context"])["Variant_Count"].to_dict()
+    assert strata == {("found", "cds"): 1, ("not_found", "intron"): 1}
+    assert summary.gnomad_af_summary.iloc[0]["Median"] == -2.0

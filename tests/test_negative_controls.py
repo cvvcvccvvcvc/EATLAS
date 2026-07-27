@@ -12,8 +12,8 @@ from analytics.core.negative_controls import (
     _matched_ecdf,
     _matched_metric_summary,
     _matched_summary,
-    _read_disjoint_contexts,
 )
+from analytics.core.target_context import read_disjoint_contexts
 
 
 def test_build_target_space_null_end_to_end_with_mocked_annotations(
@@ -133,7 +133,7 @@ def test_contexts_keep_noncoding_exon_separate_from_other_sequence(tmp_path: Pat
     path = tmp_path / "features.tsv.gz"
     features.to_csv(path, sep="\t", index=False, compression="gzip")
 
-    contexts = _read_disjoint_contexts(path, {"1": {"length": 20}})["1"]
+    contexts = read_disjoint_contexts(path, {"1": 20})["1"]
 
     assert contexts == [
         (0, 2, "other"),
