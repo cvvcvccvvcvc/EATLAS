@@ -23,8 +23,9 @@ from .conservation import (
 )
 
 
-CACHE_VERSION = 1
+CACHE_VERSION = 2
 QUANTILES = np.linspace(0.0, 1.0, 101)
+MAX_HISTOGRAM_BINS = 80
 REQUIRED_COLUMNS = {
     "variant_key",
     "lookup_chrom",
@@ -40,8 +41,10 @@ REQUIRED_COLUMNS = {
 @dataclass(frozen=True)
 class CandidateConservation:
     distributions_path: Path
+    histograms_path: Path
     manifest_path: Path
     distributions: pd.DataFrame
+    histograms: pd.DataFrame
     manifest: dict
     position_scores: PositionScores | None = None
 
@@ -68,7 +71,10 @@ def build_candidate_conservation(
         raise ValueError("Candidate-wide conservation currently requires exactly one track.")
     track = tracks[0]
     analytics_dir.mkdir(parents=True, exist_ok=True)
-    distributions_path = analytics_dir / "candidate_variants.phyloP100way.distributions.tsv.gz"
+    distributions_path = (
+        analytics_dir / "candidate_variants.phyloP100way.distributions.tsv.gz"
+    )
+    histograms_path = analytics_dir / "candidate_variants.phyloP100way.histograms.tsv.gz"
     manifest_path = analytics_dir / "candidate_variants.phyloP100way.manifest.json"
     expected_inputs = {
         "cache_version": CACHE_VERSION,
@@ -80,7 +86,7 @@ def build_candidate_conservation(
         "retry_sleep_seconds": retry_sleep_seconds,
         "precision": precision,
     }
-    cached = _load_cache(distributions_path, manifest_path, expected_inputs)
+    cached = _load_cache(distributions_path, histograms_path, manifest_path, expected_inputs)
     if cached is not None:
         return cached
 
@@ -99,13 +105,14 @@ def build_candidate_conservation(
         retry_sleep_seconds=retry_sleep_seconds,
         precision=precision,
     )
-    distributions, groups, membership_summary = _aggregate_distributions(
+    distributions, histograms, groups, membership_summary = _aggregate_distributions(
         variant_annotations_tsv,
         position_scores,
         analytics_dir,
         chunk_size,
     )
     _write_frame(distributions_path, distributions)
+    _write_frame(histograms_path, histograms)
     manifest = {
         "inputs": expected_inputs,
         "complete": position_scores.summary.get("status") == "complete",
@@ -114,13 +121,17 @@ def build_candidate_conservation(
         "memberships": membership_summary,
         "groups": groups,
         "quantile_count": len(QUANTILES),
+        "histogram_rule": "Freedman-Diaconis with an 80-bin display cap",
         "distributions_tsv": str(distributions_path),
+        "histograms_tsv": str(histograms_path),
     }
     _write_json(manifest_path, manifest)
     return CandidateConservation(
         distributions_path,
+        histograms_path,
         manifest_path,
         distributions,
+        histograms,
         manifest,
         position_scores,
     )
@@ -128,17 +139,30 @@ def build_candidate_conservation(
 
 def _load_cache(
     distributions_path: Path,
+    histograms_path: Path,
     manifest_path: Path,
     expected_inputs: dict,
 ) -> CandidateConservation | None:
-    if not distributions_path.exists() or not manifest_path.exists():
+    if (
+        not distributions_path.exists()
+        or not histograms_path.exists()
+        or not manifest_path.exists()
+    ):
         return None
     try:
         manifest = json.loads(manifest_path.read_text())
         if manifest.get("inputs") != expected_inputs or manifest.get("complete") is not True:
             return None
         distributions = pd.read_csv(distributions_path, sep="\t", compression="gzip")
-        return CandidateConservation(distributions_path, manifest_path, distributions, manifest)
+        histograms = pd.read_csv(histograms_path, sep="\t", compression="gzip")
+        return CandidateConservation(
+            distributions_path,
+            histograms_path,
+            manifest_path,
+            distributions,
+            histograms,
+            manifest,
+        )
     except (OSError, json.JSONDecodeError, ValueError):
         return None
 
@@ -201,7 +225,7 @@ def _aggregate_distributions(
     position_scores: PositionScores,
     analytics_dir: Path,
     chunk_size: int,
-) -> tuple[pd.DataFrame, list[dict[str, object]], dict[str, int]]:
+) -> tuple[pd.DataFrame, pd.DataFrame, list[dict[str, object]], dict[str, int]]:
     with tempfile.NamedTemporaryFile(
         prefix=".candidate_phylop.", suffix=".sqlite3", dir=analytics_dir, delete=False
     ) as handle:
@@ -217,7 +241,7 @@ def _aggregate_distributions(
             strategy TEXT NOT NULL,
             gnomad_status TEXT NOT NULL,
             score REAL,
-            PRIMARY KEY (variant_id, strategy)
+            PRIMARY KEY (strategy, variant_id)
         ) WITHOUT ROWID;
         """
     )
@@ -265,30 +289,61 @@ def _aggregate_distributions(
             """,
             connection,
         )
-        rows = []
-        for group in groups_frame.itertuples(index=False):
-            values = np.asarray(
-                [row[0] for row in connection.execute(
-                    "SELECT score FROM scores WHERE strategy = ? AND gnomad_status = ? AND score IS NOT NULL",
-                    (group.strategy, group.gnomad_status),
-                )],
-                dtype=float,
-            )
-            if values.size == 0:
+        distribution_rows = []
+        histogram_rows = []
+        box_summaries = {}
+        for strategy in groups_frame["strategy"].astype(str).unique():
+            strategy_groups = groups_frame[groups_frame["strategy"].astype(str).eq(strategy)]
+            values_by_status = {}
+            for group in strategy_groups.itertuples(index=False):
+                status = str(group.gnomad_status)
+                values = np.fromiter(
+                    (
+                        float(row[0])
+                        for row in connection.execute(
+                            "SELECT score FROM scores "
+                            "WHERE strategy = ? AND gnomad_status = ? AND score IS NOT NULL",
+                            (strategy, status),
+                        )
+                    ),
+                    dtype=float,
+                )
+                if values.size == 0:
+                    continue
+                values_by_status[status] = values
+                quantile_values = np.quantile(values, QUANTILES)
+                distribution_rows.extend(
+                    {
+                        "strategy": strategy,
+                        "gnomad_status": status,
+                        "quantile": float(quantile),
+                        "phyloP100way": float(score),
+                        "variant_count": int(group.variant_count),
+                        "scored_count": int(group.scored_count),
+                    }
+                    for quantile, score in zip(QUANTILES, quantile_values)
+                )
+                box_summaries[(strategy, status)] = _box_summary(values)
+
+            if not values_by_status:
                 continue
-            quantile_values = np.quantile(values, QUANTILES)
-            rows.extend(
-                {
-                    "strategy": str(group.strategy),
-                    "gnomad_status": str(group.gnomad_status),
-                    "quantile": float(quantile),
-                    "phyloP100way": float(score),
-                    "variant_count": int(group.variant_count),
-                    "scored_count": int(group.scored_count),
-                }
-                for quantile, score in zip(QUANTILES, quantile_values)
-            )
-        unique_alleles = int(connection.execute("SELECT COUNT(DISTINCT variant_id) FROM scores").fetchone()[0])
+            edges = _histogram_edges(np.concatenate(list(values_by_status.values())))
+            for status, values in values_by_status.items():
+                counts, _ = np.histogram(values, bins=edges)
+                histogram_rows.extend(
+                    {
+                        "strategy": strategy,
+                        "gnomad_status": status,
+                        "bin_left": float(left),
+                        "bin_right": float(right),
+                        "count": int(count),
+                        "fraction": float(count / values.size),
+                    }
+                    for left, right, count in zip(edges[:-1], edges[1:], counts)
+                )
+        unique_alleles = int(
+            connection.execute("SELECT COUNT(DISTINCT variant_id) FROM scores").fetchone()[0]
+        )
         membership_count = int(connection.execute("SELECT COUNT(*) FROM scores").fetchone()[0])
     finally:
         connection.close()
@@ -301,9 +356,38 @@ def _aggregate_distributions(
         group["variant_count"] = variant_count
         group["scored_count"] = scored_count
         group["score_coverage"] = scored_count / variant_count if variant_count else 0.0
-    return pd.DataFrame(rows), groups, {
+        group.update(box_summaries.get((str(group["strategy"]), str(group["gnomad_status"])), {}))
+    return pd.DataFrame(distribution_rows), pd.DataFrame(histogram_rows), groups, {
         "unique_usable_allele_count": unique_alleles,
         "strategy_variant_membership_count": membership_count,
+    }
+
+
+def _histogram_edges(values: np.ndarray) -> np.ndarray:
+    if values.size == 0:
+        raise ValueError("Cannot calculate histogram bins without values.")
+    minimum = float(np.min(values))
+    maximum = float(np.max(values))
+    if minimum == maximum:
+        padding = max(abs(minimum) * 0.05, 0.5)
+        return np.asarray([minimum - padding, maximum + padding])
+    edges = np.histogram_bin_edges(values, bins="fd")
+    if len(edges) - 1 > MAX_HISTOGRAM_BINS:
+        edges = np.linspace(minimum, maximum, MAX_HISTOGRAM_BINS + 1)
+    return edges
+
+
+def _box_summary(values: np.ndarray) -> dict[str, float]:
+    q1, median, q3 = np.quantile(values, [0.25, 0.5, 0.75])
+    iqr = q3 - q1
+    lower_candidates = values[values >= q1 - 1.5 * iqr]
+    upper_candidates = values[values <= q3 + 1.5 * iqr]
+    return {
+        "q1": float(q1),
+        "median": float(median),
+        "q3": float(q3),
+        "lower_whisker": float(np.min(lower_candidates)),
+        "upper_whisker": float(np.max(upper_candidates)),
     }
 
 

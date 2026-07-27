@@ -1385,44 +1385,55 @@ def gnomad_stratification_figure(
     if counts.empty:
         return None
     plot = counts.copy()
-    totals = plot.groupby(["strategy", "gnomad_status"], observed=True)["Variant_Count"].transform("sum")
-    plot["Fraction"] = plot["Variant_Count"] / totals.replace(0, np.nan)
-    plot["Total"] = totals
-    statuses = [("found", "Found in gnomAD"), ("not_found", "Not found in gnomAD")]
-    fig = make_subplots(rows=2, cols=1, shared_xaxes=True, subplot_titles=[label for _, label in statuses])
-    for row_index, (status, _label) in enumerate(statuses, start=1):
-        status_data = plot[plot["gnomad_status"].astype(str).eq(status)]
-        for category in category_order:
-            category_data = (
-                status_data[status_data[category_column].astype(str).eq(category)]
-                .set_index("strategy")
-                .reindex(strategy_order)
-            )
-            fig.add_trace(
-                go.Bar(
-                    x=strategy_order,
-                    y=category_data["Fraction"],
-                    name=category,
-                    legendgroup=category,
-                    showlegend=row_index == 1,
-                    marker_color=(color_map or {}).get(category),
-                    customdata=np.column_stack(
-                        [
-                            category_data["Variant_Count"].fillna(0),
-                            category_data["Total"].fillna(0),
-                        ]
-                    ),
-                    hovertemplate=(
-                        "%{x}<br>" + category + ": %{customdata[0]:,} / %{customdata[1]:,} "
-                        "(%{y:.1%})<extra></extra>"
-                    ),
+    plot["strategy"] = plot["strategy"].astype(str)
+    plot["gnomad_status"] = plot["gnomad_status"].astype(str)
+    plot[category_column] = plot[category_column].astype(str)
+    present_categories = set(plot[category_column])
+    categories = [category for category in category_order if category in present_categories]
+    categories += sorted(present_categories - set(categories))
+    statuses = [("found", "Found"), ("not_found", "Not found")]
+    combinations = [
+        (strategy, status, label)
+        for strategy in strategy_order
+        for status, label in statuses
+    ]
+    indexed = plot.set_index(["strategy", "gnomad_status", category_column])["Variant_Count"]
+    totals = plot.groupby(["strategy", "gnomad_status"], observed=True)["Variant_Count"].sum()
+    x_strategy = [strategy for strategy, _status, _label in combinations]
+    x_status = [label for _strategy, _status, label in combinations]
+    fig = go.Figure()
+    for category in categories:
+        counts_for_category = np.asarray(
+            [int(indexed.get((strategy, status, category), 0)) for strategy, status, _label in combinations]
+        )
+        totals_for_group = np.asarray(
+            [int(totals.get((strategy, status), 0)) for strategy, status, _label in combinations]
+        )
+        fractions = np.divide(
+            counts_for_category,
+            totals_for_group,
+            out=np.zeros(len(combinations), dtype=float),
+            where=totals_for_group > 0,
+        )
+        fig.add_trace(
+            go.Bar(
+                x=[x_strategy, x_status],
+                y=fractions,
+                name=category,
+                marker_color=(color_map or {}).get(category),
+                customdata=np.column_stack(
+                    [x_strategy, x_status, counts_for_category, totals_for_group]
                 ),
-                row=row_index,
-                col=1,
+                hovertemplate=(
+                    "%{customdata[0]}<br>%{customdata[1]} in gnomAD<br>"
+                    + category + ": %{customdata[2]:,} / %{customdata[3]:,} "
+                    "(%{y:.1%})<extra></extra>"
+                ),
             )
-    fig.update_layout(title=title, barmode="stack", height=620)
-    fig.update_yaxes(tickformat=".0%", title_text="Within-stratum fraction")
-    compact_figure(fig, height=620)
+        )
+    fig.update_layout(title=title, barmode="stack", height=440, bargap=0.18)
+    fig.update_yaxes(tickformat=".0%", title_text="Within-stratum fraction", range=[0, 1])
+    compact_figure(fig, height=440)
     return fig
 
 
@@ -1480,6 +1491,7 @@ def build_gnomad_stratification_sections(
     )
     if context_fig is not None:
         sections.append(fig_html(context_fig, include_plotlyjs=plotly_pending))
+        plotly_pending = False
 
     sections.append("<h3>Conservation</h3>")
     phylop_fig = candidate_phylop_figure(candidate_conservation, strategy_order)
@@ -1490,6 +1502,9 @@ def build_gnomad_stratification_sections(
         )
         sections.append(fig_html(phylop_fig, include_plotlyjs=plotly_pending))
         plotly_pending = False
+        phylop_summary_fig = candidate_phylop_summary_figure(candidate_conservation, strategy_order)
+        if phylop_summary_fig is not None:
+            sections.append(fig_html(phylop_summary_fig, include_plotlyjs=False))
     else:
         sections.append("<p>No candidate-wide phyloP100way scores were available.</p>")
 
@@ -1588,6 +1603,131 @@ def candidate_phylop_figure(
     )
     fig.add_vline(x=0.0, line_dash="dot", line_color="#8c8c8c")
     compact_figure(fig, height=420, show_x_title=True)
+    return fig
+
+
+def candidate_phylop_summary_figure(
+    analysis: CandidateConservation,
+    strategy_order: list[str],
+):
+    histograms = analysis.histograms.copy()
+    groups = pd.DataFrame(analysis.manifest.get("groups", []))
+    if histograms.empty or groups.empty:
+        return None
+    histograms["Strategy"] = histograms["strategy"].astype(str).map(strategy_label)
+    groups["Strategy"] = groups["strategy"].astype(str).map(strategy_label)
+    available = set(histograms["Strategy"])
+    ordered = [strategy for strategy in strategy_order if strategy in available]
+    ordered += sorted(available - set(ordered))
+    status_styles = {
+        "found": ("Found in gnomAD", "#2166ac"),
+        "not_found": ("Not found in gnomAD", "#b2182b"),
+    }
+    fig = make_subplots(
+        rows=1,
+        cols=2,
+        horizontal_spacing=0.12,
+        subplot_titles=["Relative-frequency histogram", "Box plot"],
+    )
+    trace_strategies = []
+    for strategy_index, strategy in enumerate(ordered):
+        for status, (label, color) in status_styles.items():
+            histogram = histograms[
+                histograms["Strategy"].eq(strategy)
+                & histograms["gnomad_status"].astype(str).eq(status)
+            ].sort_values("bin_left")
+            group = groups[
+                groups["Strategy"].eq(strategy)
+                & groups["gnomad_status"].astype(str).eq(status)
+            ]
+            if histogram.empty or group.empty:
+                continue
+            centers = (histogram["bin_left"] + histogram["bin_right"]) / 2
+            widths = histogram["bin_right"] - histogram["bin_left"]
+            visible = strategy_index == 0
+            fig.add_trace(
+                go.Bar(
+                    x=centers,
+                    y=histogram["fraction"],
+                    width=widths,
+                    name=label,
+                    legendgroup=status,
+                    marker_color=color,
+                    opacity=0.58,
+                    visible=visible,
+                    customdata=np.column_stack(
+                        [histogram["count"], histogram["bin_left"], histogram["bin_right"]]
+                    ),
+                    hovertemplate=(
+                        label + "<br>phyloP: %{customdata[1]:.3f} to %{customdata[2]:.3f}<br>"
+                        "Variants: %{customdata[0]:,}<br>Fraction: %{y:.2%}<extra></extra>"
+                    ),
+                ),
+                row=1,
+                col=1,
+            )
+            trace_strategies.append(strategy)
+            summary = group.iloc[0]
+            fig.add_trace(
+                go.Box(
+                    q1=[summary["q1"]],
+                    median=[summary["median"]],
+                    q3=[summary["q3"]],
+                    lowerfence=[summary["lower_whisker"]],
+                    upperfence=[summary["upper_whisker"]],
+                    name=label,
+                    legendgroup=status,
+                    marker_color=color,
+                    boxpoints=False,
+                    showlegend=False,
+                    visible=visible,
+                    hovertemplate=(
+                        label + "<br>Q1: %{q1:.3f}<br>Median: %{median:.3f}<br>"
+                        "Q3: %{q3:.3f}<extra></extra>"
+                    ),
+                ),
+                row=1,
+                col=2,
+            )
+            trace_strategies.append(strategy)
+    if not fig.data:
+        return None
+    buttons = []
+    for strategy in ordered:
+        visible = [trace_strategy == strategy for trace_strategy in trace_strategies]
+        if any(visible):
+            buttons.append(
+                {
+                    "label": strategy,
+                    "method": "update",
+                    "args": [
+                        {"visible": visible},
+                        {"title": f"Candidate phyloP100way: {strategy}"},
+                    ],
+                }
+            )
+    first_strategy = buttons[0]["label"] if buttons else ""
+    fig.update_layout(
+        title=f"Candidate phyloP100way: {first_strategy}",
+        barmode="overlay",
+        boxmode="group",
+        updatemenus=[
+            {
+                "buttons": buttons,
+                "direction": "down",
+                "showactive": True,
+                "x": 1.0,
+                "xanchor": "right",
+                "y": 1.2,
+                "yanchor": "top",
+            }
+        ],
+    )
+    fig.update_xaxes(title_text="phyloP100way", row=1, col=1)
+    fig.update_yaxes(title_text="Fraction per bin", tickformat=".0%", row=1, col=1)
+    fig.update_yaxes(title_text="phyloP100way", row=1, col=2)
+    fig.add_vline(x=0.0, line_dash="dot", line_color="#8c8c8c", row=1, col=1)
+    compact_figure(fig, height=430, show_x_title=True)
     return fig
 
 
@@ -2383,6 +2523,7 @@ def build_methods_sections(
         files.extend(
             [
                 ("Candidate phyloP distributions", conservation_analysis.candidate.distributions_path),
+                ("Candidate phyloP histograms", conservation_analysis.candidate.histograms_path),
                 ("Candidate phyloP manifest", conservation_analysis.candidate.manifest_path),
             ]
         )
@@ -2504,7 +2645,11 @@ def build_methods_sections(
                     },
                     {
                         "Step": "Distribution",
-                        "Definition": "Exact phyloP100way percentiles from 0 through 100 in one-percent increments.",
+                        "Definition": (
+                            "Exact percentiles from 0 through 100, plus relative-frequency histograms using shared "
+                            "Found/Not-found bins selected by the Freedman-Diaconis rule and capped at 80 bins. "
+                            "Box plots use Tukey 1.5-IQR whiskers."
+                        ),
                     },
                     {
                         "Step": "Shared read",

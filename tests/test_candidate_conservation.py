@@ -94,6 +94,19 @@ def test_candidate_conservation_deduplicates_memberships_and_reuses_cache(
     )["phyloP100way"]
     assert medians.loc[("s1", "found")] == -1.0
     assert medians.loc[("s1", "not_found")] == 2.0
+    found_histogram = result.histograms[
+        result.histograms["strategy"].eq("s1") & result.histograms["gnomad_status"].eq("found")
+    ]
+    not_found_histogram = result.histograms[
+        result.histograms["strategy"].eq("s1") & result.histograms["gnomad_status"].eq("not_found")
+    ]
+    assert found_histogram[["bin_left", "bin_right"]].values.tolist() == (
+        not_found_histogram[["bin_left", "bin_right"]].values.tolist()
+    )
+    assert found_histogram["fraction"].sum() == 1.0
+    groups = {(row["strategy"], row["gnomad_status"]): row for row in result.manifest["groups"]}
+    assert groups[("s1", "found")]["median"] == -1.0
+    assert groups[("s1", "not_found")]["median"] == 2.0
 
     monkeypatch.setattr(candidate, "read_position_scores", lambda **_kwargs: (_ for _ in ()).throw(AssertionError()))
     cached = candidate.build_candidate_conservation(
@@ -102,3 +115,4 @@ def test_candidate_conservation_deduplicates_memberships_and_reuses_cache(
     )
     assert cached.position_scores is None
     assert len(cached.distributions) == len(result.distributions)
+    assert len(cached.histograms) == len(result.histograms)

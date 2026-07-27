@@ -13,6 +13,7 @@ from analytics.strategy_report import (
     conservation_selector_view,
     dataframe_records,
     format_table_dataframe,
+    gnomad_stratification_figure,
 )
 
 
@@ -30,6 +31,24 @@ def test_single_strategy_candidate_profile_loads_plotly_without_overlap() -> Non
 
     assert "cdn.plot.ly" in html
     assert "Variant type composition by strategy" in html
+
+
+def test_gnomad_stratification_places_found_and_not_found_bars_side_by_side() -> None:
+    counts = pd.DataFrame(
+        [
+            {"strategy": "s1", "gnomad_status": "found", "kind": "SNV", "Variant_Count": 3},
+            {"strategy": "s1", "gnomad_status": "found", "kind": "INDEL", "Variant_Count": 1},
+            {"strategy": "s1", "gnomad_status": "not_found", "kind": "SNV", "Variant_Count": 1},
+            {"strategy": "s1", "gnomad_status": "not_found", "kind": "INDEL", "Variant_Count": 3},
+        ]
+    )
+
+    figure = gnomad_stratification_figure(counts, "kind", ["SNV", "INDEL"], ["s1"], "Test")
+
+    assert figure.layout.barmode == "stack"
+    assert list(figure.data[0].x[0]) == ["s1", "s1"]
+    assert list(figure.data[0].x[1]) == ["Found", "Not found"]
+    assert list(figure.data[0].y) == [0.75, 0.25]
 
 
 def test_target_space_null_section_reports_consequence_matched_design(tmp_path: Path) -> None:
