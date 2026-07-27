@@ -11,12 +11,14 @@ import pytest
 from analytics.core import conservation as conservation_module
 from analytics.core.clinvar_validation import parse_molecular_consequences
 from analytics.core.conservation import DEFAULT_TRACK_NAMES, PositionScores, Track, annotate_track, score_positions
+from analytics.core.stats import benjamini_hochberg
 from analytics.core.conservation_validation import (
     SCORE_COLUMN,
     assign_phylop_band,
     build_conservation_cohort,
     compute_continuous_firth,
     compute_fixed_band_enrichment,
+    compute_unadjusted_enrichment,
     consequence_membership_mask,
     consequence_memberships,
 )
@@ -169,6 +171,31 @@ def test_fixed_bands_use_prespecified_boundaries_and_all_selectors(tmp_path: Pat
     assert empty_indel_bins["fisher_p"].isna().all()
 
 
+def test_unadjusted_enrichment_supports_shared_selectors_and_strategy_level_fdr() -> None:
+    cohort = synthetic_cohort(120)
+    observed_s1 = set(cohort.loc[cohort.index % 3 != 0, "variant_key"])
+    observed_s2 = set(cohort.loc[cohort.index % 4 != 0, "variant_key"])
+    results = compute_unadjusted_enrichment(
+        cohort=cohort,
+        observed_by_strategy_type={
+            ("s1", "snv"): observed_s1,
+            ("s1", "indel"): set(),
+            ("s2", "snv"): observed_s2,
+            ("s2", "indel"): set(),
+        },
+        strategies=["s1", "s2"],
+    )
+
+    selected = results[
+        results["variant_type"].eq("snv") & results["consequence"].eq("missense")
+    ].sort_values("strategy")
+    assert len(selected) == 2
+    assert selected["usable_rows"].tolist() == [120, 120]
+    assert selected["fisher_q"].tolist() == pytest.approx(
+        benjamini_hochberg(selected["fisher_p"].tolist())
+    )
+
+
 def test_continuous_precheck_rejects_nonoverlapping_score_ranges(tmp_path: Path) -> None:
     cohort = synthetic_cohort(80)
     observed_keys = set(cohort.loc[cohort[SCORE_COLUMN] > 0, "variant_key"])
@@ -187,6 +214,16 @@ def test_continuous_precheck_rejects_nonoverlapping_score_ranges(tmp_path: Path)
     assert selected["status"] == "not_estimable"
     assert "do not overlap" in selected["reason"]
     assert not distributions.empty
+    assert {
+        "bin_left",
+        "bin_right",
+        "fraction",
+        "q1",
+        "median",
+        "q3",
+        "lower_whisker",
+        "upper_whisker",
+    }.issubset(distributions.columns)
     assert versions == {}
 
 

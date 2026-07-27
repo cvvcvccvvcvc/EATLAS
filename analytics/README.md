@@ -18,8 +18,8 @@ micromamba run -n gaph-v2-analytics python -m analytics.strategy_report \
   --run-dir "$RUN"
 ```
 
-The report computes ClinVar enrichment and fixed-band and continuous
-phyloP100way-adjusted validation. The consequence-matched target-space null is
+The report presents unadjusted, fixed-band, and continuous phyloP100way ClinVar
+association modes in one view. The consequence-matched target-space null is
 an explicit opt-in because it uses Ensembl REST VEP and the gnomAD GraphQL API
 and can take hours:
 
@@ -30,8 +30,9 @@ micromamba run -n gaph-v2-analytics python -m analytics.strategy_report \
   --target-space-null-sample-size 5000
 ```
 
-The conservation analyses support strategy, variant-type, and ClinVar MC
-consequence selectors. The primary view is SNV / Missense.
+The ClinVar association view compares all strategies and supports variant-type
+and ClinVar MC consequence selectors. A second selector exposes the 2x2,
+fixed-band, or continuous-distribution data for one strategy at a time.
 
 When an analysis needs durable intermediate tables, write them under
 `<run-dir>/analytics/`. The source tree does not keep a default scratch/work
@@ -119,11 +120,10 @@ report shows full focal-weighted phyloP ECDFs and descriptive target-space
 resampling intervals for all target-space-null outcomes; it does not report an
 inferential p-value for these comparators.
 
-Raw p-values remain visible for the formal validation analyses. ClinVar Fisher
-tests use Benjamini-Hochberg correction separately within the SNV and INDEL families.
-Within conservation-adjusted validation, fixed-band Fisher tests, pooled CMH
-tests, and continuous-model profile-likelihood-ratio tests are corrected as
-three separate families across displayed selector combinations.
+Raw p-values remain visible for the formal validation analyses. For each
+analysis mode, variant-type selection, and consequence selection,
+Benjamini-Hochberg correction is applied across strategies. Band-specific
+Fisher tests are corrected across strategies within the same band.
 Mantel-Haenszel confidence intervals use the Robins-Breslow-Greenland variance
 implemented by `statsmodels.StratifiedTable`. Continuous models use Firth
 logistic regression (`logistf`) with a three-degree-of-freedom natural spline

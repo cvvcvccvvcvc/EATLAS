@@ -18,6 +18,7 @@ from .stats import benjamini_hochberg, enrichment_result, mantel_haenszel_adjust
 
 SCORE_COLUMN = "phyloP100way"
 SPLINE_DF = 3
+MAX_DISTRIBUTION_BINS = 40
 
 PHYLOP_BANDS = [
     ("acceleration", "Nominal acceleration", "<= -1.30103"),
@@ -103,6 +104,7 @@ class ConservationCohort:
 @dataclass(frozen=True)
 class ConservationValidation:
     cohort: ConservationCohort
+    unadjusted: pd.DataFrame
     fixed_bins: pd.DataFrame
     fixed_adjusted: pd.DataFrame
     continuous: pd.DataFrame
@@ -211,6 +213,11 @@ def compute_conservation_validation(
     analytics_dir: Path,
     rscript: str | None = None,
 ) -> ConservationValidation:
+    unadjusted = compute_unadjusted_enrichment(
+        cohort=cohort.variants,
+        observed_by_strategy_type=observed_by_strategy_type,
+        strategies=strategies,
+    )
     fixed_bins, fixed_adjusted = compute_fixed_band_enrichment(
         cohort=cohort.variants,
         observed_by_strategy_type=observed_by_strategy_type,
@@ -225,12 +232,48 @@ def compute_conservation_validation(
     )
     return ConservationValidation(
         cohort,
+        unadjusted,
         fixed_bins,
         fixed_adjusted,
         continuous,
         distributions,
         versions,
     )
+
+
+def compute_unadjusted_enrichment(
+    *,
+    cohort: pd.DataFrame,
+    observed_by_strategy_type: dict[tuple[str, str], set[str]],
+    strategies: list[str],
+) -> pd.DataFrame:
+    rows = []
+    for strategy, variant_key, consequence_key, working in selector_frames(
+        cohort, observed_by_strategy_type, strategies
+    ):
+        result = enrichment_for_subset(working, strategy)
+        reason = two_by_two_estimability_reason(working)
+        rows.append(
+            {
+                "strategy": strategy,
+                "variant_type": variant_key,
+                "consequence": consequence_key,
+                "usable_rows": int(len(working)),
+                "benign_observed": result.benign_observed,
+                "pathogenic_observed": result.pathogenic_observed,
+                "benign_not_observed": result.benign_not_observed,
+                "pathogenic_not_observed": result.pathogenic_not_observed,
+                "odds_ratio": result.odds_ratio if not reason else float("nan"),
+                "ci_low": result.ci_low if not reason else float("nan"),
+                "ci_high": result.ci_high if not reason else float("nan"),
+                "fisher_p": result.fisher_p if not reason else float("nan"),
+                "status": "not_estimable" if reason else "estimated",
+                "reason": reason,
+            }
+        )
+    results = pd.DataFrame(rows)
+    add_grouped_bh(results, "fisher_p", "fisher_q", ["variant_type", "consequence"])
+    return results
 
 
 def compute_fixed_band_enrichment(
@@ -283,6 +326,11 @@ def compute_fixed_band_enrichment(
                 fixed_adjusted_row(strategy, variant_key, consequence_key, working, reason=reason)
             )
         else:
+            finite_effect = (
+                math.isfinite(adjusted.odds_ratio_mh)
+                and math.isfinite(adjusted.ci_low)
+                and math.isfinite(adjusted.ci_high)
+            )
             adjusted_rows.append(
                 fixed_adjusted_row(
                     strategy,
@@ -294,15 +342,19 @@ def compute_fixed_band_enrichment(
                     ci_high=adjusted.ci_high,
                     cmh_chi2=adjusted.cmh_chi2,
                     cmh_p=adjusted.cmh_p,
+                    status="estimated" if finite_effect else "test_only",
+                    reason=(
+                        "CMH p-value is available, but the common OR and CI are not finite because of separation."
+                        if not finite_effect
+                        else ""
+                    ),
                 )
             )
 
     bins = pd.DataFrame(bin_rows)
     adjusted = pd.DataFrame(adjusted_rows)
-    if not bins.empty:
-        bins["fisher_q"] = benjamini_hochberg(bins["fisher_p"].tolist())
-    if not adjusted.empty:
-        adjusted["cmh_q"] = benjamini_hochberg(adjusted["cmh_p"].tolist())
+    add_grouped_bh(bins, "fisher_p", "fisher_q", ["variant_type", "consequence", "band"])
+    add_grouped_bh(adjusted, "cmh_p", "cmh_q", ["variant_type", "consequence"])
     return bins, adjusted
 
 
@@ -385,6 +437,7 @@ def fixed_adjusted_row(
     ci_high: float = float("nan"),
     cmh_chi2: float = float("nan"),
     cmh_p: float = float("nan"),
+    status: str = "",
 ) -> dict[str, object]:
     return {
         "strategy": strategy,
@@ -397,7 +450,7 @@ def fixed_adjusted_row(
         "ci_high": ci_high,
         "cmh_chi2": cmh_chi2,
         "cmh_p": cmh_p,
-        "status": "not_estimable" if reason else "estimated",
+        "status": status or ("not_estimable" if reason else "estimated"),
         "reason": reason,
     }
 
@@ -445,7 +498,7 @@ def compute_continuous_firth(
                 "reason": reason,
             }
         )
-        distribution_rows.extend(ecdf_rows(working, strategy, variant_key, consequence_key))
+        distribution_rows.extend(distribution_detail_rows(working, strategy, variant_key, consequence_key))
         if not reason:
             fit_specs.append(
                 {
@@ -474,8 +527,7 @@ def compute_continuous_firth(
             for column in ["odds_ratio", "ci_low", "ci_high", "plr_p", "status", "reason"]:
                 results.at[index, column] = fitted_row.get(column, results.at[index, column])
 
-    if not results.empty:
-        results["plr_q"] = benjamini_hochberg(results["plr_p"].tolist())
+    add_grouped_bh(results, "plr_p", "plr_q", ["variant_type", "consequence"])
     return results, pd.DataFrame(distribution_rows), versions
 
 
@@ -495,6 +547,16 @@ def continuous_metrics(working: pd.DataFrame) -> dict[str, object]:
         "pathogenic_rows": int((working["label_class"] == "pathogenic").sum()),
         "observed_rows": int((working["ALT_observed"] == 1).sum()),
         "not_observed_rows": int((working["ALT_observed"] == 0).sum()),
+        "benign_observed": int(((working["label_class"] == "benign") & (working["ALT_observed"] == 1)).sum()),
+        "pathogenic_observed": int(
+            ((working["label_class"] == "pathogenic") & (working["ALT_observed"] == 1)).sum()
+        ),
+        "benign_not_observed": int(
+            ((working["label_class"] == "benign") & (working["ALT_observed"] == 0)).sum()
+        ),
+        "pathogenic_not_observed": int(
+            ((working["label_class"] == "pathogenic") & (working["ALT_observed"] == 0)).sum()
+        ),
         "score_min": float(total_low) if not working.empty else float("nan"),
         "score_max": float(total_high) if not working.empty else float("nan"),
         "overlap_low": float(overlap_low),
@@ -520,31 +582,74 @@ def continuous_estimability_reason(working: pd.DataFrame) -> str:
     return ""
 
 
-def ecdf_rows(
+def distribution_detail_rows(
     working: pd.DataFrame,
     strategy: str,
     variant_type: str,
     consequence: str,
-    max_points: int = 201,
 ) -> list[dict[str, object]]:
+    groups = [(1, "ALT observed"), (0, "ALT not observed")]
+    values_by_group = {
+        label: working.loc[working["ALT_observed"] == observed_value, SCORE_COLUMN].to_numpy(float)
+        for observed_value, label in groups
+    }
+    nonempty = [values for values in values_by_group.values() if len(values)]
+    if not nonempty:
+        return []
+    combined = np.concatenate(nonempty)
+    if float(np.min(combined)) == float(np.max(combined)):
+        center = float(combined[0])
+        padding = max(abs(center) * 0.05, 0.5)
+        edges = np.asarray([center - padding, center + padding])
+    else:
+        edges = np.histogram_bin_edges(combined, bins="fd")
+        if len(edges) - 1 > MAX_DISTRIBUTION_BINS:
+            edges = np.linspace(float(np.min(combined)), float(np.max(combined)), MAX_DISTRIBUTION_BINS + 1)
+
     rows = []
-    for observed_value, label in [(1, "ALT observed"), (0, "ALT not observed")]:
-        values = np.sort(working.loc[working["ALT_observed"] == observed_value, SCORE_COLUMN].to_numpy(float))
+    for _observed_value, label in groups:
+        values = values_by_group[label]
         if not len(values):
             continue
-        indices = np.unique(np.linspace(0, len(values) - 1, min(max_points, len(values))).round().astype(int))
-        for index in indices:
-            rows.append(
-                {
-                    "strategy": strategy,
-                    "variant_type": variant_type,
-                    "consequence": consequence,
-                    "group": label,
-                    "score": float(values[index]),
-                    "ecdf": float((index + 1) / len(values)),
-                }
-            )
+        q1, median, q3 = np.quantile(values, [0.25, 0.5, 0.75])
+        iqr = q3 - q1
+        lower_whisker = float(np.min(values[values >= q1 - 1.5 * iqr]))
+        upper_whisker = float(np.max(values[values <= q3 + 1.5 * iqr]))
+        counts, _ = np.histogram(values, bins=edges)
+        rows.extend(
+            {
+                "strategy": strategy,
+                "variant_type": variant_type,
+                "consequence": consequence,
+                "group": label,
+                "bin_left": float(left),
+                "bin_right": float(right),
+                "count": int(count),
+                "fraction": float(count / len(values)),
+                "group_count": int(len(values)),
+                "q1": float(q1),
+                "median": float(median),
+                "q3": float(q3),
+                "lower_whisker": lower_whisker,
+                "upper_whisker": upper_whisker,
+            }
+            for left, right, count in zip(edges[:-1], edges[1:], counts)
+        )
     return rows
+
+
+def add_grouped_bh(
+    frame: pd.DataFrame,
+    p_column: str,
+    q_column: str,
+    group_columns: list[str],
+) -> None:
+    if frame.empty:
+        frame[q_column] = pd.Series(dtype=float)
+        return
+    frame[q_column] = float("nan")
+    for _group, indices in frame.groupby(group_columns, sort=False).groups.items():
+        frame.loc[indices, q_column] = benjamini_hochberg(frame.loc[indices, p_column].tolist())
 
 
 def run_firth_models(

@@ -13,7 +13,6 @@ from pathlib import Path
 
 import pandas as pd
 
-from .stats import benjamini_hochberg, enrichment_result
 from .variant_keys import (
     build_context_index,
     contexts_for_variant,
@@ -48,7 +47,6 @@ class ClinvarValidation:
     universe_path: Path
     manifest_path: Path
     universe: pd.DataFrame
-    strategy_results: pd.DataFrame
     manifest: dict
     observed_by_strategy_type: dict[tuple[str, str], set[str]]
 
@@ -82,16 +80,10 @@ def build_validation(
         variant_annotations_tsv=variant_annotations_tsv,
         strategies=strategies,
     )
-    strategy_results = compute_strategy_results(
-        universe=universe,
-        strategies=strategies,
-        observed_by_strategy_type=observed_by_strategy_type,
-    )
     return ClinvarValidation(
         universe_path,
         manifest_path,
         universe,
-        strategy_results,
         manifest,
         observed_by_strategy_type,
     )
@@ -457,74 +449,6 @@ def collect_observed_keys_by_strategy_type(
                 observed_by_strategy_type.setdefault((strategy, variant_kind), set()).add(variant_key)
 
     return observed_by_strategy_type
-
-
-def compute_strategy_results(
-    *,
-    universe: pd.DataFrame,
-    strategies: list[str],
-    observed_by_strategy_type: dict[tuple[str, str], set[str]],
-) -> pd.DataFrame:
-    if universe.empty:
-        return pd.DataFrame(columns=result_columns())
-
-    labels_by_key = dict(zip(universe["variant_key"].astype(str), universe["label_class"].astype(str)))
-    rows = []
-    all_strategies = sorted(set(strategies) | {strategy for strategy, _variant_kind in observed_by_strategy_type})
-    for variant_kind in VALIDATION_TYPES:
-        subset = universe[universe["variant_type"].astype(str) == variant_kind]
-        if subset.empty:
-            continue
-        benign_total = int((subset["label_class"] == "benign").sum())
-        pathogenic_total = int((subset["label_class"] == "pathogenic").sum())
-        for strategy in all_strategies:
-            observed = observed_by_strategy_type.get((strategy, variant_kind), set())
-            benign_observed = sum(1 for key in observed if labels_by_key.get(key) == "benign")
-            pathogenic_observed = sum(1 for key in observed if labels_by_key.get(key) == "pathogenic")
-            result = enrichment_result(
-                strategy,
-                benign_observed,
-                pathogenic_observed,
-                benign_total - benign_observed,
-                pathogenic_total - pathogenic_observed,
-            )
-            rows.append(
-                {
-                    "variant_type": variant_kind,
-                    "strategy": strategy,
-                    "benign_observed": result.benign_observed,
-                    "pathogenic_observed": result.pathogenic_observed,
-                    "benign_not_observed": result.benign_not_observed,
-                    "pathogenic_not_observed": result.pathogenic_not_observed,
-                    "odds_ratio": result.odds_ratio,
-                    "ci_low": result.ci_low,
-                    "ci_high": result.ci_high,
-                    "fisher_p": result.fisher_p,
-                }
-            )
-    if not rows:
-        return pd.DataFrame(columns=result_columns())
-    results = pd.DataFrame(rows)
-    results["fisher_q"] = float("nan")
-    for _variant_kind, indices in results.groupby("variant_type", sort=False).groups.items():
-        results.loc[indices, "fisher_q"] = benjamini_hochberg(results.loc[indices, "fisher_p"].tolist())
-    return results[result_columns()]
-
-
-def result_columns() -> list[str]:
-    return [
-        "variant_type",
-        "strategy",
-        "benign_observed",
-        "pathogenic_observed",
-        "benign_not_observed",
-        "pathogenic_not_observed",
-        "odds_ratio",
-        "ci_low",
-        "ci_high",
-        "fisher_p",
-        "fisher_q",
-    ]
 
 
 def split_strategies(value: str) -> list[str]:

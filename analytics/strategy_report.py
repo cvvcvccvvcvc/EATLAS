@@ -605,7 +605,8 @@ def validation_method_table() -> pd.DataFrame:
                 "Step": "Statistics",
                 "Definition": (
                     "Raw odds ratio, approximate 95% CI on log(OR) with Haldane 0.5 correction for zero cells, "
-                    "two-sided Fisher exact p-value, and Benjamini-Hochberg FDR within each SNV or INDEL family."
+                    "and two-sided Fisher exact p-value. Benjamini-Hochberg FDR is computed across strategies "
+                    "within each variant-type and consequence selection."
                 ),
             },
         ]
@@ -691,8 +692,9 @@ def conservation_validation_method_table(analysis: ConservationAnalysis | None) 
             {
                 "Step": "Multiplicity",
                 "Definition": (
-                    "Benjamini-Hochberg correction is applied as three prespecified families across displayed "
-                    "selector combinations: per-band Fisher tests, pooled CMH tests, and continuous-model PLR tests."
+                    "For each analysis, variant-type, and consequence selection, Benjamini-Hochberg correction is "
+                    "applied across strategies. Band-specific Fisher tests are corrected across strategies within "
+                    "the same band."
                 ),
             },
             {
@@ -1731,163 +1733,6 @@ def candidate_phylop_summary_figure(
     return fig
 
 
-def validation_excluded_count(manifest: dict, variant_kind: str) -> int:
-    return (
-        int(manifest.get(f"excluded_vus_{variant_kind}_count", 0))
-        + int(manifest.get(f"excluded_missing_{variant_kind}_count", 0))
-        + int(manifest.get(f"excluded_other_{variant_kind}_count", 0))
-        + int(manifest.get(f"excluded_normalization_{variant_kind}_count", 0))
-        + int(manifest.get(f"ambiguous_mixed_label_{variant_kind}_count", 0))
-    )
-
-
-def validation_kind_label(variant_kind: str) -> str:
-    return "INDEL" if variant_kind == "indel" else "SNV"
-
-
-def build_validation_sections(validation, include_plotly: bool) -> list[str]:
-    manifest = validation.manifest
-    results = validation.strategy_results.copy()
-    sections = ["<h2>ClinVar Enrichment</h2>"]
-    sections.append(
-        metric_cards(
-            [
-                ("ClinVar SNV universe", format_int(manifest.get("usable_snv_allele_count", 0))),
-                ("B/LB SNVs", format_int(manifest.get("benign_snv_count", 0))),
-                ("P/LP SNVs", format_int(manifest.get("pathogenic_snv_count", 0))),
-                ("Excluded SNV alleles", format_int(validation_excluded_count(manifest, "snv"))),
-                ("ClinVar INDEL universe", format_int(manifest.get("usable_indel_allele_count", 0))),
-                ("B/LB INDELs", format_int(manifest.get("benign_indel_count", 0))),
-                ("P/LP INDELs", format_int(manifest.get("pathogenic_indel_count", 0))),
-                ("Excluded INDEL alleles", format_int(validation_excluded_count(manifest, "indel"))),
-            ]
-        )
-    )
-    sections.append(
-        "<p class=\"lead\">ClinVar validation asks whether observed alternate alleles are enriched for B/LB over P/LP labels. SNV and INDEL are computed separately.</p>"
-    )
-
-    if results.empty:
-        sections.append("<p>No usable ClinVar validation rows were found.</p>")
-        return sections
-
-    for variant_kind in ["snv", "indel"]:
-        sections.extend(build_validation_kind_sections(results, variant_kind, include_plotly))
-    return sections
-
-
-def build_validation_kind_sections(results: pd.DataFrame, variant_kind: str, include_plotly: bool) -> list[str]:
-    label = validation_kind_label(variant_kind)
-    subset = results[results["variant_type"].astype(str) == variant_kind].copy()
-    sections = [f"<h3>{label} Enrichment</h3>"]
-    if subset.empty:
-        sections.append(f"<p>No usable ClinVar {label} rows were found.</p>")
-        return sections
-
-    subset["Strategy"] = subset["strategy"].map(strategy_label)
-    plot_df = subset.dropna(subset=["ci_low", "ci_high"]).copy()
-    plot_df = plot_df[(plot_df["ci_low"] > 0) & (plot_df["ci_high"] > 0)]
-    plot_df["plot_odds_ratio"] = plot_df["odds_ratio"]
-    infinite_or = ~np.isfinite(plot_df["plot_odds_ratio"])
-    plot_df.loc[infinite_or, "plot_odds_ratio"] = np.sqrt(
-        plot_df.loc[infinite_or, "ci_low"] * plot_df.loc[infinite_or, "ci_high"]
-    )
-    plot_df = plot_df[np.isfinite(plot_df["plot_odds_ratio"]) & (plot_df["plot_odds_ratio"] > 0)]
-    if not plot_df.empty:
-        plot_df = plot_df.sort_values("plot_odds_ratio", ascending=False)
-        fig = go.Figure(
-            data=go.Scatter(
-                x=plot_df["plot_odds_ratio"],
-                y=plot_df["Strategy"],
-                mode="markers",
-                marker={"size": 10, "color": "#356d8f" if variant_kind == "snv" else "#6f4aa8"},
-                error_x={
-                    "type": "data",
-                    "symmetric": False,
-                    "array": plot_df["ci_high"] - plot_df["plot_odds_ratio"],
-                    "arrayminus": plot_df["plot_odds_ratio"] - plot_df["ci_low"],
-                    "thickness": 1.4,
-                },
-                hovertemplate=(
-                    "%{y}<br>OR: %{x:.3g}<br>"
-                    "Raw OR: %{customdata[0]}<br>"
-                    "95% CI: %{customdata[1]:.3g}-%{customdata[2]:.3g}<br>"
-                    "Fisher p: %{customdata[3]:.3g}<br>"
-                    "BH q: %{customdata[4]:.3g}<extra></extra>"
-                ),
-                customdata=np.stack(
-                    [
-                        plot_df["odds_ratio"].map(format_ratio),
-                        plot_df["ci_low"],
-                        plot_df["ci_high"],
-                        plot_df["fisher_p"],
-                        plot_df["fisher_q"],
-                    ],
-                    axis=-1,
-                ),
-            )
-        )
-        fig.add_vline(x=1.0, line_dash="dash", line_color="#8c8c8c")
-        fig.update_layout(
-            title=f"ClinVar B/LB enrichment among observed {label} alternate alleles",
-            xaxis_title="Odds ratio (log scale)",
-            yaxis_title="",
-            xaxis_type="log",
-            height=360,
-            margin={"l": 140, "r": 30, "t": 52, "b": 58},
-            template="plotly_white",
-        )
-        fig.update_yaxes(categoryorder="array", categoryarray=plot_df["Strategy"].tolist()[::-1])
-        if infinite_or.any():
-            fig.add_annotation(
-                text="Infinite raw ORs are plotted at the Haldane-corrected CI center.",
-                xref="paper",
-                yref="paper",
-                x=0,
-                y=-0.22,
-                showarrow=False,
-                font={"size": 12, "color": "#52606d"},
-                align="left",
-            )
-        sections.append(fig_html(fig, include_plotlyjs=include_plotly))
-    else:
-        sections.append(f"<p>{label} odds ratios were not finite enough to draw a log-scale forest plot.</p>")
-
-    table = subset.sort_values("odds_ratio", ascending=False, na_position="last").copy()
-    table["Odds Ratio"] = table["odds_ratio"].map(format_ratio)
-    table["95% CI"] = table.apply(lambda row: f"{format_ratio(row['ci_low'])}-{format_ratio(row['ci_high'])}", axis=1)
-    table["Fisher p"] = table["fisher_p"].map(format_pvalue)
-    table["BH q"] = table["fisher_q"].map(format_pvalue)
-    table = table.rename(
-        columns={
-            "benign_observed": "B/LB observed",
-            "pathogenic_observed": "P/LP observed",
-            "benign_not_observed": "B/LB not observed",
-            "pathogenic_not_observed": "P/LP not observed",
-        }
-    )
-    sections.append(f"<h4>{label} 2x2 Tables by Strategy</h4>")
-    sections.append(
-        table_html(
-            table[
-                [
-                    "Strategy",
-                    "B/LB observed",
-                    "P/LP observed",
-                    "B/LB not observed",
-                    "P/LP not observed",
-                    "Odds Ratio",
-                    "95% CI",
-                    "Fisher p",
-                    "BH q",
-                ]
-            ],
-            classes="table table-sm table-striped",
-        )
-    )
-    return sections
-
-
 def build_conservation_analysis(
     *,
     inputs: RunInputs,
@@ -1926,121 +1771,88 @@ def build_conservation_analysis(
     )
 
 
-def build_fixed_conservation_sections(
-    analysis: ConservationAnalysis,
-) -> list[str]:
-    summary = analysis.validation.cohort.summary
-    sections = ["<h2>ClinVar Enrichment Within Fixed phyloP Bands</h2>"]
-    sections.append(
-        "<p class=\"lead\">This sensitivity analysis repeats the B/LB-versus-P/LP enrichment test within "
-        "three prespecified phyloP100way bands. The Mantel-Haenszel estimate pools the band-specific 2x2 tables; "
-        "it reduces, but cannot eliminate, residual conservation differences inside each band.</p>"
-    )
-    sections.append(conservation_cohort_cards(summary))
-    sections.append(
-        conservation_selector_view(
-            view_id="fixed-conservation",
-            strategies=analysis.validation.fixed_adjusted["strategy"].drop_duplicates().tolist(),
-            primary=analysis.validation.fixed_adjusted,
-            detail=analysis.validation.fixed_bins,
-            mode="fixed",
-        )
-    )
-    return sections
+def build_clinvar_association_sections(analysis: ConservationAnalysis) -> list[str]:
+    return [
+        "<h2>ClinVar Association</h2>",
+        clinvar_association_view(analysis.validation),
+    ]
 
 
-def build_continuous_firth_sections(
-    analysis: ConservationAnalysis,
-) -> list[str]:
-    summary = analysis.validation.cohort.summary
-    sections = ["<h2>ClinVar Enrichment with Continuous phyloP Adjustment</h2>"]
-    sections.append(
-        "<p class=\"lead\">The primary model uses Firth logistic regression with a three-degree-of-freedom "
-        "natural spline for phyloP100way. The adjusted OR asks whether exact ALT observation remains associated "
-        "with B/LB classification after modeling the continuous, potentially nonlinear conservation relationship.</p>"
-    )
-    sections.append(conservation_cohort_cards(summary))
-    sections.append(
-        conservation_selector_view(
-            view_id="continuous-conservation",
-            strategies=analysis.validation.continuous["strategy"].drop_duplicates().tolist(),
-            primary=analysis.validation.continuous,
-            detail=analysis.validation.distributions,
-            mode="continuous",
-        )
-    )
-    return sections
-
-
-def conservation_cohort_cards(summary: dict[str, int]) -> str:
-    return metric_cards(
-        [
-            ("ClinVar B/LB + P/LP alleles", format_int(summary.get("allele_count", 0))),
-            ("With phyloP100way", format_int(summary.get("scored_allele_count", 0))),
-            ("SNVs", format_int(summary.get("snv_count", 0))),
-            ("Insertions", format_int(summary.get("insertion_count", 0))),
-            ("Deletions", format_int(summary.get("deletion_count", 0))),
-        ]
-    )
-
-
-def conservation_selector_view(
-    *,
-    view_id: str,
-    strategies: list[str],
-    primary: pd.DataFrame,
-    detail: pd.DataFrame,
-    mode: str,
-) -> str:
-    indel_note = (
-        "phyloP thresholds have a nominal single-base p-value interpretation only for SNVs. This view applies "
-        "them to the prespecified INDEL aggregate score for descriptive comparability."
-        if mode == "fixed"
-        else "INDEL phyloP is an aggregate allele score (deleted-base mean or insertion-flank mean), not a "
-        "single-base phyloP value. Interpret the adjusted INDEL association separately from the primary SNV view."
-    )
+def clinvar_association_view(validation: ConservationValidation) -> str:
+    primary_frames = []
+    mode_specs = [
+        ("unadjusted", validation.unadjusted, "odds_ratio", "fisher_p", "fisher_q"),
+        ("fixed", validation.fixed_adjusted, "odds_ratio_mh", "cmh_p", "cmh_q"),
+        ("continuous", validation.continuous, "odds_ratio", "plr_p", "plr_q"),
+    ]
+    for mode, source, odds_ratio, p_value, q_value in mode_specs:
+        frame = source.copy()
+        if frame.empty:
+            continue
+        frame["mode"] = mode
+        frame["result_or"] = frame[odds_ratio]
+        frame["result_p"] = frame[p_value]
+        frame["result_q"] = frame[q_value]
+        primary_frames.append(frame)
+    primary = pd.concat(primary_frames, ignore_index=True) if primary_frames else pd.DataFrame()
+    strategies = validation.unadjusted["strategy"].drop_duplicates().astype(str).tolist()
     payload = {
-        "viewId": view_id,
-        "mode": mode,
+        "viewId": "clinvar-association",
+        "modes": [
+            {"key": "unadjusted", "label": "Unadjusted"},
+            {"key": "fixed", "label": "phyloP fixed bands"},
+            {"key": "continuous", "label": "phyloP continuous"},
+        ],
         "strategies": [{"key": value, "label": strategy_label(value)} for value in strategies],
         "variantTypes": [{"key": key, "label": label} for key, label in VARIANT_TYPE_OPTIONS],
         "consequences": [{"key": key, "label": label} for key, label in CONSEQUENCE_OPTIONS],
         "primary": dataframe_records(primary),
-        "detail": dataframe_records(detail),
+        "fixedDetail": dataframe_records(validation.fixed_bins),
+        "continuousDetail": dataframe_records(validation.distributions),
     }
     payload_json = json.dumps(payload, separators=(",", ":"), allow_nan=False).replace("</", "<\\/")
     return f"""
-    <div class="analysis-controls" id="{view_id}-controls">
-      <label>Strategy<select data-role="strategy"></select></label>
+    <div class="analysis-controls" id="clinvar-association-controls">
+      <label>Analysis<select data-role="mode"></select></label>
       <label>Variant type<select data-role="variant-type"></select></label>
       <label>Consequence subset<select data-role="consequence"></select></label>
     </div>
-    <div id="{view_id}-indel-note" class="analysis-note" hidden>
-      {indel_note}
+    <div id="clinvar-association-status" class="analysis-note" hidden></div>
+    <div id="clinvar-association-forest" class="analysis-plot"></div>
+    <div id="clinvar-association-results"></div>
+    <div class="analysis-controls analysis-controls-single" id="clinvar-association-strategy-control">
+      <label>Inspect strategy<select data-role="strategy"></select></label>
     </div>
-    <div id="{view_id}-status" class="analysis-note" hidden></div>
-    <div id="{view_id}-metrics" class="metric-grid"></div>
-    <div id="{view_id}-plot" class="analysis-plot"></div>
-    <div id="{view_id}-table"></div>
+    <div id="clinvar-association-detail-plot" class="analysis-plot"></div>
+    <div id="clinvar-association-detail-table"></div>
     <script>
     (() => {{
       const config = {payload_json};
-      const root = document.getElementById(config.viewId + '-controls');
-      const strategySelect = root.querySelector('[data-role="strategy"]');
-      const variantSelect = root.querySelector('[data-role="variant-type"]');
-      const consequenceSelect = root.querySelector('[data-role="consequence"]');
+      const controls = document.getElementById(config.viewId + '-controls');
+      const modeSelect = controls.querySelector('[data-role="mode"]');
+      const variantSelect = controls.querySelector('[data-role="variant-type"]');
+      const consequenceSelect = controls.querySelector('[data-role="consequence"]');
+      const strategySelect = document.querySelector('#' + config.viewId + '-strategy-control [data-role="strategy"]');
+      const optionMap = values => Object.fromEntries(values.map(value => [value.key, value.label]));
+      const strategyLabels = optionMap(config.strategies);
+      const modeLabels = optionMap(config.modes);
+      const variantLabels = optionMap(config.variantTypes);
+      const consequenceLabels = optionMap(config.consequences);
       const addOptions = (select, values) => values.forEach(value => {{
         const option = document.createElement('option');
         option.value = value.key; option.textContent = value.label; select.appendChild(option);
       }});
-      addOptions(strategySelect, config.strategies);
+      addOptions(modeSelect, config.modes);
       addOptions(variantSelect, config.variantTypes);
       addOptions(consequenceSelect, config.consequences);
+      addOptions(strategySelect, config.strategies);
+      modeSelect.value = 'unadjusted';
       variantSelect.value = 'snv';
-      consequenceSelect.value = 'missense';
+      consequenceSelect.value = 'all';
 
-      const finite = value => value !== null && Number.isFinite(Number(value));
+      const finite = value => value !== null && value !== 'inf' && value !== '-inf' && Number.isFinite(Number(value));
       const number = value => finite(value) ? Number(value) : null;
+      const count = value => number(value) === null ? '0' : Math.round(Number(value)).toLocaleString('en-US').replaceAll(',', ' ');
       const fmt = value => {{
         if (value === 'inf') return '∞';
         if (value === '-inf') return '-∞';
@@ -2050,69 +1862,170 @@ def conservation_selector_view(
         if (Math.abs(item) < 0.001 || Math.abs(item) >= 1000) return item.toExponential(2);
         return item.toPrecision(3);
       }};
-      const count = value => number(value) === null ? '0' : Math.round(Number(value)).toLocaleString('en-US').replaceAll(',', ' ');
-      const ci = row => finite(row.ci_low) && finite(row.ci_high) ? `${{fmt(row.ci_low)}}–${{fmt(row.ci_high)}}` : 'NA';
-      const metric = (label, value) => `<div class="metric-card"><div class="metric-label">${{label}}</div><div class="metric-value">${{value}}</div></div>`;
-      const matches = row => row.strategy === strategySelect.value && row.variant_type === variantSelect.value && row.consequence === consequenceSelect.value;
+      const ci = row => finite(row?.ci_low) && finite(row?.ci_high) ? `${{fmt(row.ci_low)}}–${{fmt(row.ci_high)}}` : 'NA';
+      const effect = row => `${{fmt(row?.result_or)}} [${{ci(row)}}]`;
       const cell = value => `<td>${{value}}</td>`;
+      const statusText = row => {{
+        if (!row) return 'Not available';
+        if (row.status === 'estimated') return 'Estimated';
+        if (row.status === 'test_only') return 'Test only';
+        return row.reason || 'Not estimable';
+      }};
+      const matchesSelection = row => row.mode === modeSelect.value
+        && row.variant_type === variantSelect.value
+        && row.consequence === consequenceSelect.value;
+      const plotValue = row => {{
+        const raw = number(row.result_or);
+        if (raw !== null && raw > 0) return raw;
+        if (row.result_or === 'inf' && finite(row.ci_low) && finite(row.ci_high)) {{
+          return Math.sqrt(Number(row.ci_low) * Number(row.ci_high));
+        }}
+        return null;
+      }};
+      const currentRows = () => config.primary.filter(matchesSelection);
 
-      function renderFixed(row, detailRows) {{
-        document.getElementById(config.viewId + '-metrics').innerHTML = [
-          metric('MH adjusted OR', fmt(row?.odds_ratio_mh)),
-          metric('95% CI', row ? ci(row) : 'NA'),
-          metric('CMH p', fmt(row?.cmh_p)),
-          metric('BH q', fmt(row?.cmh_q)),
-          metric('Scored alleles', count(row?.usable_rows)),
-        ].join('');
-        const plotRows = detailRows.filter(item => finite(item.odds_ratio) && number(item.odds_ratio) > 0 && finite(item.ci_low) && finite(item.ci_high));
-        Plotly.react(config.viewId + '-plot', [{{
+      function renderForest(rows) {{
+        const plotted = rows.map(row => ({{row, x: plotValue(row)}}))
+          .filter(item => item.x !== null && finite(item.row.ci_low) && finite(item.row.ci_high))
+          .sort((left, right) => right.x - left.x);
+        const title = `${{modeLabels[modeSelect.value]}}: ${{variantLabels[variantSelect.value]}}, ${{consequenceLabels[consequenceSelect.value]}}`;
+        const trace = {{
           type: 'scatter', mode: 'markers',
-          x: plotRows.map(item => number(item.odds_ratio)),
-          y: plotRows.map(item => item.band_label),
-          error_x: {{type: 'data', symmetric: false,
-            array: plotRows.map(item => number(item.ci_high) - number(item.odds_ratio)),
-            arrayminus: plotRows.map(item => number(item.odds_ratio) - number(item.ci_low))}},
-          marker: {{size: 10, color: '#2f6f62'}},
-          customdata: plotRows.map(item => [ci(item), fmt(item.fisher_p), fmt(item.fisher_q), count(item.row_count)]),
-          hovertemplate: '%{{y}}<br>OR: %{{x:.3g}}<br>95% CI: %{{customdata[0]}}<br>Fisher p: %{{customdata[1]}}<br>BH q: %{{customdata[2]}}<br>N: %{{customdata[3]}}<extra></extra>'
-        }}], {{title: 'Band-specific enrichment', template: 'plotly_white', height: 330, margin: {{l: 155, r: 25, t: 50, b: 55}}, xaxis: {{title: 'Odds ratio (log scale)', type: 'log'}}, yaxis: {{title: ''}}, shapes: [{{type: 'line', x0: 1, x1: 1, y0: 0, y1: 1, yref: 'paper', line: {{dash: 'dash', color: '#8c8c8c'}}}}]}}, {{responsive: true}});
-        const rows = detailRows.map(item => `<tr>${{cell(item.band_label)}}${{cell(item.band_range)}}${{cell(count(item.row_count))}}${{cell(count(item.benign_observed))}}${{cell(count(item.pathogenic_observed))}}${{cell(count(item.benign_not_observed))}}${{cell(count(item.pathogenic_not_observed))}}${{cell(fmt(item.odds_ratio))}}${{cell(ci(item))}}${{cell(fmt(item.fisher_p))}}${{cell(fmt(item.fisher_q))}}${{cell(item.status === 'estimated' ? 'Estimated' : item.reason)}}</tr>`).join('');
-        document.getElementById(config.viewId + '-table').innerHTML = `<h3>Band-specific 2x2 Tables</h3><table><thead><tr><th>Band</th><th>Range</th><th>N</th><th>B/LB observed</th><th>P/LP observed</th><th>B/LB not observed</th><th>P/LP not observed</th><th>OR</th><th>95% CI</th><th>Fisher p</th><th>BH q</th><th>Status</th></tr></thead><tbody>${{rows}}</tbody></table>`;
+          x: plotted.map(item => item.x),
+          y: plotted.map(item => strategyLabels[item.row.strategy] || item.row.strategy),
+          marker: {{size: 10, color: '#356d8f'}},
+          error_x: {{
+            type: 'data', symmetric: false,
+            array: plotted.map(item => Number(item.row.ci_high) - item.x),
+            arrayminus: plotted.map(item => item.x - Number(item.row.ci_low)),
+          }},
+          customdata: plotted.map(item => [
+            fmt(item.row.result_or), ci(item.row), fmt(item.row.result_p), fmt(item.row.result_q),
+            count(item.row.usable_rows), statusText(item.row),
+          ]),
+          hovertemplate: '%{{y}}<br>OR: %{{customdata[0]}}<br>95% CI: %{{customdata[1]}}<br>p: %{{customdata[2]}}<br>FDR q: %{{customdata[3]}}<br>N: %{{customdata[4]}}<br>%{{customdata[5]}}<extra></extra>',
+        }};
+        const annotations = plotted.length ? [] : [{{
+          text: 'No finite odds ratio and confidence interval for this selection.',
+          x: 0.5, y: 0.5, xref: 'paper', yref: 'paper', showarrow: false,
+        }}];
+        Plotly.react(config.viewId + '-forest', plotted.length ? [trace] : [], {{
+          title, template: 'plotly_white', height: 370,
+          margin: {{l: 170, r: 30, t: 52, b: 58}},
+          xaxis: {{title: 'Odds ratio (log scale)', type: 'log', dtick: 1}}, yaxis: {{title: ''}},
+          shapes: [{{type: 'line', x0: 1, x1: 1, y0: 0, y1: 1, yref: 'paper', line: {{dash: 'dash', color: '#8c8c8c'}}}}],
+          annotations,
+        }}, {{responsive: true}});
       }}
 
-      function renderContinuous(row, detailRows) {{
-        document.getElementById(config.viewId + '-metrics').innerHTML = [
-          metric('Firth adjusted OR', fmt(row?.odds_ratio)),
-          metric('95% profile CI', row ? ci(row) : 'NA'),
-          metric('PLR p', fmt(row?.plr_p)),
-          metric('BH q', fmt(row?.plr_q)),
-          metric('Scored alleles', count(row?.usable_rows)),
-        ].join('');
-        const groups = ['ALT observed', 'ALT not observed'];
-        const colors = {{'ALT observed': '#2166ac', 'ALT not observed': '#8c8c8c'}};
-        const traces = groups.map(group => {{
-          const values = detailRows.filter(item => item.group === group);
-          return {{type: 'scatter', mode: 'lines', name: group, x: values.map(item => item.score), y: values.map(item => item.ecdf), line: {{color: colors[group], width: 2}}, hovertemplate: 'phyloP: %{{x:.3g}}<br>Cumulative fraction: %{{y:.1%}}<extra>' + group + '</extra>'}};
-        }}).filter(trace => trace.x.length);
-        Plotly.react(config.viewId + '-plot', traces, {{title: 'phyloP100way distributions', template: 'plotly_white', height: 350, margin: {{l: 65, r: 25, t: 50, b: 55}}, xaxis: {{title: 'phyloP100way'}}, yaxis: {{title: 'Cumulative fraction', tickformat: '.0%'}}, legend: {{orientation: 'h', y: 1.12}}}}, {{responsive: true}});
-        const overlap = row && finite(row.overlap_low) && finite(row.overlap_high) ? `${{fmt(row.overlap_low)}}–${{fmt(row.overlap_high)}}` : 'None';
-        const status = row?.status === 'estimated' ? 'Estimated' : (row?.reason || 'Not estimable');
-        document.getElementById(config.viewId + '-table').innerHTML = `<h3>Model Data and Estimability</h3><table><thead><tr><th>N</th><th>B/LB</th><th>P/LP</th><th>ALT observed</th><th>ALT not observed</th><th>Score range</th><th>Range overlap</th><th>Status</th></tr></thead><tbody><tr>${{cell(count(row?.usable_rows))}}${{cell(count(row?.benign_rows))}}${{cell(count(row?.pathogenic_rows))}}${{cell(count(row?.observed_rows))}}${{cell(count(row?.not_observed_rows))}}${{cell(row ? `${{fmt(row.score_min)}}–${{fmt(row.score_max)}}` : 'NA')}}${{cell(overlap)}}${{cell(status)}}</tr></tbody></table>`;
+      function renderResultsTable(rows) {{
+        const ordered = [...rows].sort((left, right) => (plotValue(right) || -1) - (plotValue(left) || -1));
+        const body = ordered.map(row => `<tr>${{cell(strategyLabels[row.strategy] || row.strategy)}}${{cell(effect(row))}}${{cell(fmt(row.result_p))}}${{cell(fmt(row.result_q))}}${{cell(count(row.usable_rows))}}${{cell(statusText(row))}}</tr>`).join('');
+        document.getElementById(config.viewId + '-results').innerHTML = `<table><thead><tr><th>Strategy</th><th>OR [95% CI]</th><th>p</th><th>FDR q</th><th>N</th><th>Status</th></tr></thead><tbody>${{body}}</tbody></table>`;
+      }}
+
+      function twoByTwoTable(row) {{
+        if (!row) return '';
+        const observedTotal = Number(row.benign_observed || 0) + Number(row.pathogenic_observed || 0);
+        const notObservedTotal = Number(row.benign_not_observed || 0) + Number(row.pathogenic_not_observed || 0);
+        return `<table><thead><tr><th>ALT status</th><th>B/LB</th><th>P/LP</th><th>Total</th></tr></thead><tbody>`
+          + `<tr>${{cell('Observed')}}${{cell(count(row.benign_observed))}}${{cell(count(row.pathogenic_observed))}}${{cell(count(observedTotal))}}</tr>`
+          + `<tr>${{cell('Not observed')}}${{cell(count(row.benign_not_observed))}}${{cell(count(row.pathogenic_not_observed))}}${{cell(count(notObservedTotal))}}</tr>`
+          + `</tbody></table>`;
+      }}
+
+      function renderUnadjusted(row) {{
+        document.getElementById(config.viewId + '-detail-plot').hidden = true;
+        document.getElementById(config.viewId + '-detail-table').innerHTML = twoByTwoTable(row);
+      }}
+
+      function renderFixed(row) {{
+        const details = config.fixedDetail.filter(item => item.strategy === strategySelect.value
+          && item.variant_type === variantSelect.value && item.consequence === consequenceSelect.value);
+        const groups = [
+          ['ALT observed', 'benign_observed', 'pathogenic_observed', '#2166ac'],
+          ['ALT not observed', 'benign_not_observed', 'pathogenic_not_observed', '#8c8c8c'],
+        ];
+        const traces = groups.map(([label, benignKey, pathogenicKey, color]) => {{
+          const fractions = details.map(item => {{
+            const denominator = Number(item[benignKey] || 0) + Number(item[pathogenicKey] || 0);
+            return denominator ? Number(item[benignKey]) / denominator : 0;
+          }});
+          return {{
+            type: 'bar', name: label, x: details.map(item => item.band_label), y: fractions,
+            marker: {{color}},
+            customdata: details.map(item => [count(item[benignKey]), count(item[pathogenicKey])]),
+            hovertemplate: '%{{x}}<br>' + label + '<br>B/LB: %{{customdata[0]}}<br>P/LP: %{{customdata[1]}}<br>B/LB fraction: %{{y:.1%}}<extra></extra>',
+          }};
+        }});
+        const plot = document.getElementById(config.viewId + '-detail-plot'); plot.hidden = false;
+        Plotly.react(plot, traces, {{
+          title: 'B/LB fraction within phyloP bands', template: 'plotly_white', barmode: 'group', height: 350,
+          margin: {{l: 65, r: 25, t: 50, b: 60}}, yaxis: {{title: 'B/LB fraction', tickformat: '.0%', range: [0, 1]}},
+          xaxis: {{title: ''}}, legend: {{orientation: 'h', y: 1.12}},
+        }}, {{responsive: true}});
+        const body = details.map(item => {{
+          const label = `${{item.band_label}} (${{item.band_range}})`;
+          const observed = `${{count(item.benign_observed)}} / ${{count(item.pathogenic_observed)}}`;
+          const notObserved = `${{count(item.benign_not_observed)}} / ${{count(item.pathogenic_not_observed)}}`;
+          return `<tr>${{cell(label)}}${{cell(count(item.row_count))}}${{cell(observed)}}${{cell(notObserved)}}${{cell(`${{fmt(item.odds_ratio)}} [${{ci(item)}}]`)}}${{cell(`${{fmt(item.fisher_p)}} / ${{fmt(item.fisher_q)}}`)}}${{cell(statusText(item))}}</tr>`;
+        }}).join('');
+        document.getElementById(config.viewId + '-detail-table').innerHTML = `<table><thead><tr><th>Band</th><th>N</th><th>Observed B/LB / P/LP</th><th>Not observed B/LB / P/LP</th><th>OR [95% CI]</th><th>p / FDR q</th><th>Status</th></tr></thead><tbody>${{body}}</tbody></table>`;
+      }}
+
+      function renderContinuous(row) {{
+        const details = config.continuousDetail.filter(item => item.strategy === strategySelect.value
+          && item.variant_type === variantSelect.value && item.consequence === consequenceSelect.value);
+        const styles = {{
+          'ALT observed': '#2166ac',
+          'ALT not observed': '#8c8c8c',
+        }};
+        const traces = [];
+        Object.entries(styles).forEach(([group, color]) => {{
+          const values = details.filter(item => item.group === group);
+          if (!values.length) return;
+          traces.push({{
+            type: 'bar', name: group, legendgroup: group,
+            x: values.map(item => (Number(item.bin_left) + Number(item.bin_right)) / 2),
+            y: values.map(item => Number(item.fraction)),
+            width: values.map(item => Number(item.bin_right) - Number(item.bin_left)),
+            marker: {{color}}, opacity: 0.58,
+            customdata: values.map(item => [item.bin_left, item.bin_right, count(item.count)]),
+            hovertemplate: group + '<br>phyloP: %{{customdata[0]:.3f}} to %{{customdata[1]:.3f}}<br>N: %{{customdata[2]}}<br>Fraction: %{{y:.2%}}<extra></extra>',
+          }});
+          const summary = values[0];
+          traces.push({{
+            type: 'box', name: group, legendgroup: group, showlegend: false,
+            q1: [summary.q1], median: [summary.median], q3: [summary.q3],
+            lowerfence: [summary.lower_whisker], upperfence: [summary.upper_whisker],
+            marker: {{color}}, boxpoints: false, xaxis: 'x2', yaxis: 'y2',
+          }});
+        }});
+        const plot = document.getElementById(config.viewId + '-detail-plot'); plot.hidden = false;
+        Plotly.react(plot, traces, {{
+          title: 'phyloP100way by ALT-observation status', template: 'plotly_white', height: 380,
+          margin: {{l: 65, r: 25, t: 50, b: 58}}, barmode: 'overlay', boxmode: 'group',
+          xaxis: {{title: 'phyloP100way', domain: [0, 0.68]}}, yaxis: {{title: 'Fraction per bin', tickformat: '.0%'}},
+          xaxis2: {{domain: [0.78, 1], anchor: 'y2'}}, yaxis2: {{title: 'phyloP100way', anchor: 'x2'}},
+          legend: {{orientation: 'h', y: 1.12}},
+        }}, {{responsive: true}});
+        document.getElementById(config.viewId + '-detail-table').innerHTML = twoByTwoTable(row);
       }}
 
       function render() {{
-        const row = config.primary.find(matches);
-        const detailRows = config.detail.filter(matches);
-        const indelNote = document.getElementById(config.viewId + '-indel-note');
-        indelNote.hidden = variantSelect.value === 'snv';
+        const rows = currentRows();
+        renderForest(rows);
+        renderResultsTable(rows);
+        if (!rows.some(row => row.strategy === strategySelect.value) && rows.length) strategySelect.value = rows[0].strategy;
+        const selected = rows.find(row => row.strategy === strategySelect.value);
         const status = document.getElementById(config.viewId + '-status');
-        const messages = [];
-        if (row && row.status !== 'estimated') messages.push(`<strong>Not estimable:</strong> ${{row.reason || 'insufficient data'}}`);
-        if (config.mode === 'continuous' && row?.overlap_warning) messages.push('The ALT groups overlap across less than 10% of their combined phyloP range; the adjusted estimate relies on limited common support.');
-        status.innerHTML = messages.join('<br>'); status.hidden = messages.length === 0;
-        if (config.mode === 'fixed') renderFixed(row, detailRows); else renderContinuous(row, detailRows);
+        status.innerHTML = selected && selected.status !== 'estimated' ? `<strong>${{strategyLabels[selected.strategy]}}:</strong> ${{statusText(selected)}}` : '';
+        status.hidden = !status.innerHTML;
+        if (modeSelect.value === 'unadjusted') renderUnadjusted(selected);
+        else if (modeSelect.value === 'fixed') renderFixed(selected);
+        else renderContinuous(selected);
       }}
-      [strategySelect, variantSelect, consequenceSelect].forEach(select => select.addEventListener('change', render));
+      [modeSelect, variantSelect, consequenceSelect, strategySelect].forEach(select => select.addEventListener('change', render));
       render();
     }})();
     </script>
@@ -2607,15 +2520,26 @@ def build_methods_sections(
     )
     sections.append("</details>")
     sections.append("<details><summary>ClinVar validation denominator and statistics</summary>")
-    sections.append(
-        "<p class=\"lead\">The ClinVar Enrichment tab intentionally uses a stricter ClinVar subset than Candidate Profile hit-rate plots.</p>"
-    )
+    if validation is not None:
+        manifest = validation.manifest
+        cohort_flow = pd.DataFrame(
+            [
+                {"Cohort step": "Raw SNV/INDEL alleles", "Alleles": manifest.get("raw_allele_count", 0)},
+                {"Cohort step": "Excluded VUS", "Alleles": manifest.get("excluded_vus_count", 0)},
+                {"Cohort step": "Excluded missing CLNSIG", "Alleles": manifest.get("excluded_missing_count", 0)},
+                {"Cohort step": "Excluded other/conflicting", "Alleles": manifest.get("excluded_other_count", 0)},
+                {"Cohort step": "Included B/LB", "Alleles": manifest.get("benign_count", 0)},
+                {"Cohort step": "Included P/LP", "Alleles": manifest.get("pathogenic_count", 0)},
+                {"Cohort step": "Final validation cohort", "Alleles": manifest.get("usable_allele_count", 0)},
+            ]
+        )
+        sections.append(table_html(cohort_flow, classes="table table-sm table-striped"))
     sections.append(table_html(validation_method_table(), classes="table table-sm table-striped"))
     sections.append("</details>")
-    sections.append("<details><summary>Conservation-adjusted ClinVar validation method</summary>")
+    sections.append("<details><summary>ClinVar association modes and consequence subsets</summary>")
     sections.append(
-        "<p class=\"lead\">The two conservation tabs use the same normalized ClinVar allele universe and "
-        "differ only in whether phyloP100way is represented by fixed bands or a continuous spline.</p>"
+        "<p class=\"lead\">All three modes use the same normalized ClinVar allele cohort. They differ only "
+        "in whether and how phyloP100way is included.</p>"
     )
     sections.append(table_html(conservation_validation_method_table(conservation_analysis), classes="table table-sm table-striped"))
     sections.append("<h4>ClinVar MC consequence subsets</h4>")
@@ -2792,7 +2716,7 @@ def render_html(sections: list[tuple[str, str, list[str]]]) -> str:
     <html>
     <head>
         <meta charset="utf-8">
-        <title>GAPH Variant Analytics Report</title>
+        <title>GAPH Variant Analysis</title>
         <style>
             body {{
                 padding: 20px;
@@ -2867,6 +2791,7 @@ def render_html(sections: list[tuple[str, str, list[str]]]) -> str:
                 gap: 12px;
                 margin: 12px 0;
             }}
+            .analysis-controls-single {{ grid-template-columns: minmax(180px, 260px); }}
             .analysis-controls label {{ color: #52606d; font-size: 13px; }}
             .analysis-controls select {{
                 display: block;
@@ -2893,8 +2818,7 @@ def render_html(sections: list[tuple[str, str, list[str]]]) -> str:
         </style>
     </head>
     <body>
-        <h1>GAPH Variant Analytics Report</h1>
-        <p class="lead">Run-level analytics for candidate variant support, strategy overlap, external evidence, and target-feature coverage.</p>
+        <h1>GAPH Variant Analysis</h1>
         {render_tabs(sections)}
     </body>
     </html>
@@ -3022,17 +2946,7 @@ def main() -> None:
                 enabled=args.target_space_null,
             ),
         ),
-        ("clinvar-enrichment", "ClinVar Enrichment", build_validation_sections(validation, include_plotly=True)),
-        (
-            "conservation-fixed",
-            "Conservation: Fixed Bands",
-            build_fixed_conservation_sections(conservation_analysis),
-        ),
-        (
-            "conservation-continuous",
-            "Conservation: Continuous",
-            build_continuous_firth_sections(conservation_analysis),
-        ),
+        ("clinvar-association", "ClinVar Association", build_clinvar_association_sections(conservation_analysis)),
         (
             "qc",
             "QC",

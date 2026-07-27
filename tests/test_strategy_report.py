@@ -10,7 +10,7 @@ from analytics.strategy_report import (
     build_variant_sections,
     build_target_space_null_sections,
     build_target_space_null_qc_sections,
-    conservation_selector_view,
+    clinvar_association_view,
     dataframe_records,
     format_table_dataframe,
     gnomad_stratification_figure,
@@ -182,37 +182,43 @@ def test_phyloP_quantiles_are_not_formatted_as_percentages() -> None:
     assert shown.loc[0, "Comparator rate Q2.5"] == "9.5%"
 
 
-def test_conservation_selector_serializes_sparse_results_and_has_all_controls() -> None:
-    primary = pd.DataFrame(
+def test_clinvar_association_serializes_sparse_results_and_has_all_controls() -> None:
+    unadjusted = pd.DataFrame(
         [
             {
                 "strategy": "s1",
                 "variant_type": "snv",
                 "consequence": "missense",
-                "odds_ratio_mh": float("inf"),
+                "odds_ratio": float("inf"),
                 "ci_low": float("nan"),
                 "ci_high": float("nan"),
-                "cmh_p": float("nan"),
-                "cmh_q": float("nan"),
+                "fisher_p": float("nan"),
+                "fisher_q": float("nan"),
                 "usable_rows": 10,
+                "benign_observed": 5,
+                "pathogenic_observed": 0,
+                "benign_not_observed": 4,
+                "pathogenic_not_observed": 1,
                 "status": "not_estimable",
                 "reason": "Sparse data",
             }
         ]
     )
-    detail = pd.DataFrame()
-
-    html = conservation_selector_view(
-        view_id="fixed-test",
-        strategies=["s1"],
-        primary=primary,
-        detail=detail,
-        mode="fixed",
+    validation = SimpleNamespace(
+        unadjusted=unadjusted,
+        fixed_adjusted=pd.DataFrame(),
+        continuous=pd.DataFrame(),
+        fixed_bins=pd.DataFrame(),
+        distributions=pd.DataFrame(),
     )
+    html = clinvar_association_view(validation)
 
     assert 'data-role="strategy"' in html
+    assert 'data-role="mode"' in html
     assert 'data-role="variant-type"' in html
     assert 'data-role="consequence"' in html
+    assert "phyloP fixed bands" in html
+    assert "phyloP continuous" in html
     assert "Missense" in html
     assert "Infinity" not in html
     assert "NaN" not in html
