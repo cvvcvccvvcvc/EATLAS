@@ -178,6 +178,118 @@ def test_variant_summary_adds_per_strategy_pathogenic_support(tmp_path: Path) ->
     assert row["support_ortholog_mean"] == 5.0
     assert row["support_ortholog_min"] == 3
     assert row["support_ortholog_max"] == 7
+    assert not summary.ortholog_evidence_available
+
+
+def test_variant_summary_builds_ortholog_evidence_without_failed_lookups(tmp_path: Path) -> None:
+    annotations = tmp_path / "variant_annotations.tsv.gz"
+    support = tmp_path / "variant_strategy_support.tsv.gz"
+    features = tmp_path / "target_features.tsv.gz"
+    genes = tmp_path / "genes.tsv.gz"
+    failures = tmp_path / "failures.tsv.gz"
+    variants = [
+        ("1:1:A>G", "0.01", 1, 4),
+        ("1:2:C>T", "", 2, 4),
+        ("1:3:G>A", "", 3, 4),
+        ("1:7:T>C", "0.02", 4, 8),
+    ]
+    with gzip.open(annotations, "wt", newline="") as handle:
+        writer = csv.DictWriter(
+            handle, fieldnames=VARIANT_USECOLS, delimiter="\t", lineterminator="\n"
+        )
+        writer.writeheader()
+        for variant_key, af, _alt, _depth in variants:
+            writer.writerow(
+                {
+                    "variant_key": variant_key,
+                    "gene_id": "1",
+                    "event_type": "snv",
+                    "ref": variant_key.split(":")[-1][0],
+                    "alt": variant_key[-1],
+                    "lookup_status": "ok",
+                    "strategies": "s1",
+                    "gnomad_af": af,
+                }
+            )
+    with gzip.open(support, "wt", newline="") as handle:
+        fields = [
+            "variant_key",
+            "gene_id",
+            "strategy",
+            "alt_support_row_count",
+            "alt_support_ortholog_count",
+            "site_aligned_ortholog_count",
+        ]
+        writer = csv.DictWriter(handle, fieldnames=fields, delimiter="\t", lineterminator="\n")
+        writer.writeheader()
+        for variant_key, _af, alt, depth in variants:
+            writer.writerow(
+                {
+                    "variant_key": variant_key,
+                    "gene_id": "1",
+                    "strategy": "s1",
+                    "alt_support_row_count": alt,
+                    "alt_support_ortholog_count": alt,
+                    "site_aligned_ortholog_count": depth,
+                }
+            )
+    with gzip.open(features, "wt", newline="") as handle:
+        fields = ["gene_id", "feature_type", "target_start0", "target_end0"]
+        writer = csv.DictWriter(handle, fieldnames=fields, delimiter="\t", lineterminator="\n")
+        writer.writeheader()
+        writer.writerows(
+            [
+                {"gene_id": "1", "feature_type": "gene", "target_start0": 0, "target_end0": 10},
+                {"gene_id": "1", "feature_type": "cds", "target_start0": 0, "target_end0": 5},
+                {"gene_id": "1", "feature_type": "intron", "target_start0": 5, "target_end0": 10},
+            ]
+        )
+    with gzip.open(genes, "wt", newline="") as handle:
+        writer = csv.DictWriter(
+            handle, fieldnames=["gene_id", "begin"], delimiter="\t", lineterminator="\n"
+        )
+        writer.writeheader()
+        writer.writerow({"gene_id": "1", "begin": 1})
+    with gzip.open(failures, "wt", newline="") as handle:
+        fields = ["source", "scope", "chrom", "start", "end", "failure_type", "message"]
+        writer = csv.DictWriter(handle, fieldnames=fields, delimiter="\t", lineterminator="\n")
+        writer.writeheader()
+        writer.writerow(
+            {"source": "gnomad", "scope": "region", "chrom": "1", "start": 3, "end": 3}
+        )
+
+    summary = build_variant_summary(
+        annotations,
+        tmp_path / "analytics",
+        strategy_label=str,
+        target_features_path=features,
+        genes_path=genes,
+        annotation_failures_path=failures,
+        variant_strategy_support_path=support,
+    )
+
+    assert summary.ortholog_evidence_available
+    assert set(summary.ortholog_evidence_cells["quantile_count"]) == {2, 4, 10}
+    median_cells = summary.ortholog_evidence_cells[
+        summary.ortholog_evidence_cells["quantile_count"].eq(2)
+    ]
+    assert int(median_cells["gnomad_eligible_count"].sum()) == 3
+    cds = median_cells[median_cells["target_context"].eq("cds")]
+    assert int(cds["gnomad_eligible_count"].sum()) == 2
+    assert int(cds["gnomad_found_count"].sum()) == 1
+
+    cached = build_variant_summary(
+        annotations,
+        tmp_path / "analytics",
+        strategy_label=str,
+        target_features_path=features,
+        genes_path=genes,
+        annotation_failures_path=failures,
+        variant_strategy_support_path=support,
+    )
+    assert cached.cache_hit
+    assert cached.ortholog_evidence_available
+    assert len(cached.ortholog_evidence_cells) == len(summary.ortholog_evidence_cells)
 
 
 def test_variant_summary_aggregates_target_context_and_gnomad_strata(tmp_path: Path) -> None:

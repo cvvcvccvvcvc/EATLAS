@@ -9,6 +9,7 @@ from analytics.core.negative_controls import TargetSpaceNullAnalysis
 from analytics.strategy_report import (
     RunInputs,
     build_variant_sections,
+    build_ortholog_evidence_sections,
     build_target_space_null_sections,
     build_target_space_null_qc_sections,
     clinvar_association_view,
@@ -17,6 +18,7 @@ from analytics.strategy_report import (
     gnomad_stratification_figure,
     hidden_clinvar_association_views,
     overview_strategy_table,
+    ortholog_evidence_figure,
     resolve_run_inputs,
     validate_report_inputs,
 )
@@ -120,6 +122,53 @@ def test_single_strategy_candidate_profile_loads_plotly_without_overlap() -> Non
 
     assert "cdn.plot.ly" in html
     assert "Variant type composition by strategy" in html
+
+
+def test_ortholog_evidence_section_renders_three_context_heatmaps() -> None:
+    cells = pd.DataFrame(
+        [
+            {
+                "strategy": "s1",
+                "target_context": context,
+                "quantile_count": quantile_count,
+                "depth_bin": 0,
+                "concordance_bin": 0,
+                "depth_label": "1-4",
+                "concordance_label": "25%-50%",
+                "gnomad_found_count": 1,
+                "gnomad_eligible_count": 2,
+                "gnomad_found_fraction": 0.5,
+            }
+            for context in ["cds", "utr", "intron"]
+            for quantile_count in [2, 4, 10]
+        ]
+    )
+    summary = SimpleNamespace(
+        ortholog_evidence_available=True,
+        ortholog_evidence_cells=cells,
+        strategies=["s1"],
+    )
+
+    figure = ortholog_evidence_figure(cells, "s1", 2)
+    html = "".join(build_ortholog_evidence_sections(summary, include_plotly=True))
+
+    assert len(figure.data) == 3
+    assert [annotation.text for annotation in figure.layout.annotations] == ["CDS", "UTR", "Intron"]
+    assert "Median" in html
+    assert "Quartiles" in html
+    assert "Deciles" in html
+    assert "Plotly.react('ortholog-evidence-plot'" in html
+
+
+def test_ortholog_evidence_section_explains_legacy_output() -> None:
+    summary = SimpleNamespace(
+        ortholog_evidence_available=False,
+        ortholog_evidence_cells=pd.DataFrame(),
+    )
+
+    html = "".join(build_ortholog_evidence_sections(summary, include_plotly=False))
+
+    assert "predates site-aligned ortholog depth" in html
 
 
 def test_overview_reports_strategy_gene_completeness_and_gnomad_eligible_denominator() -> None:

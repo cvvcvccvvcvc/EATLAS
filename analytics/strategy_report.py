@@ -1082,6 +1082,163 @@ def fig_html(fig, include_plotlyjs: bool = False) -> str:
     return fig.to_html(full_html=False, include_plotlyjs="cdn" if include_plotlyjs else False)
 
 
+def ortholog_evidence_figure(
+    cells: pd.DataFrame,
+    strategy: str,
+    quantile_count: int,
+):
+    contexts = [("cds", "CDS"), ("utr", "UTR"), ("intron", "Intron")]
+    figure = make_subplots(
+        rows=1,
+        cols=3,
+        subplot_titles=[label for _context, label in contexts],
+        horizontal_spacing=0.08,
+    )
+    selected = cells[
+        cells["strategy"].astype(str).eq(strategy)
+        & cells["quantile_count"].astype(int).eq(quantile_count)
+    ]
+    for column, (context, _label) in enumerate(contexts, start=1):
+        subset = selected[selected["target_context"].astype(str).eq(context)]
+        depth_labels = {int(row.depth_bin): str(row.depth_label) for row in subset.itertuples()}
+        concordance_labels = {
+            int(row.concordance_bin): str(row.concordance_label)
+            for row in subset.itertuples()
+        }
+        x = [depth_labels.get(index, f"Q{index + 1} (empty)") for index in range(quantile_count)]
+        y = [
+            concordance_labels.get(index, f"Q{index + 1} (empty)")
+            for index in range(quantile_count)
+        ]
+        values = {
+            (int(row.depth_bin), int(row.concordance_bin)): row
+            for row in subset.itertuples()
+        }
+        z = []
+        customdata = []
+        for y_index in range(quantile_count):
+            z_row = []
+            custom_row = []
+            for x_index in range(quantile_count):
+                row = values.get((x_index, y_index))
+                z_row.append(None if row is None else float(row.gnomad_found_fraction))
+                custom_row.append(
+                    [0, 0]
+                    if row is None
+                    else [int(row.gnomad_found_count), int(row.gnomad_eligible_count)]
+                )
+            z.append(z_row)
+            customdata.append(custom_row)
+        figure.add_trace(
+            go.Heatmap(
+                x=x,
+                y=y,
+                z=z,
+                customdata=customdata,
+                zmin=0,
+                zmax=1,
+                colorscale="Viridis",
+                colorbar={"title": "gnomAD found", "tickformat": ".0%"},
+                showscale=column == len(contexts),
+                hoverongaps=False,
+                hovertemplate=(
+                    "Site-aligned orthologs: %{x}<br>"
+                    "ALT concordance: %{y}<br>"
+                    "gnomAD found: %{customdata[0]:,} / %{customdata[1]:,} "
+                    "(%{z:.1%})<extra></extra>"
+                ),
+            ),
+            row=1,
+            col=column,
+        )
+        figure.update_xaxes(title_text="Site-aligned orthologs", row=1, col=column)
+        if column == 1:
+            figure.update_yaxes(title_text="ALT concordance", row=1, col=column)
+    figure.update_layout(
+        height=500,
+        margin={"l": 70, "r": 90, "t": 55, "b": 100},
+        template="plotly_white",
+    )
+    figure.update_xaxes(automargin=True)
+    figure.update_yaxes(automargin=True)
+    return figure
+
+
+def build_ortholog_evidence_sections(
+    variant_summary: VariantSummary,
+    include_plotly: bool,
+) -> list[str]:
+    sections = [
+        "<h2>Ortholog Evidence</h2>",
+        "<p class=\"lead\">SNV evidence strength by the number of distinct orthologs aligned "
+        "at the variant site and the fraction carrying the exact ALT allele. Cell color is the "
+        "gnomAD found fraction; failed lookups are excluded.</p>",
+    ]
+    if not variant_summary.ortholog_evidence_available:
+        sections.append(
+            "<p class=\"analysis-note\">Unavailable for this run: "
+            "variant_strategy_support.tsv.gz predates site-aligned ortholog depth.</p>"
+        )
+        return sections
+    cells = variant_summary.ortholog_evidence_cells
+    if cells.empty:
+        sections.append("<p>No eligible SNVs with ortholog evidence and successful gnomAD lookup.</p>")
+        return sections
+
+    strategies = [
+        strategy
+        for strategy in variant_summary.strategies
+        if strategy in set(cells["strategy"].astype(str))
+    ]
+    default_strategy = strategies[0]
+    quantile_options = {2: "Median", 4: "Quartiles", 10: "Deciles"}
+    figures = {}
+    for strategy in strategies:
+        figures[strategy] = {}
+        for quantile_count in quantile_options:
+            figure = ortholog_evidence_figure(cells, strategy, quantile_count)
+            figures[strategy][str(quantile_count)] = json.loads(figure.to_json())
+
+    initial = ortholog_evidence_figure(cells, default_strategy, 4)
+    initial_html = initial.to_html(
+        full_html=False,
+        include_plotlyjs="cdn" if include_plotly else False,
+        div_id="ortholog-evidence-plot",
+    )
+    strategy_options = "".join(
+        f'<option value="{strategy}">{strategy_label(strategy)}</option>'
+        for strategy in strategies
+    )
+    quantile_html = "".join(
+        f'<option value="{count}"{" selected" if count == 4 else ""}>{label}</option>'
+        for count, label in quantile_options.items()
+    )
+    payload = json.dumps(figures, separators=(",", ":"))
+    sections.append(
+        f"""
+        <div class="analysis-controls" id="ortholog-evidence-controls">
+            <label>Strategy<select id="ortholog-evidence-strategy">{strategy_options}</select></label>
+            <label>Groups<select id="ortholog-evidence-quantiles">{quantile_html}</select></label>
+        </div>
+        {initial_html}
+        <script>
+        (() => {{
+            const figures = {payload};
+            const strategy = document.getElementById('ortholog-evidence-strategy');
+            const quantiles = document.getElementById('ortholog-evidence-quantiles');
+            const render = () => {{
+                const figure = figures[strategy.value][quantiles.value];
+                Plotly.react('ortholog-evidence-plot', figure.data, figure.layout, {{responsive: true}});
+            }};
+            strategy.addEventListener('change', render);
+            quantiles.addEventListener('change', render);
+        }})();
+        </script>
+        """
+    )
+    return sections
+
+
 def compact_figure(fig, height: int = 340, show_x_title: bool = False):
     fig.update_layout(
         height=height,
@@ -3291,6 +3448,11 @@ def main() -> None:
             ),
         ),
         ("candidates", "Candidate Profile", candidate_sections),
+        (
+            "ortholog-evidence",
+            "Ortholog Evidence",
+            build_ortholog_evidence_sections(variant_summary, include_plotly=False),
+        ),
         (
             "gnomad-stratification",
             "gnomAD Stratification",

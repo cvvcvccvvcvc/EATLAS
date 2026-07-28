@@ -49,9 +49,21 @@ VARIANT_USECOLS = [
     "gnomad_csq",
 ]
 VARIANT_REQUIRED = {"variant_key", "gene_id", "event_type", "strategies"}
-SUMMARY_CACHE_VERSION = 6
+SUMMARY_CACHE_VERSION = 7
 SUMMARY_CACHE_NAME = "variant_summary.json.gz"
 SPECIAL_FLOAT_KEY = "__gaph_float__"
+ORTHOLOG_EVIDENCE_COLUMNS = [
+    "strategy",
+    "target_context",
+    "quantile_count",
+    "depth_bin",
+    "concordance_bin",
+    "depth_label",
+    "concordance_label",
+    "gnomad_found_count",
+    "gnomad_eligible_count",
+    "gnomad_found_fraction",
+]
 
 
 @dataclass(frozen=True)
@@ -88,6 +100,8 @@ class VariantSummary:
     consequence_counts: pd.DataFrame
     pathogenic_consequence_counts: pd.DataFrame
     pathogenic_rows: pd.DataFrame
+    ortholog_evidence_available: bool
+    ortholog_evidence_cells: pd.DataFrame
     cache_hit: bool = False
 
 
@@ -174,6 +188,7 @@ def _summary_payload(
         "consequence_counts",
         "pathogenic_consequence_counts",
         "pathogenic_rows",
+        "ortholog_evidence_cells",
     ]
     return {
         "cache_version": SUMMARY_CACHE_VERSION,
@@ -203,6 +218,7 @@ def _summary_payload(
             "gnomad_found": summary.gnomad_found,
             "gnomad_lookup_failed": summary.gnomad_lookup_failed,
             "pathogenic_variant_count": summary.pathogenic_variant_count,
+            "ortholog_evidence_available": summary.ortholog_evidence_available,
             "strategies": summary.strategies,
             "overlap": overlap,
             "frames": {
@@ -236,6 +252,7 @@ def _summary_from_payload(payload: dict[str, object]) -> VariantSummary:
         gnomad_found=int(summary["gnomad_found"]),
         gnomad_lookup_failed=int(summary["gnomad_lookup_failed"]),
         pathogenic_variant_count=int(summary["pathogenic_variant_count"]),
+        ortholog_evidence_available=bool(summary["ortholog_evidence_available"]),
         strategies=[str(value) for value in summary["strategies"]],
         strategy_stats=_frame_from_payload(frames["strategy_stats"]),
         unique_contribution=_frame_from_payload(frames["unique_contribution"]),
@@ -250,6 +267,7 @@ def _summary_from_payload(payload: dict[str, object]) -> VariantSummary:
         consequence_counts=_frame_from_payload(frames["consequence_counts"]),
         pathogenic_consequence_counts=_frame_from_payload(frames["pathogenic_consequence_counts"]),
         pathogenic_rows=_frame_from_payload(frames["pathogenic_rows"]),
+        ortholog_evidence_cells=_frame_from_payload(frames["ortholog_evidence_cells"]),
         cache_hit=True,
     )
 
@@ -713,6 +731,174 @@ def _gene_begins(path: Path) -> dict[str, int]:
     }
 
 
+def _weighted_quantile_bins(
+    values: pd.Series,
+    weights: pd.Series,
+    quantile_count: int,
+) -> np.ndarray:
+    grouped = (
+        pd.DataFrame({"value": values, "weight": weights})
+        .groupby("value", as_index=False, sort=True)["weight"]
+        .sum()
+    )
+    cumulative = grouped["weight"].cumsum().to_numpy()
+    total = int(grouped["weight"].sum())
+    boundaries = []
+    for index in range(1, quantile_count):
+        position = int(np.searchsorted(cumulative, total * index / quantile_count, side="left"))
+        boundaries.append(float(grouped.iloc[position]["value"]))
+    return np.searchsorted(boundaries, values.to_numpy(dtype=float), side="left")
+
+
+def _bin_labels(values: pd.Series, bins: np.ndarray, count: int, *, percent: bool) -> dict[int, str]:
+    labels = {}
+    numeric = values.to_numpy(dtype=float)
+    for index in range(count):
+        observed = numeric[bins == index]
+        if observed.size == 0:
+            labels[index] = f"Q{index + 1} (empty)"
+            continue
+        low = float(observed.min())
+        high = float(observed.max())
+        if percent:
+            low_text = f"{low:.0%}"
+            high_text = f"{high:.0%}"
+        else:
+            low_text = f"{int(low):,}"
+            high_text = f"{int(high):,}"
+        labels[index] = low_text if low == high else f"{low_text}-{high_text}"
+    return labels
+
+
+def _ortholog_evidence_summary(
+    connection: sqlite3.Connection,
+    support_path: Path | None,
+    chunk_size: int,
+) -> tuple[bool, pd.DataFrame]:
+    empty = pd.DataFrame(columns=ORTHOLOG_EVIDENCE_COLUMNS)
+    if support_path is None or "site_aligned_ortholog_count" not in _header(support_path):
+        return False, empty
+
+    connection.executescript(
+        """
+        CREATE TABLE ortholog_support (
+            variant_id TEXT NOT NULL,
+            gene_id TEXT NOT NULL,
+            strategy TEXT NOT NULL,
+            alt_support INTEGER NOT NULL,
+            site_depth INTEGER NOT NULL,
+            PRIMARY KEY (variant_id, gene_id, strategy)
+        ) WITHOUT ROWID;
+        """
+    )
+    columns = [
+        "variant_key",
+        "gene_id",
+        "strategy",
+        "alt_support_ortholog_count",
+        "site_aligned_ortholog_count",
+    ]
+    insert_sql = "INSERT INTO ortholog_support VALUES (?, ?, ?, ?, ?)"
+    for chunk in pd.read_csv(
+        support_path,
+        sep="\t",
+        compression="gzip" if support_path.suffix == ".gz" else None,
+        usecols=columns,
+        keep_default_na=False,
+        chunksize=chunk_size,
+    ):
+        alt = pd.to_numeric(chunk["alt_support_ortholog_count"], errors="coerce")
+        depth = pd.to_numeric(chunk["site_aligned_ortholog_count"], errors="coerce")
+        keep = depth.notna() & depth.gt(0) & alt.notna()
+        chunk = chunk.loc[keep].copy()
+        chunk["alt_support_ortholog_count"] = alt.loc[keep].astype("int64")
+        chunk["site_aligned_ortholog_count"] = depth.loc[keep].astype("int64")
+        invalid = (
+            chunk["alt_support_ortholog_count"].lt(0)
+            | chunk["alt_support_ortholog_count"].gt(chunk["site_aligned_ortholog_count"])
+        )
+        if invalid.any():
+            row = chunk.loc[invalid].iloc[0]
+            raise ValueError(
+                "Invalid ortholog evidence for "
+                f"{row['variant_key']} / {row['strategy']}: "
+                f"ALT={row['alt_support_ortholog_count']}, depth={row['site_aligned_ortholog_count']}"
+            )
+        connection.executemany(
+            insert_sql,
+            chunk[columns].itertuples(index=False, name=None),
+        )
+    connection.commit()
+
+    grouped = pd.read_sql_query(
+        """
+        SELECT m.strategy,
+               m.target_context,
+               s.site_depth,
+               s.alt_support,
+               SUM(m.gnomad_status = 'found') AS gnomad_found_count,
+               COUNT(*) AS gnomad_eligible_count
+        FROM memberships AS m
+        JOIN ortholog_support AS s
+          ON s.variant_id = m.variant_id
+         AND s.gene_id = m.gene_id
+         AND s.strategy = m.strategy
+        WHERE m.event_type = 'snv'
+          AND m.target_context IN ('cds', 'utr', 'intron')
+          AND m.gnomad_status IN ('found', 'not_found')
+        GROUP BY m.strategy, m.target_context, s.site_depth, s.alt_support
+        """,
+        connection,
+    )
+    if grouped.empty:
+        return True, empty
+    grouped["alt_concordance"] = grouped["alt_support"] / grouped["site_depth"]
+
+    cells = []
+    for (strategy, context), subset in grouped.groupby(
+        ["strategy", "target_context"], sort=True
+    ):
+        subset = subset.copy()
+        for quantile_count in (2, 4, 10):
+            depth_bins = _weighted_quantile_bins(
+                subset["site_depth"], subset["gnomad_eligible_count"], quantile_count
+            )
+            concordance_bins = _weighted_quantile_bins(
+                subset["alt_concordance"], subset["gnomad_eligible_count"], quantile_count
+            )
+            depth_labels = _bin_labels(
+                subset["site_depth"], depth_bins, quantile_count, percent=False
+            )
+            concordance_labels = _bin_labels(
+                subset["alt_concordance"], concordance_bins, quantile_count, percent=True
+            )
+            binned = subset.assign(
+                depth_bin=depth_bins,
+                concordance_bin=concordance_bins,
+            )
+            aggregated = binned.groupby(
+                ["depth_bin", "concordance_bin"], as_index=False
+            )[["gnomad_found_count", "gnomad_eligible_count"]].sum()
+            for row in aggregated.itertuples(index=False):
+                eligible = int(row.gnomad_eligible_count)
+                found = int(row.gnomad_found_count)
+                cells.append(
+                    {
+                        "strategy": str(strategy),
+                        "target_context": str(context),
+                        "quantile_count": quantile_count,
+                        "depth_bin": int(row.depth_bin),
+                        "concordance_bin": int(row.concordance_bin),
+                        "depth_label": depth_labels[int(row.depth_bin)],
+                        "concordance_label": concordance_labels[int(row.concordance_bin)],
+                        "gnomad_found_count": found,
+                        "gnomad_eligible_count": eligible,
+                        "gnomad_found_fraction": found / eligible,
+                    }
+                )
+    return True, pd.DataFrame(cells, columns=ORTHOLOG_EVIDENCE_COLUMNS)
+
+
 def build_variant_summary(
     path: Path,
     work_dir: Path,
@@ -976,6 +1162,11 @@ def _compute_variant_summary(
             ).fetchone()[0]
         )
         gnomad_af_summary = _gnomad_af_summary(connection, strategy_label)
+        ortholog_evidence_available, ortholog_evidence_cells = _ortholog_evidence_summary(
+            connection,
+            variant_strategy_support_path,
+            chunk_size,
+        )
     finally:
         connection.close()
         database_path.unlink(missing_ok=True)
@@ -1010,4 +1201,6 @@ def _compute_variant_summary(
         consequence_counts=consequence_counts,
         pathogenic_consequence_counts=pathogenic_consequence_counts,
         pathogenic_rows=pathogenic_rows.drop(columns=["_star_rank"], errors="ignore"),
+        ortholog_evidence_available=ortholog_evidence_available,
+        ortholog_evidence_cells=ortholog_evidence_cells,
     )
