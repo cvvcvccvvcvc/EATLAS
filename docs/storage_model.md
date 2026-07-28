@@ -42,6 +42,12 @@ are not duplicated into durable output.
 
 This layer should be kept.
 
+When `GAPH_GNOMAD_CACHE_DIR` or `--gnomad_cache_dir` is set, complete gnomAD
+regional responses are also stored in a shared reusable cache. The cache uses
+25-kb gzip-compressed tiles under a dataset/reference/schema namespace. It is
+neither a run result nor Nextflow resume state: multiple pipeline and analytics
+runs may reuse it, and a run remains valid when the cache is absent.
+
 Large handoff artifacts remain inside Nextflow `work/` during `--stage all`.
 They are consumed by the next stage and removed after a successful
 `low_storage` run:

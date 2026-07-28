@@ -16,8 +16,10 @@ nextflow run . \
 The default `--stage all` runs every stage. Use the `conda` profile for normal
 local runs so tasks use `envs/*.yml` instead of the active shell environment.
 Annotation fetches gnomAD data from the live API for clustered event regions and
-uses an in-memory cache bounded to each genomic partition. End-to-end runs may
-process up to `--annotation_max_forks` partitions concurrently (default: 2).
+uses an in-memory lookup bounded to each genomic partition. Set
+`GAPH_GNOMAD_CACHE_DIR` or `--gnomad_cache_dir` to reuse complete 25-kb regional
+responses across runs and analytics reports. End-to-end runs may process up to
+`--annotation_max_forks` partitions concurrently (default: 2).
 
 If command-line tools are not on `PATH`, pass them explicitly:
 
@@ -40,6 +42,7 @@ export DATASETS_BIN=/path/to/datasets
 export GAPH_TARGET_ANNOTATION_GFF3=/path/to/genomic.gff.gz
 export CLINVAR_VCF=/path/to/clinvar.vcf.gz
 export GAPH_WORK_DIR=/path/to/scratch/gaph_v2_work
+export GAPH_GNOMAD_CACHE_DIR=/path/to/scratch/gaph_v2_cache/gnomad
 ```
 
 When neither `--target_annotation_gff3` nor `GAPH_TARGET_ANNOTATION_GFF3` is

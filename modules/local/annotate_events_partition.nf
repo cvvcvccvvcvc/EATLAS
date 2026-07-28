@@ -6,6 +6,7 @@ process ANNOTATE_EVENTS_PARTITION {
     path annotate_script
     path clinvar_vcf
     path clinvar_vcf_tbi
+    val gnomad_cache_dir
 
     output:
     tuple val(meta), path("annotation_${meta.partition_id}"), emit: partition_dirs
@@ -13,6 +14,7 @@ process ANNOTATE_EVENTS_PARTITION {
     script:
     def resultDir = "annotation_${meta.partition_id}"
     """
+    GAPH_GNOMAD_CACHE_DIR="${gnomad_cache_dir}" \\
     python3 "${annotate_script}" \\
         --events-tsv "${alignment_partition}/alignment_events.tsv.gz" \\
         --genes-tsv "${genes_tsv}" \\

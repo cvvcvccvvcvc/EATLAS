@@ -17,6 +17,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from fetch_gnomad_variants import fetch_region_variants_recursive, select_af_metrics
+from gnomad_cache import GnomadRegionCache
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from analytics.core.variant_keys import (  # noqa: E402
@@ -45,6 +46,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--source-annotation-dir", type=Path)
     parser.add_argument("--outdir", type=Path)
     parser.add_argument("--workers", type=int, default=5)
+    parser.add_argument(
+        "--gnomad-cache-dir",
+        type=Path,
+        default=os.environ.get("GAPH_GNOMAD_CACHE_DIR") or None,
+        help="Optional shared directory for resumable gnomAD regional responses.",
+    )
     return parser.parse_args()
 
 
@@ -86,13 +93,14 @@ def failed_gnomad_region(row: dict[str, str]) -> tuple[str, int, int] | None:
 def fetch_failed_regions(
     regions: list[tuple[str, int, int]],
     workers: int,
+    region_cache: GnomadRegionCache,
 ) -> tuple[dict[tuple[str, int, int], list[dict]], dict[tuple[str, int, int], Exception]]:
     successes: dict[tuple[str, int, int], list[dict]] = {}
     failures: dict[tuple[str, int, int], Exception] = {}
     with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as executor:
         futures = {
             executor.submit(
-                fetch_region_variants_recursive,
+                region_cache.fetch_region,
                 chrom,
                 max(1, start - 100),
                 end + 100,
@@ -242,6 +250,7 @@ def complete_gnomad_annotation(
     source_annotation_dir: Path | None = None,
     outdir: Path | None = None,
     workers: int = 5,
+    gnomad_cache_dir: Path | None = None,
 ) -> dict:
     if workers < 1:
         raise ValueError("--workers must be >= 1")
@@ -265,7 +274,11 @@ def complete_gnomad_annotation(
         if (region := failed_gnomad_region(row)) is not None
     ]
     regions = sorted({region for _row, region in region_rows})
-    successes, fetch_failures = fetch_failed_regions(regions, workers)
+    region_cache = GnomadRegionCache(
+        gnomad_cache_dir,
+        fetcher=fetch_region_variants_recursive,
+    )
+    successes, fetch_failures = fetch_failed_regions(regions, workers, region_cache)
 
     contexts = load_target_contexts(
         run_dir / "fetch" / "genes.tsv.gz",
@@ -331,6 +344,7 @@ def complete_gnomad_annotation(
             "recovered_region_count": len(successes),
             "remaining_region_count": len(fetch_failures),
             "updated_variant_context_count": updated_count,
+            "shared_cache": region_cache.snapshot(),
         },
     }
     write_manifest(outdir / "manifest.json", manifest)
@@ -344,6 +358,7 @@ def main() -> None:
         source_annotation_dir=args.source_annotation_dir,
         outdir=args.outdir,
         workers=args.workers,
+        gnomad_cache_dir=args.gnomad_cache_dir,
     )
     completion = manifest["gnomad_completion"]
     print(

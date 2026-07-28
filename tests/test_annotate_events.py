@@ -16,7 +16,10 @@ from annotate_events import (  # noqa: E402
     event_vcf_key,
     variant_aggregate_key,
 )
-from finalize_annotation_partitions import COUNT_FIELDS  # noqa: E402
+from finalize_annotation_partitions import (  # noqa: E402
+    COUNT_FIELDS,
+    merge_gnomad_shared_cache,
+)
 
 
 def test_variant_annotation_schema_is_analysis_ready() -> None:
@@ -48,6 +51,51 @@ def test_variant_annotation_schema_is_analysis_ready() -> None:
 
 def test_partitioned_manifest_keeps_non_concrete_exclusion_count() -> None:
     assert "excluded_non_concrete_event_count" in COUNT_FIELDS
+
+
+def test_partitioned_manifest_aggregates_shared_gnomad_cache_metrics(tmp_path: Path) -> None:
+    identity = {
+        "enabled": True,
+        "directory": "/cache/gnomad",
+        "schema_version": 1,
+        "dataset": "gnomad_r4",
+        "reference_genome": "GRCh38",
+        "tile_size_bp": 25_000,
+    }
+    partitions = [
+        (
+            tmp_path / "one",
+            {
+                "gnomad_shared_cache": {
+                    **identity,
+                    "tile_hit_count": 2,
+                    "tile_miss_count": 3,
+                    "tile_write_count": 3,
+                    "fetch_batch_count": 1,
+                }
+            },
+        ),
+        (
+            tmp_path / "two",
+            {
+                "gnomad_shared_cache": {
+                    **identity,
+                    "tile_hit_count": 5,
+                    "tile_miss_count": 0,
+                    "tile_write_count": 0,
+                    "fetch_batch_count": 0,
+                }
+            },
+        ),
+    ]
+
+    merged = merge_gnomad_shared_cache(partitions)
+
+    assert merged is not None
+    assert merged["tile_hit_count"] == 7
+    assert merged["tile_miss_count"] == 3
+    assert merged["tile_write_count"] == 3
+    assert merged["fetch_batch_count"] == 1
 
 
 def test_variant_strategy_support_counts_distinct_orthologs() -> None:

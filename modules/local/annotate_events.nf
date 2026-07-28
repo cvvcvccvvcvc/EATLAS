@@ -8,6 +8,7 @@ process ANNOTATE_EVENTS {
     path annotate_script
     path clinvar_vcf
     path clinvar_vcf_tbi
+    val gnomad_cache_dir
 
     output:
     path "variant_annotations.tsv.gz", emit: variant_annotations
@@ -17,6 +18,7 @@ process ANNOTATE_EVENTS {
 
     script:
     """
+    GAPH_GNOMAD_CACHE_DIR="${gnomad_cache_dir}" \\
     python3 "${annotate_script}" \\
         --events-tsv "${events_tsv}" \\
         --genes-tsv "${genes_tsv}" \\

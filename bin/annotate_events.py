@@ -7,6 +7,7 @@ import csv
 import json
 import gzip
 import logging
+import os
 import sys
 import concurrent.futures
 from collections.abc import Iterable
@@ -18,6 +19,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 try:
     from fetch_gnomad_variants import GNOMAD_API_URL, fetch_region_variants_recursive, _select_af_metrics
+    from gnomad_cache import GnomadRegionCache
 except ImportError as e:
     print(f"Error importing fetch_gnomad_variants: {e}")
     sys.exit(1)
@@ -107,6 +109,12 @@ def parse_args():
     parser.add_argument("--clinvar-vcf", required=True, type=Path)
     parser.add_argument("--outdir", required=True, type=Path)
     parser.add_argument("--partition-id", default="")
+    parser.add_argument(
+        "--gnomad-cache-dir",
+        type=Path,
+        default=os.environ.get("GAPH_GNOMAD_CACHE_DIR") or None,
+        help="Optional shared directory for resumable gnomAD regional responses.",
+    )
     return parser.parse_args()
 
 def _refseq_accession_to_gnomad_chrom(chr_acc: str) -> str | None:
@@ -475,9 +483,14 @@ def add_annotation_cache_entry(
             cache[normalized] = value
 
 
-def fetch_gnomad_for_cluster(chrom: str, start: int, end: int) -> list[dict]:
+def fetch_gnomad_for_cluster(
+    region_cache: GnomadRegionCache,
+    chrom: str,
+    start: int,
+    end: int,
+) -> list[dict]:
     # pad by 100 bases
-    return fetch_region_variants_recursive(chrom, max(1, start - 100), end + 100)
+    return region_cache.fetch_region(chrom, max(1, start - 100), end + 100)
 
 
 def format_info_value(value) -> str:
@@ -691,13 +704,21 @@ def main():
     logger.info(f"Will fetch {len(gnomad_tasks)} region(s) from gnomAD API.")
 
     # 3. Fetch gnomAD in parallel and cache
+    gnomad_region_cache = GnomadRegionCache(
+        args.gnomad_cache_dir,
+        fetcher=fetch_region_variants_recursive,
+    )
     gnomad_cache = {}
     gnomad_key_status_counts = Counter()
     gnomad_region_success_count = 0
     gnomad_raw_variant_count = 0
     with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
         future_to_task = {
-            executor.submit(fetch_gnomad_for_cluster, chrom, start, end): (chrom, start, end)
+            executor.submit(fetch_gnomad_for_cluster, gnomad_region_cache, chrom, start, end): (
+                chrom,
+                start,
+                end,
+            )
             for chrom, start, end in gnomad_tasks
         }
         for future in concurrent.futures.as_completed(future_to_task):
@@ -816,6 +837,7 @@ def main():
         "gnomad_region_failure_count": len(gnomad_tasks) - gnomad_region_success_count,
         "gnomad_raw_variant_count": gnomad_raw_variant_count,
         "gnomad_cached_variant_count": len(gnomad_cache),
+        "gnomad_shared_cache": gnomad_region_cache.snapshot(),
         "failure_count": failure_count,
         "annotation_nonempty_counts": dict(annotation_value_counts),
         "event_key_status_counts": dict(event_key_status_counts),

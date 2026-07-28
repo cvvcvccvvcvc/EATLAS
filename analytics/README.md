@@ -109,11 +109,14 @@ To repair failed gnomAD regions in an existing pipeline annotation without
 changing the original output, run:
 
 ```bash
-python bin/complete_gnomad_annotation.py --run-dir "$RUN"
+python bin/complete_gnomad_annotation.py \
+  --run-dir "$RUN" \
+  --gnomad-cache-dir "$GAPH_GNOMAD_CACHE_DIR"
 ```
 
 The command writes `<run-dir>/annotation_gnomad_complete/`. Repeating it retries
-only regions still listed as failed. Build a report from the repaired annotation
+only regions still listed as failed. The cache argument is optional and also
+defaults to `GAPH_GNOMAD_CACHE_DIR`. Build a report from the repaired annotation
 with:
 
 ```bash

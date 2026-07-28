@@ -57,6 +57,10 @@
                 "clinvar_vcf": {
                     "type": "string",
                     "description": "Path to ClinVar VCF file for annotation. Defaults to CLINVAR_VCF, then assets/reference/clinvar/clinvar.vcf.gz when present. ClinVar is required for annotation."
+                },
+                "gnomad_cache_dir": {
+                    "type": "string",
+                    "description": "Optional shared gnomAD regional cache directory. Defaults to GAPH_GNOMAD_CACHE_DIR when set."
                 }
             }
         },

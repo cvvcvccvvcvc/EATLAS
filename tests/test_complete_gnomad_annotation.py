@@ -160,9 +160,18 @@ def test_completion_retries_failed_regions_and_preserves_other_columns(
             "joint": {"an": 100, "ac": [1]},
         },
     ]
-    monkeypatch.setattr(completion, "fetch_region_variants_recursive", lambda *_args: records)
+    monkeypatch.setattr(
+        completion,
+        "fetch_region_variants_recursive",
+        lambda *_args, **_kwargs: records,
+    )
 
-    manifest = completion.complete_gnomad_annotation(run_dir, workers=1)
+    shared_cache_dir = tmp_path / "gnomad_cache"
+    manifest = completion.complete_gnomad_annotation(
+        run_dir,
+        workers=1,
+        gnomad_cache_dir=shared_cache_dir,
+    )
     completed = read_tsv(run_dir / "annotation_gnomad_complete" / "variant_annotations.tsv.gz")
 
     assert [row["gnomad_af"] for row in completed] == ["0.02", "0.01"]
@@ -187,11 +196,17 @@ def test_completion_retries_failed_regions_and_preserves_other_columns(
     assert manifest["gnomad_region_success_count"] == 1
     assert manifest["gnomad_region_failure_count"] == 0
     assert manifest["gnomad_completion"]["updated_variant_context_count"] == 2
+    assert manifest["gnomad_completion"]["shared_cache"]["enabled"] is True
+    assert manifest["gnomad_completion"]["shared_cache"]["tile_write_count"] == 1
 
     def unexpected_fetch(*_args):
         raise AssertionError("A completed output must not refetch gnomAD regions")
 
     monkeypatch.setattr(completion, "fetch_region_variants_recursive", unexpected_fetch)
-    resumed = completion.complete_gnomad_annotation(run_dir, workers=1)
+    resumed = completion.complete_gnomad_annotation(
+        run_dir,
+        workers=1,
+        gnomad_cache_dir=shared_cache_dir,
+    )
 
     assert resumed["gnomad_completion"]["attempted_region_count"] == 0

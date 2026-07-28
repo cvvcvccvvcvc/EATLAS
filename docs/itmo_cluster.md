@@ -215,7 +215,7 @@ package caches in `/mnt/tank/scratch`:
 
 ```bash
 export GAPH_ROOT="/mnt/tank/scratch/$USER/gaph_v2"
-mkdir -p "$GAPH_ROOT"/{bin,conda,envs,micromamba,nextflow,results,work}
+mkdir -p "$GAPH_ROOT"/{bin,cache/gnomad,conda,envs,micromamba,nextflow,results,work}
 
 curl -Ls https://micro.mamba.pm/api/micromamba/linux-64/latest \
   | tar -xvj -C "$GAPH_ROOT" bin/micromamba
@@ -244,6 +244,7 @@ Set the runtime variables in every shell that launches Nextflow:
 export GAPH_CODE="/nfs/home/$USER/gaph_v2"
 export GAPH_ROOT="/mnt/tank/scratch/$USER/gaph_v2"
 export GAPH_WORK_DIR="$GAPH_ROOT/work"
+export GAPH_GNOMAD_CACHE_DIR="$GAPH_ROOT/cache/gnomad"
 export NXF_CONDA_CACHEDIR="$GAPH_ROOT/conda/envs"
 export MAMBA_ROOT_PREFIX="$GAPH_ROOT/micromamba"
 export CONDA_PKGS_DIRS="$MAMBA_ROOT_PREFIX/pkgs"

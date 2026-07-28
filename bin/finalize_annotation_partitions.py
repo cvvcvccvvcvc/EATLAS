@@ -34,6 +34,22 @@ COUNTER_FIELDS = [
     "gnomad_key_status_counts",
     "clinvar_key_status_counts",
 ]
+GNOMAD_SHARED_CACHE_COUNT_FIELDS = [
+    "tile_hit_count",
+    "tile_miss_count",
+    "tile_write_count",
+    "corrupt_tile_count",
+    "fetch_batch_count",
+    "split_count",
+]
+GNOMAD_SHARED_CACHE_IDENTITY_FIELDS = [
+    "enabled",
+    "directory",
+    "schema_version",
+    "dataset",
+    "reference_genome",
+    "tile_size_bp",
+]
 
 
 def parse_args() -> argparse.Namespace:
@@ -94,6 +110,28 @@ def merge_tsv_gz(partitions: list[tuple[Path, dict]], filename: str, output: Pat
     return count
 
 
+def merge_gnomad_shared_cache(partitions: list[tuple[Path, dict]]) -> dict[str, object] | None:
+    snapshots = [manifest.get("gnomad_shared_cache") for _path, manifest in partitions]
+    if not any(snapshot is not None for snapshot in snapshots):
+        return None
+    if not all(isinstance(snapshot, dict) for snapshot in snapshots):
+        raise ValueError("gnomAD shared-cache metadata is missing from some annotation partitions")
+
+    first = snapshots[0]
+    identity = {field: first.get(field) for field in GNOMAD_SHARED_CACHE_IDENTITY_FIELDS}
+    for snapshot in snapshots[1:]:
+        observed = {field: snapshot.get(field) for field in GNOMAD_SHARED_CACHE_IDENTITY_FIELDS}
+        if observed != identity:
+            raise ValueError("gnomAD shared-cache configuration differs across annotation partitions")
+    return {
+        **identity,
+        **{
+            field: sum(int(snapshot.get(field) or 0) for snapshot in snapshots)
+            for field in GNOMAD_SHARED_CACHE_COUNT_FIELDS
+        },
+    }
+
+
 def main() -> None:
     args = parse_args()
     args.outdir.mkdir(parents=True, exist_ok=True)
@@ -140,6 +178,7 @@ def main() -> None:
         counters[field] = dict(counter)
 
     first_manifest = partitions[0][1]
+    gnomad_shared_cache = merge_gnomad_shared_cache(partitions)
     manifest = {
         "created_at": utc_now(),
         "output_mode": "unique_variant_context_partitioned",
@@ -156,6 +195,8 @@ def main() -> None:
         "gnomad_dataset": first_manifest.get("gnomad_dataset", ""),
         "cache_count_semantics": "ClinVar and gnomAD cache counts are sums across partitions.",
     }
+    if gnomad_shared_cache is not None:
+        manifest["gnomad_shared_cache"] = gnomad_shared_cache
     (args.outdir / "manifest.json").write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
 
 

@@ -434,10 +434,19 @@ workflow ANNOTATION_STAGE {
     sequences_dir
     clinvar_vcf
     clinvar_vcf_tbi
+    gnomad_cache_dir
 
     main:
     annotate_script = file("${projectDir}/bin/annotate_events.py")
-    ANNOTATE_EVENTS(events_tsv, genes_tsv, sequences_dir, annotate_script, clinvar_vcf, clinvar_vcf_tbi)
+    ANNOTATE_EVENTS(
+        events_tsv,
+        genes_tsv,
+        sequences_dir,
+        annotate_script,
+        clinvar_vcf,
+        clinvar_vcf_tbi,
+        gnomad_cache_dir
+    )
 
     emit:
     variant_annotations = ANNOTATE_EVENTS.out.variant_annotations
@@ -453,6 +462,7 @@ workflow PARTITIONED_ANNOTATION_STAGE {
     partition_target_fastas
     clinvar_vcf
     clinvar_vcf_tbi
+    gnomad_cache_dir
 
     main:
     annotate_script = file("${projectDir}/bin/annotate_events.py")
@@ -468,7 +478,8 @@ workflow PARTITIONED_ANNOTATION_STAGE {
         annotation_inputs,
         annotate_script,
         clinvar_vcf,
-        clinvar_vcf_tbi
+        clinvar_vcf_tbi,
+        gnomad_cache_dir
     )
     FINALIZE_ANNOTATION(
         ANNOTATE_EVENTS_PARTITION.out.partition_dirs.map { meta, dir -> dir }.collect(),
@@ -502,7 +513,8 @@ workflow {
             ALIGNMENT_STAGE.out.partition_genes,
             ALIGNMENT_STAGE.out.partition_target_fastas,
             clinvar_inputs.vcf,
-            clinvar_inputs.tbi
+            clinvar_inputs.tbi,
+            params.gnomad_cache_dir ?: ''
         )
     } else if (params.stage == 'fetch') {
         FETCH_STAGE(file(params.ids_file))
@@ -517,7 +529,8 @@ workflow {
             file("${fetch_dir}/genes.tsv.gz"),
             file("${fetch_dir}/sequences"),
             clinvar_inputs.vcf,
-            clinvar_inputs.tbi
+            clinvar_inputs.tbi,
+            params.gnomad_cache_dir ?: ''
         )
     }
 }
