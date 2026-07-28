@@ -82,6 +82,7 @@ def test_build_target_space_null_end_to_end_with_mocked_annotations(
         return unique, {"status": "complete", "track": "phyloP100way"}
 
     def fake_external_evidence(*, matched, output_path, manifest_path, **_kwargs):
+        assert _kwargs["gnomad_cache_dir"] == tmp_path / "gnomad_cache"
         evidence = matched[["variant_key"]].drop_duplicates().copy()
         evidence["clinvar_found"] = False
         evidence["clinvar_classified"] = False
@@ -109,6 +110,7 @@ def test_build_target_space_null_end_to_end_with_mocked_annotations(
         sample_size_per_strategy=10,
         resamples=100,
         seed=3,
+        gnomad_cache_dir=tmp_path / "gnomad_cache",
     )
 
     matched = pd.read_csv(analysis.matched_path, sep="\t", compression="gzip")

@@ -13,6 +13,7 @@ from pathlib import Path
 
 import pandas as pd
 
+from bin.gnomad_cache import GnomadRegionCache
 from bin.fetch_gnomad_variants import (
     GNOMAD_API_URL,
     fetch_region_variants_recursive,
@@ -45,6 +46,7 @@ def build_external_evidence(
     clinvar_vcf: Path,
     output_path: Path,
     manifest_path: Path,
+    gnomad_cache_dir: Path | None = None,
 ) -> tuple[pd.DataFrame, dict[str, object]]:
     """Build or load exact-allele ClinVar and gnomAD annotations."""
 
@@ -90,7 +92,10 @@ def build_external_evidence(
         gnomad.loc[~gnomad["gnomad_status"].eq("ok"), "variant_key"].astype(str)
     )
     unresolved = variants[variants["variant_key"].astype(str).isin(unresolved_keys)]
-    fetched, gnomad_summary = _annotate_gnomad(unresolved)
+    fetched, gnomad_summary = _annotate_gnomad(
+        unresolved,
+        gnomad_cache_dir=gnomad_cache_dir,
+    )
     if not fetched.empty:
         fetched = fetched.copy()
         fetched["gnomad_af"] = pd.to_numeric(fetched["gnomad_af"], errors="coerce")
@@ -286,7 +291,14 @@ def _cluster_positions(positions: list[int]) -> list[tuple[int, int]]:
     return clusters
 
 
-def _annotate_gnomad(variants: pd.DataFrame) -> tuple[pd.DataFrame, dict[str, object]]:
+def _annotate_gnomad(
+    variants: pd.DataFrame,
+    gnomad_cache_dir: Path | None = None,
+) -> tuple[pd.DataFrame, dict[str, object]]:
+    region_cache = GnomadRegionCache(
+        gnomad_cache_dir,
+        fetcher=fetch_region_variants_recursive,
+    )
     wanted = {
         (normalize_chrom(row.chrom) or "", int(row.pos), str(row.ref), str(row.alt)): str(row.variant_key)
         for row in variants.itertuples(index=False)
@@ -320,7 +332,7 @@ def _annotate_gnomad(variants: pd.DataFrame) -> tuple[pd.DataFrame, dict[str, ob
     with concurrent.futures.ThreadPoolExecutor(max_workers=GNOMAD_WORKERS) as executor:
         futures = {
             executor.submit(
-                fetch_region_variants_recursive,
+                region_cache.fetch_region,
                 chrom,
                 max(1, start - 100),
                 end + 100,
@@ -374,5 +386,6 @@ def _annotate_gnomad(variants: pd.DataFrame) -> tuple[pd.DataFrame, dict[str, ob
         "failed_region_count": len(errors),
         "raw_variant_count": raw_variant_count,
         "errors": errors,
+        "shared_cache": region_cache.snapshot(),
     }
     return pd.DataFrame(rows), summary

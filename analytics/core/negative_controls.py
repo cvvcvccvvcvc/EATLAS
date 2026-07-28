@@ -68,6 +68,7 @@ def build_target_space_null(
     sample_size_per_strategy: int = 25_000,
     resamples: int = 1_000,
     seed: int = 20_260_721,
+    gnomad_cache_dir: Path | None = None,
 ) -> TargetSpaceNullAnalysis:
     """Build or load the target-space null for one completed run."""
 
@@ -113,6 +114,7 @@ def build_target_space_null(
             clinvar_vcf,
             external_evidence_path,
             external_evidence_manifest_path,
+            gnomad_cache_dir,
         )
 
     genes = _read_genes(genes_tsv)
@@ -202,6 +204,7 @@ def build_target_space_null(
         clinvar_vcf,
         external_evidence_path,
         external_evidence_manifest_path,
+        gnomad_cache_dir,
     )
 
 
@@ -226,6 +229,7 @@ def _load_analysis(
     clinvar_vcf: Path,
     external_evidence_path: Path,
     external_evidence_manifest_path: Path,
+    gnomad_cache_dir: Path | None,
 ) -> TargetSpaceNullAnalysis:
     matched = pd.read_csv(matched_path, sep="\t", compression="gzip", keep_default_na=False)
     matched["phyloP100way"] = pd.to_numeric(matched["phyloP100way"], errors="coerce")
@@ -241,6 +245,7 @@ def _load_analysis(
         clinvar_vcf,
         external_evidence_path,
         external_evidence_manifest_path,
+        gnomad_cache_dir,
     )
 
 
@@ -687,6 +692,7 @@ def _summarize_analysis(
     clinvar_vcf: Path,
     external_evidence_path: Path,
     external_evidence_manifest_path: Path,
+    gnomad_cache_dir: Path | None,
 ) -> TargetSpaceNullAnalysis:
     matched = matched.copy()
     matched["phyloP100way"] = pd.to_numeric(matched["phyloP100way"], errors="coerce")
@@ -696,6 +702,7 @@ def _summarize_analysis(
         clinvar_vcf=clinvar_vcf,
         output_path=external_evidence_path,
         manifest_path=external_evidence_manifest_path,
+        gnomad_cache_dir=gnomad_cache_dir,
     )
     matched = matched.merge(evidence, on="variant_key", how="left", validate="many_to_one")
     matched["gnomad_found_value"] = np.where(

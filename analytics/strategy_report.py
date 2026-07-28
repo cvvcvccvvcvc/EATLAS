@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import os
 import re
 import time
 import warnings
@@ -197,6 +198,12 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=20_260_721,
         help="Deterministic target-space-null seed.",
+    )
+    parser.add_argument(
+        "--gnomad-cache-dir",
+        type=Path,
+        default=os.environ.get("GAPH_GNOMAD_CACHE_DIR") or None,
+        help="Optional shared directory for resumable gnomAD regional responses.",
     )
     return parser.parse_args()
 
@@ -3155,6 +3162,7 @@ def main() -> None:
                 sample_size_per_strategy=args.target_space_null_sample_size,
                 resamples=args.target_space_null_resamples,
                 seed=args.target_space_null_seed,
+                gnomad_cache_dir=args.gnomad_cache_dir,
             )
     else:
         timings.append(

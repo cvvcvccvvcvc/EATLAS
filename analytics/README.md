@@ -30,6 +30,10 @@ micromamba run -n gaph-v2-analytics python -m analytics.strategy_report \
   --target-space-null-sample-size 5000
 ```
 
+Set `GAPH_GNOMAD_CACHE_DIR` to the same shared path used by pipeline annotation,
+or pass `--gnomad-cache-dir`, so new matched-control reports reuse complete
+regional responses instead of requesting them again.
+
 The ClinVar association view compares all strategies and supports variant-type
 and ClinVar MC consequence selectors. A second selector exposes the 2x2,
 fixed-band, or continuous-distribution data for one strategy at a time.

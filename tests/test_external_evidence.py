@@ -16,7 +16,10 @@ def test_clinvar_categories_keep_missing_classification_separate() -> None:
     assert categorize_clinvar_sig("Conflicting_classifications_of_pathogenicity") == "Other"
 
 
-def test_gnomad_annotation_distinguishes_absence_from_failed_lookup(monkeypatch) -> None:
+def test_gnomad_annotation_distinguishes_absence_from_failed_lookup(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
     variants = pd.DataFrame(
         [
             {"variant_key": "1:100:A>G", "chrom": "1", "pos": 100, "ref": "A", "alt": "G"},
@@ -24,7 +27,7 @@ def test_gnomad_annotation_distinguishes_absence_from_failed_lookup(monkeypatch)
         ]
     )
 
-    def fake_fetch(chrom, _start, _end):
+    def fake_fetch(chrom, _start, _end, **_kwargs):
         if chrom == "2":
             raise RuntimeError("network unavailable")
         return [
@@ -39,7 +42,10 @@ def test_gnomad_annotation_distinguishes_absence_from_failed_lookup(monkeypatch)
 
     monkeypatch.setattr(external_evidence, "fetch_region_variants_recursive", fake_fetch)
 
-    evidence, summary = _annotate_gnomad(variants)
+    evidence, summary = _annotate_gnomad(
+        variants,
+        gnomad_cache_dir=tmp_path / "gnomad_cache",
+    )
     evidence = evidence.set_index("variant_key")
 
     assert evidence.loc["1:100:A>G", "gnomad_status"] == "ok"
@@ -48,6 +54,8 @@ def test_gnomad_annotation_distinguishes_absence_from_failed_lookup(monkeypatch)
     assert evidence.loc["2:200:C>T", "gnomad_status"] == "error"
     assert not bool(evidence.loc["2:200:C>T", "gnomad_found"])
     assert summary["failed_region_count"] == 1
+    assert summary["shared_cache"]["enabled"] is True
+    assert summary["shared_cache"]["tile_write_count"] == 1
 
 
 def test_incomplete_external_evidence_retries_only_failed_alleles(
@@ -88,7 +96,7 @@ def test_incomplete_external_evidence_retries_only_failed_alleles(
     )
     calls = []
 
-    def fake_gnomad(variants: pd.DataFrame):
+    def fake_gnomad(variants: pd.DataFrame, gnomad_cache_dir=None):
         calls.append(variants["variant_key"].tolist())
         if len(calls) == 1:
             return pd.DataFrame(
