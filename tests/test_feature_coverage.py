@@ -13,6 +13,7 @@ BIN_DIR = Path(__file__).resolve().parents[1] / "bin"
 sys.path.insert(0, str(BIN_DIR))
 
 from feature_coverage import (  # noqa: E402
+    site_aligned_ortholog_counts,
     summarize_feature_coverage,
     summarize_feature_coverage_rows,
 )
@@ -182,3 +183,68 @@ def test_summary_without_segments_produces_zero_coverage(tmp_path: Path) -> None
     assert row["orthologs_covered"] == "0"
     assert row["covered_bases"] == "0"
     assert row["depth_bases"] == "0"
+
+
+def test_site_depth_counts_distinct_primary_orthologs(tmp_path: Path) -> None:
+    segments_path = tmp_path / "segments.tsv.gz"
+    write_tsv_gz(
+        segments_path,
+        [
+            {
+                "gene_id": "1",
+                "strategy": "test",
+                "ortholog_gene_id": "101",
+                "target_start0": "0",
+                "target_end0": "6",
+                "is_primary": "true",
+            },
+            {
+                "gene_id": "1",
+                "strategy": "test",
+                "ortholog_gene_id": "101",
+                "target_start0": "4",
+                "target_end0": "8",
+                "is_primary": "true",
+            },
+            {
+                "gene_id": "1",
+                "strategy": "test",
+                "ortholog_gene_id": "102",
+                "target_start0": "5",
+                "target_end0": "10",
+                "is_primary": "true",
+            },
+            {
+                "gene_id": "1",
+                "strategy": "test",
+                "ortholog_gene_id": "103",
+                "target_start0": "0",
+                "target_end0": "10",
+                "is_primary": "false",
+            },
+        ],
+    )
+
+    counts = site_aligned_ortholog_counts(
+        segments_path,
+        [
+            {
+                "variant_key": "1:5:A>G",
+                "gene_id": "1",
+                "strategy": "test",
+                "target_start0": "4",
+            },
+            {
+                "variant_key": "1:6:A>G",
+                "gene_id": "1",
+                "strategy": "test",
+                "target_start0": "5",
+            },
+        ],
+        tmp_path,
+    )
+
+    assert counts == {
+        ("1", "test", "1:5:A>G"): 1,
+        ("1", "test", "1:6:A>G"): 2,
+    }

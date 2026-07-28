@@ -100,6 +100,10 @@ if (params.stage == 'annotate' && !params.events_tsv) {
     error "Missing required parameter for --stage annotate: --events_tsv"
 }
 
+if (params.stage == 'annotate' && !params.segments_tsv) {
+    error "Missing required parameter for --stage annotate: --segments_tsv"
+}
+
 if (params.stage == 'annotate' && !params.fetch_dir) {
     error "Missing required parameter for --stage annotate: --fetch_dir"
 }
@@ -430,6 +434,7 @@ workflow ALIGNMENT_STAGE_FROM_DIR {
 workflow ANNOTATION_STAGE {
     take:
     events_tsv
+    segments_tsv
     genes_tsv
     sequences_dir
     clinvar_vcf
@@ -440,6 +445,7 @@ workflow ANNOTATION_STAGE {
     annotate_script = file("${projectDir}/bin/annotate_events.py")
     ANNOTATE_EVENTS(
         events_tsv,
+        segments_tsv,
         genes_tsv,
         sequences_dir,
         annotate_script,
@@ -526,6 +532,7 @@ workflow {
         fetch_dir = file(params.fetch_dir)
         ANNOTATION_STAGE(
             file(params.events_tsv),
+            file(params.segments_tsv),
             file("${fetch_dir}/genes.tsv.gz"),
             file("${fetch_dir}/sequences"),
             clinvar_inputs.vcf,

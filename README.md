@@ -96,6 +96,7 @@ nextflow run . \
   -profile local \
   --stage annotate \
   --events_tsv results/align_debug/alignment_events.tsv.gz \
+  --segments_tsv results/align_debug/alignment_segments.tsv.gz \
   --fetch_dir results/run_test/fetch \
   --outdir results/annotate_debug \
   -resume
@@ -150,7 +151,7 @@ Annotation outputs:
   with report-relevant ClinVar classification/review evidence and selected
   gnomAD AF/consequence fields.
 - `annotation/variant_strategy_support.tsv.gz` - compact per-strategy ALT-support
-  row and distinct-ortholog counts for every normalized variant.
+  counts and, for SNVs, the distinct orthologs aligned at the variant site.
 - `annotation/manifest.json` - annotation input, source, row-count, cache, and diagnostic counters.
 - `annotation/failures.tsv.gz` - non-fatal external annotation lookup failures, such as gnomAD region fetch errors.
 

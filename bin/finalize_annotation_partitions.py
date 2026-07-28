@@ -19,6 +19,7 @@ COUNT_FIELDS = [
     "annotated_variant_context_count",
     "variant_strategy_support_count",
     "variant_strategy_support_missing_key_count",
+    "variant_strategy_site_depth_count",
     "target_context_count",
     "clinvar_cached_variant_count",
     "gnomad_region_count",

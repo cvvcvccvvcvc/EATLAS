@@ -19,6 +19,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 try:
     from fetch_gnomad_variants import GNOMAD_API_URL, fetch_region_variants_recursive, _select_af_metrics
+    from feature_coverage import site_aligned_ortholog_counts
     from gnomad_cache import GnomadRegionCache
 except ImportError as e:
     print(f"Error importing fetch_gnomad_variants: {e}")
@@ -73,6 +74,7 @@ VARIANT_STRATEGY_SUPPORT_FIELDS = [
     "strategy",
     "alt_support_row_count",
     "alt_support_ortholog_count",
+    "site_aligned_ortholog_count",
 ]
 
 FAILURE_FIELDS = ["source", "scope", "chrom", "start", "end", "failure_type", "message"]
@@ -104,6 +106,7 @@ class StrategySupport:
 def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--events-tsv", required=True, type=Path)
+    parser.add_argument("--segments-tsv", required=True, type=Path)
     parser.add_argument("--genes-tsv", required=False, type=Path)
     parser.add_argument("--target-sequences-dir", required=False, type=Path)
     parser.add_argument("--clinvar-vcf", required=True, type=Path)
@@ -213,7 +216,9 @@ def add_strategy_support(aggregate: dict, row: dict[str, str]) -> None:
 
 def build_variant_strategy_support(
     aggregates: Iterable[dict],
+    site_depths: dict[tuple[str, str, str], int] | None = None,
 ) -> tuple[list[dict[str, object]], int]:
+    site_depths = site_depths or {}
     rows: list[dict[str, object]] = []
     missing_key_count = 0
     for aggregate in aggregates:
@@ -223,16 +228,29 @@ def build_variant_strategy_support(
             missing_key_count += len(support_by_strategy)
             continue
         for strategy, support in support_by_strategy.items():
+            alt_support_count = max(
+                len(support.orthologs),
+                support.ortholog_count_hint,
+            )
+            site_depth: int | str = ""
+            if aggregate.get("event_type") == "snv":
+                depth_key = (str(aggregate.get("gene_id") or ""), strategy, variant_key)
+                if depth_key not in site_depths:
+                    raise ValueError(f"Missing site ortholog depth for SNV {depth_key}")
+                site_depth = site_depths[depth_key]
+                if alt_support_count > site_depth:
+                    raise ValueError(
+                        "ALT-support ortholog count exceeds site-aligned ortholog count for "
+                        f"{depth_key}: {alt_support_count} > {site_depth}"
+                    )
             rows.append(
                 {
                     "variant_key": variant_key,
                     "gene_id": aggregate.get("gene_id", ""),
                     "strategy": strategy,
                     "alt_support_row_count": support.row_count,
-                    "alt_support_ortholog_count": max(
-                        len(support.orthologs),
-                        support.ortholog_count_hint,
-                    ),
+                    "alt_support_ortholog_count": alt_support_count,
+                    "site_aligned_ortholog_count": site_depth,
                 }
             )
     rows.sort(
@@ -243,6 +261,21 @@ def build_variant_strategy_support(
         )
     )
     return rows, missing_key_count
+
+
+def iter_variant_strategy_snv_sites(
+    aggregates: Iterable[dict],
+) -> Iterable[dict[str, object]]:
+    for aggregate in aggregates:
+        if aggregate.get("event_type") != "snv" or not aggregate.get("variant_key"):
+            continue
+        for strategy in aggregate["_support_by_strategy"]:
+            yield {
+                "variant_key": aggregate["variant_key"],
+                "gene_id": aggregate.get("gene_id", ""),
+                "strategy": strategy,
+                "target_start0": aggregate.get("target_start0", ""),
+            }
 
 
 def variant_aggregate_key(row: dict[str, str], variant_key: str) -> tuple:
@@ -630,6 +663,8 @@ def main():
     support_tsv = args.outdir / "variant_strategy_support.tsv.gz"
     failures_tsv = args.outdir / "failures.tsv.gz"
     manifest_json = args.outdir / "manifest.json"
+    if not args.segments_tsv.exists():
+        raise FileNotFoundError(f"Alignment segments TSV not found: {args.segments_tsv}")
     if not args.clinvar_vcf.exists():
         raise FileNotFoundError(f"ClinVar VCF not found: {args.clinvar_vcf}")
     clinvar_tbi = Path(f"{args.clinvar_vcf}.tbi")
@@ -676,6 +711,7 @@ def main():
                     "variant_key": variant_key,
                     "gene_id": row.get("gene_id", ""),
                     "event_type": row.get("event_type", ""),
+                    "target_start0": row.get("target_start0", ""),
                     "ref": row.get("ref", ""),
                     "alt": row.get("alt", ""),
                     "lookup_status": status,
@@ -690,6 +726,13 @@ def main():
             add_strategy_support(aggregate, row)
     logger.info(f"Event key normalization status: {dict(event_key_status_counts)}")
     logger.info(f"Collapsed {input_row_count} event row(s) to {len(variant_aggregates)} variant-context row(s).")
+
+    site_depths = site_aligned_ortholog_counts(
+        args.segments_tsv,
+        iter_variant_strategy_snv_sites(variant_aggregates.values()),
+        args.outdir,
+    )
+    logger.info(f"Calculated site-aligned ortholog depth for {len(site_depths)} variant-strategy SNV(s).")
 
     # 2. Determine gnomAD clusters
     gnomad_tasks = []
@@ -808,7 +851,8 @@ def main():
     )
     output_row_count = write_tsv_gz(out_tsv, VARIANT_ANNOTATION_FIELDS, variant_rows)
     strategy_support_rows, strategy_support_missing_key_count = build_variant_strategy_support(
-        variant_aggregates.values()
+        variant_aggregates.values(),
+        site_depths,
     )
     strategy_support_count = write_tsv_gz(
         support_tsv,
@@ -826,6 +870,7 @@ def main():
         "annotated_variant_context_count": output_row_count,
         "variant_strategy_support_count": strategy_support_count,
         "variant_strategy_support_missing_key_count": strategy_support_missing_key_count,
+        "variant_strategy_site_depth_count": len(site_depths),
         "target_context_count": len(contexts),
         "clinvar_vcf": path_metadata(args.clinvar_vcf),
         "clinvar_tbi": path_metadata(clinvar_tbi),

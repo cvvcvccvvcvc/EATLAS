@@ -3,6 +3,7 @@ process ANNOTATE_EVENTS {
 
     input:
     path events_tsv
+    path segments_tsv
     path genes_tsv
     path sequences_dir
     path annotate_script
@@ -21,6 +22,7 @@ process ANNOTATE_EVENTS {
     GAPH_GNOMAD_CACHE_DIR="${gnomad_cache_dir}" \\
     python3 "${annotate_script}" \\
         --events-tsv "${events_tsv}" \\
+        --segments-tsv "${segments_tsv}" \\
         --genes-tsv "${genes_tsv}" \\
         --target-sequences-dir "${sequences_dir}/targets" \\
         --outdir . \\

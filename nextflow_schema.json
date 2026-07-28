@@ -32,6 +32,10 @@
                     "type": "string",
                     "description": "Path to events TSV for annotation stage"
                 },
+                "segments_tsv": {
+                    "type": "string",
+                    "description": "Path to alignment segments TSV for annotation-stage site depth"
+                },
                 "outdir": {
                     "type": "string",
                     "default": "results/run",

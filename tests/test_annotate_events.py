@@ -11,9 +11,11 @@ sys.path.insert(0, str(BIN_DIR))
 
 from annotate_events import (  # noqa: E402
     VARIANT_ANNOTATION_FIELDS,
+    VARIANT_STRATEGY_SUPPORT_FIELDS,
     add_strategy_support,
     build_variant_strategy_support,
     event_vcf_key,
+    iter_variant_strategy_snv_sites,
     variant_aggregate_key,
 )
 from finalize_annotation_partitions import (  # noqa: E402
@@ -51,6 +53,11 @@ def test_variant_annotation_schema_is_analysis_ready() -> None:
 
 def test_partitioned_manifest_keeps_non_concrete_exclusion_count() -> None:
     assert "excluded_non_concrete_event_count" in COUNT_FIELDS
+
+
+def test_variant_strategy_support_schema_includes_site_depth() -> None:
+    assert VARIANT_STRATEGY_SUPPORT_FIELDS[-1] == "site_aligned_ortholog_count"
+    assert "variant_strategy_site_depth_count" in COUNT_FIELDS
 
 
 def test_partitioned_manifest_aggregates_shared_gnomad_cache_metrics(tmp_path: Path) -> None:
@@ -128,6 +135,7 @@ def test_variant_strategy_support_counts_distinct_orthologs() -> None:
             "strategy": "s1",
             "alt_support_row_count": 3,
             "alt_support_ortholog_count": 2,
+            "site_aligned_ortholog_count": "",
         },
         {
             "variant_key": "1:100:A>G",
@@ -135,8 +143,56 @@ def test_variant_strategy_support_counts_distinct_orthologs() -> None:
             "strategy": "s2",
             "alt_support_row_count": 1,
             "alt_support_ortholog_count": 1,
+            "site_aligned_ortholog_count": "",
         },
     ]
+
+
+def test_snv_support_uses_site_aligned_depth() -> None:
+    aggregate = {
+        "variant_key": "1:100:A>G",
+        "gene_id": "1",
+        "event_type": "snv",
+        "target_start0": "9",
+        "_support_by_strategy": {},
+    }
+    add_strategy_support(
+        aggregate,
+        {"strategy": "s1", "ortholog_gene_id": "101"},
+    )
+
+    assert list(iter_variant_strategy_snv_sites([aggregate])) == [
+        {
+            "variant_key": "1:100:A>G",
+            "gene_id": "1",
+            "strategy": "s1",
+            "target_start0": "9",
+        }
+    ]
+    rows, _missing_key_count = build_variant_strategy_support(
+        [aggregate],
+        {("1", "s1", "1:100:A>G"): 4},
+    )
+    assert rows[0]["site_aligned_ortholog_count"] == 4
+
+
+def test_snv_support_rejects_alt_count_above_site_depth() -> None:
+    aggregate = {
+        "variant_key": "1:100:A>G",
+        "gene_id": "1",
+        "event_type": "snv",
+        "_support_by_strategy": {},
+    }
+    add_strategy_support(
+        aggregate,
+        {"strategy": "s1", "support_ortholog_count": "2"},
+    )
+
+    with pytest.raises(ValueError, match="exceeds site-aligned"):
+        build_variant_strategy_support(
+            [aggregate],
+            {("1", "s1", "1:100:A>G"): 1},
+        )
 
 
 def test_variant_strategy_support_accepts_single_strategy_compact_counts() -> None:

@@ -651,3 +651,104 @@ def summarize_feature_coverage(
         _iter_tsv_gz(segments_path),
         output,
     )
+
+
+def site_aligned_ortholog_counts(
+    segments_path: Path,
+    site_rows: Iterable[dict[str, object]],
+    temp_parent: Path,
+) -> dict[tuple[str, str, str], int]:
+    """Count distinct ortholog intervals covering each variant-strategy SNV site."""
+    if shutil.which("bedtools") is None:
+        raise RuntimeError("bedtools is required for site ortholog-depth calculation")
+    env = os.environ.copy()
+    env["LC_ALL"] = "C"
+
+    with tempfile.TemporaryDirectory(prefix=".site_ortholog_depth_", dir=temp_parent) as temp_name:
+        temp_dir = Path(temp_name)
+        segments_raw = temp_dir / "segments.raw.bed"
+        segments_sorted = temp_dir / "segments.sorted.bed"
+        merged_raw = temp_dir / "segments.merged.raw.bed"
+        merged_sorted = temp_dir / "segments.merged.sorted.bed"
+        sites_raw = temp_dir / "sites.raw.bed"
+        sites_sorted = temp_dir / "sites.sorted.bed"
+        coverage = temp_dir / "sites.coverage.tsv"
+
+        with segments_raw.open("w") as handle:
+            for row in _iter_tsv_gz(segments_path):
+                gene_id = str(row.get("gene_id") or "")
+                strategy = str(row.get("strategy") or "")
+                ortholog_gene_id = str(row.get("ortholog_gene_id") or "")
+                if not gene_id or not strategy or not ortholog_gene_id:
+                    continue
+                if str(row.get("is_primary") or "").lower() == "false":
+                    continue
+                start0 = int(row.get("target_start0") or 0)
+                end0 = int(row.get("target_end0") or 0)
+                if end0 <= start0:
+                    continue
+                ortholog_key = _ortholog_key(
+                    _key_part(gene_id, "gene_id"),
+                    _key_part(strategy, "strategy"),
+                    _key_part(ortholog_gene_id, "ortholog_gene_id"),
+                )
+                handle.write(
+                    f"{ortholog_key}\t{start0}\t{end0}\n"
+                )
+
+        site_count = 0
+        with sites_raw.open("w") as handle:
+            for row in site_rows:
+                gene_id = _key_part(row.get("gene_id"), "gene_id")
+                strategy = _key_part(row.get("strategy"), "strategy")
+                variant_key = _key_part(row.get("variant_key"), "variant_key")
+                start0 = int(row.get("target_start0") or 0)
+                handle.write(
+                    f"{_group_key(gene_id, strategy)}\t{start0}\t{start0 + 1}\t{variant_key}\n"
+                )
+                site_count += 1
+        if site_count == 0:
+            return {}
+
+        _merge_ortholog_intervals(
+            segments_raw,
+            segments_sorted,
+            merged_raw,
+            merged_sorted,
+            temp_dir,
+            env,
+        )
+        _sort_file(
+            sites_raw,
+            sites_sorted,
+            temp_dir,
+            ["-k1,1", "-k2,2n", "-k3,3n", "-k4,4"],
+            env=env,
+        )
+        _run_to_file(
+            [
+                "bedtools",
+                "coverage",
+                "-a",
+                str(sites_sorted),
+                "-b",
+                str(merged_sorted),
+                "-counts",
+                "-sorted",
+            ],
+            coverage,
+            env=env,
+        )
+
+        counts: dict[tuple[str, str, str], int] = {}
+        with coverage.open() as handle:
+            for line in handle:
+                group, _start0, _end0, variant_key, depth = line.rstrip("\n").split("\t")
+                gene_id, strategy = group.split(KEY_SEPARATOR, 1)
+                key = (gene_id, strategy, variant_key)
+                if key in counts:
+                    raise ValueError(f"Duplicate variant-strategy site: {key}")
+                counts[key] = int(depth)
+        if len(counts) != site_count:
+            raise ValueError(f"Site ortholog-depth row count mismatch: {len(counts)} != {site_count}")
+        return counts

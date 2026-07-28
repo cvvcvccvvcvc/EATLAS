@@ -218,7 +218,7 @@ the standalone handoff files.
 Annotation expected properties:
 - `annotation/variant_annotations.tsv.gz` exists for end-to-end runs.
 - `annotation/variant_strategy_support.tsv.gz` contains per-strategy ALT-support
-  counts for future dose-effect analyses.
+  counts and site-aligned ortholog depth for SNVs.
 - `annotation/manifest.json` records event and unique variant-context row counts, source metadata, and annotation counters.
 - End-to-end annotation records `partition_count`; partition outputs are merged
   by streaming and are not published as duplicate durable tables.
@@ -313,6 +313,7 @@ nextflow run . \
   -profile local \
   --stage annotate \
   --events_tsv /path/to/alignment_events.tsv.gz \
+  --segments_tsv /path/to/alignment_segments.tsv.gz \
   --fetch_dir /path/to/fetch \
   --outdir /tmp/gaph_v2_annotate_debug \
   -work-dir /tmp/gaph_v2_annotate_debug_work \
