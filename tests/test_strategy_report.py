@@ -16,6 +16,7 @@ from analytics.strategy_report import (
     format_table_dataframe,
     gnomad_stratification_figure,
     overview_strategy_table,
+    resolve_run_inputs,
     validate_report_inputs,
 )
 
@@ -72,6 +73,36 @@ def test_report_preflight_accepts_compact_production_contract(tmp_path: Path) ->
     )
 
     validate_report_inputs(inputs)
+
+
+def test_report_inputs_accept_annotation_directory_override(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run"
+    annotation_dir = tmp_path / "completed_annotation"
+    (run_dir / "fetch" / "sequences" / "targets").mkdir(parents=True)
+    annotation_dir.mkdir()
+    pd.DataFrame(columns=["gene_id"]).to_csv(
+        run_dir / "fetch" / "genes.tsv.gz",
+        sep="\t",
+        index=False,
+        compression="gzip",
+    )
+    pd.DataFrame(columns=["variant_key"]).to_csv(
+        annotation_dir / "variant_annotations.tsv.gz",
+        sep="\t",
+        index=False,
+        compression="gzip",
+    )
+    pd.DataFrame(columns=["gene_id"]).to_csv(
+        run_dir / "fetch" / "target_features.tsv.gz",
+        sep="\t",
+        index=False,
+        compression="gzip",
+    )
+
+    inputs = resolve_run_inputs(run_dir, annotation_dir)
+
+    assert inputs.variant_annotations_tsv == annotation_dir / "variant_annotations.tsv.gz"
+    assert inputs.annotation_failures_tsv == annotation_dir / "failures.tsv.gz"
 
 
 def test_single_strategy_candidate_profile_loads_plotly_without_overlap() -> None:

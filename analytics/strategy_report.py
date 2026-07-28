@@ -151,6 +151,11 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--run-dir", required=True, type=Path, help="Completed GAPH run directory.")
     parser.add_argument(
+        "--annotation-dir",
+        type=Path,
+        help="Annotation directory override. Default: <run-dir>/annotation.",
+    )
+    parser.add_argument(
         "--clinvar-vcf",
         type=Path,
         default=project_root() / "assets" / "reference" / "clinvar" / "clinvar.vcf.gz",
@@ -220,23 +225,28 @@ def safe_report_name(name: str) -> str:
     return cleaned or "strategy_compare"
 
 
-def resolve_run_inputs(run_dir: Path) -> RunInputs:
+def resolve_run_inputs(run_dir: Path, annotation_dir: Path | None = None) -> RunInputs:
     run_dir = run_dir.expanduser().resolve()
     if not run_dir.exists():
         raise FileNotFoundError(f"Run directory does not exist: {run_dir}")
     if not run_dir.is_dir():
         raise NotADirectoryError(f"--run-dir is not a directory: {run_dir}")
 
+    annotation_dir = (
+        annotation_dir.expanduser().resolve()
+        if annotation_dir is not None
+        else run_dir / "annotation"
+    )
     inputs = RunInputs(
         run_dir=run_dir,
         fetch_manifest_json=run_dir / "fetch" / "manifest.json",
         genes_tsv=run_dir / "fetch" / "genes.tsv.gz",
         target_features_tsv=run_dir / "fetch" / "target_features.tsv.gz",
         target_sequences_dir=run_dir / "fetch" / "sequences" / "targets",
-        variant_annotations_tsv=run_dir / "annotation" / "variant_annotations.tsv.gz",
-        variant_strategy_support_tsv=run_dir / "annotation" / "variant_strategy_support.tsv.gz",
-        annotation_manifest_json=run_dir / "annotation" / "manifest.json",
-        annotation_failures_tsv=run_dir / "annotation" / "failures.tsv.gz",
+        variant_annotations_tsv=annotation_dir / "variant_annotations.tsv.gz",
+        variant_strategy_support_tsv=annotation_dir / "variant_strategy_support.tsv.gz",
+        annotation_manifest_json=annotation_dir / "manifest.json",
+        annotation_failures_tsv=annotation_dir / "failures.tsv.gz",
         feature_coverage_tsv=run_dir / "alignment" / "feature_coverage.tsv.gz",
         alignment_segments_tsv=run_dir / "alignment" / "alignment_segments.tsv.gz",
         alignment_manifest_json=run_dir / "alignment" / "manifest.json",
@@ -244,7 +254,7 @@ def resolve_run_inputs(run_dir: Path) -> RunInputs:
     )
     if not inputs.variant_annotations_tsv.exists():
         raise FileNotFoundError(
-            "Missing annotation/variant_annotations.tsv.gz under --run-dir. "
+            f"Missing variant_annotations.tsv.gz under annotation directory: {annotation_dir}. "
             "Run the annotation stage before building this report."
         )
     if not inputs.genes_tsv.exists():
@@ -2943,7 +2953,7 @@ def main() -> None:
         raise ValueError("--target-space-null-sample-size must be >= 1")
     if args.target_space_null and args.target_space_null_resamples < 100:
         raise ValueError("--target-space-null-resamples must be >= 100")
-    inputs = resolve_run_inputs(args.run_dir)
+    inputs = resolve_run_inputs(args.run_dir, args.annotation_dir)
     validate_report_inputs(inputs)
     out_html = resolve_out_html(args, inputs.run_dir)
     report_started = time.perf_counter()

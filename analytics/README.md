@@ -102,6 +102,25 @@ stored once per unique matched allele in:
 ```
 
 Failed gnomAD regions remain missing and are never interpreted as absence.
+An incomplete external-evidence table is resumable: a later report run keeps
+successful allele lookups and requests only alleles from failed regions.
+
+To repair failed gnomAD regions in an existing pipeline annotation without
+changing the original output, run:
+
+```bash
+python bin/complete_gnomad_annotation.py --run-dir "$RUN"
+```
+
+The command writes `<run-dir>/annotation_gnomad_complete/`. Repeating it retries
+only regions still listed as failed. Build a report from the repaired annotation
+with:
+
+```bash
+micromamba run -n gaph-v2-analytics python -m analytics.strategy_report \
+  --run-dir "$RUN" \
+  --annotation-dir "$RUN/annotation_gnomad_complete"
+```
 
 Its bounded, deterministic samples and annotations are cached under:
 
