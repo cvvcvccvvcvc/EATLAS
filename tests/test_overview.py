@@ -44,6 +44,8 @@ def test_overview_uses_clear_strategy_metrics_and_gene_level_coverage() -> None:
             "Unique Variants": [10, 20],
             "Found in ClinVar": [2, 5],
             "gnomAD Found": [4, 8],
+            "gnomAD Eligible": [10, 20],
+            "Genes with result": [2, 1],
             "Orthologs evaluated": [10, 8],
             "Orthologs aligned": [8, 4],
         }
@@ -58,12 +60,20 @@ def test_overview_uses_clear_strategy_metrics_and_gene_level_coverage() -> None:
         gene_count=2,
     )
 
-    table = overview_strategy_table(summary, coverage, strategy_stats)
+    table = overview_strategy_table(summary, coverage, strategy_stats, input_gene_count=2)
     assert table["Strategy"].tolist() == ["s2", "s1"]
     assert table.loc[0, "Only this strategy"] == "5 (25.0%)"
     assert table.loc[1, "Orthologs aligned"] == "8 / 10 (80.0%)"
 
-    html = "".join(build_overview(summary, coverage, strategy_stats, {"failure_count": 3}))
+    html = "".join(
+        build_overview(
+            summary,
+            coverage,
+            strategy_stats,
+            {"failure_count": 3},
+            input_gene_count=2,
+        )
+    )
     assert "Candidates found by all strategies" in html
     assert "5 (20.0%)" in html
     assert "Raw support events" not in html
