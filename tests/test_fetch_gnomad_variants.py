@@ -109,5 +109,5 @@ def test_transient_error_uses_bounded_exponential_backoff(monkeypatch: pytest.Mo
     with pytest.raises(URLError, match="connection reset"):
         gnomad.fetch_region_variants_recursive("1", 100, 100)
 
-    assert calls == 5
-    assert sleeps == [5.0, 10.0, 20.0, 30.0]
+    assert calls == 10
+    assert sleeps == [5.0, 10.0, 20.0, 40.0, 60.0, 60.0, 60.0, 60.0, 60.0]

@@ -56,13 +56,17 @@ def build_external_evidence(
         "gnomad_api": GNOMAD_API_URL,
         "gnomad_dataset": GNOMAD_DATASET,
     }
+    cached_evidence = None
+    cached_manifest: dict[str, object] = {}
     if output_path.exists() and manifest_path.exists():
         try:
-            manifest = json.loads(manifest_path.read_text())
+            cached_manifest = json.loads(manifest_path.read_text())
+            if cached_manifest.get("inputs") == expected_inputs:
+                cached_evidence = _read_evidence(output_path)
         except (OSError, json.JSONDecodeError):
-            manifest = {}
-        if manifest.get("complete") and manifest.get("inputs") == expected_inputs:
-            return _read_evidence(output_path), manifest
+            cached_manifest = {}
+        if cached_evidence is not None and cached_manifest.get("complete"):
+            return cached_evidence, cached_manifest
 
     variants = (
         matched[["variant_key", "chrom", "pos", "ref", "alt"]]
@@ -70,8 +74,33 @@ def build_external_evidence(
         .sort_values(["chrom", "pos", "variant_key"], kind="mergesort")
         .reset_index(drop=True)
     )
-    clinvar = _annotate_clinvar(variants, clinvar_vcf)
-    gnomad, gnomad_summary = _annotate_gnomad(variants)
+    if cached_evidence is not None and set(cached_evidence["variant_key"].astype(str)) != set(
+        variants["variant_key"].astype(str)
+    ):
+        cached_evidence = None
+
+    if cached_evidence is None:
+        clinvar = _annotate_clinvar(variants, clinvar_vcf)
+        gnomad = _empty_gnomad_evidence(variants)
+    else:
+        clinvar = cached_evidence[["variant_key", "clinvar_found", "clinvar_classified", "clinvar_class"]]
+        gnomad = cached_evidence[["variant_key", "gnomad_status", "gnomad_found", "gnomad_af"]].copy()
+
+    unresolved_keys = set(
+        gnomad.loc[~gnomad["gnomad_status"].eq("ok"), "variant_key"].astype(str)
+    )
+    unresolved = variants[variants["variant_key"].astype(str).isin(unresolved_keys)]
+    fetched, gnomad_summary = _annotate_gnomad(unresolved)
+    if not fetched.empty:
+        fetched = fetched.copy()
+        fetched["gnomad_af"] = pd.to_numeric(fetched["gnomad_af"], errors="coerce")
+        gnomad = gnomad.set_index("variant_key")
+        fetched = fetched.set_index("variant_key")
+        gnomad.loc[fetched.index, ["gnomad_status", "gnomad_found", "gnomad_af"]] = fetched[
+            ["gnomad_status", "gnomad_found", "gnomad_af"]
+        ]
+        gnomad = gnomad.reset_index()
+
     evidence = clinvar.merge(gnomad, on="variant_key", how="outer", validate="one_to_one")
     evidence = variants[["variant_key"]].merge(
         evidence,
@@ -79,11 +108,24 @@ def build_external_evidence(
         how="left",
         validate="one_to_one",
     )
-    evidence.to_csv(output_path, sep="\t", index=False, compression="gzip", lineterminator="\n")
+    _write_evidence(output_path, evidence)
+
+    failed_allele_count = int((~evidence["gnomad_status"].eq("ok")).sum())
+    gnomad_summary.update(
+        {
+            "queried_allele_count": int(len(unresolved)),
+            "cached_ok_allele_count": int(
+                0
+                if cached_evidence is None
+                else cached_evidence["gnomad_status"].eq("ok").sum()
+            ),
+            "failed_allele_count": failed_allele_count,
+        }
+    )
 
     manifest = {
         "inputs": expected_inputs,
-        "complete": gnomad_summary["failed_region_count"] == 0,
+        "complete": failed_allele_count == 0,
         "unique_allele_count": int(len(evidence)),
         "clinvar_found_count": int(evidence["clinvar_found"].sum()),
         "clinvar_classified_count": int(evidence["clinvar_classified"].sum()),
@@ -91,8 +133,45 @@ def build_external_evidence(
         "gnomad": gnomad_summary,
         "evidence_tsv": str(output_path),
     }
-    manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
+    _write_manifest(manifest_path, manifest)
     return evidence, manifest
+
+
+def _empty_gnomad_evidence(variants: pd.DataFrame) -> pd.DataFrame:
+    frame = variants[["variant_key"]].copy()
+    frame["gnomad_status"] = "error"
+    frame["gnomad_found"] = False
+    frame["gnomad_af"] = float("nan")
+    return frame
+
+
+def _write_evidence(path: Path, frame: pd.DataFrame) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile(dir=path.parent, suffix=".tsv.gz", delete=False) as handle:
+        temporary_path = Path(handle.name)
+    try:
+        frame.to_csv(
+            temporary_path,
+            sep="\t",
+            index=False,
+            compression="gzip",
+            lineterminator="\n",
+        )
+        temporary_path.replace(path)
+    finally:
+        temporary_path.unlink(missing_ok=True)
+
+
+def _write_manifest(path: Path, manifest: dict[str, object]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile("w", dir=path.parent, suffix=".json", delete=False) as handle:
+        temporary_path = Path(handle.name)
+        json.dump(manifest, handle, indent=2, sort_keys=True)
+        handle.write("\n")
+    try:
+        temporary_path.replace(path)
+    finally:
+        temporary_path.unlink(missing_ok=True)
 
 
 def _read_evidence(path: Path) -> pd.DataFrame:

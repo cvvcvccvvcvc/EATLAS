@@ -16,9 +16,9 @@ logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 logger = logging.getLogger(__name__)
 
 GNOMAD_API_URL = "https://gnomad.broadinstitute.org/api"
-GNOMAD_MAX_ATTEMPTS = 5
+GNOMAD_MAX_ATTEMPTS = 10
 GNOMAD_RETRY_BASE_SECONDS = 5.0
-GNOMAD_RETRY_MAX_SECONDS = 30.0
+GNOMAD_RETRY_MAX_SECONDS = 60.0
 GNOMAD_TRANSIENT_HTTP_STATUSES = {408, 429, 500, 502, 503, 504}
 GNOMAD_REGION_MIN_WINDOW_BP = 500
 
@@ -105,7 +105,7 @@ def execute_graphql(query: str, variables: dict) -> dict:
 
 def retry_sleep_seconds(attempt: int) -> float:
     delay = min(GNOMAD_RETRY_MAX_SECONDS, GNOMAD_RETRY_BASE_SECONDS * (2 ** (attempt - 1)))
-    return delay + random.uniform(0.0, delay * 0.2)
+    return min(GNOMAD_RETRY_MAX_SECONDS, delay + random.uniform(0.0, delay * 0.2))
 
 
 def is_retryable_network_error(exc: Exception) -> bool:
