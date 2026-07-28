@@ -241,15 +241,19 @@ def test_partition_merge_supports_compact_events(tmp_path: Path) -> None:
     assert manifest["alignment_event_count"] == 0
 
 
-def test_partition_annotation_input_omits_debug_tables(tmp_path: Path) -> None:
+def test_partition_annotation_input_keeps_annotation_tables(tmp_path: Path) -> None:
     result_dir = write_result_dir(
         tmp_path,
         "gene_1_s1",
         {
             "gene_id": "1",
             "strategy": "s1",
-            "segment_count": 7,
         },
+    )
+    write_tsv_gz(
+        result_dir / "alignment_segments.tsv.gz",
+        TABLE_HEADERS["alignment_segments.tsv.gz"],
+        [["1"]],
     )
     arguments = partition_arguments(
         [result_dir],
@@ -268,6 +272,7 @@ def test_partition_annotation_input_omits_debug_tables(tmp_path: Path) -> None:
         for path in outdir.iterdir()
     } == {
         "alignment_events.tsv.gz",
+        "alignment_segments.tsv.gz",
         "failures.tsv.gz",
         "feature_coverage.tsv.gz",
         "manifest.json",
@@ -275,7 +280,7 @@ def test_partition_annotation_input_omits_debug_tables(tmp_path: Path) -> None:
     }
     manifest = json.loads((outdir / "manifest.json").read_text())
     assert manifest["output_profile"] == "annotation-input"
-    assert manifest["alignment_segment_count"] == 7
+    assert manifest["alignment_segment_count"] == 1
 
 
 def test_compact_events_preserve_strategy_specific_support(tmp_path: Path) -> None:

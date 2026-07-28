@@ -818,21 +818,16 @@ def main() -> None:
                 args.outdir / "strategy_summary.tsv.gz",
                 strategies,
             )
-            segment_count = merge_tsv_gz(
-                [path / "alignment_segments.tsv.gz" for path in result_dirs],
-                args.outdir / "alignment_segments.tsv.gz",
-            )
         else:
             summary_count, strategy_summary_count = write_strategy_summary(
                 summary_inputs,
                 args.outdir / "strategy_summary.tsv.gz",
                 strategies,
             )
-            segment_count = sum_manifest_count(
-                manifests,
-                "alignment_segment_count",
-                "segment_count",
-            )
+        segment_count = merge_tsv_gz(
+            [path / "alignment_segments.tsv.gz" for path in result_dirs],
+            args.outdir / "alignment_segments.tsv.gz",
+        )
 
     feature_coverage_inputs = [path / "feature_coverage.tsv.gz" for path in result_dirs]
     missing_feature_coverage = [str(path.parent) for path in feature_coverage_inputs if not path.exists()]
