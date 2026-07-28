@@ -263,7 +263,39 @@ def test_matched_summary_uses_paired_control_options_deterministically() -> None
     pd.testing.assert_frame_equal(first, second)
     assert first.loc[0, "matched_focals"] == 2
     assert first.loc[0, "observed_median"] == 3.0
+    assert first.loc[0, "observed_ci_low"] <= first.loc[0, "observed_median"]
+    assert first.loc[0, "observed_ci_high"] >= first.loc[0, "observed_median"]
+    assert first.loc[0, "valid_resamples"] == 200
     assert "empirical_p" not in first.columns
+
+
+def test_matched_summary_preserves_paired_difference_in_bootstrap() -> None:
+    rows = []
+    for index, observed in enumerate([2.0, 4.0, 8.0, 16.0]):
+        focal_id = f"f{index}"
+        rows.append(
+            {
+                "focal_id": focal_id,
+                "strategy": "s1",
+                "role": "observed",
+                "phyloP100way": observed,
+            }
+        )
+        rows.extend(
+            {
+                "focal_id": focal_id,
+                "strategy": "s1",
+                "role": "control",
+                "phyloP100way": observed - 1.0,
+            }
+            for _ in range(3)
+        )
+
+    summary = _matched_summary(pd.DataFrame(rows), ["strategy"], resamples=200, seed=7)
+
+    assert summary.loc[0, "median_difference"] == 1.0
+    assert summary.loc[0, "difference_ci_low"] == 1.0
+    assert summary.loc[0, "difference_ci_high"] == 1.0
 
 
 def test_matched_metric_summary_resamples_one_control_per_focal() -> None:
@@ -281,6 +313,10 @@ def test_matched_metric_summary_resamples_one_control_per_focal() -> None:
 
     assert summary.loc[0, "matched_focals"] == 2
     assert summary.loc[0, "observed_value"] == 0.5
+    assert summary.loc[0, "observed_ci_low"] <= summary.loc[0, "observed_value"]
+    assert summary.loc[0, "observed_ci_high"] >= summary.loc[0, "observed_value"]
+    assert np.isfinite(summary.loc[0, "difference_ci_low"])
+    assert np.isfinite(summary.loc[0, "difference_ci_high"])
     assert summary.loc[0, "valid_resamples"] == 200
 
 

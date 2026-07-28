@@ -900,9 +900,11 @@ def negative_control_method_table() -> pd.DataFrame:
             {
                 "Step": "Resampling",
                 "Definition": (
-                    "Each iteration samples one available control per focal SNV. The report shows descriptive 95% "
-                    "resampling intervals and no inferential p-value. ClinVar class proportions exclude records with "
-                    "missing CLNSIG; failed gnomAD regions remain missing rather than absent."
+                    "Each iteration resamples matched sets with replacement and selects one available control from "
+                    "each selected set. GAPH, matched-control, and paired-difference statistics use the same draws. "
+                    "The report shows descriptive 95% paired matched-set bootstrap intervals and no inferential "
+                    "p-value. ClinVar class proportions exclude records with missing CLNSIG; failed gnomAD regions "
+                    "remain missing rather than absent."
                 ),
             },
         ]
@@ -2293,6 +2295,13 @@ def target_null_interval_figure(
             y=plot["Strategy"],
             mode="markers",
             marker={"color": "#2166ac", "size": 10, "symbol": "diamond"},
+            error_x={
+                "type": "data",
+                "symmetric": False,
+                "array": plot["observed_ci_high"] - plot["observed_value"],
+                "arrayminus": plot["observed_value"] - plot["observed_ci_low"],
+                "color": "#2166ac",
+            },
             name=observed_name,
         )
     )
@@ -2336,7 +2345,14 @@ def clinvar_class_null_figure(frame: pd.DataFrame) -> go.Figure:
                 x=class_order,
                 y=values["observed_value"],
                 marker_color=colors,
-                name="GAPH",
+                error_y={
+                    "type": "data",
+                    "symmetric": False,
+                    "array": values["observed_ci_high"] - values["observed_value"],
+                    "arrayminus": values["observed_value"] - values["observed_ci_low"],
+                    "color": "#2166ac",
+                },
+                name="GAPH (95% paired bootstrap interval)",
                 showlegend=index == 0,
                 hovertemplate="%{x}<br>GAPH: %{y:.1%}<extra></extra>",
             ),
@@ -2356,7 +2372,7 @@ def clinvar_class_null_figure(frame: pd.DataFrame) -> go.Figure:
                     "arrayminus": values["null_value"] - values["null_ci_low"],
                     "color": "#4d4d4d",
                 },
-                name="Matched null (95% resampling interval)",
+                name="Matched control (95% paired bootstrap interval)",
                 showlegend=index == 0,
                 hovertemplate="%{x}<br>Matched null: %{y:.1%}<extra></extra>",
             ),
@@ -2405,7 +2421,7 @@ def build_target_space_null_sections(
                     format_int(analysis.manifest.get("inputs", {}).get("sample_size_per_strategy", 0)),
                 ),
                 ("Sampled / matched focal SNVs", f"{format_int(sampled)} / {format_int(matched)}"),
-                ("Control resamples (input)", format_int(analysis.resamples)),
+                ("Matched-set bootstrap resamples (input)", format_int(analysis.resamples)),
             ]
         )
     )
@@ -2463,7 +2479,7 @@ def build_target_space_null_sections(
                 "arrayminus": plot["null_median"] - plot["null_ci_low"],
                 "color": "#8c8c8c",
             },
-            name="Matched-control median (95% resampling interval)",
+            name="Matched-control median (95% paired bootstrap interval)",
         )
     )
     fig.add_trace(
@@ -2472,7 +2488,14 @@ def build_target_space_null_sections(
             y=plot["Strategy"],
             mode="markers",
             marker={"color": "#2166ac", "size": 10, "symbol": "diamond"},
-            name="GAPH median",
+            error_x={
+                "type": "data",
+                "symmetric": False,
+                "array": plot["observed_ci_high"] - plot["observed_median"],
+                "arrayminus": plot["observed_median"] - plot["observed_ci_low"],
+                "color": "#2166ac",
+            },
+            name="GAPH median (95% paired bootstrap interval)",
         )
     )
     fig.update_layout(
@@ -2492,8 +2515,8 @@ def build_target_space_null_sections(
                 found,
                 title="Exact alleles found in gnomAD",
                 xaxis_title="Fraction found",
-                observed_name="GAPH fraction",
-                null_name="Matched-null fraction (95% resampling interval)",
+                observed_name="GAPH fraction (95% paired bootstrap interval)",
+                null_name="Matched-control fraction (95% paired bootstrap interval)",
                 tickformat=".0%",
             )
             sections.append(fig_html(fig_gnomad_found, include_plotlyjs=False))
@@ -2503,8 +2526,8 @@ def build_target_space_null_sections(
                 af,
                 title="gnomAD allele frequency among exact hits",
                 xaxis_title="Median allele frequency (log scale)",
-                observed_name="GAPH median AF",
-                null_name="Matched-null median AF (95% resampling interval)",
+                observed_name="GAPH median AF (95% paired bootstrap interval)",
+                null_name="Matched-control median AF (95% paired bootstrap interval)",
                 log_x=True,
             )
             sections.append(fig_html(fig_gnomad_af, include_plotlyjs=False))
@@ -2522,8 +2545,8 @@ def build_target_space_null_sections(
             clinvar,
             title="Exact alleles found in ClinVar",
             xaxis_title="Fraction found",
-            observed_name="GAPH fraction",
-            null_name="Matched-null fraction (95% resampling interval)",
+            observed_name="GAPH fraction (95% paired bootstrap interval)",
+            null_name="Matched-control fraction (95% paired bootstrap interval)",
             tickformat=".0%",
         )
         sections.append(fig_html(fig_clinvar_found, include_plotlyjs=False))
@@ -2557,10 +2580,15 @@ def build_target_space_null_qc_sections(analysis: TargetSpaceNullAnalysis) -> li
             "strategy": "Strategy",
             "matched_focals": "Matched SNVs",
             "observed_median": "GAPH median",
+            "observed_ci_low": "GAPH median Q2.5",
+            "observed_ci_high": "GAPH median Q97.5",
             "null_median": "Matched-control median",
             "null_ci_low": "Matched-control median Q2.5",
             "null_ci_high": "Matched-control median Q97.5",
             "median_difference": "Median difference",
+            "difference_ci_low": "Difference Q2.5",
+            "difference_ci_high": "Difference Q97.5",
+            "valid_resamples": "Valid bootstrap resamples",
         }
     )
     if not table.empty:
@@ -2591,8 +2619,15 @@ def build_target_space_null_qc_sections(analysis: TargetSpaceNullAnalysis) -> li
                 "primary_consequence": "Primary VEP consequence",
                 "matched_focals": "Matched SNVs",
                 "observed_median": "GAPH median",
-                "null_median": "Target-space median",
+                "observed_ci_low": "GAPH median Q2.5",
+                "observed_ci_high": "GAPH median Q97.5",
+                "null_median": "Matched-control median",
+                "null_ci_low": "Matched-control median Q2.5",
+                "null_ci_high": "Matched-control median Q97.5",
                 "median_difference": "Median difference",
+                "difference_ci_low": "Difference Q2.5",
+                "difference_ci_high": "Difference Q97.5",
+                "valid_resamples": "Valid bootstrap resamples",
             }
         )
         consequence["Strategy"] = consequence["Strategy"].map(strategy_label)
@@ -2602,12 +2637,76 @@ def build_target_space_null_qc_sections(analysis: TargetSpaceNullAnalysis) -> li
                 "Primary VEP consequence",
                 "Matched SNVs",
                 "GAPH median",
-                "Target-space median",
+                "GAPH median Q2.5",
+                "GAPH median Q97.5",
+                "Matched-control median",
+                "Matched-control median Q2.5",
+                "Matched-control median Q97.5",
                 "Median difference",
+                "Difference Q2.5",
+                "Difference Q97.5",
+                "Valid bootstrap resamples",
             ]
         ]
         sections.append("<h4>Results by primary VEP consequence</h4>")
         sections.append(table_html(consequence, classes="table table-sm table-striped"))
+
+    outcome_frames = []
+    if not analysis.gnomad_summary.empty:
+        gnomad = analysis.gnomad_summary.copy()
+        gnomad["Outcome"] = gnomad["metric"].map(
+            {
+                "found_fraction": "gnomAD found fraction",
+                "median_af": "gnomAD median AF among exact hits",
+            }
+        )
+        outcome_frames.append(gnomad)
+    if not analysis.clinvar_summary.empty:
+        clinvar = analysis.clinvar_summary.copy()
+        clinvar["Outcome"] = "ClinVar found fraction"
+        outcome_frames.append(clinvar)
+    if not analysis.clinvar_class_summary.empty:
+        clinvar_class = analysis.clinvar_class_summary.copy()
+        clinvar_class["Outcome"] = "ClinVar class: " + clinvar_class["clinvar_class"].astype(str)
+        outcome_frames.append(clinvar_class)
+    if outcome_frames:
+        outcomes = pd.concat(outcome_frames, ignore_index=True)
+        outcomes = outcomes.rename(
+            columns={
+                "strategy": "Strategy",
+                "matched_focals": "Matched SNVs",
+                "observed_value": "GAPH statistic",
+                "observed_ci_low": "GAPH Q2.5",
+                "observed_ci_high": "GAPH Q97.5",
+                "null_value": "Matched-control statistic",
+                "null_ci_low": "Matched-control Q2.5",
+                "null_ci_high": "Matched-control Q97.5",
+                "difference": "Paired difference",
+                "difference_ci_low": "Difference Q2.5",
+                "difference_ci_high": "Difference Q97.5",
+                "valid_resamples": "Valid bootstrap resamples",
+            }
+        )
+        outcomes["Strategy"] = outcomes["Strategy"].map(strategy_label)
+        outcomes = outcomes[
+            [
+                "Strategy",
+                "Outcome",
+                "Matched SNVs",
+                "GAPH statistic",
+                "GAPH Q2.5",
+                "GAPH Q97.5",
+                "Matched-control statistic",
+                "Matched-control Q2.5",
+                "Matched-control Q97.5",
+                "Paired difference",
+                "Difference Q2.5",
+                "Difference Q97.5",
+                "Valid bootstrap resamples",
+            ]
+        ]
+        sections.append("<h4>External-evidence bootstrap summary</h4>")
+        sections.append(table_html(outcomes, classes="table table-sm table-striped"))
     sections.append("</details>")
     return sections
 

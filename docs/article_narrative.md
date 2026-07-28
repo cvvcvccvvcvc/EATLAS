@@ -129,7 +129,8 @@ stories:
 - fixed-band conservation sensitivity results, selector-level cohort counts,
   and target-context assignment rules;
 - target-space-null construction, matching yield, consequence-specific counts,
-  and descriptive phyloP, gnomAD, and ClinVar comparisons;
+  and descriptive phyloP, gnomAD, and ClinVar comparisons with paired
+  matched-set bootstrap intervals for GAPH, controls, and their difference;
 - gnomAD found-versus-not-found summaries with failed region lookups excluded
   from both the numerator and denominator;
 - strategy overlap, runtime, storage, and alignment QC;

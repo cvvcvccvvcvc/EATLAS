@@ -183,10 +183,15 @@ def test_target_space_null_section_reports_consequence_matched_design(tmp_path: 
                     "strategy": "s1",
                     "matched_focals": 2,
                     "observed_median": 0.5,
+                    "observed_ci_low": 0.3,
+                    "observed_ci_high": 0.7,
                     "null_median": 1.0,
                     "null_ci_low": 0.8,
                     "null_ci_high": 1.2,
                     "median_difference": -0.5,
+                    "difference_ci_low": -0.8,
+                    "difference_ci_high": -0.2,
+                    "valid_resamples": 1_000,
                 }
             ]
         ),
@@ -197,18 +202,32 @@ def test_target_space_null_section_reports_consequence_matched_design(tmp_path: 
                 {
                     "strategy": "s1",
                     "metric": "found_fraction",
+                    "matched_focals": 2,
                     "observed_value": 0.4,
+                    "observed_ci_low": 0.2,
+                    "observed_ci_high": 0.6,
                     "null_value": 0.2,
                     "null_ci_low": 0.1,
                     "null_ci_high": 0.3,
+                    "difference": 0.2,
+                    "difference_ci_low": -0.1,
+                    "difference_ci_high": 0.5,
+                    "valid_resamples": 1_000,
                 },
                 {
                     "strategy": "s1",
                     "metric": "median_af",
+                    "matched_focals": 2,
                     "observed_value": 0.001,
+                    "observed_ci_low": 0.0005,
+                    "observed_ci_high": 0.002,
                     "null_value": 0.0005,
                     "null_ci_low": 0.0001,
                     "null_ci_high": 0.002,
+                    "difference": 0.0005,
+                    "difference_ci_low": -0.0002,
+                    "difference_ci_high": 0.001,
+                    "valid_resamples": 1_000,
                 },
             ]
         ),
@@ -216,10 +235,17 @@ def test_target_space_null_section_reports_consequence_matched_design(tmp_path: 
             [
                 {
                     "strategy": "s1",
+                    "matched_focals": 2,
                     "observed_value": 0.1,
+                    "observed_ci_low": 0.05,
+                    "observed_ci_high": 0.15,
                     "null_value": 0.05,
                     "null_ci_low": 0.02,
                     "null_ci_high": 0.08,
+                    "difference": 0.05,
+                    "difference_ci_low": -0.02,
+                    "difference_ci_high": 0.12,
+                    "valid_resamples": 1_000,
                 }
             ]
         ),
@@ -228,10 +254,17 @@ def test_target_space_null_section_reports_consequence_matched_design(tmp_path: 
                 {
                     "strategy": "s1",
                     "clinvar_class": category,
+                    "matched_focals": 2,
                     "observed_value": observed,
+                    "observed_ci_low": max(0.0, observed - 0.05),
+                    "observed_ci_high": min(1.0, observed + 0.05),
                     "null_value": null,
                     "null_ci_low": max(0.0, null - 0.05),
                     "null_ci_high": min(1.0, null + 0.05),
+                    "difference": observed - null,
+                    "difference_ci_low": observed - null - 0.05,
+                    "difference_ci_high": observed - null + 0.05,
+                    "valid_resamples": 1_000,
                 }
                 for category, observed, null in [
                     ("B/LB", 0.5, 0.4),
@@ -272,11 +305,15 @@ def test_target_space_null_section_reports_consequence_matched_design(tmp_path: 
     assert "gnomAD allele frequency among exact hits" in html
     assert "Exact alleles found in ClinVar" in html
     assert "ClinVar class composition" in html
+    assert "GAPH fraction (95% paired bootstrap interval)" in html
+    assert "Matched-control fraction (95% paired bootstrap interval)" in html
 
     qc_html = "".join(build_target_space_null_qc_sections(analysis))
     assert "Matched-control QC" in qc_html
     assert "Strategy summary" in qc_html
     assert "VEP release" in qc_html
+    assert "Paired difference" in qc_html
+    assert "Difference Q2.5" in qc_html
 
 
 def test_target_space_null_section_reports_disabled_state() -> None:

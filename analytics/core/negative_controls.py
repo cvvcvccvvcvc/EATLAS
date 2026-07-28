@@ -827,26 +827,46 @@ def _resampled_statistics(
     controls: np.ndarray,
     resamples: int,
     seed: int,
-) -> tuple[float, np.ndarray]:
+) -> tuple[float, np.ndarray, np.ndarray, np.ndarray]:
     if observed.size == 0 or controls.size == 0:
-        return math.nan, np.array([], dtype=float)
+        empty = np.array([], dtype=float)
+        return math.nan, empty, empty, empty
     control_counts = np.isfinite(controls).sum(axis=1)
     if np.any(control_counts == 0):
         raise ValueError("Every paired focal must have at least one finite control value.")
 
     rng = np.random.default_rng(seed)
+    observed_bootstrap = np.empty(resamples, dtype=float)
     null = np.empty(resamples, dtype=float)
-    focal_indices = np.arange(len(controls))[None, :]
+    difference = np.empty(resamples, dtype=float)
     for start in range(0, resamples, RESAMPLE_BLOCK_SIZE):
         stop = min(resamples, start + RESAMPLE_BLOCK_SIZE)
-        control_indices = rng.integers(
-            0,
+        focal_indices, control_indices = _matched_set_draw_indices(
+            rng,
             control_counts,
-            size=(stop - start, len(controls)),
+            stop - start,
         )
-        draws = controls[focal_indices, control_indices]
-        null[start:stop] = np.median(draws, axis=1)
-    return float(np.median(observed)), null
+        observed_values = np.median(observed[focal_indices], axis=1)
+        null_values = np.median(controls[focal_indices, control_indices], axis=1)
+        observed_bootstrap[start:stop] = observed_values
+        null[start:stop] = null_values
+        difference[start:stop] = observed_values - null_values
+    return float(np.median(observed)), observed_bootstrap, null, difference
+
+
+def _matched_set_draw_indices(
+    rng: np.random.Generator,
+    control_counts: np.ndarray,
+    block_size: int,
+) -> tuple[np.ndarray, np.ndarray]:
+    focal_indices = rng.integers(
+        0,
+        len(control_counts),
+        size=(block_size, len(control_counts)),
+    )
+    selected_control_counts = control_counts[focal_indices]
+    control_indices = rng.integers(0, selected_control_counts)
+    return focal_indices, control_indices
 
 
 def _paired_metric_values(
@@ -901,24 +921,45 @@ def _resampled_metric_statistics(
     statistic: str,
     resamples: int,
     seed: int,
-) -> tuple[float, np.ndarray, np.ndarray]:
+) -> tuple[float, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     if observed.size == 0 or controls.size == 0:
-        return math.nan, np.array([], dtype=float), np.array([], dtype=float)
+        empty = np.array([], dtype=float)
+        return math.nan, empty, empty, empty, empty
     rng = np.random.default_rng(seed)
+    observed_bootstrap = np.empty(resamples, dtype=float)
     null = np.empty(resamples, dtype=float)
+    difference = np.empty(resamples, dtype=float)
     null_nonmissing = np.empty(resamples, dtype=float)
-    focal_indices = np.arange(len(controls))[None, :]
     for start in range(0, resamples, RESAMPLE_BLOCK_SIZE):
         stop = min(resamples, start + RESAMPLE_BLOCK_SIZE)
-        control_indices = rng.integers(
-            0,
+        focal_indices, control_indices = _matched_set_draw_indices(
+            rng,
             control_counts,
-            size=(stop - start, len(controls)),
+            stop - start,
         )
-        draws = controls[focal_indices, control_indices]
-        null[start:stop] = _metric_statistic(draws, statistic, axis=1)
-        null_nonmissing[start:stop] = np.isfinite(draws).sum(axis=1)
-    return float(_metric_statistic(observed, statistic)), null, null_nonmissing
+        observed_draws = observed[focal_indices]
+        control_draws = controls[focal_indices, control_indices]
+        observed_values = _metric_statistic(observed_draws, statistic, axis=1)
+        null_values = _metric_statistic(control_draws, statistic, axis=1)
+        observed_bootstrap[start:stop] = observed_values
+        null[start:stop] = null_values
+        difference[start:stop] = observed_values - null_values
+        null_nonmissing[start:stop] = np.isfinite(control_draws).sum(axis=1)
+    return (
+        float(_metric_statistic(observed, statistic)),
+        observed_bootstrap,
+        null,
+        difference,
+        null_nonmissing,
+    )
+
+
+def _percentile_interval(values: np.ndarray) -> tuple[float, float, int]:
+    finite = values[np.isfinite(values)]
+    if finite.size == 0:
+        return math.nan, math.nan, 0
+    low, high = np.quantile(finite, [0.025, 0.975])
+    return float(low), float(high), int(finite.size)
 
 
 def _matched_metric_summary(
@@ -935,9 +976,14 @@ def _matched_metric_summary(
         *group_columns,
         "matched_focals",
         "observed_value",
+        "observed_ci_low",
+        "observed_ci_high",
         "null_value",
         "null_ci_low",
         "null_ci_high",
+        "difference",
+        "difference_ci_low",
+        "difference_ci_high",
         "observed_nonmissing",
         "null_nonmissing_median",
         "valid_resamples",
@@ -951,7 +997,13 @@ def _matched_metric_summary(
             value_column,
             status_column,
         )
-        observed_value, null, null_nonmissing = _resampled_metric_statistics(
+        (
+            observed_value,
+            observed_bootstrap,
+            null,
+            difference,
+            null_nonmissing,
+        ) = _resampled_metric_statistics(
             observed,
             controls,
             control_counts,
@@ -960,17 +1012,26 @@ def _matched_metric_summary(
             _stable_rank(seed, *key),
         )
         finite_null = null[np.isfinite(null)]
+        observed_ci_low, observed_ci_high, _ = _percentile_interval(observed_bootstrap)
+        null_ci_low, null_ci_high, _ = _percentile_interval(null)
+        difference_ci_low, difference_ci_high, valid_resamples = _percentile_interval(difference)
+        null_value = float(np.median(finite_null)) if finite_null.size else math.nan
         row = dict(zip(group_columns, key))
         row.update(
             {
                 "matched_focals": len(observed),
                 "observed_value": observed_value,
-                "null_value": float(np.median(finite_null)) if finite_null.size else math.nan,
-                "null_ci_low": float(np.quantile(finite_null, 0.025)) if finite_null.size else math.nan,
-                "null_ci_high": float(np.quantile(finite_null, 0.975)) if finite_null.size else math.nan,
+                "observed_ci_low": observed_ci_low,
+                "observed_ci_high": observed_ci_high,
+                "null_value": null_value,
+                "null_ci_low": null_ci_low,
+                "null_ci_high": null_ci_high,
+                "difference": observed_value - null_value,
+                "difference_ci_low": difference_ci_low,
+                "difference_ci_high": difference_ci_high,
                 "observed_nonmissing": int(np.isfinite(observed).sum()),
                 "null_nonmissing_median": float(np.median(null_nonmissing)) if null_nonmissing.size else math.nan,
-                "valid_resamples": int(finite_null.size),
+                "valid_resamples": valid_resamples,
             }
         )
         rows.append(row)
@@ -987,10 +1048,15 @@ def _matched_summary(
         *group_columns,
         "matched_focals",
         "observed_median",
+        "observed_ci_low",
+        "observed_ci_high",
         "null_median",
         "null_ci_low",
         "null_ci_high",
         "median_difference",
+        "difference_ci_low",
+        "difference_ci_high",
+        "valid_resamples",
     ]
     if frame.empty:
         return pd.DataFrame(columns=columns)
@@ -999,22 +1065,31 @@ def _matched_summary(
     for raw_key, group in frame.groupby(grouper, sort=True):
         key = _group_key(raw_key)
         observed, controls = _paired_values(group, "phyloP100way")
-        observed_median, null = _resampled_statistics(
+        observed_median, observed_bootstrap, null, difference = _resampled_statistics(
             observed,
             controls,
             resamples,
             _stable_rank(seed, *key),
         )
-        null_median = float(np.median(null)) if null.size else math.nan
+        finite_null = null[np.isfinite(null)]
+        null_median = float(np.median(finite_null)) if finite_null.size else math.nan
+        observed_ci_low, observed_ci_high, _ = _percentile_interval(observed_bootstrap)
+        null_ci_low, null_ci_high, _ = _percentile_interval(null)
+        difference_ci_low, difference_ci_high, valid_resamples = _percentile_interval(difference)
         row = dict(zip(group_columns, key))
         row.update(
             {
                 "matched_focals": len(controls),
                 "observed_median": observed_median,
+                "observed_ci_low": observed_ci_low,
+                "observed_ci_high": observed_ci_high,
                 "null_median": null_median,
-                "null_ci_low": float(np.quantile(null, 0.025)) if null.size else math.nan,
-                "null_ci_high": float(np.quantile(null, 0.975)) if null.size else math.nan,
+                "null_ci_low": null_ci_low,
+                "null_ci_high": null_ci_high,
                 "median_difference": observed_median - null_median,
+                "difference_ci_low": difference_ci_low,
+                "difference_ci_high": difference_ci_high,
+                "valid_resamples": valid_resamples,
             }
         )
         rows.append(row)
