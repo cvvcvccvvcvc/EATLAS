@@ -681,8 +681,6 @@ def site_aligned_ortholog_counts(
                 ortholog_gene_id = str(row.get("ortholog_gene_id") or "")
                 if not gene_id or not strategy or not ortholog_gene_id:
                     continue
-                if str(row.get("is_primary") or "").lower() == "false":
-                    continue
                 start0 = int(row.get("target_start0") or 0)
                 end0 = int(row.get("target_end0") or 0)
                 if end0 <= start0:

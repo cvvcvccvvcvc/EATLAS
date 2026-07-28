@@ -185,7 +185,7 @@ def test_summary_without_segments_produces_zero_coverage(tmp_path: Path) -> None
     assert row["depth_bases"] == "0"
 
 
-def test_site_depth_counts_distinct_primary_orthologs(tmp_path: Path) -> None:
+def test_site_depth_counts_distinct_orthologs_across_segments(tmp_path: Path) -> None:
     segments_path = tmp_path / "segments.tsv.gz"
     write_tsv_gz(
         segments_path,
@@ -245,6 +245,6 @@ def test_site_depth_counts_distinct_primary_orthologs(tmp_path: Path) -> None:
     )
 
     assert counts == {
-        ("1", "test", "1:5:A>G"): 1,
-        ("1", "test", "1:6:A>G"): 2,
+        ("1", "test", "1:5:A>G"): 2,
+        ("1", "test", "1:6:A>G"): 3,
     }
