@@ -52,10 +52,13 @@ Ask whether ClinVar B/LB alleles are more likely than P/LP alleles to have the
 exact ALT observed in orthologs.
 
 First report the broad eligible-SNV analysis. It summarizes the overall output
-of the method but may reflect consequence composition. Then show results by
-consequence class. Compute an odds ratio only where both B/LB and P/LP are
-represented; missense SNVs are the primary comparable class unless the final
-cohort supports another prespecified class.
+of the method but may reflect both target-context and consequence composition.
+Then stratify independently by the exclusive target-locus contexts derived from
+the fetched NCBI features and by ClinVar MC consequence groups. Compute an odds
+ratio only where both B/LB and P/LP are represented; missense SNVs are the
+primary comparable consequence class unless the final cohort supports another
+prespecified class. Selector combinations with no estimable strategy result are
+omitted from the interactive view and enumerated in QC.
 
 For each strategy, restrict the ClinVar denominator to genes for which that
 strategy produced an alignment result. No additional per-base callability
@@ -66,8 +69,8 @@ For each reported analysis show the four cell counts, odds ratio, 95% confidence
 interval, and Fisher exact p-value. The scientific emphasis is the effect size
 and its uncertainty, not significance alone.
 
-**Main evidence:** one forest plot containing the broad estimate and the
-estimable consequence-specific estimates.
+**Main evidence:** an interactive forest plot containing the broad estimate and
+estimable target-context and consequence-specific estimates.
 
 ### 4. Test whether the signal exceeds site-level conservation
 
@@ -111,7 +114,7 @@ because submitted classifications may themselves use evolutionary evidence.
 
 1. **Figure 1:** GAPH workflow and exact-allele feature definition.
 2. **Figure 2:** consequence and conservation landscape of GAPH candidates.
-3. **Figure 3:** broad and consequence-specific ClinVar enrichment ORs.
+3. **Figure 3:** broad, target-context, and consequence-specific ClinVar enrichment ORs.
 4. **Figure 4:** conservation overlap and adjusted ALT-observed association.
 5. **Table 1:** cohort flow and final B/LB and P/LP counts.
 
@@ -123,7 +126,8 @@ stories:
 - normalization exclusions, ClinVar review status, and cohort flow details;
 - per-strategy callability and ortholog-depth distributions;
 - gene-level and full consequence-class counts;
-- fixed-band conservation sensitivity results and selector-level cohort counts;
+- fixed-band conservation sensitivity results, selector-level cohort counts,
+  and target-context assignment rules;
 - target-space-null construction, matching yield, consequence-specific counts,
   and descriptive phyloP, gnomAD, and ClinVar comparisons;
 - gnomAD found-versus-not-found summaries with failed region lookups excluded

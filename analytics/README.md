@@ -140,9 +140,11 @@ resampling intervals for all target-space-null outcomes; it does not report an
 inferential p-value for these comparators.
 
 Raw p-values remain visible for the formal validation analyses. For each
-analysis mode, variant-type selection, and consequence selection,
-Benjamini-Hochberg correction is applied across strategies. Band-specific
-Fisher tests are corrected across strategies within the same band.
+analysis mode, SNV/INDEL selection, target-context selection, and ClinVar MC
+consequence selection, Benjamini-Hochberg correction is applied across
+strategies. Band-specific Fisher tests are corrected across strategies within
+the same band. Consequence options with no estimable strategy result for the
+current selectors are hidden from the interactive view and enumerated in QC.
 Mantel-Haenszel confidence intervals use the Robins-Breslow-Greenland variance
 implemented by `statsmodels.StratifiedTable`. Continuous models use Firth
 logistic regression (`logistf`) with a three-degree-of-freedom natural spline

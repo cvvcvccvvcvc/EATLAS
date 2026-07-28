@@ -14,6 +14,8 @@ import numpy as np
 import pandas as pd
 
 from .stats import benjamini_hochberg, enrichment_result, mantel_haenszel_adjusted
+from .target_context import context_at, read_disjoint_contexts
+from .variant_keys import changed_target_position, parse_variant_key
 
 
 SCORE_COLUMN = "phyloP100way"
@@ -27,12 +29,17 @@ PHYLOP_BANDS = [
 ]
 
 VARIANT_TYPE_OPTIONS = [
-    ("all", "All variants"),
     ("snv", "SNV"),
     ("indel", "INDEL"),
-    ("insertion", "Insertion"),
-    ("deletion", "Deletion"),
 ]
+
+TARGET_CONTEXT_OPTIONS = [
+    ("all", "All target contexts"),
+    ("cds", "CDS"),
+    ("utr", "UTR"),
+    ("intron", "Intron"),
+]
+TARGET_CONTEXT_VALUES = ("cds", "utr", "other_exon", "intron", "other")
 
 CONSEQUENCE_OPTIONS = [
     ("all", "All consequences"),
@@ -116,6 +123,8 @@ def build_conservation_cohort(
     *,
     universe: pd.DataFrame,
     conservation: pd.DataFrame,
+    genes_tsv: Path,
+    target_features_tsv: Path,
     score_column: str = SCORE_COLUMN,
 ) -> ConservationCohort:
     required = {
@@ -125,6 +134,7 @@ def build_conservation_cohort(
         "alt",
         "label_class",
         "clinvar_mc_terms",
+        "gene_ids",
     }
     missing = required - set(universe.columns)
     if missing:
@@ -140,11 +150,8 @@ def build_conservation_cohort(
         "label_class",
         "clinvar_mc_terms",
     ]
-    if "gene_ids" in universe.columns:
-        columns.append("gene_ids")
+    columns.append("gene_ids")
     base = universe[columns].drop_duplicates("variant_key").copy()
-    if "gene_ids" not in base.columns:
-        base["gene_ids"] = ""
     scores = conservation[["variant_key", score_column]].drop_duplicates("variant_key").copy()
     base = base.merge(scores, on="variant_key", how="left", validate="one_to_one")
     base[score_column] = pd.to_numeric(base[score_column], errors="coerce")
@@ -157,6 +164,11 @@ def build_conservation_cohort(
     base.loc[~snv_mask & (ref_lengths > alt_lengths), "variant_subtype"] = "deletion"
     base["consequence_groups"] = base["clinvar_mc_terms"].map(consequence_memberships_text)
     base["consequence_mask"] = base["clinvar_mc_terms"].map(consequence_membership_mask)
+    base["target_context"] = assign_target_contexts(
+        base,
+        genes_tsv=genes_tsv,
+        target_features_tsv=target_features_tsv,
+    )
 
     summary = {
         "allele_count": int(len(base)),
@@ -169,8 +181,60 @@ def build_conservation_cohort(
         "multiple_consequence_group_count": int(
             base["consequence_groups"].map(lambda value: len(split_memberships(value)) > 1).sum()
         ),
+        **{
+            f"target_context_{context}_count": int((base["target_context"] == context).sum())
+            for context in TARGET_CONTEXT_VALUES
+        },
     }
     return ConservationCohort(base, summary)
+
+
+def assign_target_contexts(
+    variants: pd.DataFrame,
+    *,
+    genes_tsv: Path,
+    target_features_tsv: Path,
+) -> pd.Series:
+    genes = pd.read_csv(
+        genes_tsv,
+        sep="\t",
+        compression="gzip" if genes_tsv.suffix == ".gz" else None,
+        keep_default_na=False,
+        usecols=["gene_id", "begin", "sequence_length"],
+        dtype={"gene_id": str},
+    )
+    gene_begins = dict(zip(genes["gene_id"], genes["begin"].astype(int)))
+    intervals = read_disjoint_contexts(
+        target_features_tsv,
+        dict(zip(genes["gene_id"], genes["sequence_length"].astype(int))),
+    )
+    starts = {
+        gene_id: [start for start, _end, _context in values]
+        for gene_id, values in intervals.items()
+    }
+    priority = {context: index for index, context in enumerate(TARGET_CONTEXT_VALUES)}
+
+    def classify(variant_key: object, gene_ids: object) -> str:
+        key = parse_variant_key(variant_key)
+        if key is None:
+            raise ValueError(f"Invalid normalized ClinVar variant_key: {variant_key}")
+        memberships = []
+        for gene_id in str(gene_ids).split("|"):
+            if gene_id not in gene_begins or gene_id not in intervals:
+                raise ValueError(
+                    f"ClinVar allele {variant_key} references unknown target gene {gene_id}"
+                )
+            target_position = changed_target_position(key, gene_begins[gene_id])
+            memberships.append(context_at(intervals[gene_id], target_position, starts[gene_id]))
+        if not memberships:
+            raise ValueError(f"ClinVar allele {variant_key} has no target gene membership")
+        return min(set(memberships), key=lambda context: priority.get(context, len(priority)))
+
+    values = [
+        classify(row.variant_key, row.gene_ids)
+        for row in variants[["variant_key", "gene_ids"]].itertuples(index=False)
+    ]
+    return pd.Series(values, index=variants.index, dtype="object")
 
 
 def consequence_memberships(terms_text: str) -> set[str]:
@@ -257,7 +321,7 @@ def compute_unadjusted_enrichment(
     eligible_gene_ids_by_strategy: dict[str, set[str]] | None = None,
 ) -> pd.DataFrame:
     rows = []
-    for strategy, variant_key, consequence_key, working in selector_frames(
+    for strategy, variant_key, target_context_key, consequence_key, working in selector_frames(
         cohort, observed_by_strategy_type, strategies, eligible_gene_ids_by_strategy
     ):
         result = enrichment_for_subset(working, strategy)
@@ -266,6 +330,7 @@ def compute_unadjusted_enrichment(
             {
                 "strategy": strategy,
                 "variant_type": variant_key,
+                "target_context": target_context_key,
                 "consequence": consequence_key,
                 "usable_rows": int(len(working)),
                 "benign_observed": result.benign_observed,
@@ -281,7 +346,12 @@ def compute_unadjusted_enrichment(
             }
         )
     results = pd.DataFrame(rows)
-    add_grouped_bh(results, "fisher_p", "fisher_q", ["variant_type", "consequence"])
+    add_grouped_bh(
+        results,
+        "fisher_p",
+        "fisher_q",
+        ["variant_type", "target_context", "consequence"],
+    )
     return results
 
 
@@ -294,7 +364,7 @@ def compute_fixed_band_enrichment(
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     bin_rows: list[dict[str, object]] = []
     adjusted_rows: list[dict[str, object]] = []
-    for strategy, variant_key, consequence_key, working in selector_frames(
+    for strategy, variant_key, target_context_key, consequence_key, working in selector_frames(
         cohort, observed_by_strategy_type, strategies, eligible_gene_ids_by_strategy
     ):
         working = working[np.isfinite(working[SCORE_COLUMN])].copy()
@@ -309,6 +379,7 @@ def compute_fixed_band_enrichment(
                 {
                     "strategy": strategy,
                     "variant_type": variant_key,
+                    "target_context": target_context_key,
                     "consequence": consequence_key,
                     "band_index": index,
                     "band": band_key,
@@ -333,7 +404,14 @@ def compute_fixed_band_enrichment(
         if adjusted is None or not math.isfinite(adjusted.cmh_p):
             reason = reason or "The fixed-band tables do not provide an estimable common odds ratio."
             adjusted_rows.append(
-                fixed_adjusted_row(strategy, variant_key, consequence_key, working, reason=reason)
+                fixed_adjusted_row(
+                    strategy,
+                    variant_key,
+                    target_context_key,
+                    consequence_key,
+                    working,
+                    reason=reason,
+                )
             )
         else:
             finite_effect = (
@@ -345,6 +423,7 @@ def compute_fixed_band_enrichment(
                 fixed_adjusted_row(
                     strategy,
                     variant_key,
+                    target_context_key,
                     consequence_key,
                     working,
                     odds_ratio=adjusted.odds_ratio_mh,
@@ -363,8 +442,18 @@ def compute_fixed_band_enrichment(
 
     bins = pd.DataFrame(bin_rows)
     adjusted = pd.DataFrame(adjusted_rows)
-    add_grouped_bh(bins, "fisher_p", "fisher_q", ["variant_type", "consequence", "band"])
-    add_grouped_bh(adjusted, "cmh_p", "cmh_q", ["variant_type", "consequence"])
+    add_grouped_bh(
+        bins,
+        "fisher_p",
+        "fisher_q",
+        ["variant_type", "target_context", "consequence", "band"],
+    )
+    add_grouped_bh(
+        adjusted,
+        "cmh_p",
+        "cmh_q",
+        ["variant_type", "target_context", "consequence"],
+    )
     return bins, adjusted
 
 
@@ -389,16 +478,28 @@ def selector_frames(
         strategy_frame["ALT_observed"] = strategy_frame["variant_key"].astype(str).isin(observed_keys).astype(int)
         for variant_key, _variant_label in VARIANT_TYPE_OPTIONS:
             type_frame = filter_variant_type(strategy_frame, variant_key)
-            for consequence_key, _consequence_label in CONSEQUENCE_OPTIONS:
-                yield strategy, variant_key, consequence_key, filter_consequence(type_frame, consequence_key)
+            for target_context_key, _target_context_label in TARGET_CONTEXT_OPTIONS:
+                context_frame = filter_target_context(type_frame, target_context_key)
+                for consequence_key, _consequence_label in CONSEQUENCE_OPTIONS:
+                    yield (
+                        strategy,
+                        variant_key,
+                        target_context_key,
+                        consequence_key,
+                        filter_consequence(context_frame, consequence_key),
+                    )
 
 
 def filter_variant_type(frame: pd.DataFrame, variant_key: str) -> pd.DataFrame:
-    if variant_key == "all":
-        return frame
     if variant_key == "indel":
         return frame[frame["variant_subtype"].isin({"insertion", "deletion"})]
     return frame[frame["variant_subtype"] == variant_key]
+
+
+def filter_target_context(frame: pd.DataFrame, target_context_key: str) -> pd.DataFrame:
+    if target_context_key == "all":
+        return frame
+    return frame[frame["target_context"] == target_context_key]
 
 
 def filter_consequence(frame: pd.DataFrame, consequence_key: str) -> pd.DataFrame:
@@ -447,6 +548,7 @@ def fixed_estimability_reason(working: pd.DataFrame) -> str:
 def fixed_adjusted_row(
     strategy: str,
     variant_type: str,
+    target_context: str,
     consequence: str,
     working: pd.DataFrame,
     *,
@@ -461,6 +563,7 @@ def fixed_adjusted_row(
     return {
         "strategy": strategy,
         "variant_type": variant_type,
+        "target_context": target_context,
         "consequence": consequence,
         "usable_rows": int(len(working)),
         "populated_bands": int(working["band"].nunique()) if not working.empty else 0,
@@ -505,7 +608,13 @@ def compute_continuous_firth(
                 lambda value: int(bool(eligible.intersection(str(value).split("|"))))
             )
 
-    for analysis_index, (strategy, variant_key, consequence_key, working) in enumerate(
+    for analysis_index, (
+        strategy,
+        variant_key,
+        target_context_key,
+        consequence_key,
+        working,
+    ) in enumerate(
         selector_frames(
             cohort,
             observed_by_strategy_type,
@@ -522,6 +631,7 @@ def compute_continuous_firth(
                 "analysis_id": analysis_id,
                 "strategy": strategy,
                 "variant_type": variant_key,
+                "target_context": target_context_key,
                 "consequence": consequence_key,
                 **metrics,
                 "spline_df": SPLINE_DF,
@@ -533,7 +643,15 @@ def compute_continuous_firth(
                 "reason": reason,
             }
         )
-        distribution_rows.extend(distribution_detail_rows(working, strategy, variant_key, consequence_key))
+        distribution_rows.extend(
+            distribution_detail_rows(
+                working,
+                strategy,
+                variant_key,
+                target_context_key,
+                consequence_key,
+            )
+        )
         if not reason:
             fit_specs.append(
                 {
@@ -542,6 +660,7 @@ def compute_continuous_firth(
                     "observation_column": observation_columns[strategy],
                     "eligibility_column": eligibility_columns[strategy],
                     "variant_type": variant_key,
+                    "target_context": target_context_key,
                     "consequence": consequence_key,
                 }
             )
@@ -563,7 +682,12 @@ def compute_continuous_firth(
             for column in ["odds_ratio", "ci_low", "ci_high", "plr_p", "status", "reason"]:
                 results.at[index, column] = fitted_row.get(column, results.at[index, column])
 
-    add_grouped_bh(results, "plr_p", "plr_q", ["variant_type", "consequence"])
+    add_grouped_bh(
+        results,
+        "plr_p",
+        "plr_q",
+        ["variant_type", "target_context", "consequence"],
+    )
     return results, pd.DataFrame(distribution_rows), versions
 
 
@@ -622,6 +746,7 @@ def distribution_detail_rows(
     working: pd.DataFrame,
     strategy: str,
     variant_type: str,
+    target_context: str,
     consequence: str,
 ) -> list[dict[str, object]]:
     groups = [(1, "ALT observed"), (0, "ALT not observed")]
@@ -656,6 +781,7 @@ def distribution_detail_rows(
             {
                 "strategy": strategy,
                 "variant_type": variant_type,
+                "target_context": target_context,
                 "consequence": consequence,
                 "group": label,
                 "bin_left": float(left),
@@ -708,6 +834,7 @@ def run_firth_models(
         "variant_key",
         "label_class",
         "variant_subtype",
+        "target_context",
         "consequence_groups",
         SCORE_COLUMN,
         *specs["observation_column"].drop_duplicates().tolist(),

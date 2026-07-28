@@ -15,6 +15,7 @@ from analytics.strategy_report import (
     dataframe_records,
     format_table_dataframe,
     gnomad_stratification_figure,
+    hidden_clinvar_association_views,
     overview_strategy_table,
     resolve_run_inputs,
     validate_report_inputs,
@@ -311,6 +312,7 @@ def test_clinvar_association_serializes_sparse_results_and_has_all_controls() ->
             {
                 "strategy": "s1",
                 "variant_type": "snv",
+                "target_context": "all",
                 "consequence": "missense",
                 "odds_ratio": float("inf"),
                 "ci_low": float("nan"),
@@ -339,10 +341,12 @@ def test_clinvar_association_serializes_sparse_results_and_has_all_controls() ->
     assert 'data-role="strategy"' in html
     assert 'data-role="mode"' in html
     assert 'data-role="variant-type"' in html
+    assert 'data-role="target-context"' in html
     assert 'data-role="consequence"' in html
     assert "phyloP fixed bands" in html
     assert "phyloP continuous" in html
     assert "Missense" in html
+    assert "All target contexts" in html
     assert "Infinity" not in html
     assert "NaN" not in html
 
@@ -350,3 +354,40 @@ def test_clinvar_association_serializes_sparse_results_and_has_all_controls() ->
 def test_dataframe_records_replaces_nonfinite_values() -> None:
     records = dataframe_records(pd.DataFrame({"value": [1.0, float("inf"), float("nan")]}))
     assert records == [{"value": 1.0}, {"value": "inf"}, {"value": None}]
+
+
+def test_hidden_clinvar_association_views_reports_suppressed_selector_counts() -> None:
+    frame = pd.DataFrame(
+        [
+            {
+                "strategy": "s1",
+                "variant_type": "snv",
+                "target_context": "all",
+                "consequence": "all",
+                "usable_rows": 100,
+                "status": "estimated",
+                "reason": "",
+            },
+            {
+                "strategy": "s1",
+                "variant_type": "snv",
+                "target_context": "all",
+                "consequence": "splice_region",
+                "usable_rows": 0,
+                "status": "not_estimable",
+                "reason": "No scored alleles in this band.",
+            },
+        ]
+    )
+    validation = SimpleNamespace(
+        unadjusted=frame,
+        fixed_adjusted=frame,
+        continuous=frame,
+    )
+
+    summary, hidden = hidden_clinvar_association_views(validation)
+
+    assert summary["Displayed selector combinations"].tolist() == [1, 1, 1]
+    assert summary["Hidden selector combinations"].tolist() == [1, 1, 1]
+    assert hidden["Consequence subset"].tolist() == ["Splice region"] * 3
+    assert hidden["N across strategies"].tolist() == ["0-0"] * 3

@@ -20,9 +20,15 @@ matches_consequence <- function(values, selector) {
   grepl(pattern, values)
 }
 
+matches_target_context <- function(values, selector) {
+  if (selector == "all") return(rep(TRUE, length(values)))
+  values == selector
+}
+
 fit_one <- function(spec) {
   keep <- cohort[[spec$eligibility_column]] == 1 &
     matches_variant_type(cohort$variant_subtype, spec$variant_type) &
+    matches_target_context(cohort$target_context, spec$target_context) &
     matches_consequence(cohort$consequence_groups, spec$consequence)
   model_data <- data.frame(
     benign = cohort$benign[keep],

@@ -31,6 +31,7 @@ from analytics.core.conservation_validation import (
     PHYLOP_BANDS,
     SCORE_COLUMN,
     SPLINE_DF,
+    TARGET_CONTEXT_OPTIONS,
     VARIANT_TYPE_OPTIONS,
     ConservationValidation,
     build_conservation_cohort,
@@ -691,7 +692,7 @@ def validation_method_table() -> pd.DataFrame:
                 "Definition": (
                     "Raw odds ratio, approximate 95% CI on log(OR) with Haldane 0.5 correction for zero cells, "
                     "and two-sided Fisher exact p-value. Benjamini-Hochberg FDR is computed across strategies "
-                    "within each variant-type and consequence selection."
+                    "within each variant-type, target-context, and consequence selection."
                 ),
             },
         ]
@@ -726,6 +727,15 @@ def conservation_validation_method_table(analysis: ConservationAnalysis | None) 
                     "For each strategy, the denominator is restricted to genes with an alignment result for that "
                     "strategy. Within those genes, ALT_observed=0 means that the strategy did not report that exact "
                     "normalized ALT; no per-base callability filter is applied."
+                ),
+            },
+            {
+                "Step": "Target contexts",
+                "Definition": (
+                    "Each normalized ClinVar allele is assigned to one target-locus context using the affected "
+                    "target position and the precedence CDS > UTR > exon > intron > other. If the same allele "
+                    "overlaps multiple target genes, the highest-priority context is used once, without duplicating "
+                    "the allele."
                 ),
             },
             {
@@ -778,17 +788,16 @@ def conservation_validation_method_table(analysis: ConservationAnalysis | None) 
             {
                 "Step": "Multiplicity",
                 "Definition": (
-                    "For each analysis, variant-type, and consequence selection, Benjamini-Hochberg correction is "
-                    "applied across strategies. Band-specific Fisher tests are corrected across strategies within "
-                    "the same band."
+                    "For each analysis, variant-type, target-context, and consequence selection, "
+                    "Benjamini-Hochberg correction is applied across strategies. Band-specific Fisher tests are "
+                    "corrected across strategies within the same band."
                 ),
             },
             {
                 "Step": "INDEL interpretation",
                 "Definition": (
                     "The fixed thresholds have their nominal single-base p-value interpretation only for SNVs. "
-                    "INDEL, insertion, deletion, and All-variant views apply the same bands to an aggregate score "
-                    "for descriptive comparability."
+                    "INDEL views apply the same bands to an aggregate score for descriptive comparability."
                 ),
             },
             {
@@ -800,6 +809,52 @@ def conservation_validation_method_table(analysis: ConservationAnalysis | None) 
             },
         ]
     )
+
+
+def hidden_clinvar_association_views(validation: ConservationValidation) -> tuple[pd.DataFrame, pd.DataFrame]:
+    mode_frames = [
+        ("Unadjusted", validation.unadjusted),
+        ("phyloP fixed bands", validation.fixed_adjusted),
+        ("phyloP continuous", validation.continuous),
+    ]
+    variant_labels = dict(VARIANT_TYPE_OPTIONS)
+    context_labels = dict(TARGET_CONTEXT_OPTIONS)
+    consequence_labels = dict(CONSEQUENCE_OPTIONS)
+    hidden_rows = []
+    summary_rows = []
+    group_columns = ["variant_type", "target_context", "consequence"]
+    for mode_label, frame in mode_frames:
+        hidden_count = 0
+        visible_count = 0
+        for keys, group in frame.groupby(group_columns, sort=False, dropna=False):
+            visible = group["status"].astype(str).ne("not_estimable").any()
+            if visible:
+                visible_count += 1
+                continue
+            hidden_count += 1
+            usable = pd.to_numeric(group["usable_rows"], errors="coerce").dropna().astype(int)
+            reasons = sorted({str(value) for value in group["reason"] if str(value)})
+            variant_type, target_context, consequence = keys
+            hidden_rows.append(
+                {
+                    "Analysis": mode_label,
+                    "Variant type": variant_labels.get(str(variant_type), str(variant_type)),
+                    "Target context": context_labels.get(str(target_context), str(target_context)),
+                    "Consequence subset": consequence_labels.get(str(consequence), str(consequence)),
+                    "N across strategies": (
+                        f"{format_int(usable.min())}-{format_int(usable.max())}" if not usable.empty else "0"
+                    ),
+                    "Reason": "; ".join(reasons) or "No estimable strategy result.",
+                }
+            )
+        summary_rows.append(
+            {
+                "Analysis": mode_label,
+                "Displayed selector combinations": visible_count,
+                "Hidden selector combinations": hidden_count,
+            }
+        )
+    return pd.DataFrame(summary_rows), pd.DataFrame(hidden_rows)
 
 
 def negative_control_method_table() -> pd.DataFrame:
@@ -1857,6 +1912,8 @@ def build_conservation_analysis(
     cohort = build_conservation_cohort(
         universe=validation.universe,
         conservation=conservation.annotations,
+        genes_tsv=inputs.genes_tsv,
+        target_features_tsv=inputs.target_features_tsv,
     )
     results = compute_conservation_validation(
         cohort=cohort,
@@ -1908,6 +1965,7 @@ def clinvar_association_view(validation: ConservationValidation) -> str:
         ],
         "strategies": [{"key": value, "label": strategy_label(value)} for value in strategies],
         "variantTypes": [{"key": key, "label": label} for key, label in VARIANT_TYPE_OPTIONS],
+        "targetContexts": [{"key": key, "label": label} for key, label in TARGET_CONTEXT_OPTIONS],
         "consequences": [{"key": key, "label": label} for key, label in CONSEQUENCE_OPTIONS],
         "primary": dataframe_records(primary),
         "fixedDetail": dataframe_records(validation.fixed_bins),
@@ -1918,6 +1976,7 @@ def clinvar_association_view(validation: ConservationValidation) -> str:
     <div class="analysis-controls" id="clinvar-association-controls">
       <label>Analysis<select data-role="mode"></select></label>
       <label>Variant type<select data-role="variant-type"></select></label>
+      <label>Target context<select data-role="target-context"></select></label>
       <label>Consequence subset<select data-role="consequence"></select></label>
     </div>
     <div id="clinvar-association-status" class="analysis-note" hidden></div>
@@ -1934,12 +1993,14 @@ def clinvar_association_view(validation: ConservationValidation) -> str:
       const controls = document.getElementById(config.viewId + '-controls');
       const modeSelect = controls.querySelector('[data-role="mode"]');
       const variantSelect = controls.querySelector('[data-role="variant-type"]');
+      const targetContextSelect = controls.querySelector('[data-role="target-context"]');
       const consequenceSelect = controls.querySelector('[data-role="consequence"]');
       const strategySelect = document.querySelector('#' + config.viewId + '-strategy-control [data-role="strategy"]');
       const optionMap = values => Object.fromEntries(values.map(value => [value.key, value.label]));
       const strategyLabels = optionMap(config.strategies);
       const modeLabels = optionMap(config.modes);
       const variantLabels = optionMap(config.variantTypes);
+      const targetContextLabels = optionMap(config.targetContexts);
       const consequenceLabels = optionMap(config.consequences);
       const addOptions = (select, values) => values.forEach(value => {{
         const option = document.createElement('option');
@@ -1947,10 +2008,11 @@ def clinvar_association_view(validation: ConservationValidation) -> str:
       }});
       addOptions(modeSelect, config.modes);
       addOptions(variantSelect, config.variantTypes);
-      addOptions(consequenceSelect, config.consequences);
+      addOptions(targetContextSelect, config.targetContexts);
       addOptions(strategySelect, config.strategies);
       modeSelect.value = 'unadjusted';
       variantSelect.value = 'snv';
+      targetContextSelect.value = 'all';
       consequenceSelect.value = 'all';
 
       const finite = value => value !== null && value !== 'inf' && value !== '-inf' && Number.isFinite(Number(value));
@@ -1976,6 +2038,7 @@ def clinvar_association_view(validation: ConservationValidation) -> str:
       }};
       const matchesSelection = row => row.mode === modeSelect.value
         && row.variant_type === variantSelect.value
+        && row.target_context === targetContextSelect.value
         && row.consequence === consequenceSelect.value;
       const plotValue = row => {{
         const raw = number(row.result_or);
@@ -1987,11 +2050,34 @@ def clinvar_association_view(validation: ConservationValidation) -> str:
       }};
       const currentRows = () => config.primary.filter(matchesSelection);
 
+      function refreshConsequences() {{
+        const available = new Set(config.primary.filter(row =>
+          row.mode === modeSelect.value
+          && row.variant_type === variantSelect.value
+          && row.target_context === targetContextSelect.value
+          && row.status !== 'not_estimable'
+        ).map(row => row.consequence));
+        const previous = consequenceSelect.value || 'all';
+        consequenceSelect.replaceChildren();
+        const options = config.consequences.filter(value => available.has(value.key));
+        addOptions(consequenceSelect, options);
+        if (available.has(previous)) consequenceSelect.value = previous;
+        else if (available.has('all')) consequenceSelect.value = 'all';
+        else if (options.length) consequenceSelect.value = options[0].key;
+        else {{
+          const option = document.createElement('option');
+          option.value = ''; option.textContent = 'No estimable subsets'; option.disabled = true;
+          consequenceSelect.appendChild(option);
+          consequenceSelect.value = '';
+        }}
+      }}
+
       function renderForest(rows) {{
         const plotted = rows.map(row => ({{row, x: plotValue(row)}}))
           .filter(item => item.x !== null && finite(item.row.ci_low) && finite(item.row.ci_high))
           .sort((left, right) => right.x - left.x);
-        const title = `${{modeLabels[modeSelect.value]}}: ${{variantLabels[variantSelect.value]}}, ${{consequenceLabels[consequenceSelect.value]}}`;
+        const consequenceLabel = consequenceLabels[consequenceSelect.value] || 'No estimable subset';
+        const title = `${{modeLabels[modeSelect.value]}}: ${{variantLabels[variantSelect.value]}}, ${{targetContextLabels[targetContextSelect.value]}}, ${{consequenceLabel}}`;
         const trace = {{
           type: 'scatter', mode: 'markers',
           x: plotted.map(item => item.x),
@@ -2044,7 +2130,9 @@ def clinvar_association_view(validation: ConservationValidation) -> str:
 
       function renderFixed(row) {{
         const details = config.fixedDetail.filter(item => item.strategy === strategySelect.value
-          && item.variant_type === variantSelect.value && item.consequence === consequenceSelect.value);
+          && item.variant_type === variantSelect.value
+          && item.target_context === targetContextSelect.value
+          && item.consequence === consequenceSelect.value);
         const groups = [
           ['ALT observed', 'benign_observed', 'pathogenic_observed', '#2166ac'],
           ['ALT not observed', 'benign_not_observed', 'pathogenic_not_observed', '#8c8c8c'],
@@ -2078,7 +2166,9 @@ def clinvar_association_view(validation: ConservationValidation) -> str:
 
       function renderContinuous(row) {{
         const details = config.continuousDetail.filter(item => item.strategy === strategySelect.value
-          && item.variant_type === variantSelect.value && item.consequence === consequenceSelect.value);
+          && item.variant_type === variantSelect.value
+          && item.target_context === targetContextSelect.value
+          && item.consequence === consequenceSelect.value);
         const styles = {{
           'ALT observed': '#2166ac',
           'ALT not observed': '#8c8c8c',
@@ -2128,7 +2218,12 @@ def clinvar_association_view(validation: ConservationValidation) -> str:
         else if (modeSelect.value === 'fixed') renderFixed(selected);
         else renderContinuous(selected);
       }}
-      [modeSelect, variantSelect, consequenceSelect, strategySelect].forEach(select => select.addEventListener('change', render));
+      [modeSelect, variantSelect, targetContextSelect].forEach(select => select.addEventListener('change', () => {{
+        refreshConsequences();
+        render();
+      }}));
+      [consequenceSelect, strategySelect].forEach(select => select.addEventListener('change', render));
+      refreshConsequences();
       render();
     }})();
     </script>
@@ -2635,9 +2730,11 @@ def build_methods_sections(
     sections.append("</details>")
     sections.append("<details><summary>Target-context assignment</summary>")
     sections.append(
-        "<p class=\"lead\">Candidate positions are assigned to one exclusive target context. "
+        "<p class=\"lead\">Candidate and ClinVar validation positions are assigned to one exclusive target context. "
         "Overlapping transcript features use the precedence CDS &gt; UTR &gt; exon &gt; intron; exon sequence "
-        "outside CDS/UTR is labelled Other exon, and remaining target sequence is labelled Other.</p>"
+        "outside CDS/UTR is labelled Other exon, and remaining target sequence is labelled Other. "
+        "The ClinVar Association selector exposes All, CDS, UTR, and Intron; Other exon and Other remain included "
+        "in the All denominator.</p>"
     )
     sections.append("</details>")
     sections.append("<details><summary>ClinVar validation denominator and statistics</summary>")
@@ -2665,6 +2762,23 @@ def build_methods_sections(
     sections.append(table_html(conservation_validation_method_table(conservation_analysis), classes="table table-sm table-striped"))
     sections.append("<h4>ClinVar MC consequence subsets</h4>")
     sections.append(table_html(validation_consequence_grouping_table(), classes="table table-sm table-striped"))
+    if conservation_analysis is not None:
+        visibility_summary, hidden_views = hidden_clinvar_association_views(
+            conservation_analysis.validation
+        )
+        sections.append("<h4>Adaptive selector visibility</h4>")
+        sections.append(
+            "<p>Consequence options are hidden from the interactive view only when no strategy has an "
+            "estimable result for the selected analysis, variant type, and target context. Hidden combinations "
+            "remain listed here; no minimum sample-size threshold is applied.</p>"
+        )
+        sections.append(
+            table_html(visibility_summary, classes="table table-sm table-striped")
+        )
+        if not hidden_views.empty:
+            sections.append(
+                table_html(hidden_views, classes="table table-sm table-striped")
+            )
     sections.append("</details>")
     sections.append("<details><summary>Candidate-wide phyloP stratification</summary>")
     sections.append(

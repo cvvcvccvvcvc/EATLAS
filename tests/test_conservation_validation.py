@@ -14,7 +14,10 @@ from analytics.core.clinvar_validation import parse_molecular_consequences
 from analytics.core.conservation import DEFAULT_TRACK_NAMES, PositionScores, Track, annotate_track, score_positions
 from analytics.core.stats import benjamini_hochberg
 from analytics.core.conservation_validation import (
+    CONSEQUENCE_OPTIONS,
     SCORE_COLUMN,
+    TARGET_CONTEXT_OPTIONS,
+    VARIANT_TYPE_OPTIONS,
     assign_phylop_band,
     build_conservation_cohort,
     compute_continuous_firth,
@@ -113,7 +116,26 @@ def test_consequence_membership_is_nonexclusive() -> None:
     assert consequence_memberships("missense_variant|unrecognized_term") == {"missense", "other"}
 
 
-def test_cohort_keeps_snv_and_indel_subtypes_and_multiple_consequences() -> None:
+def test_clinvar_association_selector_contract_keeps_all_consequences() -> None:
+    assert [key for key, _label in VARIANT_TYPE_OPTIONS] == ["snv", "indel"]
+    assert [key for key, _label in TARGET_CONTEXT_OPTIONS] == ["all", "cds", "utr", "intron"]
+    assert [key for key, _label in CONSEQUENCE_OPTIONS] == [
+        "all",
+        "missense",
+        "synonymous",
+        "protein_truncating",
+        "canonical_splice",
+        "inframe_protein_altering",
+        "splice_region",
+        "intronic",
+        "utr_noncoding",
+        "other",
+    ]
+
+
+def test_cohort_keeps_snv_and_indel_subtypes_multiple_consequences_and_target_context(
+    tmp_path: Path,
+) -> None:
     universe = pd.DataFrame(
         [
             universe_row("1:10:A>G", "snv", "A", "G", "missense_variant|splice_region_variant"),
@@ -124,10 +146,30 @@ def test_cohort_keeps_snv_and_indel_subtypes_and_multiple_consequences() -> None
     conservation = pd.DataFrame(
         {"variant_key": universe["variant_key"], SCORE_COLUMN: [-1.0, 0.2, 2.0]}
     )
+    genes_path = tmp_path / "genes.tsv.gz"
+    pd.DataFrame([{"gene_id": "1", "begin": 1, "sequence_length": 100}]).to_csv(
+        genes_path,
+        sep="\t",
+        index=False,
+        compression="gzip",
+    )
+    features_path = tmp_path / "target_features.tsv.gz"
+    pd.DataFrame(
+        [
+            {"gene_id": "1", "feature_type": "cds", "target_start0": 0, "target_end0": 15},
+            {"gene_id": "1", "feature_type": "intron", "target_start0": 15, "target_end0": 100},
+        ]
+    ).to_csv(features_path, sep="\t", index=False, compression="gzip")
 
-    cohort = build_conservation_cohort(universe=universe, conservation=conservation)
+    cohort = build_conservation_cohort(
+        universe=universe,
+        conservation=conservation,
+        genes_tsv=genes_path,
+        target_features_tsv=features_path,
+    )
 
     assert cohort.variants["variant_subtype"].tolist() == ["snv", "insertion", "deletion"]
+    assert cohort.variants["target_context"].tolist() == ["cds", "intron", "intron"]
     assert cohort.variants.loc[0, "consequence_groups"] == "missense|splice_region"
     assert cohort.summary["multiple_consequence_group_count"] == 1
 
@@ -152,11 +194,13 @@ def test_fixed_bands_use_prespecified_boundaries_and_all_selectors(tmp_path: Pat
     selected_bins = bins[
         (bins["strategy"] == "s1")
         & (bins["variant_type"] == "snv")
+        & (bins["target_context"] == "all")
         & (bins["consequence"] == "missense")
     ]
     selected_adjusted = adjusted[
         (adjusted["strategy"] == "s1")
         & (adjusted["variant_type"] == "snv")
+        & (adjusted["target_context"] == "all")
         & (adjusted["consequence"] == "missense")
     ].iloc[0]
     assert len(selected_bins) == 3
@@ -166,6 +210,7 @@ def test_fixed_bands_use_prespecified_boundaries_and_all_selectors(tmp_path: Pat
     empty_indel_bins = bins[
         (bins["strategy"] == "s1")
         & (bins["variant_type"] == "indel")
+        & (bins["target_context"] == "all")
         & (bins["consequence"] == "all")
     ]
     assert set(empty_indel_bins["status"]) == {"not_estimable"}
@@ -187,14 +232,17 @@ def test_unadjusted_enrichment_supports_shared_selectors_and_strategy_level_fdr(
         strategies=["s1", "s2"],
     )
 
-    selected = results[
-        results["variant_type"].eq("snv") & results["consequence"].eq("missense")
-    ].sort_values("strategy")
-    assert len(selected) == 2
-    assert selected["usable_rows"].tolist() == [120, 120]
-    assert selected["fisher_q"].tolist() == pytest.approx(
-        benjamini_hochberg(selected["fisher_p"].tolist())
-    )
+    for target_context in ["all", "cds"]:
+        selected = results[
+            results["variant_type"].eq("snv")
+            & results["target_context"].eq(target_context)
+            & results["consequence"].eq("missense")
+        ].sort_values("strategy")
+        assert len(selected) == 2
+        assert selected["usable_rows"].tolist() == [120, 120]
+        assert selected["fisher_q"].tolist() == pytest.approx(
+            benjamini_hochberg(selected["fisher_p"].tolist())
+        )
 
 
 def test_unadjusted_enrichment_uses_strategy_specific_gene_denominator() -> None:
@@ -213,7 +261,9 @@ def test_unadjusted_enrichment_uses_strategy_specific_gene_denominator() -> None
     )
 
     selected = results[
-        results["variant_type"].eq("snv") & results["consequence"].eq("missense")
+        results["variant_type"].eq("snv")
+        & results["target_context"].eq("all")
+        & results["consequence"].eq("missense")
     ].iloc[0]
     assert selected["usable_rows"] == 60
 
@@ -231,7 +281,9 @@ def test_continuous_precheck_rejects_nonoverlapping_score_ranges(tmp_path: Path)
     )
 
     selected = results[
-        (results["variant_type"] == "snv") & (results["consequence"] == "missense")
+        (results["variant_type"] == "snv")
+        & (results["target_context"] == "all")
+        & (results["consequence"] == "missense")
     ].iloc[0]
     assert selected["status"] == "not_estimable"
     assert "do not overlap" in selected["reason"]
@@ -284,8 +336,11 @@ def test_continuous_model_exports_strategy_eligibility_mask(
 
     assert captured["model_data"]["eligible_0"].sum() == 60
     assert set(captured["specs"]["eligibility_column"]) == {"eligible_0"}
+    assert set(captured["specs"]["target_context"]) == {"all", "cds"}
     selected = results[
-        results["variant_type"].eq("snv") & results["consequence"].eq("missense")
+        results["variant_type"].eq("snv")
+        & results["target_context"].eq("all")
+        & results["consequence"].eq("missense")
     ].iloc[0]
     assert selected["usable_rows"] == 60
 
@@ -321,7 +376,9 @@ def test_firth_model_returns_profile_likelihood_result_when_r_is_available(tmp_p
     )
 
     selected = results[
-        (results["variant_type"] == "snv") & (results["consequence"] == "missense")
+        (results["variant_type"] == "snv")
+        & (results["target_context"] == "all")
+        & (results["consequence"] == "missense")
     ].iloc[0]
     assert selected["status"] == "estimated"
     assert selected["odds_ratio"] > 1
@@ -338,6 +395,7 @@ def universe_row(key: str, variant_type: str, ref: str, alt: str, terms: str) ->
         "alt": alt,
         "label_class": "benign",
         "clinvar_mc_terms": terms,
+        "gene_ids": "1",
     }
 
 
@@ -351,6 +409,7 @@ def synthetic_cohort(count: int) -> pd.DataFrame:
             "label_class": np.where(index % 4 == 0, "pathogenic", "benign"),
             "consequence_groups": "missense",
             "consequence_mask": consequence_membership_mask("missense_variant"),
+            "target_context": "cds",
             SCORE_COLUMN: np.linspace(-3, 3, count),
         }
     )
