@@ -240,6 +240,8 @@ def prepare_gene_task(
     partition_id: str,
 ) -> dict[str, object]:
     ortholog_meta_by_id = {row["ortholog_gene_id"]: row for row in source_orthologs}
+    target_ready = target_path is not None and target_features_path is not None
+    ortholog_ready = target_ready and ortholog_path is not None and bool(ortholog_meta_by_id)
     task_row = {
         "gene_id": gene_id,
         "partition_id": partition_id,
@@ -248,21 +250,21 @@ def prepare_gene_task(
         "ortholog_fasta": str(ortholog_path or ""),
         "ortholog_count": len(ortholog_meta_by_id),
         "target_length": gene.get("sequence_length", ""),
+        "target_ready": str(target_ready).lower(),
+        "ortholog_ready": str(ortholog_ready).lower(),
         "status": "ready",
         "message": "",
     }
     if target_path is None:
         task_row.update({"status": "missing_target_fasta", "message": "No target FASTA for gene"})
         return task_row
-    if ortholog_path is None:
-        task_row.update({"status": "missing_ortholog_fasta", "message": "No ortholog FASTA for gene"})
-        return task_row
-    if not ortholog_meta_by_id:
-        task_row.update({"status": "no_ortholog_metadata", "message": "No ortholog metadata rows for gene"})
-        return task_row
     if target_features_path is None:
         task_row.update({"status": "missing_target_features", "message": "No target features for gene"})
         return task_row
+    if ortholog_path is None:
+        task_row.update({"status": "missing_ortholog_fasta", "message": "No ortholog FASTA for gene"})
+    elif not ortholog_meta_by_id:
+        task_row.update({"status": "no_ortholog_metadata", "message": "No ortholog metadata rows for gene"})
 
     task_dir = tasks_dir / f"task_{gene_id}"
     task_dir.mkdir(parents=True, exist_ok=True)
@@ -308,7 +310,11 @@ def prepare_gene_task(
     task_row.update(
         {
             "target_fasta": str(Path("sequences") / "targets" / target_path.name),
-            "ortholog_fasta": str(Path("sequences") / "orthologs" / ortholog_path.name),
+            "ortholog_fasta": (
+                str(Path("sequences") / "orthologs" / ortholog_path.name)
+                if ortholog_path is not None
+                else ""
+            ),
             "ortholog_count": len(ortholog_meta_rows),
         }
     )
@@ -372,14 +378,24 @@ def main() -> None:
             else (1, str(row["gene_id"]))
         )
     )
-    ready_gene_ids = [
+    target_ready_gene_ids = [
         str(row["gene_id"])
         for row in task_rows
-        if row["status"] == "ready"
+        if row["target_ready"] == "true"
     ]
     write_partition_genes(
-        {gene_id: genes[gene_id] for gene_id in ready_gene_ids},
-        {gene_id: gene_partitions[gene_id] for gene_id in ready_gene_ids},
+        {gene_id: genes[gene_id] for gene_id in target_ready_gene_ids},
+        {gene_id: gene_partitions[gene_id] for gene_id in target_ready_gene_ids},
+        args.outdir / "target_partition_genes",
+    )
+    ortholog_ready_gene_ids = [
+        str(row["gene_id"])
+        for row in task_rows
+        if row["ortholog_ready"] == "true"
+    ]
+    write_partition_genes(
+        {gene_id: genes[gene_id] for gene_id in ortholog_ready_gene_ids},
+        {gene_id: gene_partitions[gene_id] for gene_id in ortholog_ready_gene_ids},
         args.outdir / "partition_genes",
     )
 
@@ -391,6 +407,8 @@ def main() -> None:
         "ortholog_fasta",
         "ortholog_count",
         "target_length",
+        "target_ready",
+        "ortholog_ready",
         "status",
         "message",
     ]

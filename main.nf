@@ -10,6 +10,7 @@ AVAILABLE_ALIGNMENT_STRATEGIES = [
     'bwa_pseudoreads',
     'precomputed_ensembl_92_mammals_epo_extended',
 ]
+ENSEMBL_COMPARA_STRATEGY = 'precomputed_ensembl_92_mammals_epo_extended'
 
 def parseAlignmentStrategies(rawValue) {
     def raw = rawValue == null ? 'all' : rawValue.toString().trim()
@@ -34,10 +35,6 @@ def parseAlignmentStrategies(rawValue) {
     return selected
 }
 
-
-def alignmentResultProcessCount(selectedStrategies) {
-    return selectedStrategies.size()
-}
 
 def geneIdFromFastaPath(value) {
     def name = value instanceof java.nio.file.Path ? value.getFileName().toString() : new File(value.toString()).name
@@ -109,7 +106,9 @@ if (params.stage == 'annotate' && !params.fetch_dir) {
 }
 
 SELECTED_ALIGNMENT_STRATEGIES = parseAlignmentStrategies(params.alignment_strategies)
-ALIGNMENT_RESULT_PROCESS_COUNT = alignmentResultProcessCount(SELECTED_ALIGNMENT_STRATEGIES)
+SELECTED_ORTHOLOG_ALIGNMENT_STRATEGIES = SELECTED_ALIGNMENT_STRATEGIES.findAll {
+    it != ENSEMBL_COMPARA_STRATEGY
+}
 
 include { VALIDATE_IDS } from './modules/local/validate_ids.nf'
 include { CHECK_RUNTIME } from './modules/local/check_runtime.nf'
@@ -219,38 +218,67 @@ workflow ALIGNMENT_STAGE {
         gene_id = dir.baseName.replaceFirst(/^task_/, '')
         tuple(gene_id, dir)
     }
-    task_partitions = BUILD_ALIGNMENT_TASKS.out.alignment_tasks
+    task_capabilities = BUILD_ALIGNMENT_TASKS.out.alignment_tasks
         .splitCsv(header: true, sep: '\t', decompress: true)
-        .filter { row -> row.status == 'ready' }
-        .map { row -> tuple(row.gene_id as String, row.partition_id as String) }
-    ready_genes_by_partition = task_partitions
+        .map { row ->
+            tuple(
+                row.gene_id as String,
+                row.partition_id as String,
+                (row.target_ready as String) == 'true',
+                (row.ortholog_ready as String) == 'true'
+            )
+        }
+    target_task_partitions = task_capabilities
+        .filter { gene_id, partition_id, target_ready, ortholog_ready -> target_ready }
+        .map { gene_id, partition_id, target_ready, ortholog_ready -> tuple(gene_id, partition_id) }
+    ortholog_task_partitions = task_capabilities
+        .filter { gene_id, partition_id, target_ready, ortholog_ready -> ortholog_ready }
+        .map { gene_id, partition_id, target_ready, ortholog_ready -> tuple(gene_id, partition_id) }
+    eligible_task_partitions = task_capabilities
+        .filter { gene_id, partition_id, target_ready, ortholog_ready ->
+            (SELECTED_ALIGNMENT_STRATEGIES.contains(ENSEMBL_COMPARA_STRATEGY) && target_ready) ||
+            (!SELECTED_ORTHOLOG_ALIGNMENT_STRATEGIES.isEmpty() && ortholog_ready)
+        }
+        .map { gene_id, partition_id, target_ready, ortholog_ready -> tuple(gene_id, partition_id) }
+    eligible_genes_by_partition = eligible_task_partitions
         .map { gene_id, partition_id -> tuple(partition_id, gene_id) }
         .groupTuple()
         .map { partition_id, gene_ids ->
             tuple(partition_id, gene_ids.unique().sort())
         }
-    task_dirs_by_gene = task_dirs_by_gene_unpartitioned
-        .join(task_partitions)
+    target_task_dirs_by_gene = task_dirs_by_gene_unpartitioned
+        .join(target_task_partitions)
+        .map { gene_id, dir, partition_id -> tuple(gene_id, partition_id, dir) }
+    ortholog_task_dirs_by_gene = task_dirs_by_gene_unpartitioned
+        .join(ortholog_task_partitions)
+        .map { gene_id, dir, partition_id -> tuple(gene_id, partition_id, dir) }
+    eligible_task_dirs_by_gene = task_dirs_by_gene_unpartitioned
+        .join(eligible_task_partitions)
         .map { gene_id, dir, partition_id -> tuple(gene_id, partition_id, dir) }
     target_fastas_by_gene = sequences.flatMap { seq_dir -> fastaFilesByGene(seq_dir, 'targets') }
     ortholog_fastas_by_gene = sequences.flatMap { seq_dir -> fastaFilesByGene(seq_dir, 'orthologs') }
     target_features_by_gene = BUILD_ALIGNMENT_TASKS.out.target_feature_parts.flatten().map { path ->
         tuple(path.baseName.replaceFirst(/\.tsv$/, ''), path)
     }
-    partition_genes = BUILD_ALIGNMENT_TASKS.out.partition_genes.flatten().map { path ->
+    selected_partition_genes = (
+        SELECTED_ALIGNMENT_STRATEGIES.contains(ENSEMBL_COMPARA_STRATEGY)
+        ? BUILD_ALIGNMENT_TASKS.out.target_partition_genes
+        : BUILD_ALIGNMENT_TASKS.out.partition_genes
+    )
+    partition_genes = selected_partition_genes.flatten().map { path ->
         tuple(path.baseName.replaceFirst(/\.tsv$/, ''), path)
     }
-    target_fastas_by_partition = task_dirs_by_gene
+    target_fastas_by_partition = eligible_task_dirs_by_gene
         .map { gene_id, partition_id, dir -> tuple(gene_id, partition_id) }
         .join(target_fastas_by_gene)
         .map { gene_id, partition_id, fasta -> tuple(partition_id, fasta) }
         .groupTuple()
-    target_features_by_partition = task_dirs_by_gene
+    target_features_by_partition = eligible_task_dirs_by_gene
         .map { gene_id, partition_id, dir -> tuple(gene_id, partition_id) }
         .join(target_features_by_gene)
         .map { gene_id, partition_id, features -> tuple(partition_id, features) }
         .groupTuple()
-    alignment_inputs = task_dirs_by_gene
+    alignment_inputs = ortholog_task_dirs_by_gene
         .join(target_fastas_by_gene)
         .join(ortholog_fastas_by_gene)
         .map { gene_id, partition_id, task_dir, source_target_fasta, source_ortholog_fasta ->
@@ -261,9 +289,6 @@ workflow ALIGNMENT_STAGE {
                 source_ortholog_fasta
             )
         }
-    task_dirs = task_dirs_by_gene.map { gene_id, partition_id, dir ->
-        tuple([id: "task_${gene_id}", gene_id: gene_id, partition_id: partition_id], dir)
-    }
     alignment_result_dirs = Channel.empty()
 
     if (SELECTED_ALIGNMENT_STRATEGIES.contains('minimap2_asm10')) {
@@ -326,7 +351,7 @@ workflow ALIGNMENT_STAGE {
                 }
             }
             .groupTuple()
-        maf_gene_merge_inputs = task_dirs_by_gene
+        maf_gene_merge_inputs = target_task_dirs_by_gene
             .join(maf_fragments_by_gene)
             .map { gene_id, partition_id, task_dir, fragment_dirs ->
                 tuple(
@@ -344,22 +369,11 @@ workflow ALIGNMENT_STAGE {
     gene_result_dirs = alignment_result_dirs
         .ifEmpty { error "No alignment result directories were produced" }
         .map { meta, dir ->
-            def key = tuple(meta.partition_id as String, meta.gene_id as String)
-            tuple(groupKey(key, ALIGNMENT_RESULT_PROCESS_COUNT), dir)
+            tuple(meta.partition_id as String, meta.gene_id as String, dir)
         }
-        .groupTuple(remainder: true)
-        .map { key, dirs ->
-            def target = key.getGroupTarget()
-            if (dirs.size() != ALIGNMENT_RESULT_PROCESS_COUNT) {
-                error(
-                    "Incomplete alignment outputs for gene ${target[1]} in partition ${target[0]}: " +
-                    "expected ${ALIGNMENT_RESULT_PROCESS_COUNT} result directories, observed ${dirs.size()}"
-                )
-            }
-            tuple(target[0], target[1], dirs)
-        }
+        .groupTuple(by: [0, 1])
     partition_merge_inputs = gene_result_dirs
-        .combine(ready_genes_by_partition, by: 0)
+        .combine(eligible_genes_by_partition, by: 0)
         .map { partition_id, gene_id, dirs, expected_gene_ids ->
             def key = tuple(partition_id, expected_gene_ids)
             tuple(groupKey(key, expected_gene_ids.size()), gene_id, dirs)
@@ -389,6 +403,7 @@ workflow ALIGNMENT_STAGE {
         }
     MERGE_ALIGNMENT_PARTITION(
         partition_merge_inputs,
+        BUILD_ALIGNMENT_TASKS.out.alignment_tasks,
         SELECTED_ALIGNMENT_STRATEGIES.join(','),
         FETCH_TAXONOMY_PRESETS.out.taxonomy_presets,
         merge_script

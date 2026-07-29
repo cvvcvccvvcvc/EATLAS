@@ -83,6 +83,7 @@ STRATEGY_SUMMARY_FIELDS = [
 ]
 
 BWA_STRATEGY = "bwa_pseudoreads"
+ENSEMBL_COMPARA_STRATEGY = "precomputed_ensembl_92_mammals_epo_extended"
 DNA_BASES = frozenset("ACGT")
 BWA_REQUIRED_PARAMETERS = (
     "pseudoread_len",
@@ -128,10 +129,18 @@ def parse_expected_values(raw: str | None, label: str) -> list[str]:
     return values
 
 
-def summarize_alignment_tasks(path: Path) -> tuple[int, list[str]]:
-    """Return total task rows and distinct genes ready for alignment."""
+def _task_ready(row: dict[str, str], field: str) -> bool:
+    if field in row:
+        return str(row[field]).lower() == "true"
+    return row.get("status") == "ready"
+
+
+def read_alignment_capabilities(
+    path: Path,
+) -> tuple[int, dict[str, tuple[bool, bool]]]:
+    """Return target/ortholog readiness for every alignment task gene."""
     task_count = 0
-    ready_gene_ids: set[str] = set()
+    capabilities: dict[str, tuple[bool, bool]] = {}
     with gzip.open(path, "rt", newline="") as handle:
         reader = csv.DictReader(handle, delimiter="\t")
         required = {"gene_id", "status"}
@@ -143,9 +152,53 @@ def summarize_alignment_tasks(path: Path) -> tuple[int, list[str]]:
             )
         for row in reader:
             task_count += 1
-            if row["status"] == "ready" and row["gene_id"]:
-                ready_gene_ids.add(row["gene_id"])
-    return task_count, sorted_gene_ids(ready_gene_ids)
+            gene_id = row.get("gene_id", "")
+            if not gene_id:
+                continue
+            if gene_id in capabilities:
+                raise ValueError(f"Alignment tasks {path} contain duplicate gene_id {gene_id}")
+            capabilities[gene_id] = (
+                _task_ready(row, "target_ready"),
+                _task_ready(row, "ortholog_ready"),
+            )
+    return task_count, capabilities
+
+
+def expected_gene_strategy_pairs(
+    capabilities: dict[str, tuple[bool, bool]],
+    gene_ids: list[str],
+    strategies: list[str],
+) -> set[tuple[str, str]]:
+    pairs: set[tuple[str, str]] = set()
+    missing_genes = set(gene_ids) - set(capabilities)
+    if missing_genes:
+        raise ValueError(
+            "Alignment tasks are missing expected genes: "
+            + ", ".join(sorted_gene_ids(missing_genes))
+        )
+    for gene_id in gene_ids:
+        target_ready, ortholog_ready = capabilities[gene_id]
+        for strategy in strategies:
+            eligible = target_ready if strategy == ENSEMBL_COMPARA_STRATEGY else ortholog_ready
+            if eligible:
+                pairs.add((gene_id, strategy))
+    return pairs
+
+
+def summarize_alignment_tasks(
+    path: Path,
+    expected_strategies: list[str],
+) -> tuple[int, list[str], dict[str, int]]:
+    """Return task count, selected-strategy gene union, and per-strategy eligibility."""
+    task_count, capabilities = read_alignment_capabilities(path)
+    gene_ids = sorted_gene_ids(set(capabilities))
+    pairs = expected_gene_strategy_pairs(capabilities, gene_ids, expected_strategies)
+    eligible_gene_ids = sorted_gene_ids({gene_id for gene_id, _strategy in pairs})
+    strategy_counts = {
+        strategy: sum(pair_strategy == strategy for _gene_id, pair_strategy in pairs)
+        for strategy in expected_strategies
+    }
+    return task_count, eligible_gene_ids, strategy_counts
 
 
 def unique_paths(paths: list[Path]) -> list[Path]:
@@ -746,12 +799,29 @@ def validate_partition_manifests(
     manifests: list[dict],
     expected_gene_ids: list[str],
     expected_strategies: list[str],
+    alignment_tasks: Path | None = None,
 ) -> tuple[list[str], list[str]]:
-    expected_pairs = {
-        (gene_id, strategy)
-        for gene_id in expected_gene_ids
-        for strategy in expected_strategies
-    }
+    if alignment_tasks is None:
+        expected_pairs = {
+            (gene_id, strategy)
+            for gene_id in expected_gene_ids
+            for strategy in expected_strategies
+        }
+    else:
+        _task_count, capabilities = read_alignment_capabilities(alignment_tasks)
+        expected_pairs = expected_gene_strategy_pairs(
+            capabilities,
+            expected_gene_ids,
+            expected_strategies,
+        )
+        genes_without_strategy = set(expected_gene_ids) - {
+            gene_id for gene_id, _strategy in expected_pairs
+        }
+        if genes_without_strategy:
+            raise ValueError(
+                "Expected genes are not eligible for any selected strategy: "
+                + ", ".join(sorted_gene_ids(genes_without_strategy))
+            )
     pair_owners: dict[tuple[str, str], Path] = {}
     duplicates: list[str] = []
 
@@ -787,7 +857,8 @@ def validate_partition_manifests(
             details.append("unexpected=" + preview_pairs(unexpected_pairs))
         raise ValueError("Partition alignment coverage mismatch: " + "; ".join(details))
 
-    return sorted_gene_ids(set(expected_gene_ids)), sorted(expected_strategies)
+    observed_strategies = {strategy for _gene_id, strategy in observed_pairs}
+    return sorted_gene_ids(set(expected_gene_ids)), sorted(observed_strategies)
 
 
 def validate_final_manifests(
@@ -795,10 +866,13 @@ def validate_final_manifests(
     manifests: list[dict],
     expected_gene_ids: list[str],
     expected_strategies: list[str],
+    alignment_tasks: Path,
 ) -> tuple[list[str], list[str]]:
     expected_strategy_set = set(expected_strategies)
+    observed_strategy_set: set[str] = set()
     gene_owners: dict[str, str] = {}
     partition_ids: set[str] = set()
+    _task_count, capabilities = read_alignment_capabilities(alignment_tasks)
 
     for result_dir, manifest in zip(result_dirs, manifests):
         partition_id = str(manifest.get("partition_id") or "")
@@ -819,13 +893,22 @@ def validate_final_manifests(
             )
 
         strategies = set(manifest_strategies([manifest]))
-        if strategies != expected_strategy_set:
-            missing = sorted(expected_strategy_set - strategies)
-            unexpected = sorted(strategies - expected_strategy_set)
+        expected_partition_strategies = {
+            strategy
+            for _gene_id, strategy in expected_gene_strategy_pairs(
+                capabilities,
+                gene_ids,
+                expected_strategies,
+            )
+        }
+        if strategies != expected_partition_strategies:
+            missing = sorted(expected_partition_strategies - strategies)
+            unexpected = sorted(strategies - expected_partition_strategies)
             raise ValueError(
                 f"Alignment partition {partition_id} strategy mismatch: "
                 f"missing={missing}; unexpected={unexpected}"
             )
+        observed_strategy_set.update(strategies)
 
         for gene_id in gene_ids:
             if gene_id in gene_owners:
@@ -845,7 +928,15 @@ def validate_final_manifests(
             f"missing={missing}; unexpected={unexpected}"
         )
 
-    return sorted_gene_ids(observed_gene_set), sorted(expected_strategies)
+    if observed_strategy_set != expected_strategy_set:
+        missing = sorted(expected_strategy_set - observed_strategy_set)
+        unexpected = sorted(observed_strategy_set - expected_strategy_set)
+        raise ValueError(
+            "Final alignment strategy coverage mismatch: "
+            f"missing={missing}; unexpected={unexpected}"
+        )
+
+    return sorted_gene_ids(observed_gene_set), sorted(observed_strategy_set)
 
 
 def sum_manifest_count(
@@ -912,17 +1003,37 @@ def main() -> None:
             manifests,
             expected_gene_ids,
             expected_strategies,
+            args.alignment_tasks,
         )
         alignment_task_count = len(gene_ids)
+        strategy_eligible_gene_counts = {
+            strategy: len(
+                {
+                    gene_id
+                    for manifest in manifests
+                    if strategy in manifest_strategies([manifest])
+                    for gene_id in manifest_gene_ids([manifest])
+                }
+            )
+            for strategy in strategies
+        }
     else:
-        alignment_task_count, expected_gene_ids = summarize_alignment_tasks(args.alignment_tasks)
+        (
+            alignment_task_count,
+            expected_gene_ids,
+            strategy_eligible_gene_counts,
+        ) = summarize_alignment_tasks(args.alignment_tasks, expected_strategies)
         if not expected_gene_ids:
-            raise ValueError(f"Alignment tasks {args.alignment_tasks} contain no ready genes")
+            raise ValueError(
+                f"Alignment tasks {args.alignment_tasks} contain no genes eligible "
+                "for the selected strategies"
+            )
         gene_ids, strategies = validate_final_manifests(
             result_dirs,
             manifests,
             expected_gene_ids,
             expected_strategies,
+            args.alignment_tasks,
         )
         if args.output_profile == "full":
             copy_or_keep(args.alignment_tasks, args.outdir / "alignment_tasks.tsv.gz")
@@ -1077,6 +1188,7 @@ def main() -> None:
         "output_profile": args.output_profile,
         "strategy_count": len(strategies),
         "strategies": strategies,
+        "strategy_eligible_gene_counts": strategy_eligible_gene_counts,
         "strategy_parameters": strategy_parameters,
         "gene_count": gene_count,
         "gene_ids": gene_ids,

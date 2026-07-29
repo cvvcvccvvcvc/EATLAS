@@ -200,7 +200,11 @@ Standalone `--stage fetch` expected properties:
 Standalone `--stage align` expected properties:
 - `alignment/manifest.json` exists.
 - `alignment/manifest.json` `gene_count` equals the length of `gene_ids`, and
-  those IDs equal the `ready` genes in `alignment_tasks.tsv.gz`.
+  those IDs equal the union of genes eligible for the selected strategies in
+  `alignment_tasks.tsv.gz`. Ensembl requires `target_ready=true`; the other
+  strategies require `ortholog_ready=true`.
+- `strategy_eligible_gene_counts` reports the corresponding denominator for
+  every selected strategy.
 - `alignment/taxonomy_presets.tsv.gz` has one row per unique ortholog tax_id.
 - `alignment/taxonomy_summary.tsv.gz` records run-level scope and evidence-unit
   counts.

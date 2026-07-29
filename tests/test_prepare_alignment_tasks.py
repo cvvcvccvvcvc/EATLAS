@@ -146,12 +146,27 @@ def test_partition_genes_contains_only_ready_alignment_tasks(tmp_path: Path) -> 
     )
 
     assert result.returncode == 0, result.stderr
-    task_statuses = {
-        row["gene_id"]: row["status"]
+    task_rows = {
+        row["gene_id"]: row
         for row in read_tsv_gz(outdir / "alignment_tasks.tsv.gz")
     }
-    assert task_statuses == {"1": "ready", "2": "missing_ortholog_fasta"}
+    assert {gene_id: row["status"] for gene_id, row in task_rows.items()} == {
+        "1": "ready",
+        "2": "missing_ortholog_fasta",
+    }
+    assert {
+        gene_id: (row["target_ready"], row["ortholog_ready"])
+        for gene_id, row in task_rows.items()
+    } == {
+        "1": ("true", "true"),
+        "2": ("true", "false"),
+    }
     partition_rows = read_tsv_gz(
         outdir / "partition_genes" / "partition_000001.tsv.gz"
     )
     assert [row["gene_id"] for row in partition_rows] == ["1"]
+    target_partition_rows = read_tsv_gz(
+        outdir / "target_partition_genes" / "partition_000001.tsv.gz"
+    )
+    assert [row["gene_id"] for row in target_partition_rows] == ["1", "2"]
+    assert (outdir / "tasks" / "task_2" / "task.json").exists()

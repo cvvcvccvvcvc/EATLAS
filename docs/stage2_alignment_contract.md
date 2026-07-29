@@ -145,9 +145,10 @@ all overlapping target genes and routes normalized rows into gene fragments.
 All fragments for a gene are then consolidated before the normal alignment
 merge; target intervals are unioned and feature coverage is recomputed from the
 complete gene evidence. Transient network and truncated-gzip read failures are
-retried with block-level resume: already committed MAF blocks are skipped on the
-next attempt. If a source still cannot be fully read after all attempts, the
-task records gene-level failure rows. Unexpected process failures terminate the
+retried inside the same process with block-level continuation: already committed
+MAF blocks are skipped on the next network attempt. If a source still cannot be
+fully read after all attempts, the task records gene-level failure rows.
+Unexpected process failures terminate the
 workflow rather than silently producing incomplete gene evidence. Full MAF
 chunks are not published as durable outputs.
 
@@ -181,8 +182,8 @@ Standalone `--stage align` publishes the full handoff contract:
 
 | Path | Meaning |
 | --- | --- |
-| `manifest.json` | Exact ready `gene_ids`, enabled output strategies, and output counts. |
-| `alignment_tasks.tsv.gz` | Per-gene task manifest and readiness checks. |
+| `manifest.json` | Exact selected-strategy-eligible `gene_ids`, per-strategy eligibility counts, enabled strategies, and output counts. |
+| `alignment_tasks.tsv.gz` | Per-gene task manifest with separate human-target and fetched-ortholog readiness checks. |
 | `taxonomy_presets.tsv.gz` | Compact tax_id-to-preset mapping. |
 | `taxonomy_failures.tsv.gz` | Taxonomy lookup warnings/failures. |
 | `taxonomy_summary.tsv.gz` | Run-level ortholog and taxonomic-unit counts by scope. |
@@ -305,9 +306,11 @@ global event database and avoids placing every gene/strategy result path on a
 single command line while preserving the existing Stage 2 output tables.
 
 Both merge levels fail closed. A partition must contain exactly one result for
-every expected gene/strategy pair, required TSV inputs must exist with valid
-headers, and genes cannot occur in multiple partitions. The final merge compares
-the union of partition `gene_ids` with the ready genes in
+every eligible gene/strategy pair, required TSV inputs must exist with valid
+headers, and genes cannot occur in multiple partitions. Ensembl Compara is
+eligible when the human target is ready; minimap2, nucmer, and BWA additionally
+require fetched ortholog inputs. The final merge compares the union of partition
+`gene_ids` with the genes eligible for at least one selected strategy in
 `alignment_tasks.tsv.gz`; incomplete output is an error rather than a smaller
 successful dataset.
 

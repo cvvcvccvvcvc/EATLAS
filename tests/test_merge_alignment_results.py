@@ -122,6 +122,7 @@ def partition_arguments(
     *,
     gene_ids: str,
     strategies: str,
+    alignment_tasks: Path | None = None,
 ) -> list[str]:
     arguments = [
         "--partition-id",
@@ -133,6 +134,8 @@ def partition_arguments(
         "--outdir",
         str(outdir),
     ]
+    if alignment_tasks is not None:
+        arguments.extend(["--alignment-tasks", str(alignment_tasks)])
     for result_dir in result_dirs:
         arguments.extend(["--result-dir", str(result_dir)])
     return arguments
@@ -141,12 +144,13 @@ def partition_arguments(
 def write_final_inputs(
     root: Path,
     task_rows: list[list[str]],
+    task_header: list[str] | None = None,
 ) -> tuple[Path, Path, Path, Path]:
     alignment_tasks = root / "alignment_tasks.tsv.gz"
     taxonomy_presets = root / "taxonomy_presets.tsv.gz"
     taxonomy_failures = root / "taxonomy_failures.tsv.gz"
     target_features = root / "target_features.tsv.gz"
-    write_tsv_gz(alignment_tasks, ["gene_id", "status"], task_rows)
+    write_tsv_gz(alignment_tasks, task_header or ["gene_id", "status"], task_rows)
     write_tsv_gz(taxonomy_presets, ["tax_id"])
     write_tsv_gz(taxonomy_failures, ["tax_id"])
     write_tsv_gz(target_features, ["gene_id"])
@@ -233,6 +237,40 @@ def test_partition_merge_rejects_missing_strategy(tmp_path: Path) -> None:
 
     assert completed.returncode != 0
     assert "missing=1:s2" in completed.stderr
+
+
+def test_partition_merge_uses_strategy_specific_gene_eligibility(tmp_path: Path) -> None:
+    ensembl = "precomputed_ensembl_92_mammals_epo_extended"
+    alignment_tasks = tmp_path / "alignment_tasks.tsv.gz"
+    write_tsv_gz(
+        alignment_tasks,
+        ["gene_id", "status", "target_ready", "ortholog_ready"],
+        [
+            ["1", "ready", "true", "true"],
+            ["2", "missing_ortholog_fasta", "true", "false"],
+        ],
+    )
+    result_dirs = [
+        write_result_dir(tmp_path, "gene_1_local", {"gene_id": "1", "strategy": "s1"}),
+        write_result_dir(tmp_path, "gene_1_ensembl", {"gene_id": "1", "strategy": ensembl}),
+        write_result_dir(tmp_path, "gene_2_ensembl", {"gene_id": "2", "strategy": ensembl}),
+    ]
+    outdir = tmp_path / "merged"
+
+    completed = run_merge(
+        partition_arguments(
+            result_dirs,
+            outdir,
+            gene_ids="1,2",
+            strategies=f"s1,{ensembl}",
+            alignment_tasks=alignment_tasks,
+        )
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    manifest = json.loads((outdir / "manifest.json").read_text())
+    assert manifest["gene_ids"] == ["1", "2"]
+    assert manifest["strategy_eligible_gene_counts"] == {"s1": 1, ensembl: 2}
 
 
 def test_partition_merge_supports_compact_events(tmp_path: Path) -> None:
@@ -438,6 +476,55 @@ def test_final_merge_writes_exact_gene_manifest(tmp_path: Path) -> None:
     manifest = json.loads((outdir / "manifest.json").read_text())
     assert manifest["gene_count"] == 2
     assert manifest["gene_ids"] == ["1", "2"]
+
+
+def test_final_merge_reports_strategy_specific_eligible_gene_counts(tmp_path: Path) -> None:
+    ensembl = "precomputed_ensembl_92_mammals_epo_extended"
+    partition_dirs = [
+        write_result_dir(
+            tmp_path,
+            "partition_000001",
+            {
+                "partition_id": "partition_000001",
+                "gene_count": 1,
+                "gene_ids": ["1"],
+                "strategies": ["s1", ensembl],
+            },
+        ),
+        write_result_dir(
+            tmp_path,
+            "partition_000002",
+            {
+                "partition_id": "partition_000002",
+                "gene_count": 1,
+                "gene_ids": ["2"],
+                "strategies": [ensembl],
+            },
+        ),
+    ]
+    inputs = write_final_inputs(
+        tmp_path,
+        [
+            ["1", "ready", "true", "true"],
+            ["2", "missing_ortholog_fasta", "true", "false"],
+        ],
+        ["gene_id", "status", "target_ready", "ortholog_ready"],
+    )
+    outdir = tmp_path / "merged"
+
+    completed = run_merge(
+        final_arguments(
+            partition_dirs,
+            outdir,
+            inputs,
+            strategies=f"s1,{ensembl}",
+        )
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    manifest = json.loads((outdir / "manifest.json").read_text())
+    assert manifest["gene_ids"] == ["1", "2"]
+    assert manifest["strategy_eligible_gene_counts"] == {"s1": 1, ensembl: 2}
 
 
 def test_final_report_input_omits_handoff_tables(tmp_path: Path) -> None:
