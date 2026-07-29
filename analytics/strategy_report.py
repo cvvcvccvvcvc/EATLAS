@@ -177,8 +177,8 @@ def parse_args() -> argparse.Namespace:
         action=argparse.BooleanOptionalAction,
         default=False,
         help=(
-            "Build the consequence-matched target-space null. Disabled by default because it uses Ensembl REST "
-            "VEP and the gnomAD GraphQL API."
+            "Build the consequence-matched target-space null. Disabled by default because it uses Ensembl VEP "
+            "and the gnomAD GraphQL API."
         ),
     )
     parser.add_argument(
@@ -204,6 +204,34 @@ def parse_args() -> argparse.Namespace:
         type=Path,
         default=os.environ.get("GAPH_GNOMAD_CACHE_DIR") or None,
         help="Optional shared directory for resumable gnomAD regional responses.",
+    )
+    parser.add_argument(
+        "--vep-backend",
+        choices=("rest", "local"),
+        default=os.environ.get("GAPH_VEP_BACKEND", "rest"),
+        help="VEP execution backend for the target-space null. Default: rest.",
+    )
+    parser.add_argument(
+        "--vep-release",
+        default=os.environ.get("GAPH_VEP_RELEASE") or None,
+        help="Pinned Ensembl VEP release. Required for local VEP; REST detects the current release.",
+    )
+    parser.add_argument(
+        "--vep-executable",
+        default=os.environ.get("GAPH_VEP_EXECUTABLE", "vep"),
+        help="Local VEP executable or wrapper. Used only with --vep-backend local.",
+    )
+    parser.add_argument(
+        "--vep-cache-dir",
+        type=Path,
+        default=os.environ.get("GAPH_VEP_CACHE_DIR") or None,
+        help="Local indexed VEP cache root. Required with --vep-backend local.",
+    )
+    parser.add_argument(
+        "--vep-forks",
+        type=int,
+        default=int(os.environ.get("GAPH_VEP_FORKS", "4")),
+        help="Worker processes for local VEP. Default: 4.",
     )
     return parser.parse_args()
 
@@ -885,7 +913,7 @@ def negative_control_method_table() -> pd.DataFrame:
             {
                 "Step": "VEP consequence",
                 "Definition": (
-                    "Ensembl REST VEP uses RefSeq transcripts and pick_allele_gene. The target Entrez Gene ID is "
+                    "Ensembl VEP uses RefSeq transcripts and pick_allele_gene. The target Entrez Gene ID is "
                     "selected; the most severe Sequence Ontology term on the picked transcript is the matching key."
                 ),
             },
@@ -2557,7 +2585,7 @@ def build_target_space_null_sections(
     if not enabled:
         sections.append(
             "<p>Matched Control was disabled for this report run. Enable it with "
-            "<code>--target-space-null</code>; this analysis uses Ensembl REST VEP and may take hours.</p>"
+            "<code>--target-space-null</code>; this analysis uses Ensembl VEP and may take hours.</p>"
         )
         return sections
     if analysis is None:
@@ -2721,6 +2749,7 @@ def build_target_space_null_qc_sections(analysis: TargetSpaceNullAnalysis) -> li
         table_html(
             pd.DataFrame(
                 [
+                    {"Metric": "VEP backend", "Value": focal_vep.get("backend", "")},
                     {"Metric": "VEP release", "Value": focal_vep.get("release", "")},
                     {
                         "Metric": "VEP-annotated focal SNVs",
@@ -3330,6 +3359,12 @@ def main() -> None:
         raise ValueError("--target-space-null-sample-size must be >= 1")
     if args.target_space_null and args.target_space_null_resamples < 100:
         raise ValueError("--target-space-null-resamples must be >= 100")
+    if args.target_space_null and args.vep_forks < 1:
+        raise ValueError("--vep-forks must be >= 1")
+    if args.target_space_null and args.vep_backend == "local" and args.vep_cache_dir is None:
+        raise ValueError("--vep-cache-dir is required with --vep-backend local")
+    if args.target_space_null and args.vep_backend == "local" and not args.vep_release:
+        raise ValueError("--vep-release is required with --vep-backend local")
     inputs = resolve_run_inputs(args.run_dir, args.annotation_dir)
     validate_report_inputs(inputs)
     out_html = resolve_out_html(args, inputs.run_dir)
@@ -3419,6 +3454,11 @@ def main() -> None:
                 resamples=args.target_space_null_resamples,
                 seed=args.target_space_null_seed,
                 gnomad_cache_dir=args.gnomad_cache_dir,
+                vep_backend=args.vep_backend,
+                vep_release=args.vep_release,
+                vep_executable=args.vep_executable,
+                vep_cache_dir=args.vep_cache_dir,
+                vep_forks=args.vep_forks,
             )
     else:
         timings.append(

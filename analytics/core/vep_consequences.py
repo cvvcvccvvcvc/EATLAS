@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import csv
 import concurrent.futures
 import hashlib
 import json
 import sqlite3
+import subprocess
+import tempfile
 import time
 import urllib.error
 import urllib.parse
@@ -17,6 +20,7 @@ import pandas as pd
 
 VEP_BASE_URL = "https://rest.ensembl.org"
 VEP_BATCH_SIZE = 200
+VEP_ASSEMBLY = "GRCh38"
 VEP_OPTIONS = {
     "canonical": 1,
     "mane": 1,
@@ -81,8 +85,12 @@ def annotate_vep_consequences(
     max_workers: int = 2,
     retries: int = 4,
     timeout_seconds: float = 120.0,
+    backend: str = "rest",
+    vep_executable: str | Path = "vep",
+    vep_cache_dir: Path | None = None,
+    vep_forks: int = 1,
 ) -> tuple[pd.DataFrame, dict[str, object]]:
-    """Annotate unique SNV/gene pairs and persist each completed REST batch."""
+    """Annotate unique variant/gene pairs and persist completed work."""
 
     required = {"variant_key", "gene_id", "chrom", "pos", "ref", "alt"}
     missing = required - set(rows.columns)
@@ -90,6 +98,10 @@ def annotate_vep_consequences(
         raise ValueError(f"VEP input missing columns: {', '.join(sorted(missing))}")
     if max_workers < 1:
         raise ValueError("VEP max_workers must be >= 1")
+    if backend not in {"rest", "local"}:
+        raise ValueError("VEP backend must be 'rest' or 'local'")
+    if vep_forks < 1:
+        raise ValueError("VEP forks must be >= 1")
 
     unique = (
         rows[list(required)]
@@ -101,13 +113,32 @@ def annotate_vep_consequences(
     if unique.empty:
         return _empty_annotations(), {"status": "complete", "requested": 0, "cached": 0, "queried": 0}
 
-    release = release or _fetch_release(base_url, retries, timeout_seconds)
-    config = {
-        "base_url": base_url.rstrip("/"),
-        "options": VEP_OPTIONS,
-        "release": str(release),
-        "schema_version": 1,
-    }
+    if backend == "rest":
+        release = release or _fetch_release(base_url, retries, timeout_seconds)
+        # Preserve the original REST hash so existing caches remain reusable.
+        config = {
+            "base_url": base_url.rstrip("/"),
+            "options": VEP_OPTIONS,
+            "release": str(release),
+            "schema_version": 1,
+        }
+    else:
+        if release is None:
+            raise ValueError("Local VEP requires an explicit release")
+        if vep_cache_dir is None:
+            raise ValueError("Local VEP requires a cache directory")
+        vep_cache_dir = Path(vep_cache_dir).expanduser()
+        if not vep_cache_dir.is_dir():
+            raise FileNotFoundError(f"Local VEP cache directory does not exist: {vep_cache_dir}")
+        config = {
+            "assembly": VEP_ASSEMBLY,
+            "backend": "local",
+            "options": VEP_OPTIONS,
+            "refseq": True,
+            "release": str(release),
+            "schema_version": 1,
+            "use_given_ref": True,
+        }
     config_hash = hashlib.sha256(json.dumps(config, sort_keys=True).encode()).hexdigest()
 
     cache_path.parent.mkdir(parents=True, exist_ok=True)
@@ -121,12 +152,32 @@ def annotate_vep_consequences(
             if (str(row["variant_key"]), str(row["gene_id"])) not in cached
         ]
 
-        batches = [
-            missing_rows[index : index + VEP_BATCH_SIZE]
-            for index in range(0, len(missing_rows), VEP_BATCH_SIZE)
-        ]
-        if batches:
-            with concurrent.futures.ThreadPoolExecutor(max_workers=min(max_workers, len(batches))) as executor:
+        batch_count = 0
+        if missing_rows and backend == "local":
+            annotations = _run_local_vep(
+                missing_rows,
+                executable=vep_executable,
+                cache_dir=vep_cache_dir,
+                release=str(release),
+                forks=vep_forks,
+                temporary_root=cache_path.parent,
+            )
+            _store_annotations(connection, config_hash, str(release), annotations)
+            cached.update(
+                {
+                    (str(item["variant_key"]), str(item["gene_id"])): item
+                    for item in annotations
+                }
+            )
+            batch_count = 1
+        elif missing_rows:
+            batches = [
+                missing_rows[index : index + VEP_BATCH_SIZE]
+                for index in range(0, len(missing_rows), VEP_BATCH_SIZE)
+            ]
+            batch_count = len(batches)
+            worker_count = min(max_workers, len(batches))
+            with concurrent.futures.ThreadPoolExecutor(max_workers=worker_count) as executor:
                 futures = [
                     executor.submit(
                         _request_batch,
@@ -150,18 +201,30 @@ def annotate_vep_consequences(
     ordered = [cached[(variant_key, gene_id)] for variant_key, gene_id in wanted]
     result = pd.DataFrame(ordered, columns=_annotation_columns())
     status_counts = result["status"].value_counts().sort_index().to_dict()
-    return result, {
+    summary = {
         "status": "complete",
-        "base_url": base_url.rstrip("/"),
+        "backend": backend,
         "release": str(release),
         "options": VEP_OPTIONS,
         "requested": len(wanted),
         "cached": len(wanted) - len(missing_rows),
         "queried": len(missing_rows),
-        "batch_count": len(batches),
+        "batch_count": batch_count,
         "status_counts": {str(key): int(value) for key, value in status_counts.items()},
         "cache_path": str(cache_path),
     }
+    if backend == "rest":
+        summary["base_url"] = base_url.rstrip("/")
+    else:
+        summary.update(
+            {
+                "assembly": VEP_ASSEMBLY,
+                "vep_cache_dir": str(vep_cache_dir),
+                "vep_executable": str(vep_executable),
+                "vep_forks": vep_forks,
+            }
+        )
+    return result, summary
 
 
 def _annotation_columns() -> list[str]:
@@ -235,19 +298,154 @@ def _request_batch(
     return annotations
 
 
-def _parse_record(row: dict[str, object], record: dict[str, object] | None) -> dict[str, object]:
-    base = {
-        "variant_key": str(row["variant_key"]),
-        "gene_id": str(row["gene_id"]),
-        "status": "no_response",
-        "primary_consequence": "",
-        "consequence_terms": "",
-        "transcript_id": "",
-        "mane_select": "",
-        "canonical": False,
-        "impact": "",
-        "variant_class": "",
+def _run_local_vep(
+    rows: list[dict[str, object]],
+    *,
+    executable: str | Path,
+    cache_dir: Path,
+    release: str,
+    forks: int,
+    temporary_root: Path,
+) -> list[dict[str, object]]:
+    request_ids = {f"gaph_{index:08d}": row for index, row in enumerate(rows)}
+    temporary_root.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix=".vep_", dir=temporary_root) as directory:
+        directory_path = Path(directory)
+        input_path = directory_path / "input.vcf"
+        output_path = directory_path / "output.tsv"
+        with input_path.open("w", newline="") as handle:
+            handle.write("##fileformat=VCFv4.2\n")
+            writer = csv.writer(handle, delimiter="\t", lineterminator="\n")
+            writer.writerow(["#CHROM", "POS", "ID", "REF", "ALT", "QUAL", "FILTER", "INFO"])
+            for request_id, row in request_ids.items():
+                ref = _validate_vcf_allele(row["ref"], "REF")
+                alt = _validate_vcf_allele(row["alt"], "ALT")
+                writer.writerow(
+                    [
+                        str(row["chrom"]).removeprefix("chr"),
+                        int(row["pos"]),
+                        request_id,
+                        ref,
+                        alt,
+                        ".",
+                        ".",
+                        ".",
+                    ]
+                )
+
+        command = [
+            str(executable),
+            "--offline",
+            "--cache",
+            "--refseq",
+            "--use_given_ref",
+            "--species",
+            "homo_sapiens",
+            "--assembly",
+            VEP_ASSEMBLY,
+            "--cache_version",
+            release,
+            "--dir_cache",
+            str(cache_dir),
+            "--input_file",
+            str(input_path),
+            "--output_file",
+            str(output_path),
+            "--format",
+            "vcf",
+            "--tab",
+            "--fields",
+            "Uploaded_variation,Gene,Feature,Consequence,IMPACT,CANONICAL,MANE_SELECT,VARIANT_CLASS",
+            "--pick_allele_gene",
+            "--canonical",
+            "--mane",
+            "--variant_class",
+            "--fork",
+            str(forks),
+            "--no_stats",
+            "--force_overwrite",
+        ]
+        try:
+            process = subprocess.run(command, capture_output=True, text=True, check=False)
+        except OSError as exc:
+            raise RuntimeError(f"Could not start local VEP executable {executable}: {exc}") from exc
+        if process.returncode != 0:
+            detail = (process.stderr or process.stdout).strip()[-2_000:]
+            raise RuntimeError(f"Local VEP failed with exit code {process.returncode}: {detail}")
+        if not output_path.exists():
+            raise RuntimeError("Local VEP completed without producing its output table")
+        records = _read_local_output(output_path, request_ids)
+    return [
+        _parse_local_record(row, records.get(request_id))
+        for request_id, row in request_ids.items()
+    ]
+
+
+def _validate_vcf_allele(value: object, label: str) -> str:
+    allele = str(value).upper()
+    if not allele or any(character.isspace() for character in allele):
+        raise ValueError(f"Local VEP {label} allele must be non-empty and contain no whitespace")
+    return allele
+
+
+def _read_local_output(
+    path: Path,
+    request_ids: dict[str, dict[str, object]],
+) -> dict[str, dict[str, str]]:
+    records: dict[str, dict[str, str]] = {}
+    with path.open() as handle:
+        reader = csv.DictReader(
+            (line for line in handle if not line.startswith("##")),
+            delimiter="\t",
+        )
+        if reader.fieldnames is None or "#Uploaded_variation" not in reader.fieldnames:
+            raise RuntimeError("Local VEP output is missing #Uploaded_variation")
+        for record in reader:
+            request_id = str(record.get("#Uploaded_variation") or "")
+            source = request_ids.get(request_id)
+            if source is None or str(record.get("Gene") or "") != str(source["gene_id"]):
+                continue
+            records.setdefault(request_id, record)
+    return records
+
+
+def _parse_local_record(
+    row: dict[str, object],
+    record: dict[str, str] | None,
+) -> dict[str, object]:
+    base = _empty_annotation(row)
+    if record is None:
+        return {**base, "status": "no_target_gene"}
+    terms = sorted(
+        {
+            term
+            for term in str(record.get("Consequence") or "").split(",")
+            if term and term != "-"
+        },
+        key=lambda term: (_CONSEQUENCE_RANK.get(term, len(_CONSEQUENCE_RANK)), term),
+    )
+    if not terms:
+        return {**base, "status": "no_consequence"}
+    return {
+        **base,
+        "status": "ok",
+        "primary_consequence": terms[0],
+        "consequence_terms": "&".join(terms),
+        "transcript_id": _local_value(record, "Feature"),
+        "mane_select": _local_value(record, "MANE_SELECT"),
+        "canonical": _local_value(record, "CANONICAL").lower() in {"1", "true", "yes"},
+        "impact": _local_value(record, "IMPACT"),
+        "variant_class": _local_value(record, "VARIANT_CLASS"),
     }
+
+
+def _local_value(record: dict[str, str], field: str) -> str:
+    value = str(record.get(field) or "")
+    return "" if value == "-" else value
+
+
+def _parse_record(row: dict[str, object], record: dict[str, object] | None) -> dict[str, object]:
+    base = _empty_annotation(row)
     if record is None:
         return base
 
@@ -276,6 +474,21 @@ def _parse_record(row: dict[str, object], record: dict[str, object] | None) -> d
         "canonical": canonical,
         "impact": str(item.get("impact") or ""),
         "variant_class": str(record.get("variant_class") or ""),
+    }
+
+
+def _empty_annotation(row: dict[str, object]) -> dict[str, object]:
+    return {
+        "variant_key": str(row["variant_key"]),
+        "gene_id": str(row["gene_id"]),
+        "status": "no_response",
+        "primary_consequence": "",
+        "consequence_terms": "",
+        "transcript_id": "",
+        "mane_select": "",
+        "canonical": False,
+        "impact": "",
+        "variant_class": "",
     }
 
 

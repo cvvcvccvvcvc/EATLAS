@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import subprocess
 from pathlib import Path
 
 import pandas as pd
+import pytest
 
 from analytics.core import vep_consequences as vep
 
@@ -73,3 +75,99 @@ def test_sqlite_cache_reuses_completed_annotations(tmp_path: Path, monkeypatch) 
     assert first_summary["queried"] == 1
     assert second_summary["cached"] == 1
     pd.testing.assert_frame_equal(first, second)
+
+
+def test_local_vep_uses_offline_refseq_cache_and_reuses_sqlite(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    rows = pd.DataFrame(
+        [
+            {
+                "variant_key": "17:43044295:T>A",
+                "gene_id": "672",
+                "chrom": "17",
+                "pos": 43044295,
+                "ref": "T",
+                "alt": "A",
+            }
+        ]
+    )
+    commands = []
+
+    def fake_run(command, **kwargs):
+        commands.append((command, kwargs))
+        output_path = Path(command[command.index("--output_file") + 1])
+        output_path.write_text(
+            "## ENSEMBL VARIANT EFFECT PREDICTOR v116.0\n"
+            "#Uploaded_variation\tGene\tFeature\tConsequence\tIMPACT\tCANONICAL\tMANE_SELECT\tVARIANT_CLASS\n"
+            "gaph_00000000\t672\tNM_007294.4\t3_prime_UTR_variant\tMODIFIER\tYES\t-\tSNV\n"
+        )
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    monkeypatch.setattr(vep.subprocess, "run", fake_run)
+    cache_dir = tmp_path / "vep-cache"
+    cache_dir.mkdir()
+    sqlite_path = tmp_path / "vep.sqlite"
+
+    first, first_summary = vep.annotate_vep_consequences(
+        rows,
+        sqlite_path,
+        backend="local",
+        release="116",
+        vep_executable="gaph-vep",
+        vep_cache_dir=cache_dir,
+        vep_forks=4,
+    )
+    second, second_summary = vep.annotate_vep_consequences(
+        rows,
+        sqlite_path,
+        backend="local",
+        release="116",
+        vep_executable="gaph-vep",
+        vep_cache_dir=cache_dir,
+        vep_forks=4,
+    )
+
+    assert len(commands) == 1
+    command, kwargs = commands[0]
+    assert command[0] == "gaph-vep"
+    assert "--offline" in command
+    assert "--refseq" in command
+    assert "--use_given_ref" in command
+    assert command[command.index("--fork") + 1] == "4"
+    assert kwargs == {"capture_output": True, "text": True, "check": False}
+    assert first.loc[0, "status"] == "ok"
+    assert first.loc[0, "primary_consequence"] == "3_prime_UTR_variant"
+    assert first.loc[0, "transcript_id"] == "NM_007294.4"
+    assert first.loc[0, "mane_select"] == ""
+    assert bool(first.loc[0, "canonical"])
+    assert first_summary["backend"] == "local"
+    assert first_summary["queried"] == 1
+    assert second_summary["cached"] == 1
+    pd.testing.assert_frame_equal(first, second)
+
+
+def test_local_vep_requires_release_and_cache(tmp_path: Path) -> None:
+    rows = pd.DataFrame(
+        [
+            {
+                "variant_key": "1:10:A>G",
+                "gene_id": "25",
+                "chrom": "1",
+                "pos": 10,
+                "ref": "A",
+                "alt": "G",
+            }
+        ]
+    )
+
+    with pytest.raises(ValueError, match="explicit release"):
+        vep.annotate_vep_consequences(rows, tmp_path / "one.sqlite", backend="local")
+    with pytest.raises(ValueError, match="cache directory"):
+        vep.annotate_vep_consequences(
+            rows,
+            tmp_path / "two.sqlite",
+            backend="local",
+            release="116",
+        )

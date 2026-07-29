@@ -20,8 +20,8 @@ micromamba run -n gaph-v2-analytics python -m analytics.strategy_report \
 
 The report presents unadjusted, fixed-band, and continuous phyloP100way ClinVar
 association modes in one view. The consequence-matched target-space null is
-an explicit opt-in because it uses Ensembl REST VEP and the gnomAD GraphQL API
-and can take hours:
+an explicit opt-in because it uses Ensembl VEP and the gnomAD GraphQL API and
+can take hours:
 
 ```bash
 micromamba run -n gaph-v2-analytics python -m analytics.strategy_report \
@@ -29,6 +29,26 @@ micromamba run -n gaph-v2-analytics python -m analytics.strategy_report \
   --target-space-null \
   --target-space-null-sample-size 5000
 ```
+
+REST remains the default VEP backend for small runs. Large cluster runs can use
+a pinned local RefSeq cache without changing the annotation schema:
+
+```bash
+python -m analytics.strategy_report \
+  --run-dir "$RUN" \
+  --target-space-null \
+  --vep-backend local \
+  --vep-release 116 \
+  --vep-executable "$GAPH_VEP_EXECUTABLE" \
+  --vep-cache-dir "$GAPH_VEP_CACHE_DIR" \
+  --vep-forks 4
+```
+
+The executable may be a wrapper around a containerized VEP. It must expose the
+ordinary VEP CLI and be able to read the cache and run analytics paths. Local
+VEP uses GRCh38, RefSeq transcripts, `pick_allele_gene`, and the uploaded
+normalized REF/ALT alleles; basic consequence annotation does not require a
+reference FASTA.
 
 Set `GAPH_GNOMAD_CACHE_DIR` to the same shared path used by pipeline annotation,
 or pass `--gnomad-cache-dir`, so new matched-control reports reuse complete
@@ -99,8 +119,8 @@ stratification and ClinVar conservation validation.
 `Target-Space Null` compares GAPH SNVs with unobserved possible SNVs matched by
 gene, target context, exact genomic REF>ALT substitution, and primary RefSeq VEP
 consequence. GAPH callability and conservation are not matching variables.
-Ensembl REST VEP annotations are cached batch by batch so interrupted runs can
-resume without downloading a local VEP cache.
+VEP annotations use a release-specific SQLite cache, so interrupted REST or
+local runs resume without repeating completed variant/gene pairs.
 
 The same matched focal-control sets are also compared descriptively for exact
 allele overlap with gnomAD and ClinVar, gnomAD AF among exact hits, and ClinVar

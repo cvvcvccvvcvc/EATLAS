@@ -69,6 +69,11 @@ def build_target_space_null(
     resamples: int = 1_000,
     seed: int = 20_260_721,
     gnomad_cache_dir: Path | None = None,
+    vep_backend: str = "rest",
+    vep_release: str | None = None,
+    vep_executable: str | Path = "vep",
+    vep_cache_dir: Path | None = None,
+    vep_forks: int = 1,
 ) -> TargetSpaceNullAnalysis:
     """Build or load the target-space null for one completed run."""
 
@@ -99,6 +104,11 @@ def build_target_space_null(
         "candidate_focal_chunk_size": CANDIDATE_FOCAL_CHUNK_SIZE,
         "seed": seed,
         "matching": ["gene_id", "target_context", "ref", "alt", "vep_primary_consequence"],
+        "vep": {
+            "release": str(vep_release) if vep_release is not None else "current",
+            "refseq": True,
+            "pick_allele_gene": True,
+        },
         "conservation_track": "phyloP100way",
     }
     if _cache_is_valid(manifest_path, expected_inputs, [matched_path, conservation_path]):
@@ -143,6 +153,11 @@ def build_target_space_null(
     focal_annotations, focal_vep = annotate_vep_consequences(
         focal[["variant_key", "gene_id", "chrom", "pos", "ref", "alt"]],
         vep_cache_path,
+        backend=vep_backend,
+        release=vep_release,
+        vep_executable=vep_executable,
+        vep_cache_dir=vep_cache_dir,
+        vep_forks=vep_forks,
     )
     focal = _merge_vep(focal, focal_annotations)
     focal = focal[focal["vep_status"].eq("ok")].reset_index(drop=True)
@@ -157,6 +172,10 @@ def build_target_space_null(
         vep_cache_path,
         str(focal_vep["release"]),
         seed,
+        vep_backend=vep_backend,
+        vep_executable=vep_executable,
+        vep_cache_dir=vep_cache_dir,
+        vep_forks=vep_forks,
     )
     if candidates.empty:
         raise ValueError("No consequence-matched target-space control candidates were available.")
@@ -473,6 +492,11 @@ def _annotate_candidate_controls(
     vep_cache_path: Path,
     vep_release: str,
     seed: int,
+    *,
+    vep_backend: str,
+    vep_executable: str | Path,
+    vep_cache_dir: Path | None,
+    vep_forks: int,
 ) -> tuple[pd.DataFrame, int, dict[str, object]]:
     unique_focal = focal.drop_duplicates(["variant_key", "gene_id"]).reset_index(drop=True)
     matched_parts = []
@@ -488,6 +512,10 @@ def _annotate_candidate_controls(
             candidates[["variant_key", "gene_id", "chrom", "pos", "ref", "alt"]],
             vep_cache_path,
             release=vep_release,
+            backend=vep_backend,
+            vep_executable=vep_executable,
+            vep_cache_dir=vep_cache_dir,
+            vep_forks=vep_forks,
         )
         summaries.append(summary)
         candidates = _merge_vep(candidates, annotations)
@@ -516,7 +544,9 @@ def _merge_vep_summaries(
     first = summaries[0] if summaries else {}
     return {
         "status": "complete",
+        "backend": first.get("backend", ""),
         "base_url": first.get("base_url", ""),
+        "assembly": first.get("assembly", ""),
         "release": release,
         "options": first.get("options", {}),
         "requested": sum(int(item.get("requested", 0)) for item in summaries),
@@ -525,6 +555,9 @@ def _merge_vep_summaries(
         "batch_count": sum(int(item.get("batch_count", 0)) for item in summaries),
         "status_counts": dict(sorted(status_counts.items())),
         "cache_path": str(cache_path),
+        "vep_cache_dir": first.get("vep_cache_dir", ""),
+        "vep_executable": first.get("vep_executable", ""),
+        "vep_forks": first.get("vep_forks", ""),
     }
 
 

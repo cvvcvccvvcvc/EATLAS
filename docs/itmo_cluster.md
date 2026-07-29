@@ -245,6 +245,11 @@ export GAPH_CODE="/nfs/home/$USER/gaph_v2"
 export GAPH_ROOT="/mnt/tank/scratch/$USER/gaph_v2"
 export GAPH_WORK_DIR="$GAPH_ROOT/work"
 export GAPH_GNOMAD_CACHE_DIR="$GAPH_ROOT/cache/gnomad"
+export GAPH_VEP_BACKEND="local"
+export GAPH_VEP_RELEASE="116"
+export GAPH_VEP_EXECUTABLE="$GAPH_ROOT/bin/gaph-vep116"
+export GAPH_VEP_CACHE_DIR="$GAPH_ROOT/reference/vep"
+export GAPH_VEP_FORKS="4"
 export NXF_CONDA_CACHEDIR="$GAPH_ROOT/conda/envs"
 export MAMBA_ROOT_PREFIX="$GAPH_ROOT/micromamba"
 export CONDA_PKGS_DIRS="$MAMBA_ROOT_PREFIX/pkgs"
@@ -259,6 +264,38 @@ configured in the ignored `$GAPH_CODE/.env`; the file was verified with mode
 
 If NCBI credentials are used, place them in the ignored `$GAPH_CODE/.env`, set
 permissions to `600`, and never commit the file.
+
+## Local VEP For Analytics
+
+Verified on 2026-07-29:
+
+- Ensembl VEP image: `ensemblorg/ensembl-vep:release_116.0`
+- image path: `$GAPH_ROOT/containers/ensembl-vep_release_116.0.sif` (`281 MB`)
+- indexed RefSeq cache: `$GAPH_ROOT/reference/vep/homo_sapiens_refseq/116_GRCh38`
+  (`25 GB` as reported by `du`)
+- retained download archive: `$GAPH_ROOT/downloads/vep/homo_sapiens_refseq_vep_116_GRCh38.tar.gz`
+  (`26,409,563,680` bytes)
+- wrapper: `$GAPH_ROOT/bin/gaph-vep116`
+
+The cache archive is the official Ensembl release-116 RefSeq-only GRCh38
+archive. Installation validated the complete archive, extracted it outside the
+final cache path, and ran VEP `--show_cache_info` before marking it complete.
+The installation used 50 GB while retaining both the archive and extracted
+cache. The archive is intentionally still present; remove it only as a separate
+explicit storage decision.
+
+Basic consequence annotation uses `--offline`, `--cache`, `--refseq`,
+`--use_given_ref`, and `--assembly GRCh38`. No FASTA is installed because the current
+analytics contract does not request HGVS or reference checking. The
+`--use_given_ref` flag is required for this BAM-edited RefSeq cache; without it,
+VEP automatically requests transcript reference sequences and fails without a
+FASTA.
+
+A six-variant APC/BRCA1 smoke covering SNV, insertion, and deletion matched
+Ensembl REST release 116 exactly after normalizing VEP's `-` placeholder to an
+empty value. Consequence terms, selected RefSeq transcript, canonical/MANE
+fields, impact, and variant class agreed for all six variants. Local VEP wrote
+the six results in about 3.3 seconds.
 
 ## Compute-Node Preflight
 
