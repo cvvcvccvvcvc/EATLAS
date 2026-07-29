@@ -129,7 +129,8 @@ stories:
 - per-strategy callability and ortholog-depth distributions;
 - descriptive SNV heatmaps relating site-aligned evidence-unit count and
   absolute exact-ALT support to gnomAD overlap, stratified by CDS, UTR, and
-  intron context and selectable taxonomic scope/grouping;
+  intron context and selectable taxonomic scope/grouping, accompanied by
+  pooled empirical distributions of both evidence counts;
 - gene-level and full consequence-class counts;
 - fixed-band conservation sensitivity results, selector-level cohort counts,
   and target-context assignment rules;

@@ -45,13 +45,19 @@ def test_taxonomic_ortholog_evidence_uses_absolute_alt_support(tmp_path: Path) -
             ]
         )
 
-    available, cells = read_taxonomic_ortholog_evidence(path)
+    available, cells, distributions = read_taxonomic_ortholog_evidence(path)
 
     assert available
     assert set(cells["taxonomic_scope"]) == {"mammalia"}
     assert set(cells["evidence_unit"]) == {"species"}
     assert cells["alt_label"].str.contains("%").sum() == 0
     assert int(cells[cells["quantile_count"].eq(2)]["gnomad_eligible_count"].sum()) == 9
+    site = distributions[distributions["metric"].eq("site_aligned")].set_index("value")
+    alt = distributions[distributions["metric"].eq("exact_alt")].set_index("value")
+    assert int(site.loc[10, "variant_count"]) == 11
+    assert int(site.loc[20, "variant_count"]) == 7
+    assert int(alt.loc[1, "variant_count"]) == 5
+    assert int(distributions[distributions["metric"].eq("exact_alt")]["variant_count"].sum()) == 18
 
 
 def test_variant_summary_accepts_compact_annotation_schema(tmp_path: Path) -> None:
@@ -360,6 +366,11 @@ def test_variant_summary_builds_ortholog_evidence_without_failed_lookups(tmp_pat
 
     assert summary.ortholog_evidence_available
     assert set(summary.ortholog_evidence_cells["quantile_count"]) == {2, 4, 10}
+    assert int(
+        summary.ortholog_evidence_distributions[
+            summary.ortholog_evidence_distributions["metric"].eq("site_aligned")
+        ]["variant_count"].sum()
+    ) == 4
     median_cells = summary.ortholog_evidence_cells[
         summary.ortholog_evidence_cells["quantile_count"].eq(2)
     ]
@@ -380,6 +391,9 @@ def test_variant_summary_builds_ortholog_evidence_without_failed_lookups(tmp_pat
     assert cached.cache_hit
     assert cached.ortholog_evidence_available
     assert len(cached.ortholog_evidence_cells) == len(summary.ortholog_evidence_cells)
+    assert len(cached.ortholog_evidence_distributions) == len(
+        summary.ortholog_evidence_distributions
+    )
 
 
 def test_variant_summary_aggregates_target_context_and_gnomad_strata(tmp_path: Path) -> None:

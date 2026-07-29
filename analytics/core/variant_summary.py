@@ -50,7 +50,7 @@ VARIANT_USECOLS = [
 ]
 VEP_USECOLS = ["vep_status", "vep_primary_consequence"]
 VARIANT_REQUIRED = {"variant_key", "gene_id", "event_type", "strategies"}
-SUMMARY_CACHE_VERSION = 8
+SUMMARY_CACHE_VERSION = 9
 SUMMARY_CACHE_NAME = "variant_summary.json.gz"
 SPECIAL_FLOAT_KEY = "__gaph_float__"
 ORTHOLOG_EVIDENCE_COLUMNS = [
@@ -66,6 +66,14 @@ ORTHOLOG_EVIDENCE_COLUMNS = [
     "gnomad_found_count",
     "gnomad_eligible_count",
     "gnomad_found_fraction",
+]
+ORTHOLOG_EVIDENCE_DISTRIBUTION_COLUMNS = [
+    "strategy",
+    "taxonomic_scope",
+    "evidence_unit",
+    "metric",
+    "value",
+    "variant_count",
 ]
 
 
@@ -106,6 +114,7 @@ class VariantSummary:
     pathogenic_rows: pd.DataFrame
     ortholog_evidence_available: bool
     ortholog_evidence_cells: pd.DataFrame
+    ortholog_evidence_distributions: pd.DataFrame
     cache_hit: bool = False
 
 
@@ -193,6 +202,7 @@ def _summary_payload(
         "pathogenic_consequence_counts",
         "pathogenic_rows",
         "ortholog_evidence_cells",
+        "ortholog_evidence_distributions",
     ]
     return {
         "cache_version": SUMMARY_CACHE_VERSION,
@@ -274,6 +284,9 @@ def _summary_from_payload(payload: dict[str, object]) -> VariantSummary:
         pathogenic_consequence_counts=_frame_from_payload(frames["pathogenic_consequence_counts"]),
         pathogenic_rows=_frame_from_payload(frames["pathogenic_rows"]),
         ortholog_evidence_cells=_frame_from_payload(frames["ortholog_evidence_cells"]),
+        ortholog_evidence_distributions=_frame_from_payload(
+            frames["ortholog_evidence_distributions"]
+        ),
         cache_hit=True,
     )
 
@@ -784,14 +797,44 @@ def _bin_labels(values: pd.Series, bins: np.ndarray, count: int, *, percent: boo
     return labels
 
 
+def _ortholog_evidence_distributions(
+    frame: pd.DataFrame,
+    *,
+    count_column: str,
+    site_column: str,
+    alt_column: str,
+) -> pd.DataFrame:
+    if frame.empty:
+        return pd.DataFrame(columns=ORTHOLOG_EVIDENCE_DISTRIBUTION_COLUMNS)
+    group_columns = ["strategy", "taxonomic_scope", "evidence_unit"]
+    distributions = []
+    for metric, value_column in (
+        ("site_aligned", site_column),
+        ("exact_alt", alt_column),
+    ):
+        grouped = (
+            frame.groupby([*group_columns, value_column], as_index=False, sort=True)[
+                count_column
+            ]
+            .sum()
+            .rename(columns={value_column: "value", count_column: "variant_count"})
+        )
+        grouped["metric"] = metric
+        distributions.append(grouped)
+    return pd.concat(distributions, ignore_index=True)[
+        ORTHOLOG_EVIDENCE_DISTRIBUTION_COLUMNS
+    ]
+
+
 def _ortholog_evidence_summary(
     connection: sqlite3.Connection,
     support_path: Path | None,
     chunk_size: int,
-) -> tuple[bool, pd.DataFrame]:
+) -> tuple[bool, pd.DataFrame, pd.DataFrame]:
     empty = pd.DataFrame(columns=ORTHOLOG_EVIDENCE_COLUMNS)
+    empty_distributions = pd.DataFrame(columns=ORTHOLOG_EVIDENCE_DISTRIBUTION_COLUMNS)
     if support_path is None or "site_aligned_ortholog_count" not in _header(support_path):
-        return False, empty
+        return False, empty, empty_distributions
 
     connection.executescript(
         """
@@ -864,8 +907,33 @@ def _ortholog_evidence_summary(
         """,
         connection,
     )
+    distribution_source = pd.read_sql_query(
+        """
+        SELECT m.strategy,
+               'all' AS taxonomic_scope,
+               'ortholog' AS evidence_unit,
+               s.site_depth,
+               s.alt_support,
+               COUNT(*) AS variant_count
+        FROM memberships AS m
+        JOIN ortholog_support AS s
+          ON s.variant_id = m.variant_id
+         AND s.gene_id = m.gene_id
+         AND s.strategy = m.strategy
+        WHERE m.event_type = 'snv'
+          AND m.target_context IN ('cds', 'utr', 'intron')
+        GROUP BY m.strategy, s.site_depth, s.alt_support
+        """,
+        connection,
+    )
+    distributions = _ortholog_evidence_distributions(
+        distribution_source,
+        count_column="variant_count",
+        site_column="site_depth",
+        alt_column="alt_support",
+    )
     if grouped.empty:
-        return True, empty
+        return True, empty, distributions
     cells = []
     for (strategy, context), subset in grouped.groupby(
         ["strategy", "target_context"], sort=True
@@ -910,12 +978,15 @@ def _ortholog_evidence_summary(
                         "gnomad_found_fraction": found / eligible,
                     }
                 )
-    return True, pd.DataFrame(cells, columns=ORTHOLOG_EVIDENCE_COLUMNS)
+    return True, pd.DataFrame(cells, columns=ORTHOLOG_EVIDENCE_COLUMNS), distributions
 
 
-def read_taxonomic_ortholog_evidence(path: Path) -> tuple[bool, pd.DataFrame]:
+def read_taxonomic_ortholog_evidence(
+    path: Path,
+) -> tuple[bool, pd.DataFrame, pd.DataFrame]:
     """Bin a compact pipeline histogram for interactive report heatmaps."""
     empty = pd.DataFrame(columns=ORTHOLOG_EVIDENCE_COLUMNS)
+    empty_distributions = pd.DataFrame(columns=ORTHOLOG_EVIDENCE_DISTRIBUTION_COLUMNS)
     required = {
         "strategy",
         "target_context",
@@ -934,7 +1005,7 @@ def read_taxonomic_ortholog_evidence(path: Path) -> tuple[bool, pd.DataFrame]:
             f"Ortholog evidence summary {path} missing columns: {', '.join(sorted(missing))}"
         )
     if frame.empty:
-        return True, empty
+        return True, empty, empty_distributions
     for column in (
         "site_aligned_count",
         "alt_support_count",
@@ -954,15 +1025,24 @@ def read_taxonomic_ortholog_evidence(path: Path) -> tuple[bool, pd.DataFrame]:
             "Invalid taxonomic ortholog evidence: "
             f"ALT={row['alt_support_count']}, site={row['site_aligned_count']}"
         )
+    frame["variant_count"] = (
+        frame["gnomad_found_count"]
+        + frame["gnomad_not_found_count"]
+        + frame["gnomad_lookup_failed_count"]
+    )
+    frame = frame[frame["target_context"].isin(("cds", "utr", "intron"))]
+    distributions = _ortholog_evidence_distributions(
+        frame,
+        count_column="variant_count",
+        site_column="site_aligned_count",
+        alt_column="alt_support_count",
+    )
     frame["gnomad_eligible_count"] = (
         frame["gnomad_found_count"] + frame["gnomad_not_found_count"]
     )
-    frame = frame[
-        frame["target_context"].isin(("cds", "utr", "intron"))
-        & frame["gnomad_eligible_count"].gt(0)
-    ]
+    frame = frame[frame["gnomad_eligible_count"].gt(0)]
     if frame.empty:
-        return True, empty
+        return True, empty, distributions
 
     cells = []
     group_columns = ["strategy", "target_context", "taxonomic_scope", "evidence_unit"]
@@ -1005,7 +1085,7 @@ def read_taxonomic_ortholog_evidence(path: Path) -> tuple[bool, pd.DataFrame]:
                         "gnomad_found_fraction": found / eligible,
                     }
                 )
-    return True, pd.DataFrame(cells, columns=ORTHOLOG_EVIDENCE_COLUMNS)
+    return True, pd.DataFrame(cells, columns=ORTHOLOG_EVIDENCE_COLUMNS), distributions
 
 
 def build_variant_summary(
@@ -1277,7 +1357,11 @@ def _compute_variant_summary(
             ).fetchone()[0]
         )
         gnomad_af_summary = _gnomad_af_summary(connection, strategy_label)
-        ortholog_evidence_available, ortholog_evidence_cells = _ortholog_evidence_summary(
+        (
+            ortholog_evidence_available,
+            ortholog_evidence_cells,
+            ortholog_evidence_distributions,
+        ) = _ortholog_evidence_summary(
             connection,
             variant_strategy_support_path,
             chunk_size,
@@ -1319,4 +1403,5 @@ def _compute_variant_summary(
         pathogenic_rows=pathogenic_rows.drop(columns=["_star_rank"], errors="ignore"),
         ortholog_evidence_available=ortholog_evidence_available,
         ortholog_evidence_cells=ortholog_evidence_cells,
+        ortholog_evidence_distributions=ortholog_evidence_distributions,
     )

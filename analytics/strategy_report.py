@@ -1354,6 +1354,155 @@ def ortholog_evidence_figure(
     return figure
 
 
+def _distribution_ticks(maximum: int) -> tuple[list[float], list[str]]:
+    candidates = [0, 1, 2, 5]
+    scale = 10
+    while scale <= maximum:
+        candidates.extend([scale, 2 * scale, 5 * scale])
+        scale *= 10
+    values = sorted({value for value in candidates if value <= maximum})
+    if maximum not in values:
+        values.append(maximum)
+    return [math.log1p(value) for value in values], [format_int(value) for value in values]
+
+
+def _weighted_quantile_from_distribution(distribution: pd.DataFrame, quantile: float) -> int:
+    ordered = distribution.sort_values("value", kind="mergesort")
+    cumulative = ordered["variant_count"].astype("int64").cumsum().to_numpy()
+    threshold = int(ordered["variant_count"].sum()) * quantile
+    index = int(np.searchsorted(cumulative, threshold, side="left"))
+    return int(ordered.iloc[min(index, len(ordered) - 1)]["value"])
+
+
+def ortholog_evidence_distribution_figure(
+    distributions: pd.DataFrame,
+    strategy: str,
+    taxonomic_scope: str = "all",
+    evidence_unit: str = "ortholog",
+):
+    selected = distributions[
+        distributions["strategy"].astype(str).eq(strategy)
+        & distributions["taxonomic_scope"].astype(str).eq(taxonomic_scope)
+        & distributions["evidence_unit"].astype(str).eq(evidence_unit)
+    ]
+    metrics = [
+        ("site_aligned", "Site-aligned evidence units", "#2166ac"),
+        ("exact_alt", "Exact-ALT evidence units", "#2ca25f"),
+    ]
+    figure = make_subplots(
+        rows=1,
+        cols=2,
+        subplot_titles=[label for _metric, label, _color in metrics],
+        horizontal_spacing=0.12,
+    )
+    for column, (metric, _label, color) in enumerate(metrics, start=1):
+        subset = selected[selected["metric"].astype(str).eq(metric)].copy()
+        if subset.empty:
+            continue
+        subset["value"] = pd.to_numeric(subset["value"], errors="raise").astype("int64")
+        subset["variant_count"] = (
+            pd.to_numeric(subset["variant_count"], errors="raise").astype("int64")
+        )
+        subset = subset.groupby("value", as_index=False, sort=True)["variant_count"].sum()
+        total = int(subset["variant_count"].sum())
+        subset["cumulative_count"] = subset["variant_count"].cumsum()
+        subset["exact_fraction"] = subset["variant_count"] / total
+        subset["cumulative_fraction"] = subset["cumulative_count"] / total
+        customdata = np.column_stack(
+            [
+                subset["value"],
+                subset["variant_count"],
+                subset["exact_fraction"],
+                subset["cumulative_count"],
+                np.full(len(subset), total),
+            ]
+        )
+        figure.add_trace(
+            go.Scatter(
+                x=np.log1p(subset["value"]),
+                y=subset["cumulative_fraction"],
+                customdata=customdata,
+                mode="lines+markers",
+                line={"color": color, "shape": "hv", "width": 2.5},
+                marker={"color": color, "size": 5},
+                showlegend=False,
+                hovertemplate=(
+                    "Evidence units: %{customdata[0]:,.0f}<br>"
+                    "Exactly this value: %{customdata[1]:,.0f} (%{customdata[2]:.1%})<br>"
+                    "Cumulative: %{customdata[3]:,.0f} / %{customdata[4]:,.0f} "
+                    "(%{y:.1%})<extra></extra>"
+                ),
+            ),
+            row=1,
+            col=column,
+        )
+        tick_values, tick_labels = _distribution_ticks(int(subset["value"].max()))
+        figure.update_xaxes(
+            title_text="Evidence units (log1p scale)",
+            tickmode="array",
+            tickvals=tick_values,
+            ticktext=tick_labels,
+            row=1,
+            col=column,
+        )
+        figure.add_hline(
+            y=0.5,
+            line={"color": "#9e9e9e", "dash": "dot", "width": 1},
+            row=1,
+            col=column,
+        )
+    figure.update_yaxes(
+        title_text="Cumulative SNVs at or below X",
+        tickformat=".0%",
+        range=[0, 1.02],
+        row=1,
+        col=1,
+    )
+    figure.update_yaxes(tickformat=".0%", range=[0, 1.02], row=1, col=2)
+    figure.update_layout(
+        height=410,
+        margin={"l": 70, "r": 30, "t": 55, "b": 70},
+        template="plotly_white",
+    )
+    figure.update_xaxes(automargin=True)
+    figure.update_yaxes(automargin=True)
+    return figure
+
+
+def ortholog_evidence_distribution_stats(
+    distributions: pd.DataFrame,
+    strategy: str,
+    taxonomic_scope: str,
+    evidence_unit: str,
+) -> list[dict[str, str]]:
+    selected = distributions[
+        distributions["strategy"].astype(str).eq(strategy)
+        & distributions["taxonomic_scope"].astype(str).eq(taxonomic_scope)
+        & distributions["evidence_unit"].astype(str).eq(evidence_unit)
+    ]
+    stats = []
+    totals = []
+    for metric, label in (
+        ("site_aligned", "Site-aligned median [IQR]"),
+        ("exact_alt", "Exact-ALT median [IQR]"),
+    ):
+        subset = selected[selected["metric"].astype(str).eq(metric)].copy()
+        if subset.empty:
+            continue
+        subset["value"] = pd.to_numeric(subset["value"], errors="raise").astype("int64")
+        subset["variant_count"] = (
+            pd.to_numeric(subset["variant_count"], errors="raise").astype("int64")
+        )
+        totals.append(int(subset["variant_count"].sum()))
+        q1 = _weighted_quantile_from_distribution(subset, 0.25)
+        median = _weighted_quantile_from_distribution(subset, 0.5)
+        q3 = _weighted_quantile_from_distribution(subset, 0.75)
+        stats.append({"label": label, "value": f"{format_int(median)} [{format_int(q1)}-{format_int(q3)}]"})
+    if len(set(totals)) > 1:
+        raise ValueError("Ortholog evidence distributions use inconsistent SNV totals")
+    return [{"label": "SNVs", "value": format_int(totals[0] if totals else 0)}, *stats]
+
+
 def build_ortholog_evidence_sections(
     variant_summary: VariantSummary,
     include_plotly: bool,
@@ -1372,6 +1521,11 @@ def build_ortholog_evidence_sections(
         )
         return sections
     cells = variant_summary.ortholog_evidence_cells
+    distributions = getattr(
+        variant_summary,
+        "ortholog_evidence_distributions",
+        pd.DataFrame(),
+    )
     if cells.empty:
         sections.append("<p>No eligible SNVs with ortholog evidence and successful gnomAD lookup.</p>")
         return sections
@@ -1420,8 +1574,12 @@ def build_ortholog_evidence_sections(
     default_unit = "ortholog" if "ortholog" in available_units else available_units[0]
 
     figures = {}
+    distribution_figures = {}
+    distribution_stats = {}
     for strategy in supported_strategies:
         figures[strategy] = {}
+        distribution_figures[strategy] = {}
+        distribution_stats[strategy] = {}
         for scope in visible_scopes:
             scoped = cells[
                 cells["strategy"].astype(str).eq(strategy)
@@ -1430,6 +1588,8 @@ def build_ortholog_evidence_sections(
             if scoped.empty:
                 continue
             figures[strategy][scope] = {}
+            distribution_figures[strategy][scope] = {}
+            distribution_stats[strategy][scope] = {}
             for unit in available_units:
                 if scoped["evidence_unit"].astype(str).eq(unit).sum() == 0:
                     continue
@@ -1445,6 +1605,30 @@ def build_ortholog_evidence_sections(
                     figures[strategy][scope][unit][str(quantile_count)] = json.loads(
                         figure.to_json()
                     )
+                if not distributions.empty:
+                    distribution_subset = distributions[
+                        distributions["strategy"].astype(str).eq(strategy)
+                        & distributions["taxonomic_scope"].astype(str).eq(scope)
+                        & distributions["evidence_unit"].astype(str).eq(unit)
+                    ]
+                    if not distribution_subset.empty:
+                        distribution_figure = ortholog_evidence_distribution_figure(
+                            distributions,
+                            strategy,
+                            scope,
+                            unit,
+                        )
+                        distribution_figures[strategy][scope][unit] = json.loads(
+                            distribution_figure.to_json()
+                        )
+                        distribution_stats[strategy][scope][unit] = (
+                            ortholog_evidence_distribution_stats(
+                                distributions,
+                                strategy,
+                                scope,
+                                unit,
+                            )
+                        )
 
     initial = ortholog_evidence_figure(
         cells,
@@ -1482,7 +1666,9 @@ def build_ortholog_evidence_sections(
         for count, label in quantile_options.items()
     )
     payload = json.dumps(figures, separators=(",", ":"))
-    stats = {}
+    distribution_payload = json.dumps(distribution_figures, separators=(",", ":"))
+    distribution_stats_payload = json.dumps(distribution_stats, separators=(",", ":"))
+    taxonomy_stats = {}
     if not taxonomy_summary.empty:
         for scope in visible_scopes:
             ortholog_row = taxonomy_summary[
@@ -1491,7 +1677,7 @@ def build_ortholog_evidence_sections(
             ]
             if ortholog_row.empty:
                 continue
-            stats[scope] = {}
+            taxonomy_stats[scope] = {}
             ortholog_median = float(ortholog_row.iloc[0]["orthologs_per_gene_median"])
             for unit in available_units:
                 unit_row = taxonomy_summary[
@@ -1501,13 +1687,37 @@ def build_ortholog_evidence_sections(
                 if unit_row.empty:
                     continue
                 row = unit_row.iloc[0]
-                stats[scope][unit] = (
+                taxonomy_stats[scope][unit] = (
                     f"Median selected orthologs/gene: {ortholog_median:,.1f}; "
                     f"median {EVIDENCE_UNIT_LABELS.get(unit, unit).lower()} units/gene: "
                     f"{float(row['units_per_gene_median']):,.1f}; "
                     f"distinct units in run: {int(row['unit_count']):,}."
                 )
-    stats_payload = json.dumps(stats, separators=(",", ":"))
+    taxonomy_stats_payload = json.dumps(taxonomy_stats, separators=(",", ":"))
+    distribution_html = ""
+    if (
+        default_strategy in distribution_figures
+        and default_scope in distribution_figures[default_strategy]
+        and default_unit in distribution_figures[default_strategy][default_scope]
+    ):
+        initial_distribution = ortholog_evidence_distribution_figure(
+            distributions,
+            default_strategy,
+            default_scope,
+            default_unit,
+        )
+        distribution_html = (
+            '<h3>Evidence distributions</h3>'
+            '<p class="analysis-note">CDS, UTR, and intron SNVs with at least one '
+            "site-aligned selected unit, pooled across genes. gnomAD lookup status "
+            "does not filter these distributions.</p>"
+            '<div class="metric-grid" id="ortholog-evidence-distribution-stats"></div>'
+            + initial_distribution.to_html(
+                full_html=False,
+                include_plotlyjs=False,
+                div_id="ortholog-evidence-distribution-plot",
+            )
+        )
     sections.append(
         f"""
         <div class="analysis-controls" id="ortholog-evidence-controls">
@@ -1518,15 +1728,19 @@ def build_ortholog_evidence_sections(
         </div>
         <p class="analysis-note" id="ortholog-evidence-stats"></p>
         {initial_html}
+        {distribution_html}
         <script>
         (() => {{
             const figures = {payload};
-            const stats = {stats_payload};
+            const taxonomyStats = {taxonomy_stats_payload};
+            const distributionFigures = {distribution_payload};
+            const distributionStats = {distribution_stats_payload};
             const strategy = document.getElementById('ortholog-evidence-strategy');
             const scope = document.getElementById('ortholog-evidence-scope');
             const unit = document.getElementById('ortholog-evidence-unit');
             const quantiles = document.getElementById('ortholog-evidence-quantiles');
             const summary = document.getElementById('ortholog-evidence-stats');
+            const distributionCards = document.getElementById('ortholog-evidence-distribution-stats');
             const firstKey = value => Object.keys(value)[0];
             const render = () => {{
                 const strategyFigures = figures[strategy.value];
@@ -1534,8 +1748,22 @@ def build_ortholog_evidence_sections(
                 const scopeFigures = strategyFigures[scope.value];
                 if (!scopeFigures[unit.value]) unit.value = firstKey(scopeFigures);
                 const figure = scopeFigures[unit.value][quantiles.value];
-                summary.textContent = stats[scope.value]?.[unit.value] || '';
+                summary.textContent = taxonomyStats[scope.value]?.[unit.value] || '';
                 Plotly.react('ortholog-evidence-plot', figure.data, figure.layout, {{responsive: true}});
+                const distribution = distributionFigures[strategy.value]?.[scope.value]?.[unit.value];
+                if (distribution && distributionCards) {{
+                    const items = distributionStats[strategy.value][scope.value][unit.value];
+                    distributionCards.innerHTML = items.map(item =>
+                        `<div class="metric-card"><div class="metric-label">${{item.label}}</div>` +
+                        `<div class="metric-value">${{item.value}}</div></div>`
+                    ).join('');
+                    Plotly.react(
+                        'ortholog-evidence-distribution-plot',
+                        distribution.data,
+                        distribution.layout,
+                        {{responsive: true}}
+                    );
+                }}
             }};
             strategy.addEventListener('change', render);
             scope.addEventListener('change', render);
@@ -3732,13 +3960,14 @@ def main() -> None:
             variant_strategy_support_path=inputs.variant_strategy_support_tsv,
         )
         if inputs.ortholog_evidence_summary_tsv.exists():
-            available, cells = read_taxonomic_ortholog_evidence(
+            available, cells, distributions = read_taxonomic_ortholog_evidence(
                 inputs.ortholog_evidence_summary_tsv
             )
             variant_summary = replace(
                 variant_summary,
                 ortholog_evidence_available=available,
                 ortholog_evidence_cells=cells,
+                ortholog_evidence_distributions=distributions,
             )
         timing["Details"] = "cache hit" if variant_summary.cache_hit else "cache miss"
 

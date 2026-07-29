@@ -113,10 +113,14 @@ and absolute exact-ALT support for CDS, UTR, and intron contexts. The controls
 select strategy, taxonomic scope, evidence unit (ortholog, species, genus,
 family, or order), and median/quartile/decile grouping. Boundaries are computed
 independently within each context. Cell color is the gnomAD found fraction after
-excluding failed lookups. Ensembl Compara MAF is marked unavailable because its
-species rows do not carry the NCBI taxonomy identifiers required by this
-calculation. Older runs remain reportable through the legacy all-ortholog view
-when site depth is present; otherwise the section is marked unavailable.
+excluding failed lookups. Two weighted empirical cumulative distributions below
+the heatmaps summarize site-aligned and exact-ALT evidence units across the
+eligible CDS, UTR, and intron SNVs; these distributions include failed gnomAD
+lookups because gnomAD is not an evidence-depth eligibility criterion. Ensembl
+Compara MAF is marked unavailable because its species rows do not carry the NCBI
+taxonomy identifiers required by this calculation. Older runs remain reportable
+through the legacy all-ortholog view when site depth is present; otherwise the
+section is marked unavailable.
 
 When an analysis needs durable intermediate tables, write them under
 `<run-dir>/analytics/`. The source tree does not keep a default scratch/work

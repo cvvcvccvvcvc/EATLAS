@@ -19,6 +19,8 @@ from analytics.strategy_report import (
     gnomad_stratification_figure,
     hidden_clinvar_association_views,
     overview_strategy_table,
+    ortholog_evidence_distribution_figure,
+    ortholog_evidence_distribution_stats,
     ortholog_evidence_figure,
     resolve_run_inputs,
     validate_report_inputs,
@@ -218,9 +220,27 @@ def test_ortholog_evidence_section_renders_three_context_heatmaps() -> None:
             for quantile_count in [2, 4, 10]
         ]
     )
+    distributions = pd.DataFrame(
+        [
+            {
+                "strategy": "s1",
+                "taxonomic_scope": "all",
+                "evidence_unit": "ortholog",
+                "metric": metric,
+                "value": value,
+                "variant_count": count,
+            }
+            for metric, values in {
+                "site_aligned": [(1, 1), (4, 3)],
+                "exact_alt": [(0, 2), (2, 2)],
+            }.items()
+            for value, count in values
+        ]
+    )
     summary = SimpleNamespace(
         ortholog_evidence_available=True,
         ortholog_evidence_cells=cells,
+        ortholog_evidence_distributions=distributions,
         strategies=["s1", "precomputed_ensembl_92_mammals_epo_extended"],
     )
     taxonomy_summary = pd.DataFrame(
@@ -238,6 +258,13 @@ def test_ortholog_evidence_section_renders_three_context_heatmaps() -> None:
     )
 
     figure = ortholog_evidence_figure(cells, "s1", 2)
+    distribution_figure = ortholog_evidence_distribution_figure(distributions, "s1")
+    distribution_stats = ortholog_evidence_distribution_stats(
+        distributions,
+        "s1",
+        "all",
+        "ortholog",
+    )
     html = "".join(
         build_ortholog_evidence_sections(
             summary,
@@ -247,6 +274,13 @@ def test_ortholog_evidence_section_renders_three_context_heatmaps() -> None:
     )
 
     assert len(figure.data) == 3
+    assert len(distribution_figure.data) == 2
+    assert all(float(trace.y[-1]) == 1.0 for trace in distribution_figure.data)
+    assert distribution_stats == [
+        {"label": "SNVs", "value": "4"},
+        {"label": "Site-aligned median [IQR]", "value": "4 [1-4]"},
+        {"label": "Exact-ALT median [IQR]", "value": "0 [0-2]"},
+    ]
     assert [annotation.text for annotation in figure.layout.annotations] == ["CDS", "UTR", "Intron"]
     assert "Median" in html
     assert "Quartiles" in html
@@ -254,6 +288,8 @@ def test_ortholog_evidence_section_renders_three_context_heatmaps() -> None:
     assert "Taxonomic scope" in html
     assert "Evidence unit" in html
     assert "Exact-ALT support" in html
+    assert "Evidence distributions" in html
+    assert "Cumulative SNVs at or below X" in html
     assert "Median selected orthologs/gene: 50.0" in html
     assert "taxonomy unavailable" in html
     assert "Plotly.react('ortholog-evidence-plot'" in html
@@ -263,6 +299,7 @@ def test_ortholog_evidence_section_explains_legacy_output() -> None:
     summary = SimpleNamespace(
         ortholog_evidence_available=False,
         ortholog_evidence_cells=pd.DataFrame(),
+        ortholog_evidence_distributions=pd.DataFrame(),
     )
 
     html = "".join(build_ortholog_evidence_sections(summary, include_plotly=False))
