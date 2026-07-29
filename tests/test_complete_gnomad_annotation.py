@@ -198,6 +198,9 @@ def test_completion_retries_failed_regions_and_preserves_other_columns(
     assert manifest["gnomad_completion"]["updated_variant_context_count"] == 2
     assert manifest["gnomad_completion"]["shared_cache"]["enabled"] is True
     assert manifest["gnomad_completion"]["shared_cache"]["tile_write_count"] == 1
+    assert not (
+        run_dir / "annotation_gnomad_complete" / "variant_strategy_support.tsv.gz"
+    ).exists()
 
     def unexpected_fetch(*_args):
         raise AssertionError("A completed output must not refetch gnomAD regions")

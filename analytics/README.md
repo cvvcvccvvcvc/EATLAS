@@ -200,8 +200,10 @@ python bin/complete_gnomad_annotation.py \
 
 The command writes `<run-dir>/annotation_gnomad_complete/`. Repeating it retries
 only regions still listed as failed. The cache argument is optional and also
-defaults to `GAPH_GNOMAD_CACHE_DIR`. Build a report from the repaired annotation
-with:
+defaults to `GAPH_GNOMAD_CACHE_DIR`. The recovery directory contains the
+corrected variant annotations, failure table, and manifest; immutable strategy
+support tables remain in `<run-dir>/annotation/` and are reused by the report.
+Build a report from the repaired annotation with:
 
 ```bash
 micromamba run -n gaph-v2-analytics python -m analytics.strategy_report \

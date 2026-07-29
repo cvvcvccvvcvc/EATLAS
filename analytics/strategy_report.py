@@ -312,6 +312,23 @@ def resolve_run_inputs(run_dir: Path, annotation_dir: Path | None = None) -> Run
     variant_annotations_tsv = annotation_dir / "variant_annotations.tsv.gz"
     if not annotation_override:
         variant_annotations_tsv = resolve_vep_variant_annotations(run_dir, variant_annotations_tsv)
+    base_annotation_dir = run_dir / "annotation"
+    reuse_base_support = False
+    recovery_manifest_path = annotation_dir / "manifest.json"
+    if annotation_override and recovery_manifest_path.exists():
+        recovery_manifest = json.loads(recovery_manifest_path.read_text())
+        recovery_source = (
+            recovery_manifest.get("gnomad_completion", {}).get("source_annotation_dir", "")
+        )
+        if recovery_source:
+            reuse_base_support = Path(recovery_source).expanduser().resolve() == base_annotation_dir.resolve()
+
+    def annotation_support_path(filename: str) -> Path:
+        candidate = annotation_dir / filename
+        if candidate.exists() or not reuse_base_support:
+            return candidate
+        return base_annotation_dir / filename
+
     inputs = RunInputs(
         run_dir=run_dir,
         fetch_manifest_json=run_dir / "fetch" / "manifest.json",
@@ -319,8 +336,8 @@ def resolve_run_inputs(run_dir: Path, annotation_dir: Path | None = None) -> Run
         target_features_tsv=run_dir / "fetch" / "target_features.tsv.gz",
         target_sequences_dir=run_dir / "fetch" / "sequences" / "targets",
         variant_annotations_tsv=variant_annotations_tsv,
-        variant_strategy_support_tsv=annotation_dir / "variant_strategy_support.tsv.gz",
-        ortholog_evidence_summary_tsv=annotation_dir / "ortholog_evidence_summary.tsv.gz",
+        variant_strategy_support_tsv=annotation_support_path("variant_strategy_support.tsv.gz"),
+        ortholog_evidence_summary_tsv=annotation_support_path("ortholog_evidence_summary.tsv.gz"),
         annotation_manifest_json=annotation_dir / "manifest.json",
         annotation_failures_tsv=annotation_dir / "failures.tsv.gz",
         feature_coverage_tsv=run_dir / "alignment" / "feature_coverage.tsv.gz",

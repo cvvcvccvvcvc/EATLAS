@@ -9,7 +9,6 @@ import csv
 import gzip
 import json
 import os
-import shutil
 import sys
 import tempfile
 from collections import Counter
@@ -32,7 +31,6 @@ from analytics.core.variant_keys import (  # noqa: E402
 
 REQUIRED_FILES = (
     "variant_annotations.tsv.gz",
-    "variant_strategy_support.tsv.gz",
     "failures.tsv.gz",
     "manifest.json",
 )
@@ -225,17 +223,6 @@ def write_failures(path: Path, rows: list[dict[str, str]]) -> None:
         temporary.unlink(missing_ok=True)
 
 
-def copy_atomic(source: Path, destination: Path) -> None:
-    if source.resolve() == destination.resolve():
-        return
-    temporary = atomic_path(destination, destination.suffix)
-    try:
-        shutil.copyfile(source, temporary)
-        os.replace(temporary, destination)
-    finally:
-        temporary.unlink(missing_ok=True)
-
-
 def write_manifest(path: Path, manifest: dict) -> None:
     temporary = atomic_path(path, ".json")
     try:
@@ -304,10 +291,6 @@ def complete_gnomad_annotation(
         source / "variant_annotations.tsv.gz",
         outdir / "variant_annotations.tsv.gz",
         cache,
-    )
-    copy_atomic(
-        source / "variant_strategy_support.tsv.gz",
-        outdir / "variant_strategy_support.tsv.gz",
     )
     write_failures(outdir / "failures.tsv.gz", retained_failures)
 
