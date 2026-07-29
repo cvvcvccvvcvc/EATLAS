@@ -108,12 +108,15 @@ and consequence selectors. With a completed bulk-VEP artifact these selectors
 use RefSeq VEP; legacy runs use ClinVar MC. A second selector exposes the 2x2,
 fixed-band, or continuous-distribution data for one strategy at a time.
 
-`Ortholog Evidence` shows SNV-only heatmaps of site-aligned ortholog depth and
-exact-ALT concordance for CDS, UTR, and intron contexts. Median, quartile, and
-decile boundaries are computed independently within each context. Cell color
-is the gnomAD found fraction after excluding failed lookups. Runs produced
-before `site_aligned_ortholog_count` was added remain reportable, but this
-section is marked unavailable.
+`Ortholog Evidence` shows SNV-only heatmaps of site-aligned evidence-unit count
+and absolute exact-ALT support for CDS, UTR, and intron contexts. The controls
+select strategy, taxonomic scope, evidence unit (ortholog, species, genus,
+family, or order), and median/quartile/decile grouping. Boundaries are computed
+independently within each context. Cell color is the gnomAD found fraction after
+excluding failed lookups. Ensembl Compara MAF is marked unavailable because its
+species rows do not carry the NCBI taxonomy identifiers required by this
+calculation. Older runs remain reportable through the legacy all-ortholog view
+when site depth is present; otherwise the section is marked unavailable.
 
 When an analysis needs durable intermediate tables, write them under
 `<run-dir>/analytics/`. The source tree does not keep a default scratch/work

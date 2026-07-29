@@ -56,11 +56,13 @@ SPECIAL_FLOAT_KEY = "__gaph_float__"
 ORTHOLOG_EVIDENCE_COLUMNS = [
     "strategy",
     "target_context",
+    "taxonomic_scope",
+    "evidence_unit",
     "quantile_count",
     "depth_bin",
-    "concordance_bin",
+    "alt_bin",
     "depth_label",
-    "concordance_label",
+    "alt_label",
     "gnomad_found_count",
     "gnomad_eligible_count",
     "gnomad_found_fraction",
@@ -864,8 +866,6 @@ def _ortholog_evidence_summary(
     )
     if grouped.empty:
         return True, empty
-    grouped["alt_concordance"] = grouped["alt_support"] / grouped["site_depth"]
-
     cells = []
     for (strategy, context), subset in grouped.groupby(
         ["strategy", "target_context"], sort=True
@@ -875,21 +875,21 @@ def _ortholog_evidence_summary(
             depth_bins = _weighted_quantile_bins(
                 subset["site_depth"], subset["gnomad_eligible_count"], quantile_count
             )
-            concordance_bins = _weighted_quantile_bins(
-                subset["alt_concordance"], subset["gnomad_eligible_count"], quantile_count
+            alt_bins = _weighted_quantile_bins(
+                subset["alt_support"], subset["gnomad_eligible_count"], quantile_count
             )
             depth_labels = _bin_labels(
                 subset["site_depth"], depth_bins, quantile_count, percent=False
             )
-            concordance_labels = _bin_labels(
-                subset["alt_concordance"], concordance_bins, quantile_count, percent=True
+            alt_labels = _bin_labels(
+                subset["alt_support"], alt_bins, quantile_count, percent=False
             )
             binned = subset.assign(
                 depth_bin=depth_bins,
-                concordance_bin=concordance_bins,
+                alt_bin=alt_bins,
             )
             aggregated = binned.groupby(
-                ["depth_bin", "concordance_bin"], as_index=False
+                ["depth_bin", "alt_bin"], as_index=False
             )[["gnomad_found_count", "gnomad_eligible_count"]].sum()
             for row in aggregated.itertuples(index=False):
                 eligible = int(row.gnomad_eligible_count)
@@ -898,11 +898,108 @@ def _ortholog_evidence_summary(
                     {
                         "strategy": str(strategy),
                         "target_context": str(context),
+                        "taxonomic_scope": "all",
+                        "evidence_unit": "ortholog",
                         "quantile_count": quantile_count,
                         "depth_bin": int(row.depth_bin),
-                        "concordance_bin": int(row.concordance_bin),
+                        "alt_bin": int(row.alt_bin),
                         "depth_label": depth_labels[int(row.depth_bin)],
-                        "concordance_label": concordance_labels[int(row.concordance_bin)],
+                        "alt_label": alt_labels[int(row.alt_bin)],
+                        "gnomad_found_count": found,
+                        "gnomad_eligible_count": eligible,
+                        "gnomad_found_fraction": found / eligible,
+                    }
+                )
+    return True, pd.DataFrame(cells, columns=ORTHOLOG_EVIDENCE_COLUMNS)
+
+
+def read_taxonomic_ortholog_evidence(path: Path) -> tuple[bool, pd.DataFrame]:
+    """Bin a compact pipeline histogram for interactive report heatmaps."""
+    empty = pd.DataFrame(columns=ORTHOLOG_EVIDENCE_COLUMNS)
+    required = {
+        "strategy",
+        "target_context",
+        "taxonomic_scope",
+        "evidence_unit",
+        "site_aligned_count",
+        "alt_support_count",
+        "gnomad_found_count",
+        "gnomad_not_found_count",
+        "gnomad_lookup_failed_count",
+    }
+    frame = pd.read_csv(path, sep="\t", compression="gzip", keep_default_na=False)
+    missing = required - set(frame.columns)
+    if missing:
+        raise ValueError(
+            f"Ortholog evidence summary {path} missing columns: {', '.join(sorted(missing))}"
+        )
+    if frame.empty:
+        return True, empty
+    for column in (
+        "site_aligned_count",
+        "alt_support_count",
+        "gnomad_found_count",
+        "gnomad_not_found_count",
+        "gnomad_lookup_failed_count",
+    ):
+        frame[column] = pd.to_numeric(frame[column], errors="raise").astype("int64")
+    invalid = (
+        frame["site_aligned_count"].le(0)
+        | frame["alt_support_count"].lt(0)
+        | frame["alt_support_count"].gt(frame["site_aligned_count"])
+    )
+    if invalid.any():
+        row = frame.loc[invalid].iloc[0]
+        raise ValueError(
+            "Invalid taxonomic ortholog evidence: "
+            f"ALT={row['alt_support_count']}, site={row['site_aligned_count']}"
+        )
+    frame["gnomad_eligible_count"] = (
+        frame["gnomad_found_count"] + frame["gnomad_not_found_count"]
+    )
+    frame = frame[
+        frame["target_context"].isin(("cds", "utr", "intron"))
+        & frame["gnomad_eligible_count"].gt(0)
+    ]
+    if frame.empty:
+        return True, empty
+
+    cells = []
+    group_columns = ["strategy", "target_context", "taxonomic_scope", "evidence_unit"]
+    for group, subset in frame.groupby(group_columns, sort=True):
+        strategy, context, scope, unit = group
+        subset = subset.copy()
+        for quantile_count in (2, 4, 10):
+            depth_bins = _weighted_quantile_bins(
+                subset["site_aligned_count"], subset["gnomad_eligible_count"], quantile_count
+            )
+            alt_bins = _weighted_quantile_bins(
+                subset["alt_support_count"], subset["gnomad_eligible_count"], quantile_count
+            )
+            depth_labels = _bin_labels(
+                subset["site_aligned_count"], depth_bins, quantile_count, percent=False
+            )
+            alt_labels = _bin_labels(
+                subset["alt_support_count"], alt_bins, quantile_count, percent=False
+            )
+            binned = subset.assign(depth_bin=depth_bins, alt_bin=alt_bins)
+            aggregated = binned.groupby(["depth_bin", "alt_bin"], as_index=False)[
+                ["gnomad_found_count", "gnomad_eligible_count"]
+            ].sum()
+            for row in aggregated.itertuples(index=False):
+                eligible = int(row.gnomad_eligible_count)
+                found = int(row.gnomad_found_count)
+                cells.append(
+                    {
+                        "strategy": str(strategy),
+                        "target_context": str(context),
+                        "taxonomic_scope": str(scope),
+                        "evidence_unit": str(unit),
+                        "quantile_count": quantile_count,
+                        "depth_bin": int(row.depth_bin),
+                        "alt_bin": int(row.alt_bin),
+                        "depth_label": depth_labels[int(row.depth_bin)],
+                        "alt_label": alt_labels[int(row.alt_bin)],
                         "gnomad_found_count": found,
                         "gnomad_eligible_count": eligible,
                         "gnomad_found_fraction": found / eligible,

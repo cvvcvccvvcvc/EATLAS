@@ -21,6 +21,7 @@ try:
     from fetch_gnomad_variants import GNOMAD_API_URL, fetch_region_variants_recursive, _select_af_metrics
     from feature_coverage import load_snv_site_depth, site_aligned_ortholog_counts
     from gnomad_cache import GnomadRegionCache
+    from ortholog_evidence_summary import write_ortholog_evidence_summary
 except ImportError as e:
     print(f"Error importing fetch_gnomad_variants: {e}")
     sys.exit(1)
@@ -109,8 +110,11 @@ def parse_args():
     depth_input = parser.add_mutually_exclusive_group(required=True)
     depth_input.add_argument("--segments-tsv", type=Path)
     depth_input.add_argument("--snv-site-depth-tsv", type=Path)
+    parser.add_argument("--snv-taxonomic-depth-tsv", type=Path)
+    parser.add_argument("--snv-alt-taxonomic-support-tsv", type=Path)
     parser.add_argument("--genes-tsv", required=False, type=Path)
     parser.add_argument("--target-sequences-dir", required=False, type=Path)
+    parser.add_argument("--target-features-dir", type=Path)
     parser.add_argument("--clinvar-vcf", required=True, type=Path)
     parser.add_argument("--outdir", required=True, type=Path)
     parser.add_argument("--partition-id", default="")
@@ -612,6 +616,59 @@ def gnomad_annotation_from_variant(variant: dict) -> dict[str, str]:
     }
 
 
+def build_gnomad_statuses(
+    aggregates: Iterable[dict],
+    gnomad_cache: dict[tuple[str, int, str, str], dict],
+    failures: Iterable[dict],
+) -> dict[tuple[str, int, str, str], str]:
+    failed_by_chrom: dict[str, list[tuple[int, int]]] = defaultdict(list)
+    for failure in failures:
+        if failure.get("source") != "gnomad" or failure.get("scope") != "region":
+            continue
+        chrom = normalize_chrom(str(failure.get("chrom") or ""))
+        try:
+            start = int(failure.get("start") or 0)
+            end = int(failure.get("end") or 0)
+        except (TypeError, ValueError):
+            continue
+        if chrom and start > 0 and end >= start:
+            failed_by_chrom[chrom].append((start, end))
+    for chrom in failed_by_chrom:
+        failed_by_chrom[chrom].sort()
+
+    statuses: dict[tuple[str, int, str, str], str] = {}
+    for aggregate in aggregates:
+        if aggregate.get("event_type") != "snv":
+            continue
+        target_key = (
+            str(aggregate.get("gene_id") or ""),
+            int(aggregate.get("target_start0") or 0),
+            str(aggregate.get("ref") or "").upper(),
+            str(aggregate.get("alt") or "").upper(),
+        )
+        lookup_key = aggregate.get("_lookup_key")
+        found = False
+        if lookup_key in gnomad_cache:
+            found = bool(gnomad_annotation_from_variant(gnomad_cache[lookup_key])["gnomad_af"])
+        if found:
+            status = "found"
+        elif aggregate.get("lookup_status") != "ok" or lookup_key is None:
+            status = "lookup_failed"
+        else:
+            chrom, position, _ref, _alt = lookup_key
+            status = "not_found"
+            for start, end in failed_by_chrom.get(normalize_chrom(chrom) or "", []):
+                if start <= position <= end:
+                    status = "lookup_failed"
+                    break
+                if start > position:
+                    break
+        previous = statuses.setdefault(target_key, status)
+        if previous != status:
+            raise ValueError(f"Conflicting gnomAD status for target SNV {target_key}")
+    return statuses
+
+
 def build_clinvar_cache(
     clinvar,
     accession_positions: dict[str, set[int]],
@@ -666,12 +723,27 @@ def main():
     args.outdir.mkdir(parents=True, exist_ok=True)
     out_tsv = args.outdir / "variant_annotations.tsv.gz"
     support_tsv = args.outdir / "variant_strategy_support.tsv.gz"
+    ortholog_evidence_tsv = args.outdir / "ortholog_evidence_summary.tsv.gz"
     failures_tsv = args.outdir / "failures.tsv.gz"
     manifest_json = args.outdir / "manifest.json"
     if args.segments_tsv is not None and not args.segments_tsv.exists():
         raise FileNotFoundError(f"Alignment segments TSV not found: {args.segments_tsv}")
     if args.snv_site_depth_tsv is not None and not args.snv_site_depth_tsv.exists():
         raise FileNotFoundError(f"SNV site-depth TSV not found: {args.snv_site_depth_tsv}")
+    taxonomic_inputs = [
+        args.snv_taxonomic_depth_tsv,
+        args.snv_alt_taxonomic_support_tsv,
+        args.target_features_dir,
+    ]
+    if any(path is not None for path in taxonomic_inputs) and not all(
+        path is not None for path in taxonomic_inputs
+    ):
+        raise ValueError(
+            "Taxonomic ortholog evidence requires site depth, ALT support, and target features"
+        )
+    for path in taxonomic_inputs:
+        if path is not None and not path.exists():
+            raise FileNotFoundError(f"Taxonomic ortholog evidence input not found: {path}")
     if not args.clinvar_vcf.exists():
         raise FileNotFoundError(f"ClinVar VCF not found: {args.clinvar_vcf}")
     clinvar_tbi = Path(f"{args.clinvar_vcf}.tbi")
@@ -869,6 +941,18 @@ def main():
         VARIANT_STRATEGY_SUPPORT_FIELDS,
         strategy_support_rows,
     )
+    ortholog_evidence_summary_count = 0
+    if args.snv_taxonomic_depth_tsv is not None:
+        target_feature_paths = sorted(args.target_features_dir.glob("*.tsv.gz"))
+        if not target_feature_paths:
+            raise ValueError(f"No target feature tables found in {args.target_features_dir}")
+        ortholog_evidence_summary_count = write_ortholog_evidence_summary(
+            args.snv_taxonomic_depth_tsv,
+            args.snv_alt_taxonomic_support_tsv,
+            target_feature_paths,
+            build_gnomad_statuses(variant_aggregates.values(), gnomad_cache, failures),
+            ortholog_evidence_tsv,
+        )
 
     failure_count = write_tsv_gz(failures_tsv, FAILURE_FIELDS, failures)
     manifest = {
@@ -881,6 +965,7 @@ def main():
         "variant_strategy_support_count": strategy_support_count,
         "variant_strategy_support_missing_key_count": strategy_support_missing_key_count,
         "variant_strategy_site_depth_count": len(site_depths),
+        "ortholog_evidence_summary_count": ortholog_evidence_summary_count,
         "target_context_count": len(contexts),
         "clinvar_vcf": path_metadata(args.clinvar_vcf),
         "clinvar_tbi": path_metadata(clinvar_tbi),

@@ -4,7 +4,54 @@ import csv
 import gzip
 from pathlib import Path
 
-from analytics.core.variant_summary import VEP_USECOLS, VARIANT_USECOLS, build_variant_summary
+from analytics.core.variant_summary import (
+    VEP_USECOLS,
+    VARIANT_USECOLS,
+    build_variant_summary,
+    read_taxonomic_ortholog_evidence,
+)
+
+
+def test_taxonomic_ortholog_evidence_uses_absolute_alt_support(tmp_path: Path) -> None:
+    path = tmp_path / "ortholog_evidence_summary.tsv.gz"
+    fields = [
+        "strategy",
+        "target_context",
+        "taxonomic_scope",
+        "evidence_unit",
+        "site_aligned_count",
+        "alt_support_count",
+        "gnomad_found_count",
+        "gnomad_not_found_count",
+        "gnomad_lookup_failed_count",
+    ]
+    with gzip.open(path, "wt", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fields, delimiter="\t", lineterminator="\n")
+        writer.writeheader()
+        writer.writerows(
+            [
+                {
+                    "strategy": "s1",
+                    "target_context": "cds",
+                    "taxonomic_scope": "mammalia",
+                    "evidence_unit": "species",
+                    "site_aligned_count": depth,
+                    "alt_support_count": alt,
+                    "gnomad_found_count": found,
+                    "gnomad_not_found_count": 1,
+                    "gnomad_lookup_failed_count": 3,
+                }
+                for depth, alt, found in [(10, 1, 1), (10, 5, 2), (20, 10, 3)]
+            ]
+        )
+
+    available, cells = read_taxonomic_ortholog_evidence(path)
+
+    assert available
+    assert set(cells["taxonomic_scope"]) == {"mammalia"}
+    assert set(cells["evidence_unit"]) == {"species"}
+    assert cells["alt_label"].str.contains("%").sum() == 0
+    assert int(cells[cells["quantile_count"].eq(2)]["gnomad_eligible_count"].sum()) == 9
 
 
 def test_variant_summary_accepts_compact_annotation_schema(tmp_path: Path) -> None:

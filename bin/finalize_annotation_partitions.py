@@ -51,6 +51,23 @@ GNOMAD_SHARED_CACHE_IDENTITY_FIELDS = [
     "reference_genome",
     "tile_size_bp",
 ]
+ORTHOLOG_EVIDENCE_KEY_FIELDS = [
+    "strategy",
+    "target_context",
+    "taxonomic_scope",
+    "evidence_unit",
+    "site_aligned_count",
+    "alt_support_count",
+]
+ORTHOLOG_EVIDENCE_COUNT_FIELDS = [
+    "gnomad_found_count",
+    "gnomad_not_found_count",
+    "gnomad_lookup_failed_count",
+]
+ORTHOLOG_EVIDENCE_FIELDS = [
+    *ORTHOLOG_EVIDENCE_KEY_FIELDS,
+    *ORTHOLOG_EVIDENCE_COUNT_FIELDS,
+]
 
 
 def parse_args() -> argparse.Namespace:
@@ -133,6 +150,63 @@ def merge_gnomad_shared_cache(partitions: list[tuple[Path, dict]]) -> dict[str, 
     }
 
 
+def merge_ortholog_evidence(
+    partitions: list[tuple[Path, dict]],
+    output: Path,
+) -> int:
+    totals: dict[tuple[str, ...], Counter] = {}
+    for partition, _manifest in partitions:
+        path = partition / "ortholog_evidence_summary.tsv.gz"
+        if not path.exists():
+            raise FileNotFoundError(
+                f"Annotation partition missing ortholog_evidence_summary.tsv.gz: {partition}"
+            )
+        with gzip.open(path, "rt", newline="") as handle:
+            reader = csv.DictReader(handle, delimiter="\t")
+            missing = set(ORTHOLOG_EVIDENCE_FIELDS) - set(reader.fieldnames or [])
+            if missing:
+                raise ValueError(
+                    f"Ortholog evidence summary {path} missing columns: "
+                    f"{', '.join(sorted(missing))}"
+                )
+            for row in reader:
+                key = tuple(row[field] for field in ORTHOLOG_EVIDENCE_KEY_FIELDS)
+                counter = totals.setdefault(key, Counter())
+                counter.update(
+                    {
+                        field: int(row[field])
+                        for field in ORTHOLOG_EVIDENCE_COUNT_FIELDS
+                    }
+                )
+
+    with gzip.open(output, "wt", newline="") as handle:
+        writer = csv.DictWriter(
+            handle,
+            fieldnames=ORTHOLOG_EVIDENCE_FIELDS,
+            delimiter="\t",
+            lineterminator="\n",
+        )
+        writer.writeheader()
+        for key in sorted(
+            totals,
+            key=lambda item: (
+                item[0],
+                item[1],
+                item[2],
+                item[3],
+                int(item[4]),
+                int(item[5]),
+            ),
+        ):
+            writer.writerow(
+                {
+                    **dict(zip(ORTHOLOG_EVIDENCE_KEY_FIELDS, key)),
+                    **totals[key],
+                }
+            )
+    return len(totals)
+
+
 def main() -> None:
     args = parse_args()
     args.outdir.mkdir(parents=True, exist_ok=True)
@@ -146,6 +220,10 @@ def main() -> None:
         partitions,
         "variant_strategy_support.tsv.gz",
         args.outdir / "variant_strategy_support.tsv.gz",
+    )
+    ortholog_evidence_count = merge_ortholog_evidence(
+        partitions,
+        args.outdir / "ortholog_evidence_summary.tsv.gz",
     )
     failure_count = merge_tsv_gz(partitions, "failures.tsv.gz", args.outdir / "failures.tsv.gz")
 
@@ -189,6 +267,7 @@ def main() -> None:
         **counters,
         "annotated_variant_context_count": annotation_count,
         "variant_strategy_support_count": support_count,
+        "ortholog_evidence_summary_count": ortholog_evidence_count,
         "failure_count": failure_count,
         "clinvar_vcf": first_manifest.get("clinvar_vcf", {}),
         "clinvar_tbi": first_manifest.get("clinvar_tbi", {}),

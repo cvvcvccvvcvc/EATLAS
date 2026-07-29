@@ -25,6 +25,7 @@ For a default end-to-end `--stage all` run, `fetch/` contains:
 `alignment/` contains:
 
 - compact per-strategy and feature-coverage summaries
+- compact run-level taxonomy scope/unit summary
 - alignment failures
 - `manifest.json`
 
@@ -32,6 +33,7 @@ For a default end-to-end `--stage all` run, `fetch/` contains:
 
 - the compressed unique variant-context annotation table
 - compact per-strategy ALT-support counts for every normalized variant
+- compact taxonomic ortholog-evidence histograms for report heatmaps
 - annotation manifest and diagnostic failure table
 
 The variant-context table intentionally stores one compact interpretation
@@ -50,8 +52,9 @@ runs may reuse it, and a run remains valid when the cache is absent.
 
 Large handoff artifacts remain inside Nextflow `work/` during `--stage all`.
 Alignment partitions reduce raw segments to a compact `snv_site_depth.tsv.gz`
-table containing only observed concrete SNV positions before annotation. The
-large artifacts are removed after a successful
+table and temporary taxonomy-aware counts containing only observed concrete SNV
+positions before annotation. Annotation reduces the latter to a bounded
+histogram before publication. The large artifacts are removed after a successful
 `low_storage` run:
 
 - selected ortholog FASTA files

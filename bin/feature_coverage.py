@@ -11,6 +11,8 @@ import tempfile
 from collections.abc import Iterable, Iterator
 from pathlib import Path
 
+from taxonomic_evidence import COUNT_KEYS, load_taxonomy_profiles, member_group_keys
+
 
 FEATURE_COVERAGE_FIELDS = [
     "gene_id",
@@ -36,6 +38,12 @@ SNV_SITE_DEPTH_FIELDS = [
     "strategy",
     "target_start0",
     "site_aligned_ortholog_count",
+]
+SNV_TAXONOMIC_DEPTH_FIELDS = [
+    "gene_id",
+    "strategy",
+    "target_start0",
+    *COUNT_KEYS,
 ]
 
 KEY_SEPARATOR = "|"
@@ -813,6 +821,184 @@ def write_snv_site_depth(
                     row_count += 1
         if row_count != site_count:
             raise ValueError(f"SNV site-depth row count mismatch: {row_count} != {site_count}")
+        return row_count
+
+
+def write_snv_taxonomic_depth(
+    segment_paths: Iterable[Path],
+    site_rows: Iterable[dict[str, object]],
+    taxonomy_presets: Path,
+    output: Path,
+    temp_parent: Path,
+) -> int:
+    """Write distinct aligned taxonomic-unit counts at observed concrete SNV sites."""
+    if shutil.which("bedtools") is None:
+        raise RuntimeError("bedtools is required for taxonomic site-depth calculation")
+    profiles = load_taxonomy_profiles(taxonomy_presets)
+    env = os.environ.copy()
+    env["LC_ALL"] = "C"
+    output.parent.mkdir(parents=True, exist_ok=True)
+
+    with tempfile.TemporaryDirectory(prefix=".snv_taxonomic_depth_", dir=temp_parent) as temp_name:
+        temp_dir = Path(temp_name)
+        sites_raw = temp_dir / "sites.raw.bed"
+        sites_sorted = temp_dir / "sites.sorted.bed"
+        with sites_raw.open("w") as handle:
+            for row in site_rows:
+                gene_id = _key_part(row.get("gene_id"), "gene_id")
+                strategy = _key_part(row.get("strategy"), "strategy")
+                start0 = int(row.get("target_start0") or 0)
+                if start0 < 0:
+                    raise ValueError(f"SNV site has a negative target_start0: {start0}")
+                handle.write(f"{_group_key(gene_id, strategy)}\t{start0}\t{start0 + 1}\n")
+        _sort_file(
+            sites_raw,
+            sites_sorted,
+            temp_dir,
+            ["-k1,1", "-k2,2n", "-k3,3n"],
+            unique=True,
+            env=env,
+        )
+
+        segments_raw = temp_dir / "segments.raw.bed"
+        supported_groups: set[str] = set()
+        required = {
+            "gene_id",
+            "strategy",
+            "ortholog_gene_id",
+            "tax_id",
+            "target_start0",
+            "target_end0",
+        }
+        with segments_raw.open("w") as handle:
+            for row in _iter_required_tsv_gz(segment_paths, required):
+                tax_id = str(row.get("tax_id") or "")
+                if not tax_id:
+                    continue
+                gene_id = _key_part(row.get("gene_id"), "gene_id")
+                strategy = _key_part(row.get("strategy"), "strategy")
+                ortholog_gene_id = _key_part(row.get("ortholog_gene_id"), "ortholog_gene_id")
+                tax_id = _key_part(tax_id, "tax_id")
+                start0 = int(row.get("target_start0") or 0)
+                end0 = int(row.get("target_end0") or 0)
+                if end0 <= start0:
+                    continue
+                group = _group_key(gene_id, strategy)
+                supported_groups.add(group)
+                member = f"{ortholog_gene_id}{KEY_SEPARATOR}{tax_id}"
+                handle.write(f"{group}{KEY_SEPARATOR}{member}\t{start0}\t{end0}\n")
+
+        if not supported_groups:
+            with gzip.open(output, "wt", newline="") as handle:
+                csv.DictWriter(
+                    handle,
+                    fieldnames=SNV_TAXONOMIC_DEPTH_FIELDS,
+                    delimiter="\t",
+                ).writeheader()
+            return 0
+
+        segments_sorted = temp_dir / "segments.sorted.bed"
+        merged_intervals = temp_dir / "segments.merged.bed"
+        _sort_file(
+            segments_raw,
+            segments_sorted,
+            temp_dir,
+            ["-k1,1", "-k2,2n", "-k3,3n"],
+            env=env,
+        )
+        _run_to_file(
+            ["bedtools", "merge", "-i", str(segments_sorted)],
+            merged_intervals,
+            env=env,
+        )
+
+        sweep_raw = temp_dir / "sweep.raw.tsv"
+        sweep_sorted = temp_dir / "sweep.sorted.tsv"
+        with sweep_raw.open("w") as handle:
+            with merged_intervals.open() as intervals:
+                for line in intervals:
+                    member_key, start0, end0 = line.rstrip("\n").split("\t")
+                    gene_id, strategy, ortholog_gene_id, tax_id = member_key.split(KEY_SEPARATOR, 3)
+                    group = _group_key(gene_id, strategy)
+                    member = f"{ortholog_gene_id}\t{tax_id}"
+                    handle.write(f"{group}\t{end0}\t0\t{member}\n")
+                    handle.write(f"{group}\t{start0}\t1\t{member}\n")
+            with sites_sorted.open() as sites:
+                for line in sites:
+                    group, start0, _end0 = line.rstrip("\n").split("\t")
+                    if group in supported_groups:
+                        handle.write(f"{group}\t{start0}\t2\t\t\n")
+        _sort_file(
+            sweep_raw,
+            sweep_sorted,
+            temp_dir,
+            ["-k1,1", "-k2,2n", "-k3,3n", "-k4,4", "-k5,5"],
+            env=env,
+        )
+
+        row_count = 0
+        active: dict[tuple[str, str], tuple[str, ...]] = {}
+        group_refcounts: dict[str, int] = {}
+        counts = {key: 0 for key in COUNT_KEYS}
+        current_group = ""
+        with gzip.open(output, "wt", newline="") as handle:
+            writer = csv.DictWriter(
+                handle,
+                fieldnames=SNV_TAXONOMIC_DEPTH_FIELDS,
+                delimiter="\t",
+                lineterminator="\n",
+            )
+            writer.writeheader()
+            with sweep_sorted.open() as source:
+                for line in source:
+                    group, position, kind, ortholog_gene_id, tax_id = line.rstrip("\n").split("\t")
+                    if group != current_group:
+                        if active:
+                            raise ValueError(f"Taxonomic interval sweep ended with active members for {current_group}")
+                        if group_refcounts or any(counts.values()):
+                            raise ValueError(
+                                f"Taxonomic interval sweep retained counts for {current_group}"
+                            )
+                        current_group = group
+                    member_key = (ortholog_gene_id, tax_id)
+                    if kind == "1":
+                        if member_key in active:
+                            raise ValueError(f"Duplicate active ortholog interval for {group}: {member_key}")
+                        memberships = member_group_keys(ortholog_gene_id, tax_id, profiles)
+                        active[member_key] = memberships
+                        for membership in memberships:
+                            count_key, _group_id = membership.split("=", 1)
+                            previous = group_refcounts.get(membership, 0)
+                            group_refcounts[membership] = previous + 1
+                            if previous == 0:
+                                counts[count_key] += 1
+                    elif kind == "0":
+                        memberships = active.pop(member_key, None)
+                        if memberships is None:
+                            raise ValueError(f"Inactive ortholog interval ended for {group}: {member_key}")
+                        for membership in memberships:
+                            count_key, _group_id = membership.split("=", 1)
+                            remaining = group_refcounts[membership] - 1
+                            if remaining == 0:
+                                del group_refcounts[membership]
+                                counts[count_key] -= 1
+                            else:
+                                group_refcounts[membership] = remaining
+                    else:
+                        if counts["all__ortholog"] < 1:
+                            raise ValueError(f"Observed SNV site has no taxonomically identified alignment: {group}:{position}")
+                        gene_id, strategy = group.split(KEY_SEPARATOR, 1)
+                        writer.writerow(
+                            {
+                                "gene_id": gene_id,
+                                "strategy": strategy,
+                                "target_start0": position,
+                                **counts,
+                            }
+                        )
+                        row_count += 1
+        if active:
+            raise ValueError(f"Taxonomic interval sweep ended with active members for {current_group}")
         return row_count
 
 

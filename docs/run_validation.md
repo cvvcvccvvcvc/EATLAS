@@ -202,6 +202,8 @@ Standalone `--stage align` expected properties:
 - `alignment/manifest.json` `gene_count` equals the length of `gene_ids`, and
   those IDs equal the `ready` genes in `alignment_tasks.tsv.gz`.
 - `alignment/taxonomy_presets.tsv.gz` has one row per unique ortholog tax_id.
+- `alignment/taxonomy_summary.tsv.gz` records run-level scope and evidence-unit
+  counts.
 - `alignment/ortholog_alignment_summary.tsv.gz` has rows for each enabled strategy.
 - `alignment/alignment_segments.tsv.gz` and `alignment/alignment_events.tsv.gz`
   are gzip TSV files with stable headers.
@@ -221,6 +223,8 @@ Annotation expected properties:
 - `annotation/variant_annotations.tsv.gz` exists for end-to-end runs.
 - `annotation/variant_strategy_support.tsv.gz` contains per-strategy ALT-support
   counts and site-aligned ortholog depth for SNVs.
+- `annotation/ortholog_evidence_summary.tsv.gz` contains bounded SNV evidence
+  histograms by strategy, target context, taxonomic scope, and evidence unit.
 - `annotation/manifest.json` records event and unique variant-context row counts, source metadata, and annotation counters.
 - End-to-end annotation records `partition_count`; partition outputs are merged
   by streaming and are not published as duplicate durable tables.

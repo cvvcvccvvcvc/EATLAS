@@ -76,10 +76,12 @@ remains the default because it preserves maximum traceability.
 
 ## Taxonomy Presets
 
-Taxonomy enrichment uses the offline class dictionary published in
-`assets/reference/ncbi/taxonomy/taxonomy_classes.json.gz`. The alignment stage maps every selected
-ortholog `tax_id` to a compact preset group without making taxonomy network
-requests during alignment.
+Preset selection uses the offline class dictionary published in
+`assets/reference/ncbi/taxonomy/taxonomy_classes.json.gz`. Once per run, the
+alignment stage also requests the NCBI taxonomy summary for the selected tax IDs
+to record lineage and species/genus/family/order identifiers. These identifiers
+support the report's taxonomic scope and evidence-unit controls; they do not
+change aligner selection or presets.
 
 Preset policy:
 
@@ -183,6 +185,7 @@ Standalone `--stage align` publishes the full handoff contract:
 | `alignment_tasks.tsv.gz` | Per-gene task manifest and readiness checks. |
 | `taxonomy_presets.tsv.gz` | Compact tax_id-to-preset mapping. |
 | `taxonomy_failures.tsv.gz` | Taxonomy lookup warnings/failures. |
+| `taxonomy_summary.tsv.gz` | Run-level ortholog and taxonomic-unit counts by scope. |
 | `ortholog_alignment_summary.tsv.gz` | One row per gene/ortholog/output strategy when that strategy emits summary evidence. |
 | `strategy_summary.tsv.gz` | Small canonical per-strategy aggregate derived from `ortholog_alignment_summary.tsv.gz` for reports and run inspection. |
 | `alignment_segments.tsv.gz` | Normalized alignment intervals. |
@@ -196,14 +199,14 @@ Native outputs are disabled by default.
 
 In an end-to-end `--stage all` run, Stage 3 consumes partitioned events directly
 from Nextflow `work/`. Before the raw partition segments are discarded, the
-partition merge derives `snv_site_depth.tsv.gz` only for observed concrete SNV
-positions. Stage 3 uses this compact table to distinguish ALT support from
-aligned reference support without carrying merged segment tables between
-processes. The durable `alignment/` directory therefore contains
-only `manifest.json`, `strategy_summary.tsv.gz`, `feature_coverage.tsv.gz`, and
-`failures.tsv.gz`. The manifest retains the raw row counts even though raw
-events, segments, per-ortholog summaries, task metadata, and taxonomy tables are
-not copied into the final run directory.
+partition merge derives SNV-only site depth and taxonomic-unit counts for the
+observed concrete variant positions. Stage 3 combines those temporary tables
+with gnomAD status into the bounded histogram
+`annotation/ortholog_evidence_summary.tsv.gz`. The durable `alignment/`
+directory therefore contains only `manifest.json`, `strategy_summary.tsv.gz`,
+`feature_coverage.tsv.gz`, `taxonomy_summary.tsv.gz`, and `failures.tsv.gz`.
+Raw events, segments, per-ortholog summaries, and partition-level taxonomic
+tables remain disposable work data.
 
 For Minimap2 rows, `native_record_id` is derived from the PAF record content
 rather than its output line number. `event_id` combines the strategy, that
@@ -241,6 +244,10 @@ This is why standalone Stage 2 stores both interval evidence and event evidence.
 End-to-end runs reduce the intervals to `snv_site_depth.tsv.gz` at each
 alignment partition boundary; rows are keyed by gene, strategy, and target
 position, so different ALT alleles at one site share the same denominator.
+For taxonomy-aware reporting, the same boundary also counts distinct aligned
+ortholog, species, genus, family, and order units within supported taxonomic
+scopes. Exact-ALT counts use the same unit definitions, so multiple orthologs
+from one selected taxon cannot inflate a collapsed unit.
 
 `feature_coverage.tsv.gz` intersects `alignment_segments.tsv.gz` with
 `target_features.tsv.gz`. Depth is summed after merging overlapping segments

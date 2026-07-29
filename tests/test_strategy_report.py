@@ -68,12 +68,14 @@ def test_report_preflight_accepts_compact_production_contract(tmp_path: Path) ->
         target_sequences_dir=targets,
         variant_annotations_tsv=annotations,
         variant_strategy_support_tsv=support,
+        ortholog_evidence_summary_tsv=tmp_path / "ortholog_evidence_summary.tsv.gz",
         annotation_manifest_json=tmp_path / "annotation_manifest.json",
         annotation_failures_tsv=tmp_path / "annotation_failures.tsv.gz",
         feature_coverage_tsv=coverage,
         alignment_segments_tsv=tmp_path / "alignment_segments.tsv.gz",
         alignment_manifest_json=tmp_path / "alignment_manifest.json",
         strategy_summary_tsv=summary,
+        taxonomy_summary_tsv=tmp_path / "taxonomy_summary.tsv.gz",
     )
 
     validate_report_inputs(inputs)
@@ -176,11 +178,13 @@ def test_ortholog_evidence_section_renders_three_context_heatmaps() -> None:
             {
                 "strategy": "s1",
                 "target_context": context,
+                "taxonomic_scope": "all",
+                "evidence_unit": "ortholog",
                 "quantile_count": quantile_count,
                 "depth_bin": 0,
-                "concordance_bin": 0,
+                "alt_bin": 0,
                 "depth_label": "1-4",
-                "concordance_label": "25%-50%",
+                "alt_label": "1-2",
                 "gnomad_found_count": 1,
                 "gnomad_eligible_count": 2,
                 "gnomad_found_fraction": 0.5,
@@ -192,17 +196,41 @@ def test_ortholog_evidence_section_renders_three_context_heatmaps() -> None:
     summary = SimpleNamespace(
         ortholog_evidence_available=True,
         ortholog_evidence_cells=cells,
-        strategies=["s1"],
+        strategies=["s1", "precomputed_ensembl_92_mammals_epo_extended"],
+    )
+    taxonomy_summary = pd.DataFrame(
+        [
+            {
+                "taxonomic_scope": "all",
+                "evidence_unit": "ortholog",
+                "ortholog_count": 100,
+                "taxon_count": 20,
+                "orthologs_per_gene_median": 50.0,
+                "units_per_gene_median": 50.0,
+                "unit_count": 100,
+            }
+        ]
     )
 
     figure = ortholog_evidence_figure(cells, "s1", 2)
-    html = "".join(build_ortholog_evidence_sections(summary, include_plotly=True))
+    html = "".join(
+        build_ortholog_evidence_sections(
+            summary,
+            include_plotly=True,
+            taxonomy_summary=taxonomy_summary,
+        )
+    )
 
     assert len(figure.data) == 3
     assert [annotation.text for annotation in figure.layout.annotations] == ["CDS", "UTR", "Intron"]
     assert "Median" in html
     assert "Quartiles" in html
     assert "Deciles" in html
+    assert "Taxonomic scope" in html
+    assert "Evidence unit" in html
+    assert "Exact-ALT support" in html
+    assert "Median selected orthologs/gene: 50.0" in html
+    assert "taxonomy unavailable" in html
     assert "Plotly.react('ortholog-evidence-plot'" in html
 
 

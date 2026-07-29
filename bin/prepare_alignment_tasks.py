@@ -7,6 +7,7 @@ import argparse
 import csv
 import gzip
 import json
+import shutil
 from collections import defaultdict
 from itertools import groupby
 from pathlib import Path
@@ -265,7 +266,7 @@ def prepare_gene_task(
 
     task_dir = tasks_dir / f"task_{gene_id}"
     task_dir.mkdir(parents=True, exist_ok=True)
-    target_features_path.replace(task_dir / "target_features.tsv.gz")
+    shutil.copy2(target_features_path, task_dir / "target_features.tsv.gz")
     target_id = f"target_{gene_id}"
     ortholog_meta_rows = [
         ortholog_metadata_row(gene_id, source_meta, taxonomy)

@@ -14,6 +14,7 @@ process BUILD_ALIGNMENT_TASKS {
     path "alignment_tasks.tsv.gz", emit: alignment_tasks
     path "tasks/task_*", emit: task_dirs
     path "partition_genes/*.tsv.gz", emit: partition_genes
+    path "target_feature_parts/*.tsv.gz", emit: target_feature_parts
 
     script:
     """

@@ -16,7 +16,9 @@ from feature_coverage import (  # noqa: E402
     site_aligned_ortholog_counts,
     summarize_feature_coverage,
     summarize_feature_coverage_rows,
+    write_snv_taxonomic_depth,
 )
+from taxonomic_evidence import COUNT_KEYS  # noqa: E402
 
 
 pytestmark = pytest.mark.skipif(shutil.which("bedtools") is None, reason="bedtools is not installed")
@@ -246,3 +248,61 @@ def test_site_depth_counts_distinct_orthologs_across_segments(tmp_path: Path) ->
         ("1", "test", 4): 2,
         ("1", "test", 5): 3,
     }
+
+
+def test_taxonomic_site_depth_collapses_members_by_rank(tmp_path: Path) -> None:
+    taxonomy = tmp_path / "taxonomy.tsv.gz"
+    write_tsv_gz(
+        taxonomy,
+        [
+            {
+                "tax_id": "11",
+                "species_id": "11",
+                "genus_id": "10",
+                "family_id": "9",
+                "order_id": "8",
+                "parent_tax_ids": "2759,33208,7742,32523,32524,40674,11",
+            },
+            {
+                "tax_id": "12",
+                "species_id": "12",
+                "genus_id": "10",
+                "family_id": "9",
+                "order_id": "8",
+                "parent_tax_ids": "2759,33208,7742,32523,32524,40674,12",
+            },
+        ],
+    )
+    segments = tmp_path / "segments.tsv.gz"
+    write_tsv_gz(
+        segments,
+        [
+            {
+                "gene_id": "1",
+                "strategy": "s1",
+                "ortholog_gene_id": ortholog,
+                "tax_id": tax_id,
+                "target_start0": 0,
+                "target_end0": 10,
+            }
+            for ortholog, tax_id in [("101", "11"), ("102", "12")]
+        ],
+    )
+    output = tmp_path / "depth.tsv.gz"
+
+    count = write_snv_taxonomic_depth(
+        [segments],
+        [{"gene_id": "1", "strategy": "s1", "target_start0": 4}],
+        taxonomy,
+        output,
+        tmp_path,
+    )
+
+    assert count == 1
+    row = read_tsv_gz(output)[0]
+    assert set(COUNT_KEYS) <= set(row)
+    assert row["all__ortholog"] == "2"
+    assert row["all__species"] == "2"
+    assert row["all__genus"] == "1"
+    assert row["mammalia__family"] == "1"
+    assert row["primates__ortholog"] == "0"

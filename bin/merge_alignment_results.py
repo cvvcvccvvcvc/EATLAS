@@ -16,7 +16,9 @@ from feature_coverage import (
     iter_snv_event_sites,
     summarize_feature_coverage,
     write_snv_site_depth,
+    write_snv_taxonomic_depth,
 )
+from taxonomic_evidence import COUNT_KEYS, SCOPE_ORDER, UNIT_ORDER, load_taxonomy_profiles
 
 
 def parse_args() -> argparse.Namespace:
@@ -24,6 +26,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--alignment-tasks", type=Path)
     parser.add_argument("--taxonomy-presets", type=Path)
     parser.add_argument("--taxonomy-failures", type=Path)
+    parser.add_argument("--taxonomy-summary", type=Path)
     parser.add_argument("--target-features", type=Path)
     parser.add_argument("--outdir", required=True, type=Path)
     parser.add_argument("--result-dir", action="append", default=[], type=Path)
@@ -61,6 +64,14 @@ COMPACT_EVENT_FIELDS = [
     "taxname_count",
     "qc_flags",
 ]
+SNV_ALT_TAXONOMIC_SUPPORT_FIELDS = [
+    "gene_id",
+    "strategy",
+    "target_start0",
+    "ref",
+    "alt",
+    *COUNT_KEYS,
+]
 
 STRATEGY_SUMMARY_FIELDS = [
     "strategy",
@@ -72,6 +83,7 @@ STRATEGY_SUMMARY_FIELDS = [
 ]
 
 BWA_STRATEGY = "bwa_pseudoreads"
+DNA_BASES = frozenset("ACGT")
 BWA_REQUIRED_PARAMETERS = (
     "pseudoread_len",
     "pseudoread_step",
@@ -392,7 +404,62 @@ def compact_event_flags(raw_flags: str) -> str:
     return ",".join(flags)
 
 
-def write_compact_events(paths: list[Path], output: Path) -> tuple[int, int]:
+def create_taxonomy_table(conn: sqlite3.Connection, taxonomy_presets: Path) -> None:
+    profiles = load_taxonomy_profiles(taxonomy_presets)
+    scope_columns = [scope for scope in SCOPE_ORDER if scope != "all"]
+    conn.execute(
+        "CREATE TABLE taxonomy_profiles ("
+        "tax_id TEXT PRIMARY KEY, species_id TEXT, genus_id TEXT, family_id TEXT, order_id TEXT, "
+        + ", ".join(f"{scope} INTEGER NOT NULL" for scope in scope_columns)
+        + ") WITHOUT ROWID"
+    )
+    fields = ["tax_id", "species_id", "genus_id", "family_id", "order_id", *scope_columns]
+    placeholders = ", ".join("?" for _field in fields)
+    rows = []
+    for profile in profiles.values():
+        scopes = set(profile.scopes())
+        rows.append(
+            (
+                profile.tax_id,
+                profile.species_id,
+                profile.genus_id,
+                profile.family_id,
+                profile.order_id,
+                *(int(scope in scopes) for scope in scope_columns),
+            )
+        )
+    conn.executemany(
+        f"INSERT INTO taxonomy_profiles ({', '.join(fields)}) VALUES ({placeholders})",
+        rows,
+    )
+
+
+def taxonomy_count_expressions() -> list[str]:
+    expressions = []
+    for scope in SCOPE_ORDER:
+        scope_condition = "e.tax_id != ''" if scope == "all" else f"p.{scope} = 1"
+        for unit in UNIT_ORDER:
+            group_value = (
+                "e.ortholog_gene_id"
+                if unit == "ortholog"
+                else f"COALESCE(NULLIF(p.{unit}_id, ''), 'taxon:' || e.tax_id)"
+            )
+            expressions.append(
+                "COUNT(DISTINCT CASE WHEN "
+                f"{scope_condition} AND e.ortholog_gene_id != '' THEN {group_value} END) "
+                f'AS "{scope}__{unit}"'
+            )
+    return expressions
+
+
+def write_compact_events(
+    paths: list[Path],
+    output: Path,
+    taxonomy_presets: Path | None = None,
+    taxonomic_support_output: Path | None = None,
+) -> tuple[int, int, int]:
+    if (taxonomy_presets is None) != (taxonomic_support_output is None):
+        raise ValueError("Taxonomic event support requires both taxonomy presets and an output path")
     output.parent.mkdir(parents=True, exist_ok=True)
     db_path = output.parent / "alignment_event_support.sqlite"
     if db_path.exists():
@@ -406,6 +473,8 @@ def write_compact_events(paths: list[Path], output: Path) -> tuple[int, int]:
         raw_count = 0
         for path in paths:
             raw_count += insert_event_rows(conn, path)
+        if taxonomy_presets is not None:
+            create_taxonomy_table(conn, taxonomy_presets)
         conn.commit()
         conn.execute(
             """
@@ -424,55 +493,112 @@ def write_compact_events(paths: list[Path], output: Path) -> tuple[int, int]:
             """
         )
 
-        query = """
+        taxonomic_select = ""
+        taxonomic_join = ""
+        if taxonomy_presets is not None:
+            taxonomic_select = ",\n                " + ",\n                ".join(
+                taxonomy_count_expressions()
+            )
+            taxonomic_join = "LEFT JOIN taxonomy_profiles AS p ON p.tax_id = e.tax_id"
+        query = f"""
             SELECT
-                gene_id,
-                event_type,
-                target_start0,
-                target_end0,
-                genomic_accession,
-                genomic_start1,
-                genomic_end1,
-                ref,
-                alt,
-                strategy,
+                e.gene_id,
+                e.event_type,
+                e.target_start0,
+                e.target_end0,
+                e.genomic_accession,
+                e.genomic_start1,
+                e.genomic_end1,
+                e.ref,
+                e.alt,
+                e.strategy,
                 COUNT(*) AS support_row_count,
-                COUNT(DISTINCT ortholog_gene_id) AS support_ortholog_count,
-                GROUP_CONCAT(DISTINCT tool) AS tools,
-                GROUP_CONCAT(DISTINCT preset) AS presets,
-                COUNT(DISTINCT tax_id) AS tax_id_count,
-                COUNT(DISTINCT taxname) AS taxname_count,
-                GROUP_CONCAT(DISTINCT qc_flags) AS qc_flags
-            FROM events
+                COUNT(DISTINCT e.ortholog_gene_id) AS support_ortholog_count,
+                GROUP_CONCAT(DISTINCT e.tool) AS tools,
+                GROUP_CONCAT(DISTINCT e.preset) AS presets,
+                COUNT(DISTINCT e.tax_id) AS tax_id_count,
+                COUNT(DISTINCT e.taxname) AS taxname_count,
+                GROUP_CONCAT(DISTINCT e.qc_flags) AS qc_flags
+                {taxonomic_select}
+            FROM events AS e
+            {taxonomic_join}
             GROUP BY
-                gene_id,
-                event_type,
-                target_start0,
-                target_end0,
-                genomic_accession,
-                genomic_start1,
-                genomic_end1,
-                ref,
-                alt,
-                strategy
+                e.gene_id,
+                e.event_type,
+                e.target_start0,
+                e.target_end0,
+                e.genomic_accession,
+                e.genomic_start1,
+                e.genomic_end1,
+                e.ref,
+                e.alt,
+                e.strategy
             ORDER BY
-                CAST(gene_id AS INTEGER),
-                CAST(target_start0 AS INTEGER),
-                event_type,
-                ref,
-                alt,
-                strategy
+                e.gene_id,
+                e.strategy,
+                CAST(e.target_start0 AS INTEGER),
+                e.event_type,
+                e.ref,
+                e.alt
         """
         compact_count = 0
-        with gzip.open(output, "wt", newline="") as handle:
-            writer = csv.DictWriter(handle, fieldnames=COMPACT_EVENT_FIELDS, delimiter="\t", extrasaction="ignore")
-            writer.writeheader()
-            for row in conn.execute(query):
-                record = dict(zip(COMPACT_EVENT_FIELDS, row))
-                record["qc_flags"] = compact_event_flags(record.get("qc_flags") or "")
-                writer.writerow(record)
-                compact_count += 1
-        return compact_count, raw_count
+        taxonomic_support_count = 0
+        support_handle = (
+            gzip.open(taxonomic_support_output, "wt", newline="")
+            if taxonomic_support_output is not None
+            else None
+        )
+        try:
+            support_writer = None
+            if support_handle is not None:
+                support_writer = csv.DictWriter(
+                    support_handle,
+                    fieldnames=SNV_ALT_TAXONOMIC_SUPPORT_FIELDS,
+                    delimiter="\t",
+                    lineterminator="\n",
+                )
+                support_writer.writeheader()
+            with gzip.open(output, "wt", newline="") as handle:
+                writer = csv.DictWriter(handle, fieldnames=COMPACT_EVENT_FIELDS, delimiter="\t", extrasaction="ignore")
+                writer.writeheader()
+                for row in conn.execute(query):
+                    record = dict(
+                        zip(
+                            [
+                                *COMPACT_EVENT_FIELDS,
+                                *(COUNT_KEYS if taxonomy_presets is not None else ()),
+                            ],
+                            row,
+                        )
+                    )
+                    record["qc_flags"] = compact_event_flags(record.get("qc_flags") or "")
+                    writer.writerow(record)
+                    compact_count += 1
+                    if (
+                        support_writer is None
+                        or record.get("event_type") != "snv"
+                        or len(str(record.get("ref") or "")) != 1
+                        or len(str(record.get("alt") or "")) != 1
+                        or str(record.get("ref") or "").upper() not in DNA_BASES
+                        or str(record.get("alt") or "").upper() not in DNA_BASES
+                        or int(record.get("all__ortholog") or 0) < 1
+                    ):
+                        continue
+                    support_writer.writerow(
+                        {
+                            "gene_id": record["gene_id"],
+                            "strategy": record["strategy"],
+                            "target_start0": record["target_start0"],
+                            "ref": str(record["ref"]).upper(),
+                            "alt": str(record["alt"]).upper(),
+                            **{key: int(record[key]) for key in COUNT_KEYS},
+                        }
+                    )
+                    taxonomic_support_count += 1
+        finally:
+            if support_handle is not None:
+                support_handle.close()
+        return compact_count, raw_count, taxonomic_support_count
     finally:
         conn.close()
         if db_path.exists():
@@ -761,7 +887,12 @@ def main() -> None:
     args.outdir.mkdir(parents=True, exist_ok=True)
     result_dirs = resolve_result_dirs(args.result_dir, args.result_root)
 
-    global_inputs = [args.alignment_tasks, args.taxonomy_presets, args.taxonomy_failures, args.target_features]
+    global_inputs = [
+        args.alignment_tasks,
+        args.taxonomy_presets,
+        args.taxonomy_failures,
+        args.target_features,
+    ]
     if not args.partition_id and any(path is None for path in global_inputs):
         raise ValueError(
             "Final alignment merge requires --alignment-tasks, --taxonomy-presets, "
@@ -797,6 +928,8 @@ def main() -> None:
             copy_or_keep(args.alignment_tasks, args.outdir / "alignment_tasks.tsv.gz")
             copy_or_keep(args.taxonomy_presets, args.outdir / "taxonomy_presets.tsv.gz")
             copy_or_keep(args.taxonomy_failures, args.outdir / "taxonomy_failures.tsv.gz")
+        if args.taxonomy_summary is not None:
+            copy_or_keep(args.taxonomy_summary, args.outdir / "taxonomy_summary.tsv.gz")
     gene_count = len(gene_ids)
 
     if args.output_profile == "report-input":
@@ -864,13 +997,21 @@ def main() -> None:
     if args.output_profile == "report-input":
         event_count = sum_manifest_count(manifests, "alignment_event_count")
         raw_event_count = sum_manifest_count(manifests, "raw_alignment_event_count")
+        taxonomic_alt_support_count = sum_manifest_count(
+            manifests,
+            "snv_alt_taxonomic_support_count",
+        )
         alignment_event_mode = merged_event_mode(manifests)
     else:
         event_inputs = [path / "alignment_events.tsv.gz" for path in result_dirs]
         if args.compact_events and not args.events_already_compacted:
-            event_count, raw_event_count = write_compact_events(
+            event_count, raw_event_count, taxonomic_alt_support_count = write_compact_events(
                 event_inputs,
                 args.outdir / "alignment_events.tsv.gz",
+                args.taxonomy_presets if args.partition_id and args.taxonomy_presets else None,
+                args.outdir / "snv_alt_taxonomic_support.tsv.gz"
+                if args.partition_id and args.taxonomy_presets
+                else None,
             )
         else:
             event_count = merge_tsv_gz(
@@ -878,6 +1019,7 @@ def main() -> None:
                 args.outdir / "alignment_events.tsv.gz",
             )
             raw_event_count = event_count
+            taxonomic_alt_support_count = 0
             if args.events_already_compacted:
                 raw_event_count = sum(
                     int(manifest.get("raw_alignment_event_count") or manifest.get("alignment_event_count") or 0)
@@ -892,13 +1034,31 @@ def main() -> None:
             args.outdir / "snv_site_depth.tsv.gz",
             args.outdir,
         )
+        if args.taxonomy_presets is not None:
+            snv_taxonomic_depth_count = write_snv_taxonomic_depth(
+                [path / "alignment_segments.tsv.gz" for path in result_dirs],
+                iter_snv_event_sites([args.outdir / "alignment_events.tsv.gz"]),
+                args.taxonomy_presets,
+                args.outdir / "snv_taxonomic_depth.tsv.gz",
+                args.outdir,
+            )
+        else:
+            snv_taxonomic_depth_count = 0
     elif args.output_profile == "full":
         snv_site_depth_count = merge_tsv_gz(
             [path / "snv_site_depth.tsv.gz" for path in result_dirs],
             args.outdir / "snv_site_depth.tsv.gz",
         )
+        snv_taxonomic_depth_count = sum_manifest_count(
+            manifests,
+            "snv_taxonomic_depth_count",
+        )
     else:
         snv_site_depth_count = sum_manifest_count(manifests, "snv_site_depth_count")
+        snv_taxonomic_depth_count = sum_manifest_count(
+            manifests,
+            "snv_taxonomic_depth_count",
+        )
 
     failure_count = merge_tsv_gz(
         [path / "failures.tsv.gz" for path in result_dirs],
@@ -933,6 +1093,8 @@ def main() -> None:
         "raw_alignment_event_count": raw_event_count,
         "alignment_event_count": event_count,
         "snv_site_depth_count": snv_site_depth_count,
+        "snv_taxonomic_depth_count": snv_taxonomic_depth_count,
+        "snv_alt_taxonomic_support_count": taxonomic_alt_support_count,
         "failure_count": failure_count,
         "native_file_count": native_file_count,
     }

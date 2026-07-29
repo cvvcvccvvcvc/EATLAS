@@ -234,6 +234,9 @@ workflow ALIGNMENT_STAGE {
         .map { gene_id, dir, partition_id -> tuple(gene_id, partition_id, dir) }
     target_fastas_by_gene = sequences.flatMap { seq_dir -> fastaFilesByGene(seq_dir, 'targets') }
     ortholog_fastas_by_gene = sequences.flatMap { seq_dir -> fastaFilesByGene(seq_dir, 'orthologs') }
+    target_features_by_gene = BUILD_ALIGNMENT_TASKS.out.target_feature_parts.flatten().map { path ->
+        tuple(path.baseName.replaceFirst(/\.tsv$/, ''), path)
+    }
     partition_genes = BUILD_ALIGNMENT_TASKS.out.partition_genes.flatten().map { path ->
         tuple(path.baseName.replaceFirst(/\.tsv$/, ''), path)
     }
@@ -241,6 +244,11 @@ workflow ALIGNMENT_STAGE {
         .map { gene_id, partition_id, dir -> tuple(gene_id, partition_id) }
         .join(target_fastas_by_gene)
         .map { gene_id, partition_id, fasta -> tuple(partition_id, fasta) }
+        .groupTuple()
+    target_features_by_partition = task_dirs_by_gene
+        .map { gene_id, partition_id, dir -> tuple(gene_id, partition_id) }
+        .join(target_features_by_gene)
+        .map { gene_id, partition_id, features -> tuple(partition_id, features) }
         .groupTuple()
     alignment_inputs = task_dirs_by_gene
         .join(target_fastas_by_gene)
@@ -382,6 +390,7 @@ workflow ALIGNMENT_STAGE {
     MERGE_ALIGNMENT_PARTITION(
         partition_merge_inputs,
         SELECTED_ALIGNMENT_STRATEGIES.join(','),
+        FETCH_TAXONOMY_PRESETS.out.taxonomy_presets.first(),
         merge_script
     )
 
@@ -389,6 +398,7 @@ workflow ALIGNMENT_STAGE {
         BUILD_ALIGNMENT_TASKS.out.alignment_tasks,
         FETCH_TAXONOMY_PRESETS.out.taxonomy_presets,
         FETCH_TAXONOMY_PRESETS.out.taxonomy_failures,
+        FETCH_TAXONOMY_PRESETS.out.taxonomy_summary,
         target_features,
         MERGE_ALIGNMENT_PARTITION.out.partition_dirs.map { meta, dir -> dir }.collect(),
         SELECTED_ALIGNMENT_STRATEGIES.join(','),
@@ -400,6 +410,7 @@ workflow ALIGNMENT_STAGE {
     tasks = MERGE_ALIGNMENT.out.alignment_tasks
     taxonomy_presets = MERGE_ALIGNMENT.out.taxonomy_presets
     taxonomy_failures = MERGE_ALIGNMENT.out.taxonomy_failures
+    taxonomy_summary = MERGE_ALIGNMENT.out.taxonomy_summary
     summaries = MERGE_ALIGNMENT.out.summaries
     strategy_summary = MERGE_ALIGNMENT.out.strategy_summary
     segments = MERGE_ALIGNMENT.out.segments
@@ -409,6 +420,7 @@ workflow ALIGNMENT_STAGE {
     partitions = MERGE_ALIGNMENT_PARTITION.out.partition_dirs
     partition_genes = partition_genes
     partition_target_fastas = target_fastas_by_partition
+    partition_target_features = target_features_by_partition
 }
 
 workflow ALIGNMENT_STAGE_FROM_DIR {
@@ -466,6 +478,7 @@ workflow PARTITIONED_ANNOTATION_STAGE {
     alignment_partitions
     partition_genes
     partition_target_fastas
+    partition_target_features
     clinvar_vcf
     clinvar_vcf_tbi
     gnomad_cache_dir
@@ -477,8 +490,9 @@ workflow PARTITIONED_ANNOTATION_STAGE {
         .map { meta, dir -> tuple(meta.partition_id as String, meta, dir) }
         .join(partition_genes)
         .join(partition_target_fastas)
-        .map { partition_id, meta, alignment_partition, genes_tsv, target_fastas ->
-            tuple(meta, alignment_partition, genes_tsv, target_fastas)
+        .join(partition_target_features)
+        .map { partition_id, meta, alignment_partition, genes_tsv, target_fastas, target_features ->
+            tuple(meta, alignment_partition, genes_tsv, target_fastas, target_features)
         }
     ANNOTATE_EVENTS_PARTITION(
         annotation_inputs,
@@ -495,6 +509,7 @@ workflow PARTITIONED_ANNOTATION_STAGE {
     emit:
     variant_annotations = FINALIZE_ANNOTATION.out.variant_annotations
     variant_strategy_support = FINALIZE_ANNOTATION.out.variant_strategy_support
+    ortholog_evidence_summary = FINALIZE_ANNOTATION.out.ortholog_evidence_summary
     manifest = FINALIZE_ANNOTATION.out.manifest
     failures = FINALIZE_ANNOTATION.out.failures
 }
@@ -518,6 +533,7 @@ workflow {
             ALIGNMENT_STAGE.out.partitions,
             ALIGNMENT_STAGE.out.partition_genes,
             ALIGNMENT_STAGE.out.partition_target_fastas,
+            ALIGNMENT_STAGE.out.partition_target_features,
             clinvar_inputs.vcf,
             clinvar_inputs.tbi,
             params.gnomad_cache_dir ?: ''

@@ -12,7 +12,7 @@ import time
 import warnings
 from collections.abc import Iterator
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 import numpy as np
@@ -39,7 +39,12 @@ from analytics.core.conservation_validation import (
     compute_conservation_validation,
 )
 from analytics.core.negative_controls import TargetSpaceNullAnalysis, build_target_space_null
-from analytics.core.variant_summary import StrategyOverlap, VariantSummary, build_variant_summary
+from analytics.core.variant_summary import (
+    StrategyOverlap,
+    VariantSummary,
+    build_variant_summary,
+    read_taxonomic_ortholog_evidence,
+)
 
 
 warnings.filterwarnings("ignore", r"All-NaN (slice|axis) encountered")
@@ -122,6 +127,34 @@ STRATEGY_LABELS = {
     "nucmer": "nucmer",
     "precomputed_ensembl_92_mammals_epo_extended": "Ensembl EPO",
 }
+TAXONOMIC_SCOPE_ORDER = [
+    "all",
+    "eukaryota",
+    "metazoa",
+    "vertebrata",
+    "tetrapoda",
+    "amniota",
+    "mammalia",
+    "primates",
+]
+TAXONOMIC_SCOPE_LABELS = {
+    "all": "All selected",
+    "eukaryota": "Eukaryota",
+    "metazoa": "Metazoa",
+    "vertebrata": "Vertebrata",
+    "tetrapoda": "Tetrapoda",
+    "amniota": "Amniota",
+    "mammalia": "Mammalia",
+    "primates": "Primates",
+}
+EVIDENCE_UNIT_ORDER = ["ortholog", "species", "genus", "family", "order"]
+EVIDENCE_UNIT_LABELS = {
+    "ortholog": "Ortholog",
+    "species": "Species",
+    "genus": "Genus",
+    "family": "Family",
+    "order": "Order",
+}
 
 @dataclass(frozen=True)
 class RunInputs:
@@ -132,12 +165,14 @@ class RunInputs:
     target_sequences_dir: Path
     variant_annotations_tsv: Path
     variant_strategy_support_tsv: Path
+    ortholog_evidence_summary_tsv: Path
     annotation_manifest_json: Path
     annotation_failures_tsv: Path
     feature_coverage_tsv: Path
     alignment_segments_tsv: Path
     alignment_manifest_json: Path
     strategy_summary_tsv: Path
+    taxonomy_summary_tsv: Path
 
 
 @dataclass(frozen=True)
@@ -285,12 +320,14 @@ def resolve_run_inputs(run_dir: Path, annotation_dir: Path | None = None) -> Run
         target_sequences_dir=run_dir / "fetch" / "sequences" / "targets",
         variant_annotations_tsv=variant_annotations_tsv,
         variant_strategy_support_tsv=annotation_dir / "variant_strategy_support.tsv.gz",
+        ortholog_evidence_summary_tsv=annotation_dir / "ortholog_evidence_summary.tsv.gz",
         annotation_manifest_json=annotation_dir / "manifest.json",
         annotation_failures_tsv=annotation_dir / "failures.tsv.gz",
         feature_coverage_tsv=run_dir / "alignment" / "feature_coverage.tsv.gz",
         alignment_segments_tsv=run_dir / "alignment" / "alignment_segments.tsv.gz",
         alignment_manifest_json=run_dir / "alignment" / "manifest.json",
         strategy_summary_tsv=run_dir / "alignment" / "strategy_summary.tsv.gz",
+        taxonomy_summary_tsv=run_dir / "alignment" / "taxonomy_summary.tsv.gz",
     )
     if not inputs.variant_annotations_tsv.exists():
         raise FileNotFoundError(
@@ -393,6 +430,38 @@ def validate_report_inputs(inputs: RunInputs) -> None:
             raise FileNotFoundError(f"Missing report input: {path}")
         compression = "gzip" if path.suffix == ".gz" else None
         header = set(pd.read_csv(path, sep="\t", compression=compression, nrows=0).columns)
+        missing = required - header
+        if missing:
+            raise ValueError(
+                f"Report input {path} is missing required columns: {', '.join(sorted(missing))}"
+            )
+    optional_contracts = {
+        inputs.ortholog_evidence_summary_tsv: {
+            "strategy",
+            "target_context",
+            "taxonomic_scope",
+            "evidence_unit",
+            "site_aligned_count",
+            "alt_support_count",
+            "gnomad_found_count",
+            "gnomad_not_found_count",
+            "gnomad_lookup_failed_count",
+        },
+        inputs.taxonomy_summary_tsv: {
+            "taxonomic_scope",
+            "evidence_unit",
+            "gene_count",
+            "ortholog_count",
+            "taxon_count",
+            "unit_count",
+            "orthologs_per_gene_median",
+            "units_per_gene_median",
+        },
+    }
+    for path, required in optional_contracts.items():
+        if not path.exists():
+            continue
+        header = set(pd.read_csv(path, sep="\t", compression="gzip", nrows=0).columns)
         missing = required - header
         if missing:
             raise ValueError(
@@ -545,6 +614,30 @@ def read_failures(path: Path) -> pd.DataFrame:
         return pd.DataFrame()
     failures = pd.read_csv(path, sep="\t", compression="gzip", keep_default_na=False)
     return failures
+
+
+def read_taxonomy_summary(path: Path) -> pd.DataFrame:
+    if not path.exists():
+        return pd.DataFrame()
+    summary = pd.read_csv(path, sep="\t", compression="gzip", keep_default_na=False)
+    numeric_columns = [
+        "gene_count",
+        "ortholog_count",
+        "taxon_count",
+        "unit_count",
+        "orthologs_per_gene_min",
+        "orthologs_per_gene_median",
+        "orthologs_per_gene_mean",
+        "orthologs_per_gene_max",
+        "units_per_gene_min",
+        "units_per_gene_median",
+        "units_per_gene_mean",
+        "units_per_gene_max",
+    ]
+    for column in numeric_columns:
+        if column in summary:
+            summary[column] = pd.to_numeric(summary[column], errors="raise")
+    return summary
 
 
 def alignment_summary_for_report(summary: pd.DataFrame) -> pd.DataFrame:
@@ -1162,6 +1255,8 @@ def ortholog_evidence_figure(
     cells: pd.DataFrame,
     strategy: str,
     quantile_count: int,
+    taxonomic_scope: str = "all",
+    evidence_unit: str = "ortholog",
 ):
     contexts = [("cds", "CDS"), ("utr", "UTR"), ("intron", "Intron")]
     figure = make_subplots(
@@ -1173,21 +1268,23 @@ def ortholog_evidence_figure(
     selected = cells[
         cells["strategy"].astype(str).eq(strategy)
         & cells["quantile_count"].astype(int).eq(quantile_count)
+        & cells["taxonomic_scope"].astype(str).eq(taxonomic_scope)
+        & cells["evidence_unit"].astype(str).eq(evidence_unit)
     ]
     for column, (context, _label) in enumerate(contexts, start=1):
         subset = selected[selected["target_context"].astype(str).eq(context)]
         depth_labels = {int(row.depth_bin): str(row.depth_label) for row in subset.itertuples()}
-        concordance_labels = {
-            int(row.concordance_bin): str(row.concordance_label)
+        alt_labels = {
+            int(row.alt_bin): str(row.alt_label)
             for row in subset.itertuples()
         }
         x = [depth_labels.get(index, f"Q{index + 1} (empty)") for index in range(quantile_count)]
         y = [
-            concordance_labels.get(index, f"Q{index + 1} (empty)")
+            alt_labels.get(index, f"Q{index + 1} (empty)")
             for index in range(quantile_count)
         ]
         values = {
-            (int(row.depth_bin), int(row.concordance_bin)): row
+            (int(row.depth_bin), int(row.alt_bin)): row
             for row in subset.itertuples()
         }
         z = []
@@ -1219,7 +1316,7 @@ def ortholog_evidence_figure(
                 hoverongaps=False,
                 hovertemplate=(
                     "Site-aligned orthologs: %{x}<br>"
-                    "ALT concordance: %{y}<br>"
+                    "Exact-ALT support: %{y}<br>"
                     "gnomAD found: %{customdata[0]:,} / %{customdata[1]:,} "
                     "(%{z:.1%})<extra></extra>"
                 ),
@@ -1227,9 +1324,9 @@ def ortholog_evidence_figure(
             row=1,
             col=column,
         )
-        figure.update_xaxes(title_text="Site-aligned orthologs", row=1, col=column)
+        figure.update_xaxes(title_text="Site-aligned evidence units", row=1, col=column)
         if column == 1:
-            figure.update_yaxes(title_text="ALT concordance", row=1, col=column)
+            figure.update_yaxes(title_text="Exact-ALT evidence units", row=1, col=column)
     figure.update_layout(
         height=500,
         margin={"l": 70, "r": 90, "t": 55, "b": 100},
@@ -1243,11 +1340,12 @@ def ortholog_evidence_figure(
 def build_ortholog_evidence_sections(
     variant_summary: VariantSummary,
     include_plotly: bool,
+    taxonomy_summary: pd.DataFrame | None = None,
 ) -> list[str]:
     sections = [
         "<h2>Ortholog Evidence</h2>",
-        "<p class=\"lead\">SNV evidence strength by the number of distinct orthologs aligned "
-        "at the variant site and the fraction carrying the exact ALT allele. Cell color is the "
+        "<p class=\"lead\">SNV evidence strength by the number of selected evidence units aligned "
+        "at the variant site and carrying the exact ALT allele. Cell color is the "
         "gnomAD found fraction; failed lookups are excluded.</p>",
     ]
     if not variant_summary.ortholog_evidence_available:
@@ -1261,21 +1359,83 @@ def build_ortholog_evidence_sections(
         sections.append("<p>No eligible SNVs with ortholog evidence and successful gnomAD lookup.</p>")
         return sections
 
-    strategies = [
+    supported_strategies = [
         strategy
         for strategy in variant_summary.strategies
         if strategy in set(cells["strategy"].astype(str))
     ]
-    default_strategy = strategies[0]
+    if not supported_strategies:
+        sections.append("<p>No strategies expose taxonomically identified ortholog evidence.</p>")
+        return sections
+    default_strategy = supported_strategies[0]
     quantile_options = {2: "Median", 4: "Quartiles", 10: "Deciles"}
-    figures = {}
-    for strategy in strategies:
-        figures[strategy] = {}
-        for quantile_count in quantile_options:
-            figure = ortholog_evidence_figure(cells, strategy, quantile_count)
-            figures[strategy][str(quantile_count)] = json.loads(figure.to_json())
+    available_scopes = set(cells["taxonomic_scope"].astype(str))
+    taxonomy_summary = taxonomy_summary if taxonomy_summary is not None else pd.DataFrame()
+    visible_scopes = []
+    seen_scope_signatures = set()
+    for scope in TAXONOMIC_SCOPE_ORDER:
+        if scope not in available_scopes:
+            continue
+        signature = None
+        if not taxonomy_summary.empty:
+            row = taxonomy_summary[
+                taxonomy_summary["taxonomic_scope"].astype(str).eq(scope)
+                & taxonomy_summary["evidence_unit"].astype(str).eq("ortholog")
+            ]
+            if not row.empty:
+                signature = (
+                    int(row.iloc[0]["ortholog_count"]),
+                    int(row.iloc[0]["taxon_count"]),
+                    float(row.iloc[0]["orthologs_per_gene_median"]),
+                )
+        if signature is not None and signature in seen_scope_signatures:
+            continue
+        visible_scopes.append(scope)
+        if signature is not None:
+            seen_scope_signatures.add(signature)
+    visible_scopes.extend(sorted(available_scopes - set(visible_scopes) - set(TAXONOMIC_SCOPE_ORDER)))
+    available_units = [
+        unit
+        for unit in EVIDENCE_UNIT_ORDER
+        if unit in set(cells["evidence_unit"].astype(str))
+    ]
+    default_scope = "all" if "all" in visible_scopes else visible_scopes[0]
+    default_unit = "ortholog" if "ortholog" in available_units else available_units[0]
 
-    initial = ortholog_evidence_figure(cells, default_strategy, 4)
+    figures = {}
+    for strategy in supported_strategies:
+        figures[strategy] = {}
+        for scope in visible_scopes:
+            scoped = cells[
+                cells["strategy"].astype(str).eq(strategy)
+                & cells["taxonomic_scope"].astype(str).eq(scope)
+            ]
+            if scoped.empty:
+                continue
+            figures[strategy][scope] = {}
+            for unit in available_units:
+                if scoped["evidence_unit"].astype(str).eq(unit).sum() == 0:
+                    continue
+                figures[strategy][scope][unit] = {}
+                for quantile_count in quantile_options:
+                    figure = ortholog_evidence_figure(
+                        cells,
+                        strategy,
+                        quantile_count,
+                        scope,
+                        unit,
+                    )
+                    figures[strategy][scope][unit][str(quantile_count)] = json.loads(
+                        figure.to_json()
+                    )
+
+    initial = ortholog_evidence_figure(
+        cells,
+        default_strategy,
+        4,
+        default_scope,
+        default_unit,
+    )
     initial_html = initial.to_html(
         full_html=False,
         include_plotlyjs="cdn" if include_plotly else False,
@@ -1283,31 +1443,88 @@ def build_ortholog_evidence_sections(
     )
     strategy_options = "".join(
         f'<option value="{strategy}">{strategy_label(strategy)}</option>'
-        for strategy in strategies
+        for strategy in supported_strategies
+    )
+    unsupported_options = "".join(
+        f'<option disabled>{strategy_label(strategy)} (taxonomy unavailable)</option>'
+        for strategy in variant_summary.strategies
+        if strategy not in supported_strategies
+    )
+    scope_options = "".join(
+        f'<option value="{scope}"{" selected" if scope == default_scope else ""}>'
+        f'{TAXONOMIC_SCOPE_LABELS.get(scope, scope)}</option>'
+        for scope in visible_scopes
+    )
+    unit_options = "".join(
+        f'<option value="{unit}"{" selected" if unit == default_unit else ""}>'
+        f'{EVIDENCE_UNIT_LABELS.get(unit, unit)}</option>'
+        for unit in available_units
     )
     quantile_html = "".join(
         f'<option value="{count}"{" selected" if count == 4 else ""}>{label}</option>'
         for count, label in quantile_options.items()
     )
     payload = json.dumps(figures, separators=(",", ":"))
+    stats = {}
+    if not taxonomy_summary.empty:
+        for scope in visible_scopes:
+            ortholog_row = taxonomy_summary[
+                taxonomy_summary["taxonomic_scope"].astype(str).eq(scope)
+                & taxonomy_summary["evidence_unit"].astype(str).eq("ortholog")
+            ]
+            if ortholog_row.empty:
+                continue
+            stats[scope] = {}
+            ortholog_median = float(ortholog_row.iloc[0]["orthologs_per_gene_median"])
+            for unit in available_units:
+                unit_row = taxonomy_summary[
+                    taxonomy_summary["taxonomic_scope"].astype(str).eq(scope)
+                    & taxonomy_summary["evidence_unit"].astype(str).eq(unit)
+                ]
+                if unit_row.empty:
+                    continue
+                row = unit_row.iloc[0]
+                stats[scope][unit] = (
+                    f"Median selected orthologs/gene: {ortholog_median:,.1f}; "
+                    f"median {EVIDENCE_UNIT_LABELS.get(unit, unit).lower()} units/gene: "
+                    f"{float(row['units_per_gene_median']):,.1f}; "
+                    f"distinct units in run: {int(row['unit_count']):,}."
+                )
+    stats_payload = json.dumps(stats, separators=(",", ":"))
     sections.append(
         f"""
         <div class="analysis-controls" id="ortholog-evidence-controls">
-            <label>Strategy<select id="ortholog-evidence-strategy">{strategy_options}</select></label>
+            <label>Strategy<select id="ortholog-evidence-strategy">{strategy_options}{unsupported_options}</select></label>
+            <label>Taxonomic scope<select id="ortholog-evidence-scope">{scope_options}</select></label>
+            <label>Evidence unit<select id="ortholog-evidence-unit">{unit_options}</select></label>
             <label>Groups<select id="ortholog-evidence-quantiles">{quantile_html}</select></label>
         </div>
+        <p class="analysis-note" id="ortholog-evidence-stats"></p>
         {initial_html}
         <script>
         (() => {{
             const figures = {payload};
+            const stats = {stats_payload};
             const strategy = document.getElementById('ortholog-evidence-strategy');
+            const scope = document.getElementById('ortholog-evidence-scope');
+            const unit = document.getElementById('ortholog-evidence-unit');
             const quantiles = document.getElementById('ortholog-evidence-quantiles');
+            const summary = document.getElementById('ortholog-evidence-stats');
+            const firstKey = value => Object.keys(value)[0];
             const render = () => {{
-                const figure = figures[strategy.value][quantiles.value];
+                const strategyFigures = figures[strategy.value];
+                if (!strategyFigures[scope.value]) scope.value = firstKey(strategyFigures);
+                const scopeFigures = strategyFigures[scope.value];
+                if (!scopeFigures[unit.value]) unit.value = firstKey(scopeFigures);
+                const figure = scopeFigures[unit.value][quantiles.value];
+                summary.textContent = stats[scope.value]?.[unit.value] || '';
                 Plotly.react('ortholog-evidence-plot', figure.data, figure.layout, {{responsive: true}});
             }};
             strategy.addEventListener('change', render);
+            scope.addEventListener('change', render);
+            unit.addEventListener('change', render);
             quantiles.addEventListener('change', render);
+            render();
         }})();
         </script>
         """
@@ -2958,17 +3175,20 @@ def build_methods_sections(
     conservation_analysis: ConservationAnalysis | None = None,
     negative_controls: TargetSpaceNullAnalysis | None = None,
     report_timings: list[dict[str, object]] | None = None,
+    taxonomy_summary: pd.DataFrame | None = None,
 ) -> list[str]:
     files = [
         ("Run Dir", inputs.run_dir),
         ("Fetch Manifest", inputs.fetch_manifest_json),
         ("Variant Annotations", inputs.variant_annotations_tsv),
         ("Variant Strategy Support", inputs.variant_strategy_support_tsv),
+        ("Ortholog Evidence Summary", inputs.ortholog_evidence_summary_tsv),
         ("Target Features", inputs.target_features_tsv),
         ("Target Sequences", inputs.target_sequences_dir),
         ("Feature Coverage", inputs.feature_coverage_tsv),
         ("Alignment Segments", inputs.alignment_segments_tsv),
         ("Strategy Summary", inputs.strategy_summary_tsv),
+        ("Taxonomy Summary", inputs.taxonomy_summary_tsv),
         ("Annotation Manifest", inputs.annotation_manifest_json),
         ("Alignment Manifest", inputs.alignment_manifest_json),
         ("Output HTML", out_html),
@@ -3005,6 +3225,38 @@ def build_methods_sections(
     if not failures.empty:
         sections.append("<h3>Annotation Failures</h3>")
         sections.append(table_html(failures, classes="table table-sm table-striped", max_rows=50))
+    if taxonomy_summary is not None and not taxonomy_summary.empty:
+        shown = taxonomy_summary.copy()
+        shown["Taxonomic scope"] = shown["taxonomic_scope"].map(
+            lambda value: TAXONOMIC_SCOPE_LABELS.get(str(value), str(value))
+        )
+        shown["Evidence unit"] = shown["evidence_unit"].map(
+            lambda value: EVIDENCE_UNIT_LABELS.get(str(value), str(value))
+        )
+        shown = shown.rename(
+            columns={
+                "gene_count": "Genes",
+                "ortholog_count": "Selected ortholog rows",
+                "taxon_count": "Distinct taxa",
+                "unit_count": "Distinct units",
+                "orthologs_per_gene_median": "Median orthologs/gene",
+                "units_per_gene_median": "Median units/gene",
+            }
+        )[
+            [
+                "Taxonomic scope",
+                "Evidence unit",
+                "Genes",
+                "Selected ortholog rows",
+                "Distinct taxa",
+                "Distinct units",
+                "Median orthologs/gene",
+                "Median units/gene",
+            ]
+        ]
+        sections.append("<details><summary>Taxonomic evidence scope and grouping</summary>")
+        sections.append(table_html(shown, classes="table table-sm table-striped"))
+        sections.append("</details>")
     pathogenic_table = pathogenic_variant_table(variant_summary.pathogenic_rows)
     if not pathogenic_table.empty:
         shown = min(len(pathogenic_table), 100)
@@ -3462,6 +3714,15 @@ def main() -> None:
             annotation_failures_path=inputs.annotation_failures_tsv,
             variant_strategy_support_path=inputs.variant_strategy_support_tsv,
         )
+        if inputs.ortholog_evidence_summary_tsv.exists():
+            available, cells = read_taxonomic_ortholog_evidence(
+                inputs.ortholog_evidence_summary_tsv
+            )
+            variant_summary = replace(
+                variant_summary,
+                ortholog_evidence_available=available,
+                ortholog_evidence_cells=cells,
+            )
         timing["Details"] = "cache hit" if variant_summary.cache_hit else "cache miss"
 
     with timed_stage("Run summary inputs", timings):
@@ -3474,6 +3735,7 @@ def main() -> None:
         failures = read_failures(inputs.annotation_failures_tsv)
         annotation_manifest = read_json(inputs.annotation_manifest_json)
         alignment_manifest = read_json(inputs.alignment_manifest_json)
+        taxonomy_summary = read_taxonomy_summary(inputs.taxonomy_summary_tsv)
 
     print("Computing strategy metrics...")
     with timed_stage("Strategy metrics", timings):
@@ -3577,7 +3839,11 @@ def main() -> None:
         (
             "ortholog-evidence",
             "Ortholog Evidence",
-            build_ortholog_evidence_sections(variant_summary, include_plotly=False),
+            build_ortholog_evidence_sections(
+                variant_summary,
+                include_plotly=False,
+                taxonomy_summary=taxonomy_summary,
+            ),
         ),
         (
             "gnomad-stratification",
@@ -3614,6 +3880,7 @@ def main() -> None:
                 conservation_analysis,
                 negative_controls,
                 timings,
+                taxonomy_summary,
             ),
         ),
     ]
