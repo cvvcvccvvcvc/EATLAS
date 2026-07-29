@@ -24,6 +24,7 @@ __pycache__/
 .DS_Store
 /datasets
 /scratch*.py
+/scientific_work/
 /report.html
 /compare_results.txt
 /mock_events.tsv.gz
