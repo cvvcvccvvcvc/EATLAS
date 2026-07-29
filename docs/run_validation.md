@@ -205,6 +205,8 @@ Standalone `--stage align` expected properties:
 - `alignment/ortholog_alignment_summary.tsv.gz` has rows for each enabled strategy.
 - `alignment/alignment_segments.tsv.gz` and `alignment/alignment_events.tsv.gz`
   are gzip TSV files with stable headers.
+- `alignment/snv_site_depth.tsv.gz` contains one row per observed concrete SNV
+  position and strategy, with positive distinct-ortholog depth.
 - `alignment/feature_coverage.tsv.gz` has rows for each aligned gene, enabled
   strategy, and target structural feature.
 - `alignment/native/` is absent unless `--keep_native_alignments true` was used.

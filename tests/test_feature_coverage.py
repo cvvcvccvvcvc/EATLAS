@@ -229,13 +229,11 @@ def test_site_depth_counts_distinct_orthologs_across_segments(tmp_path: Path) ->
         segments_path,
         [
             {
-                "variant_key": "1:5:A>G",
                 "gene_id": "1",
                 "strategy": "test",
                 "target_start0": "4",
             },
             {
-                "variant_key": "1:6:A>G",
                 "gene_id": "1",
                 "strategy": "test",
                 "target_start0": "5",
@@ -245,6 +243,6 @@ def test_site_depth_counts_distinct_orthologs_across_segments(tmp_path: Path) ->
     )
 
     assert counts == {
-        ("1", "test", "1:5:A>G"): 2,
-        ("1", "test", "1:6:A>G"): 3,
+        ("1", "test", 4): 2,
+        ("1", "test", 5): 3,
     }

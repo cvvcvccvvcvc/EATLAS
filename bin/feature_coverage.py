@@ -31,14 +31,38 @@ FEATURE_COVERAGE_FIELDS = [
     "mean_depth",
 ]
 
+SNV_SITE_DEPTH_FIELDS = [
+    "gene_id",
+    "strategy",
+    "target_start0",
+    "site_aligned_ortholog_count",
+]
+
 KEY_SEPARATOR = "|"
 SORT_MEMORY = "128M"
 FEATURE_BED_FIELD_COUNT = 12
+DNA_BASES = frozenset("ACGT")
 
 
 def _iter_tsv_gz(path: Path) -> Iterator[dict[str, str]]:
     with gzip.open(path, "rt", newline="") as handle:
         yield from csv.DictReader(handle, delimiter="\t")
+
+
+def _iter_required_tsv_gz(
+    paths: Iterable[Path],
+    required_fields: set[str],
+) -> Iterator[dict[str, str]]:
+    for path in paths:
+        with gzip.open(path, "rt", newline="") as handle:
+            reader = csv.DictReader(handle, delimiter="\t")
+            missing = required_fields - set(reader.fieldnames or [])
+            if missing:
+                raise ValueError(
+                    f"TSV {path} missing required columns: "
+                    + ", ".join(sorted(missing))
+                )
+            yield from reader
 
 
 def _format_fraction(numerator: int, denominator: int) -> str:
@@ -653,60 +677,87 @@ def summarize_feature_coverage(
     )
 
 
-def site_aligned_ortholog_counts(
-    segments_path: Path,
+def iter_snv_event_sites(event_paths: Iterable[Path]) -> Iterator[dict[str, object]]:
+    required = {"gene_id", "strategy", "event_type", "target_start0", "ref", "alt"}
+    for row in _iter_required_tsv_gz(event_paths, required):
+        ref = str(row.get("ref") or "").upper()
+        alt = str(row.get("alt") or "").upper()
+        if (
+            row.get("event_type") != "snv"
+            or len(ref) != 1
+            or len(alt) != 1
+            or ref not in DNA_BASES
+            or alt not in DNA_BASES
+        ):
+            continue
+        yield {
+            "gene_id": row["gene_id"],
+            "strategy": row["strategy"],
+            "target_start0": row["target_start0"],
+        }
+
+
+def write_snv_site_depth(
+    segment_paths: Iterable[Path],
     site_rows: Iterable[dict[str, object]],
+    output: Path,
     temp_parent: Path,
-) -> dict[tuple[str, str, str], int]:
-    """Count distinct ortholog intervals covering each variant-strategy SNV site."""
+) -> int:
+    """Write distinct-ortholog depth only for observed concrete SNV sites."""
     if shutil.which("bedtools") is None:
         raise RuntimeError("bedtools is required for site ortholog-depth calculation")
     env = os.environ.copy()
     env["LC_ALL"] = "C"
+    output.parent.mkdir(parents=True, exist_ok=True)
 
-    with tempfile.TemporaryDirectory(prefix=".site_ortholog_depth_", dir=temp_parent) as temp_name:
+    with tempfile.TemporaryDirectory(prefix=".snv_site_depth_", dir=temp_parent) as temp_name:
         temp_dir = Path(temp_name)
-        segments_raw = temp_dir / "segments.raw.bed"
-        segments_sorted = temp_dir / "segments.sorted.bed"
-        merged_raw = temp_dir / "segments.merged.raw.bed"
-        merged_sorted = temp_dir / "segments.merged.sorted.bed"
         sites_raw = temp_dir / "sites.raw.bed"
         sites_sorted = temp_dir / "sites.sorted.bed"
-        coverage = temp_dir / "sites.coverage.tsv"
 
-        with segments_raw.open("w") as handle:
-            for row in _iter_tsv_gz(segments_path):
-                gene_id = str(row.get("gene_id") or "")
-                strategy = str(row.get("strategy") or "")
-                ortholog_gene_id = str(row.get("ortholog_gene_id") or "")
-                if not gene_id or not strategy or not ortholog_gene_id:
-                    continue
-                start0 = int(row.get("target_start0") or 0)
-                end0 = int(row.get("target_end0") or 0)
-                if end0 <= start0:
-                    continue
-                ortholog_key = _ortholog_key(
-                    _key_part(gene_id, "gene_id"),
-                    _key_part(strategy, "strategy"),
-                    _key_part(ortholog_gene_id, "ortholog_gene_id"),
-                )
-                handle.write(
-                    f"{ortholog_key}\t{start0}\t{end0}\n"
-                )
-
-        site_count = 0
         with sites_raw.open("w") as handle:
             for row in site_rows:
                 gene_id = _key_part(row.get("gene_id"), "gene_id")
                 strategy = _key_part(row.get("strategy"), "strategy")
-                variant_key = _key_part(row.get("variant_key"), "variant_key")
                 start0 = int(row.get("target_start0") or 0)
-                handle.write(
-                    f"{_group_key(gene_id, strategy)}\t{start0}\t{start0 + 1}\t{variant_key}\n"
-                )
-                site_count += 1
+                if start0 < 0:
+                    raise ValueError(f"SNV site has a negative target_start0: {start0}")
+                handle.write(f"{_group_key(gene_id, strategy)}\t{start0}\t{start0 + 1}\n")
+
+        _sort_file(
+            sites_raw,
+            sites_sorted,
+            temp_dir,
+            ["-k1,1", "-k2,2n", "-k3,3n"],
+            unique=True,
+            env=env,
+        )
+        with sites_sorted.open() as handle:
+            site_count = sum(1 for _line in handle)
         if site_count == 0:
-            return {}
+            with gzip.open(output, "wt", newline="") as handle:
+                csv.DictWriter(handle, fieldnames=SNV_SITE_DEPTH_FIELDS, delimiter="\t").writeheader()
+            return 0
+
+        segments_raw = temp_dir / "segments.raw.bed"
+        segments_sorted = temp_dir / "segments.sorted.bed"
+        merged_raw = temp_dir / "segments.merged.raw.bed"
+        merged_sorted = temp_dir / "segments.merged.sorted.bed"
+        required = {"gene_id", "strategy", "ortholog_gene_id", "target_start0", "target_end0"}
+        with segments_raw.open("w") as handle:
+            for row in _iter_required_tsv_gz(segment_paths, required):
+                gene_id = _key_part(row.get("gene_id"), "gene_id")
+                strategy = _key_part(row.get("strategy"), "strategy")
+                ortholog_gene_id = _key_part(row.get("ortholog_gene_id"), "ortholog_gene_id")
+                start0 = int(row.get("target_start0") or 0)
+                end0 = int(row.get("target_end0") or 0)
+                if end0 <= start0:
+                    continue
+                handle.write(
+                    f"{_ortholog_key(gene_id, strategy, ortholog_gene_id)}\t{start0}\t{end0}\n"
+                )
+        if segments_raw.stat().st_size == 0:
+            raise ValueError("Observed SNV sites have no alignment segments")
 
         _merge_ortholog_intervals(
             segments_raw,
@@ -716,13 +767,7 @@ def site_aligned_ortholog_counts(
             temp_dir,
             env,
         )
-        _sort_file(
-            sites_raw,
-            sites_sorted,
-            temp_dir,
-            ["-k1,1", "-k2,2n", "-k3,3n", "-k4,4"],
-            env=env,
-        )
+        coverage = temp_dir / "sites.coverage.tsv"
         _run_to_file(
             [
                 "bedtools",
@@ -738,15 +783,59 @@ def site_aligned_ortholog_counts(
             env=env,
         )
 
-        counts: dict[tuple[str, str, str], int] = {}
-        with coverage.open() as handle:
-            for line in handle:
-                group, _start0, _end0, variant_key, depth = line.rstrip("\n").split("\t")
-                gene_id, strategy = group.split(KEY_SEPARATOR, 1)
-                key = (gene_id, strategy, variant_key)
-                if key in counts:
-                    raise ValueError(f"Duplicate variant-strategy site: {key}")
-                counts[key] = int(depth)
-        if len(counts) != site_count:
-            raise ValueError(f"Site ortholog-depth row count mismatch: {len(counts)} != {site_count}")
-        return counts
+        row_count = 0
+        with gzip.open(output, "wt", newline="") as handle:
+            writer = csv.DictWriter(
+                handle,
+                fieldnames=SNV_SITE_DEPTH_FIELDS,
+                delimiter="\t",
+                lineterminator="\n",
+            )
+            writer.writeheader()
+            with coverage.open() as source:
+                for line in source:
+                    group, start0, _end0, depth = line.rstrip("\n").split("\t")
+                    gene_id, strategy = group.split(KEY_SEPARATOR, 1)
+                    count = int(depth)
+                    if count < 1:
+                        raise ValueError(
+                            f"Observed SNV site is not covered by an alignment: "
+                            f"{gene_id}:{strategy}:{start0}"
+                        )
+                    writer.writerow(
+                        {
+                            "gene_id": gene_id,
+                            "strategy": strategy,
+                            "target_start0": start0,
+                            "site_aligned_ortholog_count": count,
+                        }
+                    )
+                    row_count += 1
+        if row_count != site_count:
+            raise ValueError(f"SNV site-depth row count mismatch: {row_count} != {site_count}")
+        return row_count
+
+
+def load_snv_site_depth(path: Path) -> dict[tuple[str, str, int], int]:
+    depths: dict[tuple[str, str, int], int] = {}
+    for row in _iter_required_tsv_gz([path], set(SNV_SITE_DEPTH_FIELDS)):
+        key = (row["gene_id"], row["strategy"], int(row["target_start0"]))
+        if key in depths:
+            raise ValueError(f"Duplicate SNV site-depth row: {key}")
+        depth = int(row["site_aligned_ortholog_count"])
+        if depth < 1:
+            raise ValueError(f"SNV site depth must be positive for {key}: {depth}")
+        depths[key] = depth
+    return depths
+
+
+def site_aligned_ortholog_counts(
+    segments_path: Path,
+    site_rows: Iterable[dict[str, object]],
+    temp_parent: Path,
+) -> dict[tuple[str, str, int], int]:
+    """Count distinct ortholog intervals covering each variant-strategy SNV site."""
+    with tempfile.TemporaryDirectory(prefix=".site_ortholog_depth_", dir=temp_parent) as temp_name:
+        output = Path(temp_name) / "snv_site_depth.tsv.gz"
+        write_snv_site_depth([segments_path], site_rows, output, Path(temp_name))
+        return load_snv_site_depth(output)

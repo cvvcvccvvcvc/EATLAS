@@ -186,6 +186,7 @@ Standalone `--stage align` publishes the full handoff contract:
 | `ortholog_alignment_summary.tsv.gz` | One row per gene/ortholog/output strategy when that strategy emits summary evidence. |
 | `strategy_summary.tsv.gz` | Small canonical per-strategy aggregate derived from `ortholog_alignment_summary.tsv.gz` for reports and run inspection. |
 | `alignment_segments.tsv.gz` | Normalized alignment intervals. |
+| `snv_site_depth.tsv.gz` | Distinct aligned-ortholog depth for each observed concrete SNV position and strategy. |
 | `feature_coverage.tsv.gz` | Per-gene, per-strategy coverage and depth over target structural intervals. |
 | `alignment_events.tsv.gz` | Raw mismatch/indel events normalized to target coordinates by default; unique event support rows when `--compact_alignment_events true`. |
 | `failures.tsv.gz` | Alignment-stage failures. |
@@ -194,7 +195,11 @@ Standalone `--stage align` publishes the full handoff contract:
 Native outputs are disabled by default.
 
 In an end-to-end `--stage all` run, Stage 3 consumes partitioned events directly
-from Nextflow `work/`. The durable `alignment/` directory therefore contains
+from Nextflow `work/`. Before the raw partition segments are discarded, the
+partition merge derives `snv_site_depth.tsv.gz` only for observed concrete SNV
+positions. Stage 3 uses this compact table to distinguish ALT support from
+aligned reference support without carrying merged segment tables between
+processes. The durable `alignment/` directory therefore contains
 only `manifest.json`, `strategy_summary.tsv.gz`, `feature_coverage.tsv.gz`, and
 `failures.tsv.gz`. The manifest retains the raw row counts even though raw
 events, segments, per-ortholog summaries, task metadata, and taxonomy tables are
@@ -232,7 +237,10 @@ position not covered            -> no-call
 bad/ambiguous alignment         -> filtered/no-call
 ```
 
-This is why Stage 2 stores both interval evidence and event evidence.
+This is why standalone Stage 2 stores both interval evidence and event evidence.
+End-to-end runs reduce the intervals to `snv_site_depth.tsv.gz` at each
+alignment partition boundary; rows are keyed by gene, strategy, and target
+position, so different ALT alleles at one site share the same denominator.
 
 `feature_coverage.tsv.gz` intersects `alignment_segments.tsv.gz` with
 `target_features.tsv.gz`. Depth is summed after merging overlapping segments

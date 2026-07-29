@@ -17,7 +17,7 @@ process ANNOTATE_EVENTS_PARTITION {
     GAPH_GNOMAD_CACHE_DIR="${gnomad_cache_dir}" \\
     python3 "${annotate_script}" \\
         --events-tsv "${alignment_partition}/alignment_events.tsv.gz" \\
-        --segments-tsv "${alignment_partition}/alignment_segments.tsv.gz" \\
+        --snv-site-depth-tsv "${alignment_partition}/snv_site_depth.tsv.gz" \\
         --genes-tsv "${genes_tsv}" \\
         --target-sequences-dir targets \\
         --outdir "${resultDir}" \\

@@ -20,6 +20,7 @@ process MERGE_ALIGNMENT {
     path "alignment_segments.tsv.gz", optional: true, emit: segments
     path "feature_coverage.tsv.gz", emit: feature_coverage
     path "alignment_events.tsv.gz", optional: true, emit: events
+    path "snv_site_depth.tsv.gz", optional: true, emit: snv_site_depth
     path "failures.tsv.gz", emit: failures
     path "native", optional: true, emit: native_outputs
 

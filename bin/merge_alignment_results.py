@@ -12,7 +12,11 @@ import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 
-from feature_coverage import summarize_feature_coverage
+from feature_coverage import (
+    iter_snv_event_sites,
+    summarize_feature_coverage,
+    write_snv_site_depth,
+)
 
 
 def parse_args() -> argparse.Namespace:
@@ -824,10 +828,17 @@ def main() -> None:
                 args.outdir / "strategy_summary.tsv.gz",
                 strategies,
             )
-        segment_count = merge_tsv_gz(
-            [path / "alignment_segments.tsv.gz" for path in result_dirs],
-            args.outdir / "alignment_segments.tsv.gz",
-        )
+        if args.output_profile == "full":
+            segment_count = merge_tsv_gz(
+                [path / "alignment_segments.tsv.gz" for path in result_dirs],
+                args.outdir / "alignment_segments.tsv.gz",
+            )
+        else:
+            segment_count = sum_manifest_count(
+                manifests,
+                "alignment_segment_count",
+                "segment_count",
+            )
 
     feature_coverage_inputs = [path / "feature_coverage.tsv.gz" for path in result_dirs]
     missing_feature_coverage = [str(path.parent) for path in feature_coverage_inputs if not path.exists()]
@@ -873,6 +884,22 @@ def main() -> None:
                     for manifest in manifests
                 )
         alignment_event_mode = "compact_support" if args.compact_events else "raw"
+
+    if args.partition_id:
+        snv_site_depth_count = write_snv_site_depth(
+            [path / "alignment_segments.tsv.gz" for path in result_dirs],
+            iter_snv_event_sites([args.outdir / "alignment_events.tsv.gz"]),
+            args.outdir / "snv_site_depth.tsv.gz",
+            args.outdir,
+        )
+    elif args.output_profile == "full":
+        snv_site_depth_count = merge_tsv_gz(
+            [path / "snv_site_depth.tsv.gz" for path in result_dirs],
+            args.outdir / "snv_site_depth.tsv.gz",
+        )
+    else:
+        snv_site_depth_count = sum_manifest_count(manifests, "snv_site_depth_count")
+
     failure_count = merge_tsv_gz(
         [path / "failures.tsv.gz" for path in result_dirs],
         args.outdir / "failures.tsv.gz",
@@ -905,6 +932,7 @@ def main() -> None:
         "alignment_event_mode": alignment_event_mode,
         "raw_alignment_event_count": raw_event_count,
         "alignment_event_count": event_count,
+        "snv_site_depth_count": snv_site_depth_count,
         "failure_count": failure_count,
         "native_file_count": native_file_count,
     }

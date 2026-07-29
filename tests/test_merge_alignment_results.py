@@ -27,7 +27,13 @@ TABLE_HEADERS = {
         "event_count",
         "aligned_target_bp",
     ],
-    "alignment_segments.tsv.gz": ["gene_id"],
+    "alignment_segments.tsv.gz": [
+        "gene_id",
+        "strategy",
+        "ortholog_gene_id",
+        "target_start0",
+        "target_end0",
+    ],
     "feature_coverage.tsv.gz": ["gene_id"],
     "alignment_events.tsv.gz": [
         "gene_id",
@@ -39,6 +45,19 @@ TABLE_HEADERS = {
         "genomic_end1",
         "ref",
         "alt",
+        "ortholog_gene_id",
+        "strategy",
+        "tool",
+        "preset",
+        "tax_id",
+        "taxname",
+        "qc_flags",
+    ],
+    "snv_site_depth.tsv.gz": [
+        "gene_id",
+        "strategy",
+        "target_start0",
+        "site_aligned_ortholog_count",
     ],
     "failures.tsv.gz": ["gene_id"],
 }
@@ -241,19 +260,31 @@ def test_partition_merge_supports_compact_events(tmp_path: Path) -> None:
     assert manifest["alignment_event_count"] == 0
 
 
-def test_partition_annotation_input_keeps_annotation_tables(tmp_path: Path) -> None:
+def test_partition_annotation_input_keeps_compact_annotation_tables(tmp_path: Path) -> None:
     result_dir = write_result_dir(
         tmp_path,
         "gene_1_s1",
         {
             "gene_id": "1",
             "strategy": "s1",
+            "alignment_segment_count": 2,
         },
     )
     write_tsv_gz(
         result_dir / "alignment_segments.tsv.gz",
         TABLE_HEADERS["alignment_segments.tsv.gz"],
-        [["1"]],
+        [
+            ["1", "s1", "101", "0", "10"],
+            ["1", "s1", "102", "0", "10"],
+        ],
+    )
+    write_tsv_gz(
+        result_dir / "alignment_events.tsv.gz",
+        TABLE_HEADERS["alignment_events.tsv.gz"],
+        [
+            ["1", "snv", "4", "5", "NC_1", "5", "5", "A", "G", "101", "s1", "tool", "", "1", "species", ""],
+            ["1", "snv", "4", "5", "NC_1", "5", "5", "A", "T", "102", "s1", "tool", "", "2", "species", ""],
+        ],
     )
     arguments = partition_arguments(
         [result_dir],
@@ -272,15 +303,25 @@ def test_partition_annotation_input_keeps_annotation_tables(tmp_path: Path) -> N
         for path in outdir.iterdir()
     } == {
         "alignment_events.tsv.gz",
-        "alignment_segments.tsv.gz",
         "failures.tsv.gz",
         "feature_coverage.tsv.gz",
         "manifest.json",
+        "snv_site_depth.tsv.gz",
         "strategy_summary.tsv.gz",
     }
     manifest = json.loads((outdir / "manifest.json").read_text())
     assert manifest["output_profile"] == "annotation-input"
-    assert manifest["alignment_segment_count"] == 1
+    assert manifest["alignment_segment_count"] == 2
+    assert manifest["snv_site_depth_count"] == 1
+    with gzip.open(outdir / "snv_site_depth.tsv.gz", "rt", newline="") as handle:
+        assert list(csv.DictReader(handle, delimiter="\t")) == [
+            {
+                "gene_id": "1",
+                "strategy": "s1",
+                "target_start0": "4",
+                "site_aligned_ortholog_count": "2",
+            }
+        ]
 
 
 def test_compact_events_preserve_strategy_specific_support(tmp_path: Path) -> None:
@@ -292,17 +333,13 @@ def test_compact_events_preserve_strategy_specific_support(tmp_path: Path) -> No
         )
         for strategy in ["s1", "s2"]
     ]
-    event_header = [
-        *TABLE_HEADERS["alignment_events.tsv.gz"],
-        "ortholog_gene_id",
-        "strategy",
-        "tool",
-        "preset",
-        "tax_id",
-        "taxname",
-        "qc_flags",
-    ]
+    event_header = TABLE_HEADERS["alignment_events.tsv.gz"]
     for result_dir, strategy in zip(result_dirs, ["s1", "s2"]):
+        write_tsv_gz(
+            result_dir / "alignment_segments.tsv.gz",
+            TABLE_HEADERS["alignment_segments.tsv.gz"],
+            [["1", strategy, "101", "0", "1"]],
+        )
         write_tsv_gz(
             result_dir / "alignment_events.tsv.gz",
             event_header,

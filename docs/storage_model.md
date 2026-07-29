@@ -49,7 +49,9 @@ neither a run result nor Nextflow resume state: multiple pipeline and analytics
 runs may reuse it, and a run remains valid when the cache is absent.
 
 Large handoff artifacts remain inside Nextflow `work/` during `--stage all`.
-They are consumed by the next stage and removed after a successful
+Alignment partitions reduce raw segments to a compact `snv_site_depth.tsv.gz`
+table containing only observed concrete SNV positions before annotation. The
+large artifacts are removed after a successful
 `low_storage` run:
 
 - selected ortholog FASTA files

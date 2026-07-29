@@ -163,7 +163,6 @@ def test_snv_support_uses_site_aligned_depth() -> None:
 
     assert list(iter_variant_strategy_snv_sites([aggregate])) == [
         {
-            "variant_key": "1:100:A>G",
             "gene_id": "1",
             "strategy": "s1",
             "target_start0": "9",
@@ -171,7 +170,7 @@ def test_snv_support_uses_site_aligned_depth() -> None:
     ]
     rows, _missing_key_count = build_variant_strategy_support(
         [aggregate],
-        {("1", "s1", "1:100:A>G"): 4},
+        {("1", "s1", 9): 4},
     )
     assert rows[0]["site_aligned_ortholog_count"] == 4
 
@@ -191,7 +190,7 @@ def test_snv_support_rejects_alt_count_above_site_depth() -> None:
     with pytest.raises(ValueError, match="exceeds site-aligned"):
         build_variant_strategy_support(
             [aggregate],
-            {("1", "s1", "1:100:A>G"): 1},
+            {("1", "s1", 0): 1},
         )
 
 

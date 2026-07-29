@@ -19,7 +19,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 try:
     from fetch_gnomad_variants import GNOMAD_API_URL, fetch_region_variants_recursive, _select_af_metrics
-    from feature_coverage import site_aligned_ortholog_counts
+    from feature_coverage import load_snv_site_depth, site_aligned_ortholog_counts
     from gnomad_cache import GnomadRegionCache
 except ImportError as e:
     print(f"Error importing fetch_gnomad_variants: {e}")
@@ -106,7 +106,9 @@ class StrategySupport:
 def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--events-tsv", required=True, type=Path)
-    parser.add_argument("--segments-tsv", required=True, type=Path)
+    depth_input = parser.add_mutually_exclusive_group(required=True)
+    depth_input.add_argument("--segments-tsv", type=Path)
+    depth_input.add_argument("--snv-site-depth-tsv", type=Path)
     parser.add_argument("--genes-tsv", required=False, type=Path)
     parser.add_argument("--target-sequences-dir", required=False, type=Path)
     parser.add_argument("--clinvar-vcf", required=True, type=Path)
@@ -216,7 +218,7 @@ def add_strategy_support(aggregate: dict, row: dict[str, str]) -> None:
 
 def build_variant_strategy_support(
     aggregates: Iterable[dict],
-    site_depths: dict[tuple[str, str, str], int] | None = None,
+    site_depths: dict[tuple[str, str, int], int] | None = None,
 ) -> tuple[list[dict[str, object]], int]:
     site_depths = site_depths or {}
     rows: list[dict[str, object]] = []
@@ -234,7 +236,11 @@ def build_variant_strategy_support(
             )
             site_depth: int | str = ""
             if aggregate.get("event_type") == "snv":
-                depth_key = (str(aggregate.get("gene_id") or ""), strategy, variant_key)
+                depth_key = (
+                    str(aggregate.get("gene_id") or ""),
+                    strategy,
+                    int(aggregate.get("target_start0") or 0),
+                )
                 if depth_key not in site_depths:
                     raise ValueError(f"Missing site ortholog depth for SNV {depth_key}")
                 site_depth = site_depths[depth_key]
@@ -271,7 +277,6 @@ def iter_variant_strategy_snv_sites(
             continue
         for strategy in aggregate["_support_by_strategy"]:
             yield {
-                "variant_key": aggregate["variant_key"],
                 "gene_id": aggregate.get("gene_id", ""),
                 "strategy": strategy,
                 "target_start0": aggregate.get("target_start0", ""),
@@ -663,8 +668,10 @@ def main():
     support_tsv = args.outdir / "variant_strategy_support.tsv.gz"
     failures_tsv = args.outdir / "failures.tsv.gz"
     manifest_json = args.outdir / "manifest.json"
-    if not args.segments_tsv.exists():
+    if args.segments_tsv is not None and not args.segments_tsv.exists():
         raise FileNotFoundError(f"Alignment segments TSV not found: {args.segments_tsv}")
+    if args.snv_site_depth_tsv is not None and not args.snv_site_depth_tsv.exists():
+        raise FileNotFoundError(f"SNV site-depth TSV not found: {args.snv_site_depth_tsv}")
     if not args.clinvar_vcf.exists():
         raise FileNotFoundError(f"ClinVar VCF not found: {args.clinvar_vcf}")
     clinvar_tbi = Path(f"{args.clinvar_vcf}.tbi")
@@ -727,11 +734,14 @@ def main():
     logger.info(f"Event key normalization status: {dict(event_key_status_counts)}")
     logger.info(f"Collapsed {input_row_count} event row(s) to {len(variant_aggregates)} variant-context row(s).")
 
-    site_depths = site_aligned_ortholog_counts(
-        args.segments_tsv,
-        iter_variant_strategy_snv_sites(variant_aggregates.values()),
-        args.outdir,
-    )
+    if args.snv_site_depth_tsv is not None:
+        site_depths = load_snv_site_depth(args.snv_site_depth_tsv)
+    else:
+        site_depths = site_aligned_ortholog_counts(
+            args.segments_tsv,
+            iter_variant_strategy_snv_sites(variant_aggregates.values()),
+            args.outdir,
+        )
     logger.info(f"Calculated site-aligned ortholog depth for {len(site_depths)} variant-strategy SNV(s).")
 
     # 2. Determine gnomAD clusters
