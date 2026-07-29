@@ -221,7 +221,9 @@ def annotate_partition(
             "status_counts": {},
         }
     else:
-        with tempfile.TemporaryDirectory(prefix=".vep_cache_", dir=outdir) as temporary:
+        # Partition-local VEP input, output, and SQLite are disposable. Keep
+        # them on the compute node to avoid NFS cleanup races between VEP forks.
+        with tempfile.TemporaryDirectory(prefix="gaph_vep_") as temporary:
             annotations, summary = annotate_vep_consequences(
                 requests,
                 Path(temporary) / "partition.sqlite",
