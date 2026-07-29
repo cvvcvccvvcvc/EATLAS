@@ -174,6 +174,36 @@ def test_cohort_keeps_snv_and_indel_subtypes_multiple_consequences_and_target_co
     assert cohort.summary["multiple_consequence_group_count"] == 1
 
 
+def test_cohort_can_use_unified_vep_consequences(tmp_path: Path) -> None:
+    universe = pd.DataFrame(
+        [
+            {
+                **universe_row("1:10:A>G", "snv", "A", "G", "missense_variant"),
+                "vep_consequence_terms": "intron_variant",
+            }
+        ]
+    )
+    conservation = pd.DataFrame({"variant_key": ["1:10:A>G"], SCORE_COLUMN: [0.5]})
+    genes_path = tmp_path / "genes.tsv.gz"
+    pd.DataFrame([{"gene_id": "1", "begin": 1, "sequence_length": 100}]).to_csv(
+        genes_path, sep="\t", index=False, compression="gzip"
+    )
+    features_path = tmp_path / "target_features.tsv.gz"
+    pd.DataFrame(
+        [{"gene_id": "1", "feature_type": "intron", "target_start0": 0, "target_end0": 100}]
+    ).to_csv(features_path, sep="\t", index=False, compression="gzip")
+
+    cohort = build_conservation_cohort(
+        universe=universe,
+        conservation=conservation,
+        genes_tsv=genes_path,
+        target_features_tsv=features_path,
+        consequence_column="vep_consequence_terms",
+    )
+
+    assert cohort.variants.loc[0, "consequence_groups"] == "intronic"
+
+
 def test_fixed_bands_use_prespecified_boundaries_and_all_selectors(tmp_path: Path) -> None:
     values = pd.Series([-1.30103, -1.0, 1.301029, 1.30103])
     assert assign_phylop_band(values).astype(str).tolist() == [

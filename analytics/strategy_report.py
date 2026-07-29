@@ -209,7 +209,7 @@ def parse_args() -> argparse.Namespace:
         "--vep-backend",
         choices=("rest", "local"),
         default=os.environ.get("GAPH_VEP_BACKEND", "rest"),
-        help="VEP execution backend for the target-space null. Default: rest.",
+        help="VEP backend for unified consequences and the target-space null. Default: rest.",
     )
     parser.add_argument(
         "--vep-release",
@@ -219,7 +219,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--vep-executable",
         default=os.environ.get("GAPH_VEP_EXECUTABLE", "vep"),
-        help="Local VEP executable or wrapper. Used only with --vep-backend local.",
+        help="Local VEP executable or wrapper. Used with --vep-backend local.",
     )
     parser.add_argument(
         "--vep-cache-dir",
@@ -334,6 +334,15 @@ def resolve_vep_variant_annotations(run_dir: Path, source: Path) -> Path:
     if manifest.get("output") != output_identity:
         raise ValueError(f"Bulk VEP output metadata changed: {output_path}")
     return output_path
+
+
+def bulk_vep_release(inputs: RunInputs) -> str | None:
+    expected = inputs.run_dir / "analytics" / "vep_consequences" / "variant_annotations.vep.tsv.gz"
+    if inputs.variant_annotations_tsv != expected:
+        return None
+    manifest = read_json(expected.parent / "manifest.json")
+    release = manifest.get("config", {}).get("release")
+    return str(release) if release else None
 
 
 def validate_report_inputs(inputs: RunInputs) -> None:
@@ -768,7 +777,7 @@ def validation_method_table() -> pd.DataFrame:
     )
 
 
-def validation_consequence_grouping_table() -> pd.DataFrame:
+def validation_consequence_grouping_table(source: str = "ClinVar MC") -> pd.DataFrame:
     rows = []
     for key, label in CONSEQUENCE_OPTIONS:
         if key == "all":
@@ -777,9 +786,9 @@ def validation_consequence_grouping_table() -> pd.DataFrame:
         rows.append(
             {
                 "Consequence subset": label,
-                "ClinVar MC terms": ", ".join(sorted(terms))
+                f"{source} terms": ", ".join(sorted(terms))
                 if terms
-                else "Missing MC or any MC term not assigned to a named subset.",
+                else f"Missing {source} consequence or any term not assigned to a named subset.",
             }
         )
     return pd.DataFrame(rows)
@@ -2147,6 +2156,7 @@ def build_conservation_analysis(
         conservation=conservation.annotations,
         genes_tsv=inputs.genes_tsv,
         target_features_tsv=inputs.target_features_tsv,
+        consequence_column=validation.consequence_column,
     )
     results = compute_conservation_validation(
         cohort=cohort,
@@ -3097,8 +3107,14 @@ def build_methods_sections(
         "in whether and how phyloP100way is included.</p>"
     )
     sections.append(table_html(conservation_validation_method_table(conservation_analysis), classes="table table-sm table-striped"))
-    sections.append("<h4>ClinVar MC consequence subsets</h4>")
-    sections.append(table_html(validation_consequence_grouping_table(), classes="table table-sm table-striped"))
+    consequence_source = validation.consequence_source if validation is not None else "ClinVar MC"
+    sections.append(f"<h4>{consequence_source} consequence subsets</h4>")
+    sections.append(
+        table_html(
+            validation_consequence_grouping_table(consequence_source),
+            classes="table table-sm table-striped",
+        )
+    )
     if conservation_analysis is not None:
         visibility_summary, hidden_views = hidden_clinvar_association_views(
             conservation_analysis.validation
@@ -3412,6 +3428,25 @@ def main() -> None:
         raise ValueError("--vep-release is required with --vep-backend local")
     inputs = resolve_run_inputs(args.run_dir, args.annotation_dir)
     validate_report_inputs(inputs)
+    annotation_columns = set(
+        pd.read_csv(inputs.variant_annotations_tsv, sep="\t", compression="gzip", nrows=0).columns
+    )
+    use_vep_consequences = {
+        "vep_status",
+        "vep_primary_consequence",
+        "vep_consequence_terms",
+    }.issubset(annotation_columns)
+    artifact_release = bulk_vep_release(inputs) if use_vep_consequences else None
+    if artifact_release and args.vep_release and str(args.vep_release) != artifact_release:
+        raise ValueError(
+            f"Bulk VEP artifact uses release {artifact_release}, not {args.vep_release}"
+        )
+    if not args.vep_release:
+        args.vep_release = artifact_release
+    if use_vep_consequences and not args.vep_release:
+        raise ValueError("--vep-release is required when the report uses bulk VEP consequences")
+    if use_vep_consequences and args.vep_backend == "local" and args.vep_cache_dir is None:
+        raise ValueError("--vep-cache-dir is required with --vep-backend local")
     out_html = resolve_out_html(args, inputs.run_dir)
     report_started = time.perf_counter()
     timings: list[dict[str, object]] = []
@@ -3472,6 +3507,12 @@ def main() -> None:
             target_sequences_dir=inputs.target_sequences_dir,
             clinvar_vcf=args.clinvar_vcf.expanduser().resolve(),
             strategies=strategies,
+            use_vep_consequences=use_vep_consequences,
+            vep_backend=args.vep_backend,
+            vep_release=args.vep_release,
+            vep_executable=args.vep_executable,
+            vep_cache_dir=args.vep_cache_dir,
+            vep_forks=args.vep_forks,
         )
 
     print("Computing conservation-adjusted ClinVar validation...")

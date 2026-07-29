@@ -7,6 +7,7 @@ import gzip
 import json
 import shutil
 import subprocess
+import tempfile
 from collections import Counter, defaultdict
 from dataclasses import dataclass
 from pathlib import Path
@@ -19,9 +20,11 @@ from .variant_keys import (
     load_target_contexts,
     normalize_chrom,
     normalize_vcf_key_for_context,
+    parse_variant_key,
     variant_key_text,
     variant_type,
 )
+from .vep_consequences import VEP_CONSEQUENCE_ORDER, annotate_vep_consequences
 
 
 UNIVERSE_FIELDS = [
@@ -49,6 +52,8 @@ class ClinvarValidation:
     universe: pd.DataFrame
     manifest: dict
     observed_by_strategy_type: dict[tuple[str, str], set[str]]
+    consequence_column: str = "clinvar_mc_terms"
+    consequence_source: str = "ClinVar MC"
 
 
 def build_validation(
@@ -59,6 +64,12 @@ def build_validation(
     target_sequences_dir: Path,
     clinvar_vcf: Path,
     strategies: list[str],
+    use_vep_consequences: bool = False,
+    vep_backend: str = "rest",
+    vep_release: str | None = None,
+    vep_executable: str | Path = "vep",
+    vep_cache_dir: Path | None = None,
+    vep_forks: int = 1,
 ) -> ClinvarValidation:
     analytics_dir = run_dir / "analytics"
     analytics_dir.mkdir(parents=True, exist_ok=True)
@@ -75,6 +86,25 @@ def build_validation(
         regions_path=regions_path,
     )
     universe = pd.read_csv(universe_path, sep="\t", compression="gzip", keep_default_na=False)
+    consequence_column = "clinvar_mc_terms"
+    consequence_source = "ClinVar MC"
+    if use_vep_consequences:
+        if not vep_release:
+            raise ValueError("A pinned VEP release is required for ClinVar consequence annotation")
+        universe_path, vep_manifest_path, universe, vep_manifest = build_or_load_vep_universe(
+            universe=universe,
+            universe_path=universe_path,
+            analytics_dir=analytics_dir,
+            backend=vep_backend,
+            release=str(vep_release),
+            vep_executable=vep_executable,
+            vep_cache_dir=vep_cache_dir,
+            vep_forks=vep_forks,
+        )
+        manifest = {**manifest, "consequence_source": "Ensembl VEP", "vep": vep_manifest}
+        manifest_path = vep_manifest_path
+        consequence_column = "vep_consequence_terms"
+        consequence_source = "Ensembl VEP"
     observed_by_strategy_type = collect_observed_keys_by_strategy_type(
         universe=universe,
         variant_annotations_tsv=variant_annotations_tsv,
@@ -86,7 +116,171 @@ def build_validation(
         universe,
         manifest,
         observed_by_strategy_type,
+        consequence_column,
+        consequence_source,
     )
+
+
+def build_or_load_vep_universe(
+    *,
+    universe: pd.DataFrame,
+    universe_path: Path,
+    analytics_dir: Path,
+    backend: str,
+    release: str,
+    vep_executable: str | Path,
+    vep_cache_dir: Path | None,
+    vep_forks: int,
+) -> tuple[Path, Path, pd.DataFrame, dict[str, object]]:
+    """Annotate the compact ClinVar validation universe once with RefSeq VEP."""
+
+    output_path = analytics_dir / "clinvar_universe.snv_indel.vep.tsv.gz"
+    manifest_path = analytics_dir / "clinvar_universe.snv_indel.vep.manifest.json"
+    contract = {
+        "schema_version": 1,
+        "source": path_metadata(universe_path),
+        "backend": backend,
+        "release": release,
+    }
+    if output_path.exists() and manifest_path.exists():
+        existing = json.loads(manifest_path.read_text())
+        if (
+            existing.get("contract") == contract
+            and existing.get("output") == path_metadata(output_path)
+        ):
+            return (
+                output_path,
+                manifest_path,
+                pd.read_csv(output_path, sep="\t", compression="gzip", keep_default_na=False),
+                {**existing, "cache_hit": True},
+            )
+
+    requests = _clinvar_vep_requests(universe)
+    with tempfile.TemporaryDirectory(prefix="gaph_clinvar_vep_") as temporary:
+        annotations, summary = annotate_vep_consequences(
+            requests,
+            Path(temporary) / "clinvar_vep.sqlite",
+            backend=backend,
+            release=release,
+            vep_executable=vep_executable,
+            vep_cache_dir=vep_cache_dir,
+            vep_forks=vep_forks,
+        )
+    aggregated = _aggregate_vep_by_variant(annotations)
+    enriched = universe.merge(
+        aggregated,
+        on="variant_key",
+        how="left",
+        validate="one_to_one",
+    )
+    if enriched["vep_status"].isna().any():
+        raise ValueError("VEP did not return a status for every ClinVar allele")
+    _write_frame_atomic(enriched, output_path)
+    manifest = {
+        "status": "complete",
+        "contract": contract,
+        "allele_count": len(enriched),
+        "request_count": len(requests),
+        "status_counts": {
+            str(status): int(count)
+            for status, count in enriched["vep_status"].value_counts().sort_index().items()
+        },
+        "vep": summary,
+        "output": path_metadata(output_path),
+    }
+    _write_json_atomic(manifest, manifest_path)
+    return output_path, manifest_path, enriched, {**manifest, "cache_hit": False}
+
+
+def _clinvar_vep_requests(universe: pd.DataFrame) -> pd.DataFrame:
+    requests = []
+    for row in universe[["variant_key", "gene_ids"]].itertuples(index=False):
+        key = str(row.variant_key)
+        parsed = parse_variant_key(key)
+        if parsed is None:
+            raise ValueError(f"Invalid normalized ClinVar variant_key: {key}")
+        chrom, pos, ref, alt = parsed
+        for gene_id in str(row.gene_ids).split("|"):
+            if gene_id:
+                requests.append(
+                    {
+                        "variant_key": key,
+                        "gene_id": gene_id,
+                        "chrom": chrom,
+                        "pos": pos,
+                        "ref": ref,
+                        "alt": alt,
+                    }
+                )
+    return pd.DataFrame(
+        requests,
+        columns=["variant_key", "gene_id", "chrom", "pos", "ref", "alt"],
+    ).drop_duplicates(["variant_key", "gene_id"])
+
+
+def _aggregate_vep_by_variant(annotations: pd.DataFrame) -> pd.DataFrame:
+    rank = {term: index for index, term in enumerate(VEP_CONSEQUENCE_ORDER)}
+    rows = []
+    for variant_key, group in annotations.groupby("variant_key", sort=False):
+        successful = group[group["status"] == "ok"]
+        terms = {
+            term
+            for value in successful["consequence_terms"]
+            for term in str(value).split("&")
+            if term
+        }
+        ordered_terms = sorted(terms, key=lambda term: (rank.get(term, len(rank)), term))
+        statuses = sorted({str(value) for value in group["status"] if str(value)})
+        status = (
+            "ok"
+            if ordered_terms
+            else (statuses[0] if len(statuses) == 1 else "no_consequence")
+        )
+        rows.append(
+            {
+                "variant_key": str(variant_key),
+                "vep_status": status,
+                "vep_primary_consequence": ordered_terms[0] if ordered_terms else "",
+                "vep_consequence_terms": "|".join(ordered_terms),
+            }
+        )
+    return pd.DataFrame(
+        rows,
+        columns=[
+            "variant_key",
+            "vep_status",
+            "vep_primary_consequence",
+            "vep_consequence_terms",
+        ],
+    )
+
+
+def _write_frame_atomic(frame: pd.DataFrame, path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile(dir=path.parent, suffix=".tsv.gz", delete=False) as handle:
+        temporary = Path(handle.name)
+    try:
+        frame.to_csv(
+            temporary,
+            sep="\t",
+            index=False,
+            lineterminator="\n",
+            compression={"method": "gzip", "compresslevel": 6, "mtime": 0},
+        )
+        temporary.replace(path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def _write_json_atomic(payload: dict[str, object], path: Path) -> None:
+    with tempfile.NamedTemporaryFile(dir=path.parent, suffix=".json", mode="w", delete=False) as handle:
+        temporary = Path(handle.name)
+        json.dump(payload, handle, indent=2, sort_keys=True)
+        handle.write("\n")
+    try:
+        temporary.replace(path)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def build_or_load_clinvar_universe(

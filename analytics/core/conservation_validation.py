@@ -126,6 +126,7 @@ def build_conservation_cohort(
     genes_tsv: Path,
     target_features_tsv: Path,
     score_column: str = SCORE_COLUMN,
+    consequence_column: str = "clinvar_mc_terms",
 ) -> ConservationCohort:
     required = {
         "variant_key",
@@ -133,7 +134,7 @@ def build_conservation_cohort(
         "ref",
         "alt",
         "label_class",
-        "clinvar_mc_terms",
+        consequence_column,
         "gene_ids",
     }
     missing = required - set(universe.columns)
@@ -148,7 +149,7 @@ def build_conservation_cohort(
         "ref",
         "alt",
         "label_class",
-        "clinvar_mc_terms",
+        consequence_column,
     ]
     columns.append("gene_ids")
     base = universe[columns].drop_duplicates("variant_key").copy()
@@ -162,8 +163,8 @@ def build_conservation_cohort(
     base.loc[snv_mask, "variant_subtype"] = "snv"
     base.loc[~snv_mask & (alt_lengths > ref_lengths), "variant_subtype"] = "insertion"
     base.loc[~snv_mask & (ref_lengths > alt_lengths), "variant_subtype"] = "deletion"
-    base["consequence_groups"] = base["clinvar_mc_terms"].map(consequence_memberships_text)
-    base["consequence_mask"] = base["clinvar_mc_terms"].map(consequence_membership_mask)
+    base["consequence_groups"] = base[consequence_column].map(consequence_memberships_text)
+    base["consequence_mask"] = base[consequence_column].map(consequence_membership_mask)
     base["target_context"] = assign_target_contexts(
         base,
         genes_tsv=genes_tsv,
@@ -177,7 +178,7 @@ def build_conservation_cohort(
         "snv_count": int((base["variant_subtype"] == "snv").sum()),
         "insertion_count": int((base["variant_subtype"] == "insertion").sum()),
         "deletion_count": int((base["variant_subtype"] == "deletion").sum()),
-        "missing_consequence_count": int((base["clinvar_mc_terms"].astype(str) == "").sum()),
+        "missing_consequence_count": int((base[consequence_column].astype(str) == "").sum()),
         "multiple_consequence_group_count": int(
             base["consequence_groups"].map(lambda value: len(split_memberships(value)) > 1).sum()
         ),

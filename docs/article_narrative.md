@@ -54,7 +54,9 @@ exact ALT observed in orthologs.
 First report the broad eligible-SNV analysis. It summarizes the overall output
 of the method but may reflect both target-context and consequence composition.
 Then stratify independently by the exclusive target-locus contexts derived from
-the fetched NCBI features and by ClinVar MC consequence groups. Compute an odds
+the fetched NCBI features and by release-pinned RefSeq VEP consequence groups. Raw
+ClinVar MC and gnomAD consequence fields are retained as provenance but are not
+mixed into these VEP-defined strata. Compute an odds
 ratio only where both B/LB and P/LP are represented; missense SNVs are the
 primary comparable consequence class unless the final cohort supports another
 prespecified class. Selector combinations with no estimable strategy result are

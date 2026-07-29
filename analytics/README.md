@@ -92,12 +92,20 @@ RefSeq VEP consequences for every successfully annotated candidate; raw
 `gnomad_csq` remains available as provenance. Runs without the artifact retain
 the legacy gnomAD-CSQ plots.
 
+The same report invocation annotates the much smaller normalized ClinVar
+validation universe with the configured VEP release and caches it as
+`<run-dir>/analytics/clinvar_universe.snv_indel.vep.tsv.gz`. ClinVar Association
+then uses those RefSeq VEP terms for consequence subsets while retaining raw
+ClinVar MC fields in the artifact. A matching source and VEP release reuse the
+file without another VEP process.
+
 Set `GAPH_GNOMAD_CACHE_DIR` to the same shared path used by pipeline annotation,
 or pass `--gnomad-cache-dir`, so new matched-control reports reuse complete
 regional responses instead of requesting them again.
 
 The ClinVar association view compares all strategies and supports variant-type
-and ClinVar MC consequence selectors. A second selector exposes the 2x2,
+and consequence selectors. With a completed bulk-VEP artifact these selectors
+use RefSeq VEP; legacy runs use ClinVar MC. A second selector exposes the 2x2,
 fixed-band, or continuous-distribution data for one strategy at a time.
 
 `Ortholog Evidence` shows SNV-only heatmaps of site-aligned ortholog depth and
