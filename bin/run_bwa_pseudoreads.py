@@ -311,17 +311,21 @@ def add_event_support(
     ortholog_id: str,
     strand: str,
     native_record_id: str,
+    is_primary: bool,
 ) -> None:
     support = {
         "ortholog_gene_id": ortholog_id,
         "strand": strand,
         "native_record_id": native_record_id,
+        "is_primary": is_primary,
     }
     current = event_support[key].get(ortholog_id)
     if current is None or (
+        not is_primary,
         str(support["native_record_id"]),
         str(support["strand"]),
     ) < (
+        not bool(current["is_primary"]),
         str(current["native_record_id"]),
         str(current["strand"]),
     ):
@@ -341,6 +345,7 @@ def scan_bam(
                 continue
             ortholog_id = read_ortholog_gene_id(read.query_name)
             strand = "-" if read.is_reverse else "+"
+            primary = not read.is_secondary and not read.is_supplementary
             matches, block_length, identity = identity_from_read(read)
             segments.append(
                 {
@@ -356,9 +361,9 @@ def scan_bam(
                     "block_length": block_length,
                     "identity": identity,
                     "mapq": read.mapping_quality,
-                    "is_primary": str(not read.is_secondary and not read.is_supplementary).lower(),
+                    "is_primary": str(primary).lower(),
                     "native_record_id": read.query_name,
-                    "qc_flags": "filtered_pseudoread",
+                    "qc_flags": "filtered_pseudoread" if primary else "filtered_pseudoread,non_primary",
                 }
             )
 
@@ -387,6 +392,7 @@ def scan_bam(
                             ortholog_id,
                             strand,
                             read.query_name,
+                            primary,
                         )
                     r_pos += length
                     q_pos += length
@@ -399,6 +405,7 @@ def scan_bam(
                         ortholog_id,
                         strand,
                         read.query_name,
+                        primary,
                     )
                     q_pos += length
                 elif op in {2, 3}:
@@ -411,6 +418,7 @@ def scan_bam(
                             ortholog_id,
                             strand,
                             read.query_name,
+                            primary,
                         )
                     r_pos += length
                 elif op == 4:
@@ -500,6 +508,9 @@ def make_bwa_event_rows(
     for (event_type, start0, end0, ref, alt), support_by_ortholog in sorted(event_support.items()):
         for ortholog_id in sorted(support_by_ortholog, key=int):
             support = support_by_ortholog[ortholog_id]
+            flags = ["bwa_cigar_event"]
+            if not bool(support["is_primary"]):
+                flags.append("non_primary")
             rows.append(
                 make_event_row(
                     gene_id=gene_id,
@@ -513,7 +524,7 @@ def make_bwa_event_rows(
                     ref=ref,
                     alt=alt,
                     support=support,
-                    qc_flags="bwa_cigar_event",
+                    qc_flags=",".join(flags),
                 )
             )
     return rows

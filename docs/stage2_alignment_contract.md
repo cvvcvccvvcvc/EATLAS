@@ -206,6 +206,12 @@ stable record identifier, and the event ordinal within the PAF `cs` tag. These
 identifiers therefore remain stable when Minimap2 emits identical records in a
 different order at another thread count.
 
+Minimap2, Nucmer, and BWA retain events from accepted primary and non-primary
+alignment records. Non-primary evidence is marked with `non_primary` in
+`qc_flags`. If primary and non-primary records from the same ortholog emit the
+same normalized event, one support row is kept and the primary record is
+preferred. Ensembl Compara MAF records are primary by construction.
+
 `strategy_summary.tsv.gz` contains `summary_row_count`, `gene_count`,
 `aligned_summary_row_count`, `event_count`, and `aligned_target_bp` for each
 enabled strategy. Reports must read this alignment-owned table, not mutable

@@ -119,11 +119,11 @@ def test_scan_bam_deduplicates_event_support_by_ortholog(tmp_path: Path) -> None
     bam_path = tmp_path / "reads.bam"
     header = {"HD": {"VN": "1.6", "SO": "coordinate"}, "SQ": [{"SN": "target", "LN": 100}]}
 
-    def make_read(name: str) -> bwa_runner.pysam.AlignedSegment:
+    def make_read(name: str, *, secondary: bool = False) -> bwa_runner.pysam.AlignedSegment:
         read = bwa_runner.pysam.AlignedSegment()
         read.query_name = name
         read.query_sequence = "A" * 20 + "G" + "A" * 9
-        read.flag = 0
+        read.flag = 256 if secondary else 0
         read.reference_id = 0
         read.reference_start = 0
         read.mapping_quality = 60
@@ -133,9 +133,11 @@ def test_scan_bam_deduplicates_event_support_by_ortholog(tmp_path: Path) -> None
         return read
 
     with bwa_runner.pysam.AlignmentFile(bam_path, "wb", header=header) as bam:
+        bam.write(make_read("ortholog_101_pseudo_0_1-30", secondary=True))
         bam.write(make_read("ortholog_101_pseudo_2_1-30"))
         bam.write(make_read("ortholog_101_pseudo_1_1-30"))
         bam.write(make_read("ortholog_102_pseudo_1_1-30"))
+        bam.write(make_read("ortholog_103_pseudo_1_1-30", secondary=True))
     bwa_runner.pysam.index(str(bam_path))
 
     _segments, event_support = bwa_runner.scan_bam(bam_path, "A" * 100)
@@ -151,7 +153,14 @@ def test_scan_bam_deduplicates_event_support_by_ortholog(tmp_path: Path) -> None
         },
     )
 
-    assert sorted(support) == ["101", "102"]
+    assert sorted(support) == ["101", "102", "103"]
     assert support["101"]["native_record_id"] == "ortholog_101_pseudo_1_1-30"
-    assert len(rows) == 2
-    assert len({row["event_id"] for row in rows}) == 2
+    assert support["101"]["is_primary"] is True
+    assert support["103"]["is_primary"] is False
+    assert len(rows) == 3
+    assert len({row["event_id"] for row in rows}) == 3
+    assert {row["ortholog_gene_id"]: row["qc_flags"] for row in rows} == {
+        "101": "bwa_cigar_event",
+        "102": "bwa_cigar_event",
+        "103": "bwa_cigar_event,non_primary",
+    }

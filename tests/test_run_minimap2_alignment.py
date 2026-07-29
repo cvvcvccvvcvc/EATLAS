@@ -55,3 +55,44 @@ def test_paf_identifiers_do_not_depend_on_record_order(tmp_path: Path) -> None:
     assert forward_events == reverse_events
     assert len({row[7] for row in forward_events}) == len(forward_events)
     assert all(str(row[22]).startswith("paf:") for row in forward_segments)
+
+
+def test_paf_emits_non_primary_events_and_prefers_primary_duplicates(tmp_path: Path) -> None:
+    path = tmp_path / "records.paf"
+    path.write_text(
+        "\n".join(
+            [
+                "q1\t10\t0\t10\t+\ttarget_1\t10\t0\t10\t9\t10\t20\ttp:A:S\tcs:Z::4*ag:5",
+                "q1\t10\t0\t10\t+\ttarget_1\t10\t0\t10\t9\t10\t60\ttp:A:P\tcs:Z::4*ag:5",
+                "q2\t10\t0\t10\t+\ttarget_1\t10\t0\t10\t9\t10\t20\ttp:A:S\tcs:Z::2*ct:7",
+            ]
+        )
+        + "\n"
+    )
+    metadata = {
+        "q1": {"ortholog_gene_id": "101", "tax_id": "1", "taxname": "species 1"},
+        "q2": {"ortholog_gene_id": "102", "tax_id": "2", "taxname": "species 2"},
+    }
+    summaries = {
+        query_id: empty_summary("1", "minimap2_asm20", "asm20", meta, 10)
+        for query_id, meta in metadata.items()
+    }
+
+    _segments, events, next_index = parse_paf(
+        path,
+        "1",
+        "minimap2_asm20",
+        "asm20",
+        {"genomic_accession": "NC_1", "genomic_begin": "100"},
+        metadata,
+        summaries,
+        1,
+    )
+
+    assert len(events) == 2
+    assert next_index == 3
+    by_query = {row["query_id"]: row for row in events}
+    assert by_query["q1"]["qc_flags"] == ""
+    assert by_query["q2"]["qc_flags"] == "non_primary"
+    assert summaries["q1"]["event_count"] == 1
+    assert summaries["q2"]["event_count"] == 1

@@ -344,8 +344,7 @@ def parse_paf(
     event_start_index: int,
 ) -> tuple[list[dict[str, object]], list[dict[str, object]], int]:
     segments: list[dict[str, object]] = []
-    events: list[dict[str, object]] = []
-    event_index = event_start_index
+    event_by_key: dict[tuple[object, ...], dict[str, object]] = {}
     record_occurrences: dict[str, int] = defaultdict(int)
 
     with paf_path.open() as handle:
@@ -433,7 +432,7 @@ def parse_paf(
                 summary["qc_flags"].add("has_secondary")
 
             cs = tags.get("cs")
-            if primary and cs:
+            if cs:
                 event_record = {
                     "gene_id": gene_id,
                     "ortholog_gene_id": meta.get("ortholog_gene_id", ""),
@@ -454,11 +453,40 @@ def parse_paf(
                     target_meta,
                     f"{strategy}:{native_record_id}",
                 )
-                event_index += len(new_events)
-                summary["event_count"] += len(new_events)
-                events.extend(new_events)
+                for event in new_events:
+                    event["_is_primary"] = primary
+                    key = (
+                        event["query_id"],
+                        event["event_type"],
+                        event["target_start0"],
+                        event["target_end0"],
+                        event["ref"],
+                        event["alt"],
+                    )
+                    current = event_by_key.get(key)
+                    candidate_rank = (not primary, str(event["native_record_id"]))
+                    current_rank = (
+                        not bool(current["_is_primary"]),
+                        str(current["native_record_id"]),
+                    ) if current is not None else None
+                    if current_rank is None or candidate_rank < current_rank:
+                        event_by_key[key] = event
 
-    return segments, events, event_index
+    events = sorted(
+        event_by_key.values(),
+        key=lambda row: (
+            str(row["query_id"]),
+            int(row["target_start0"]),
+            str(row["event_type"]),
+            str(row["ref"]),
+            str(row["alt"]),
+        ),
+    )
+    for event in events:
+        event.pop("_is_primary", None)
+        summaries[str(event["query_id"])]["event_count"] += 1
+
+    return segments, events, event_start_index + len(events)
 
 
 def empty_summary(gene_id: str, strategy: str, preset: str, meta: dict[str, str], target_length: int) -> dict[str, object]:
