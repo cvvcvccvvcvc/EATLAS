@@ -83,7 +83,6 @@ def fetch_taxonomy_records(
                 "taxon",
                 "--inputfile",
                 str(ids_path),
-                "--parents",
                 "--as-json-lines",
             ],
             text=True,
@@ -138,10 +137,11 @@ def taxonomy_row(tax_id: str, preset_group: str, record: dict | None) -> dict[st
         "tax_id": tax_id,
         "scientific_name": (
             (record.get("currentScientificName") or {}).get("name")
+            or (record.get("current_scientific_name") or {}).get("name")
             or record.get("organism_name", "")
         ),
         "rank": record.get("rank", ""),
-        "group_name": record.get("groupName") or preset_group,
+        "group_name": record.get("groupName") or record.get("group_name") or preset_group,
         "class_id": classification_value(record, "class", "id"),
         "class_name": classification_value(record, "class", "name"),
         "order_id": classification_value(record, "order", "id"),

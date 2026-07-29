@@ -2,13 +2,14 @@ from __future__ import annotations
 
 import csv
 import gzip
+import json
 import sys
 from pathlib import Path
 
 PROJECT_DIR = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_DIR / "bin"))
 
-from fetch_taxonomy_presets import taxonomy_row
+from fetch_taxonomy_presets import fetch_taxonomy_records, taxonomy_row
 from finalize_annotation_partitions import merge_ortholog_evidence
 from merge_alignment_results import write_compact_events
 from ortholog_evidence_summary import write_ortholog_evidence_summary
@@ -55,15 +56,15 @@ def taxonomy_fixture(tmp_path: Path) -> Path:
     return path
 
 
-def test_taxonomy_row_reads_ncbi_camel_case_lineage() -> None:
+def test_taxonomy_row_reads_ncbi_taxonomy_lineage() -> None:
     row = taxonomy_row(
         "9598",
         "primates",
         {
-            "taxId": 9598,
+            "tax_id": 9598,
             "rank": "SPECIES",
-            "currentScientificName": {"name": "Pan troglodytes"},
-            "groupName": "primates",
+            "current_scientific_name": {"name": "Pan troglodytes"},
+            "group_name": "primates",
             "classification": {
                 "class": {"id": 40674, "name": "Mammalia"},
                 "order": {"id": 9443, "name": "Primates"},
@@ -81,6 +82,26 @@ def test_taxonomy_row_reads_ncbi_camel_case_lineage() -> None:
     assert row["is_primate"] == "true"
     assert row["is_mammal"] == "true"
     assert row["is_vertebrate"] == "true"
+
+
+def test_taxonomy_batch_request_does_not_use_single_taxon_parents_flag(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    def fake_run(command, *, text, stdout, stderr):
+        assert command[:4] == ["datasets", "summary", "taxonomy", "taxon"]
+        assert "--inputfile" in command
+        assert "--parents" not in command
+        assert text is True
+        assert stderr is not None
+        stdout.write(json.dumps({"taxonomy": {"tax_id": 9598}}) + "\n")
+        return type("Result", (), {"returncode": 0, "stderr": ""})()
+
+    monkeypatch.setattr("fetch_taxonomy_presets.subprocess.run", fake_run)
+
+    records = fetch_taxonomy_records(["9598"], "datasets", tmp_path)
+
+    assert records == {"9598": {"tax_id": 9598}}
 
 
 def test_scope_and_unit_counts_use_any_member_semantics(tmp_path: Path) -> None:

@@ -390,7 +390,7 @@ workflow ALIGNMENT_STAGE {
     MERGE_ALIGNMENT_PARTITION(
         partition_merge_inputs,
         SELECTED_ALIGNMENT_STRATEGIES.join(','),
-        FETCH_TAXONOMY_PRESETS.out.taxonomy_presets.first(),
+        FETCH_TAXONOMY_PRESETS.out.taxonomy_presets,
         merge_script
     )
 
