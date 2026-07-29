@@ -297,6 +297,14 @@ empty value. Consequence terms, selected RefSeq transcript, canonical/MANE
 fields, impact, and variant class agreed for all six variants. Local VEP wrote
 the six results in about 3.3 seconds.
 
+Run full-candidate VEP through `analytics.vep_annotation` in Slurm, not on
+`sphinx`. The 590-gene annotation contains 118,549,428 rows, which produces 475
+partitions at the default 250,000 rows. Benchmark one representative partition
+before choosing Slurm-array concurrency: each task uses four VEP workers, and
+concurrent tasks also share the same network-backed 25 GB cache. Completed
+partition outputs are the resume boundary; no full-candidate SQLite cache is
+kept.
+
 ## Compute-Node Preflight
 
 Before the first pipeline run:

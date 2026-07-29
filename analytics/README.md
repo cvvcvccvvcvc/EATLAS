@@ -50,6 +50,43 @@ VEP uses GRCh38, RefSeq transcripts, `pick_allele_gene`, and the uploaded
 normalized REF/ALT alleles; basic consequence annotation does not require a
 reference FASTA.
 
+Full candidate annotation is a separate resumable precompute, not an implicit
+part of HTML generation. Prepare deterministic input partitions once:
+
+```bash
+python -m analytics.vep_annotation prepare \
+  --run-dir "$RUN" \
+  --partition-size 250000
+```
+
+Run each one-based partition index independently, normally through a bounded
+Slurm array:
+
+```bash
+python -m analytics.vep_annotation annotate \
+  --run-dir "$RUN" \
+  --partition-index 1 \
+  --vep-backend local \
+  --vep-release 116 \
+  --vep-executable "$GAPH_VEP_EXECUTABLE" \
+  --vep-cache-dir "$GAPH_VEP_CACHE_DIR" \
+  --vep-forks 4
+```
+
+After every partition is complete, validate and join the gzip members without
+recompressing them:
+
+```bash
+python -m analytics.vep_annotation finalize --run-dir "$RUN"
+```
+
+The final table is
+`<run-dir>/analytics/vep_consequences/variant_annotations.vep.tsv.gz`. It keeps
+the source annotation columns and adds `vep_*` fields. Prepared inputs,
+headerless output partitions, and their manifests remain in the same directory
+for resume and audit. A changed source, partition contract, or VEP runtime
+configuration is rejected instead of being silently mixed with old results.
+
 Set `GAPH_GNOMAD_CACHE_DIR` to the same shared path used by pipeline annotation,
 or pass `--gnomad-cache-dir`, so new matched-control reports reuse complete
 regional responses instead of requesting them again.
