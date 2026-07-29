@@ -86,6 +86,11 @@ the source annotation columns and adds `vep_*` fields. Prepared inputs,
 headerless output partitions, and their manifests remain in the same directory
 for resume and audit. A changed source, partition contract, or VEP runtime
 configuration is rejected instead of being silently mixed with old results.
+When this finalized artifact matches the current pipeline annotation file, the
+report selects it automatically. Candidate consequence plots then use primary
+RefSeq VEP consequences for every successfully annotated candidate; raw
+`gnomad_csq` remains available as provenance. Runs without the artifact retain
+the legacy gnomAD-CSQ plots.
 
 Set `GAPH_GNOMAD_CACHE_DIR` to the same shared path used by pipeline annotation,
 or pass `--gnomad-cache-dir`, so new matched-control reports reuse complete

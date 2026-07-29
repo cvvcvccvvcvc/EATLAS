@@ -48,8 +48,9 @@ VARIANT_USECOLS = [
     "gnomad_af",
     "gnomad_csq",
 ]
+VEP_USECOLS = ["vep_status", "vep_primary_consequence"]
 VARIANT_REQUIRED = {"variant_key", "gene_id", "event_type", "strategies"}
-SUMMARY_CACHE_VERSION = 7
+SUMMARY_CACHE_VERSION = 8
 SUMMARY_CACHE_NAME = "variant_summary.json.gz"
 SPECIAL_FLOAT_KEY = "__gaph_float__"
 ORTHOLOG_EVIDENCE_COLUMNS = [
@@ -86,6 +87,7 @@ class VariantSummary:
     gnomad_found: int
     gnomad_lookup_failed: int
     pathogenic_variant_count: int
+    consequence_source: str
     strategies: list[str]
     strategy_stats: pd.DataFrame
     unique_contribution: pd.DataFrame
@@ -218,6 +220,7 @@ def _summary_payload(
             "gnomad_found": summary.gnomad_found,
             "gnomad_lookup_failed": summary.gnomad_lookup_failed,
             "pathogenic_variant_count": summary.pathogenic_variant_count,
+            "consequence_source": summary.consequence_source,
             "ortholog_evidence_available": summary.ortholog_evidence_available,
             "strategies": summary.strategies,
             "overlap": overlap,
@@ -252,6 +255,7 @@ def _summary_from_payload(payload: dict[str, object]) -> VariantSummary:
         gnomad_found=int(summary["gnomad_found"]),
         gnomad_lookup_failed=int(summary["gnomad_lookup_failed"]),
         pathogenic_variant_count=int(summary["pathogenic_variant_count"]),
+        consequence_source=str(summary["consequence_source"]),
         ortholog_evidence_available=bool(summary["ortholog_evidence_available"]),
         strategies=[str(value) for value in summary["strategies"]],
         strategy_stats=_frame_from_payload(frames["strategy_stats"]),
@@ -376,6 +380,7 @@ def _normalize_chunk(
     gene_begins: dict[str, int] | None = None,
     gnomad_failed_regions: RegionIndex | None = None,
 ) -> pd.DataFrame:
+    has_vep_consequences = {"vep_status", "vep_primary_consequence"}.issubset(df.columns)
     for column in VARIANT_USECOLS:
         if column not in df.columns:
             df[column] = ""
@@ -421,6 +426,13 @@ def _normalize_chunk(
     df["clinvar_found"] = df["clinvar_id"].astype(str) != ""
     df["clinvar_classified"] = df["clinvar_sig"].astype(str) != ""
     df["clinvar_category"] = _categorize_clinvar(df["clinvar_sig"])
+    if has_vep_consequences:
+        df["consequence"] = df["vep_primary_consequence"].where(
+            df["vep_status"].astype(str).eq("ok"),
+            "",
+        )
+    else:
+        df["consequence"] = df["gnomad_csq"].astype(str)
 
     ref = df["ref"].astype(str).str.upper()
     alt = df["alt"].astype(str).str.upper()
@@ -456,7 +468,7 @@ def _create_database(path: Path) -> sqlite3.Connection:
             gnomad_status TEXT NOT NULL,
             titv_kind TEXT NOT NULL,
             review_stars TEXT NOT NULL,
-            gnomad_csq TEXT NOT NULL,
+            consequence TEXT NOT NULL,
             PRIMARY KEY (variant_id, strategy)
         ) WITHOUT ROWID;
         """
@@ -962,6 +974,10 @@ def _compute_variant_summary(
     if missing:
         raise ValueError(f"Variant annotations missing required columns: {', '.join(sorted(missing))}")
     usecols = [column for column in VARIANT_USECOLS if column in header]
+    has_vep_consequences = {"vep_status", "vep_primary_consequence"}.issubset(header)
+    if has_vep_consequences:
+        usecols.extend(VEP_USECOLS)
+    consequence_source = "Ensembl VEP" if has_vep_consequences else "gnomAD CSQ (legacy)"
     if "target_start0" in header:
         usecols.append("target_start0")
     contexts: dict[str, list[tuple[int, int, str]]] = {}
@@ -995,7 +1011,9 @@ def _compute_variant_summary(
     gnomad_found = 0
     gnomad_lookup_failed = 0
     genes: set[str] = set()
-    pathogenic_rows = pd.DataFrame(columns=[*VARIANT_USECOLS, "variant_id", "clinvar_category", "review_stars"])
+    pathogenic_rows = pd.DataFrame(
+        columns=[*VARIANT_USECOLS, *VEP_USECOLS, "variant_id", "clinvar_category", "review_stars"]
+    )
 
     connection = _create_database(database_path)
     try:
@@ -1012,7 +1030,7 @@ def _compute_variant_summary(
             INSERT OR IGNORE INTO memberships (
                 variant_id, strategy, gene_id, event_type, target_context, clinvar_found,
                 clinvar_classified, clinvar_category, gnomad_af, gnomad_status, titv_kind,
-                review_stars, gnomad_csq
+                review_stars, consequence
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """
         for chunk in reader:
@@ -1048,7 +1066,7 @@ def _compute_variant_summary(
                 "gnomad_status",
                 "titv_kind",
                 "review_stars",
-                "gnomad_csq",
+                "consequence",
             ]
             for (
                 variant_id,
@@ -1063,7 +1081,7 @@ def _compute_variant_summary(
                 gnomad_status,
                 titv_kind,
                 review_stars,
-                gnomad_csq,
+                consequence,
             ) in chunk[record_columns].itertuples(index=False, name=None):
                 strategies = [item.strip() for item in str(strategy_text).split(",") if item.strip()]
                 for strategy in strategies:
@@ -1081,7 +1099,7 @@ def _compute_variant_summary(
                             str(gnomad_status),
                             str(titv_kind),
                             str(review_stars),
-                            str(gnomad_csq),
+                            str(consequence),
                         )
                     )
             connection.executemany(insert_sql, records)
@@ -1144,15 +1162,15 @@ def _compute_variant_summary(
         ).rename(columns={"strategy": "Strategy", "value": "Review stars"})
         consequence_counts = _grouped_counts(
             connection,
-            "gnomad_csq",
+            "consequence",
             strategy_label,
-            "gnomad_af IS NOT NULL",
+            "consequence != ''",
         )
         pathogenic_consequence_counts = _grouped_counts(
             connection,
-            "gnomad_csq",
+            "consequence",
             strategy_label,
-            "gnomad_af IS NOT NULL AND clinvar_category = 'P/LP'",
+            "consequence != '' AND clinvar_category = 'P/LP'",
         )
         strategy_record_count = int(sum(totals.values()))
         pathogenic_variant_count = int(
@@ -1187,6 +1205,7 @@ def _compute_variant_summary(
         gnomad_found=gnomad_found,
         gnomad_lookup_failed=gnomad_lookup_failed,
         pathogenic_variant_count=pathogenic_variant_count,
+        consequence_source=consequence_source,
         strategies=strategies,
         strategy_stats=strategy_stats,
         unique_contribution=unique_contribution,

@@ -4,7 +4,7 @@ import csv
 import gzip
 from pathlib import Path
 
-from analytics.core.variant_summary import VARIANT_USECOLS, build_variant_summary
+from analytics.core.variant_summary import VEP_USECOLS, VARIANT_USECOLS, build_variant_summary
 
 
 def test_variant_summary_accepts_compact_annotation_schema(tmp_path: Path) -> None:
@@ -83,6 +83,7 @@ def test_variant_summary_accepts_compact_annotation_schema(tmp_path: Path) -> No
     assert by_strategy.loc["s2", "Ti/Tv"] == float("inf")
     assert summary.clinvar_found == 2
     assert summary.gnomad_found == 1
+    assert summary.consequence_source == "gnomAD CSQ (legacy)"
 
     cached = build_variant_summary(
         annotations,
@@ -93,6 +94,48 @@ def test_variant_summary_accepts_compact_annotation_schema(tmp_path: Path) -> No
     assert cached.all_strategy_variant_count == 1
     assert cached.strategy_stats.set_index("Strategy").loc["s2", "Ti/Tv"] == float("inf")
     assert (tmp_path / "analytics" / "variant_summary.json.gz").stat().st_mode & 0o777 == 0o644
+
+
+def test_variant_summary_prefers_vep_consequences_for_all_candidates(tmp_path: Path) -> None:
+    annotations = tmp_path / "variant_annotations.tsv.gz"
+    fields = [*VARIANT_USECOLS, *VEP_USECOLS]
+    rows = [
+        {
+            "variant_key": "1:100:A>G",
+            "gene_id": "1",
+            "event_type": "snv",
+            "ref": "A",
+            "alt": "G",
+            "strategies": "s1",
+            "gnomad_af": "",
+            "gnomad_csq": "synonymous_variant",
+            "vep_status": "ok",
+            "vep_primary_consequence": "missense_variant",
+        },
+        {
+            "variant_key": "1:200:C>T",
+            "gene_id": "1",
+            "event_type": "snv",
+            "ref": "C",
+            "alt": "T",
+            "strategies": "s1",
+            "gnomad_af": "0.01",
+            "gnomad_csq": "intron_variant",
+            "vep_status": "no_target_gene",
+            "vep_primary_consequence": "",
+        },
+    ]
+    with gzip.open(annotations, "wt", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fields, delimiter="\t", lineterminator="\n")
+        writer.writeheader()
+        writer.writerows(rows)
+
+    summary = build_variant_summary(annotations, tmp_path / "analytics", strategy_label=str)
+
+    assert summary.consequence_source == "Ensembl VEP"
+    assert summary.consequence_counts.to_dict(orient="records") == [
+        {"strategy": "s1", "value": "missense_variant", "Variant_Count": 1}
+    ]
 
 
 def test_variant_summary_rebuilds_a_corrupt_cache(tmp_path: Path) -> None:

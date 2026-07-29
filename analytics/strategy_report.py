@@ -268,18 +268,22 @@ def resolve_run_inputs(run_dir: Path, annotation_dir: Path | None = None) -> Run
     if not run_dir.is_dir():
         raise NotADirectoryError(f"--run-dir is not a directory: {run_dir}")
 
+    annotation_override = annotation_dir is not None
     annotation_dir = (
         annotation_dir.expanduser().resolve()
         if annotation_dir is not None
         else run_dir / "annotation"
     )
+    variant_annotations_tsv = annotation_dir / "variant_annotations.tsv.gz"
+    if not annotation_override:
+        variant_annotations_tsv = resolve_vep_variant_annotations(run_dir, variant_annotations_tsv)
     inputs = RunInputs(
         run_dir=run_dir,
         fetch_manifest_json=run_dir / "fetch" / "manifest.json",
         genes_tsv=run_dir / "fetch" / "genes.tsv.gz",
         target_features_tsv=run_dir / "fetch" / "target_features.tsv.gz",
         target_sequences_dir=run_dir / "fetch" / "sequences" / "targets",
-        variant_annotations_tsv=annotation_dir / "variant_annotations.tsv.gz",
+        variant_annotations_tsv=variant_annotations_tsv,
         variant_strategy_support_tsv=annotation_dir / "variant_strategy_support.tsv.gz",
         annotation_manifest_json=annotation_dir / "manifest.json",
         annotation_failures_tsv=annotation_dir / "failures.tsv.gz",
@@ -300,6 +304,36 @@ def resolve_run_inputs(run_dir: Path, annotation_dir: Path | None = None) -> Run
     if not inputs.target_sequences_dir.exists():
         raise FileNotFoundError("Missing fetch/sequences/targets under --run-dir.")
     return inputs
+
+
+def resolve_vep_variant_annotations(run_dir: Path, source: Path) -> Path:
+    """Use the completed bulk-VEP artifact only when it matches the source table."""
+
+    artifact_dir = run_dir / "analytics" / "vep_consequences"
+    manifest_path = artifact_dir / "manifest.json"
+    output_path = artifact_dir / "variant_annotations.vep.tsv.gz"
+    if not manifest_path.exists() and not output_path.exists():
+        return source
+    if not manifest_path.exists() or not output_path.exists():
+        raise ValueError(f"Incomplete bulk VEP artifact under {artifact_dir}")
+
+    manifest = read_json(manifest_path)
+    source_stat = source.stat()
+    source_identity = {
+        "path": str(source.resolve()),
+        "size_bytes": source_stat.st_size,
+        "mtime": int(source_stat.st_mtime),
+    }
+    if manifest.get("status") != "complete" or manifest.get("source") != source_identity:
+        raise ValueError(f"Bulk VEP artifact does not match {source}")
+    output_stat = output_path.stat()
+    output_identity = {
+        "size_bytes": output_stat.st_size,
+        "mtime_ns": output_stat.st_mtime_ns,
+    }
+    if manifest.get("output") != output_identity:
+        raise ValueError(f"Bulk VEP output metadata changed: {output_path}")
+    return output_path
 
 
 def validate_report_inputs(inputs: RunInputs) -> None:
@@ -600,13 +634,13 @@ def consequence_group(value: str) -> str:
     return "Other"
 
 
-def consequence_grouping_table() -> pd.DataFrame:
+def consequence_grouping_table(source: str) -> pd.DataFrame:
     rows = [
         {
             "Group": group,
-            "gnomAD consequence values": ", ".join(CONSEQUENCE_GROUP_TERMS.get(group, []))
+            f"{source} consequence values": ", ".join(CONSEQUENCE_GROUP_TERMS.get(group, []))
             if group != "Other"
-            else "Any non-empty gnomAD consequence not listed above.",
+            else f"Any non-empty {source} consequence not listed above.",
         }
         for group in CONSEQUENCE_GROUP_ORDER
     ]
@@ -1067,6 +1101,11 @@ def pathogenic_variant_table(variants: pd.DataFrame) -> pd.DataFrame:
             "ClinVar type": pathogenic["clinvar_variant_type"],
             "gnomAD AF": pathogenic["gnomAD AF"],
             "gnomAD consequence": pathogenic["gnomad_csq"],
+            **(
+                {"VEP consequence": pathogenic["vep_primary_consequence"]}
+                if "vep_primary_consequence" in pathogenic.columns
+                else {}
+            ),
             "Ortholog support / strategy": pathogenic["Ortholog support / strategy"],
             "Strategies": pathogenic["Strategies"],
         }
@@ -1559,7 +1598,7 @@ def build_clinvar_gnomad_sections(
             y="Fraction",
             color="Consequence group",
             barmode="stack",
-            title="gnomAD consequence mix among gnomAD hits",
+            title=f"{variant_summary.consequence_source} consequence mix among candidates",
             category_orders={"Strategy": order, "Consequence group": CONSEQUENCE_GROUP_ORDER},
             color_discrete_map=CONSEQUENCE_GROUP_COLORS,
             labels={"Strategy": "", "Fraction": "Within-strategy fraction", "Consequence group": "Consequence group"},
@@ -1671,7 +1710,7 @@ def build_clinvar_gnomad_sections(
             y="Variant_Count",
             color="Consequence group",
             barmode="stack",
-            title="gnomAD consequence groups for pathogenic ClinVar hits",
+            title=f"{variant_summary.consequence_source} consequence groups for pathogenic ClinVar hits",
             category_orders={"Strategy": pathogenic_order, "Consequence group": CONSEQUENCE_GROUP_ORDER},
             color_discrete_map=CONSEQUENCE_GROUP_COLORS,
             labels={"Strategy": "", "Variant_Count": "P/LP ClinVar variants", "Consequence group": "Consequence group"},
@@ -3013,12 +3052,18 @@ def build_methods_sections(
     )
     sections.append(table_html(clinvar_review_star_mapping_table(), classes="table table-sm table-striped"))
     sections.append("</details>")
-    sections.append("<details><summary>gnomAD consequence grouping</summary>")
+    sections.append(f"<details><summary>{variant_summary.consequence_source} consequence grouping</summary>")
     sections.append(
-        "<p class=\"lead\">The Candidate Profile consequence plots group raw values from the "
-        "<code>gnomad_csq</code> annotation column as follows.</p>"
+        f"<p class=\"lead\">The Candidate Profile consequence plots use "
+        f"{variant_summary.consequence_source} annotations and group them as follows. "
+        "Raw <code>gnomad_csq</code> remains available as provenance.</p>"
     )
-    sections.append(table_html(consequence_grouping_table(), classes="table table-sm table-striped"))
+    sections.append(
+        table_html(
+            consequence_grouping_table(variant_summary.consequence_source),
+            classes="table table-sm table-striped",
+        )
+    )
     sections.append("</details>")
     sections.append("<details><summary>Target-context assignment</summary>")
     sections.append(

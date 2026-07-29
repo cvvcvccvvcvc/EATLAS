@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -106,6 +107,51 @@ def test_report_inputs_accept_annotation_directory_override(tmp_path: Path) -> N
 
     assert inputs.variant_annotations_tsv == annotation_dir / "variant_annotations.tsv.gz"
     assert inputs.annotation_failures_tsv == annotation_dir / "failures.tsv.gz"
+
+
+def test_report_inputs_use_matching_completed_vep_artifact(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run"
+    annotation_dir = run_dir / "annotation"
+    artifact_dir = run_dir / "analytics" / "vep_consequences"
+    (run_dir / "fetch" / "sequences" / "targets").mkdir(parents=True)
+    annotation_dir.mkdir()
+    artifact_dir.mkdir(parents=True)
+    source = annotation_dir / "variant_annotations.tsv.gz"
+    pd.DataFrame(columns=["variant_key"]).to_csv(
+        source, sep="\t", index=False, compression="gzip"
+    )
+    pd.DataFrame(columns=["gene_id"]).to_csv(
+        run_dir / "fetch" / "genes.tsv.gz", sep="\t", index=False, compression="gzip"
+    )
+    pd.DataFrame(columns=["gene_id"]).to_csv(
+        run_dir / "fetch" / "target_features.tsv.gz", sep="\t", index=False, compression="gzip"
+    )
+    output = artifact_dir / "variant_annotations.vep.tsv.gz"
+    pd.DataFrame(columns=["variant_key", "vep_status"]).to_csv(
+        output, sep="\t", index=False, compression="gzip"
+    )
+    source_stat = source.stat()
+    output_stat = output.stat()
+    (artifact_dir / "manifest.json").write_text(
+        json.dumps(
+            {
+                "status": "complete",
+                "source": {
+                    "path": str(source.resolve()),
+                    "size_bytes": source_stat.st_size,
+                    "mtime": int(source_stat.st_mtime),
+                },
+                "output": {
+                    "size_bytes": output_stat.st_size,
+                    "mtime_ns": output_stat.st_mtime_ns,
+                },
+            }
+        )
+    )
+
+    inputs = resolve_run_inputs(run_dir)
+
+    assert inputs.variant_annotations_tsv == output
 
 
 def test_single_strategy_candidate_profile_loads_plotly_without_overlap() -> None:
