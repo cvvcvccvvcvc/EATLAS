@@ -78,8 +78,10 @@ reference FASTA.
 VEP executable. `GAPH_VEP_RESULT_CACHE_DIR` is a separate sparse cross-run cache
 of completed variant/gene results. The latter stores immutable regional Parquet
 fragments with Zstandard compression, namespaces them by the complete VEP
-configuration, and never retains transient `no_response` results. Matched
-control still keeps its per-run SQLite database as its resume checkpoint.
+configuration, and never retains transient `no_response` results. Concurrent
+publishers are serialized per genomic tile with POSIX advisory locks, so the
+cache directory must be on a filesystem that supports `flock`. Matched control
+still keeps its per-run SQLite database as its resume checkpoint.
 When `GAPH_VEP_RESULT_CACHE_DIR` is unset but `GAPH_ROOT` is available, reports
 default to `$GAPH_ROOT/cache/vep_results`.
 

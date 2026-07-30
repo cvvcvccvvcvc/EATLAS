@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import fcntl
 import hashlib
 import json
 import os
 import re
 import tempfile
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -145,32 +148,17 @@ class VepResultCache:
         requests = rows[
             ["variant_key", "gene_id", "chrom", "pos", "ref", "alt"]
         ]
-        existing, lookup = self.lookup(requests)
-        existing_by_key = {
-            (str(row.variant_key), str(row.gene_id)): tuple(
-                getattr(row, column) for column in RESULT_COLUMNS
-            )
-            for row in existing.itertuples(index=False)
-        }
-
-        missing_records = []
-        for row in rows.itertuples(index=False):
-            key = (str(row.variant_key), str(row.gene_id))
-            values = tuple(getattr(row, column) for column in RESULT_COLUMNS)
-            cached_values = existing_by_key.get(key)
-            if cached_values is None:
-                missing_records.append(row._asdict())
-            elif cached_values != values:
-                raise ValueError(
-                    "Conflicting VEP result for cached key "
-                    f"{row.variant_key} / gene {row.gene_id}"
-                )
+        existing, _ = self.lookup(requests)
+        missing_records, existing_count = _partition_cached_annotations(
+            rows,
+            existing,
+        )
 
         if not missing_records:
             return self._publish_summary(
                 len(rows),
                 skipped_count,
-                int(lookup["hit_count"]),
+                existing_count,
                 0,
                 0,
             )
@@ -188,19 +176,31 @@ class VepResultCache:
                 start=int(tile_start),
                 end=int(tile_start) + self.tile_size_bp - 1,
             )
-            storage = group[STORAGE_COLUMNS].sort_values(
-                KEY_COLUMNS,
-                kind="mergesort",
-            )
-            created = self._write_fragment(tile, storage)
-            fragment_count += int(created)
-            if created:
-                published_count += len(storage)
+            with self._tile_publish_lock(tile):
+                current, _ = self.lookup(
+                    group[["variant_key", "gene_id", "chrom", "pos", "ref", "alt"]]
+                )
+                pending_records, concurrent_existing = _partition_cached_annotations(
+                    group,
+                    current,
+                )
+                existing_count += concurrent_existing
+                if not pending_records:
+                    continue
+                pending = pd.DataFrame.from_records(pending_records)
+                storage = pending[STORAGE_COLUMNS].sort_values(
+                    KEY_COLUMNS,
+                    kind="mergesort",
+                )
+                created = self._write_fragment(tile, storage)
+                fragment_count += int(created)
+                if created:
+                    published_count += len(storage)
 
         return self._publish_summary(
             len(rows),
             skipped_count,
-            int(lookup["hit_count"]),
+            existing_count,
             published_count,
             fragment_count,
         )
@@ -212,6 +212,18 @@ class VepResultCache:
             / f"chrom={chrom}"
             / f"tile={tile.start:012d}-{tile.end:012d}"
         )
+
+    @contextmanager
+    def _tile_publish_lock(self, tile: CacheTile) -> Iterator[None]:
+        directory = self._tile_dir(tile)
+        directory.mkdir(parents=True, exist_ok=True)
+        lock_path = directory / ".publish.lock"
+        with lock_path.open("a+b") as handle:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
     def _write_fragment(self, tile: CacheTile, rows: pd.DataFrame) -> bool:
         directory = self._tile_dir(tile)
@@ -347,6 +359,34 @@ class VepResultCache:
             "published_count": published_count,
             "fragment_count": fragment_count,
         }
+
+
+def _partition_cached_annotations(
+    rows: pd.DataFrame,
+    cached: pd.DataFrame,
+) -> tuple[list[dict[str, object]], int]:
+    cached_by_key = {
+        (str(row.variant_key), str(row.gene_id)): tuple(
+            getattr(row, column) for column in RESULT_COLUMNS
+        )
+        for row in cached.itertuples(index=False)
+    }
+    missing_records = []
+    existing_count = 0
+    for row in rows.itertuples(index=False):
+        key = (str(row.variant_key), str(row.gene_id))
+        values = tuple(getattr(row, column) for column in RESULT_COLUMNS)
+        cached_values = cached_by_key.get(key)
+        if cached_values is None:
+            missing_records.append(row._asdict())
+        elif cached_values != values:
+            raise ValueError(
+                "Conflicting VEP result for cached key "
+                f"{row.variant_key} / gene {row.gene_id}"
+            )
+        else:
+            existing_count += 1
+    return missing_records, existing_count
 
 
 def _normalize_requests(frame: pd.DataFrame) -> pd.DataFrame:
