@@ -14,6 +14,8 @@ from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
 
+import pysam
+
 if __package__ in {None, ""}:
     runtime_root = Path.cwd()
     if not (runtime_root / "genomics").is_dir():
@@ -35,13 +37,6 @@ from genomics.variants import (
 )
 from ortholog_evidence_summary import write_ortholog_evidence_summary
 
-try:
-    import pysam
-except ImportError:
-    print("pysam is required but not installed.")
-    sys.exit(1)
-
-logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 logger = logging.getLogger(__name__)
 
 CLINVAR_COLUMNS = [
@@ -471,6 +466,7 @@ def build_clinvar_cache(
 
 
 def main():
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
     args = parse_args()
     args.outdir.mkdir(parents=True, exist_ok=True)
     out_tsv = args.outdir / "variant_annotations.tsv.gz"

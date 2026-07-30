@@ -6,6 +6,7 @@ import math
 import warnings
 from dataclasses import dataclass
 
+from scipy.stats import fisher_exact
 from statsmodels.stats.contingency_tables import StratifiedTable
 
 
@@ -60,12 +61,7 @@ def odds_ratio_and_ci(a: int, b: int, c: int, d: int) -> tuple[float, float, flo
 
 
 def fisher_exact_two_sided(a: int, b: int, c: int, d: int) -> float:
-    try:
-        from scipy.stats import fisher_exact
-
-        return float(fisher_exact([[a, b], [c, d]], alternative="two-sided").pvalue)
-    except Exception:
-        return _fisher_exact_two_sided_fallback(a, b, c, d)
+    return float(fisher_exact([[a, b], [c, d]], alternative="two-sided").pvalue)
 
 
 def enrichment_result(name: str, a: int, b: int, c: int, d: int) -> EnrichmentResult:
@@ -140,36 +136,3 @@ def benjamini_hochberg(pvalues: list[float]) -> list[float]:
         running_minimum = min(running_minimum, pvalue * count / rank)
         adjusted[original_index] = min(1.0, running_minimum)
     return adjusted
-
-
-def _log_comb(n: int, k: int) -> float:
-    if k < 0 or k > n:
-        return float("-inf")
-    return math.lgamma(n + 1) - math.lgamma(k + 1) - math.lgamma(n - k + 1)
-
-
-def _hypergeom_log_prob(k: int, row1: int, row2: int, col1: int, total: int) -> float:
-    return _log_comb(row1, k) + _log_comb(row2, col1 - k) - _log_comb(total, col1)
-
-
-def _fisher_exact_two_sided_fallback(a: int, b: int, c: int, d: int) -> float:
-    row1 = a + b
-    row2 = c + d
-    col1 = a + c
-    total = row1 + row2
-    if total == 0:
-        return float("nan")
-
-    low = max(0, col1 - row2)
-    high = min(row1, col1)
-    observed_log = _hypergeom_log_prob(a, row1, row2, col1, total)
-    included_logs = []
-    for k in range(low, high + 1):
-        log_prob = _hypergeom_log_prob(k, row1, row2, col1, total)
-        if log_prob <= observed_log + 1e-12:
-            included_logs.append(log_prob)
-    if not included_logs:
-        return 0.0
-    max_log = max(included_logs)
-    log_p = max_log + math.log(sum(math.exp(value - max_log) for value in included_logs))
-    return min(1.0, math.exp(log_p))
