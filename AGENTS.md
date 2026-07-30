@@ -30,6 +30,7 @@ Stage 3 produces:
 Core files:
 - `main.nf` - Nextflow DSL2 workflow wiring.
 - `nextflow.config` - local/slurm profiles and process resource policy.
+- `lib/RunManifest.groovy` - root run provenance and completion manifest.
 - `bin/normalize_ids.py` - input ID normalization and chunking.
 - `bin/fetch_parse_chunk.py` - NCBI Datasets fetch + package parsing.
 - `bin/build_fetch_dataset.py` - final fetch dataset assembly.

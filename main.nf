@@ -1,5 +1,7 @@
 nextflow.enable.dsl = 2
 
+import RunManifest
+
 include { validateParameters; paramsHelp } from 'plugin/nf-validation'
 
 AVAILABLE_ALIGNMENT_STRATEGIES = [
@@ -562,6 +564,15 @@ workflow PARTITIONED_ANNOTATION_STAGE {
 }
 
 workflow {
+    run_manifest_path = file("${params.outdir}/run_manifest.json")
+    RunManifest.start(
+        run_manifest_path,
+        projectDir,
+        workflow,
+        params,
+        file("${projectDir}/nextflow_schema.json")
+    )
+
     runtime_check_script = file("${projectDir}/bin/check_runtime.py")
     CHECK_RUNTIME(runtime_check_script, params.stage, SELECTED_ALIGNMENT_STRATEGIES.join(','))
 
@@ -603,4 +614,8 @@ workflow {
             params.gnomad_cache_dir ?: ''
         )
     }
+}
+
+workflow.onComplete {
+    RunManifest.finish(file("${params.outdir}/run_manifest.json"), workflow)
 }

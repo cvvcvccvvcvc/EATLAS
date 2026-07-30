@@ -7,6 +7,7 @@ Use this file to navigate the repository before making changes.
 Production logic is in:
 - `main.nf`
 - `nextflow.config`
+- `lib/*.groovy`
 - `bin/*.py`
 - `genomics/*.py`
 - `analytics/`
@@ -147,6 +148,7 @@ Default end-to-end layout:
 
 ```text
 results/run_001/
+  run_manifest.json
   fetch/
   alignment/
   annotation/

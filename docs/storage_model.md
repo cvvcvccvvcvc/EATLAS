@@ -8,10 +8,20 @@ For the default end-to-end run, `params.outdir` is a run root:
 
 ```text
 results/run_001/
+  run_manifest.json
   fetch/
   alignment/
   annotation/
 ```
+
+`run_manifest.json` is written when the workflow starts and atomically finalized
+when Nextflow terminates. It records the launch-time Git commit and dirty state,
+selected profiles, schema-declared resolved parameters with secret-like values
+redacted, and the workflow completion status. A manifest left in `running`
+state identifies an interrupted run whose completion handler did not execute.
+Archival tools must treat this file as the provenance source of truth. For
+legacy runs without it, the producing commit is unknown and must not be inferred
+from the current checkout.
 
 For a default end-to-end `--stage all` run, `fetch/` contains:
 
@@ -134,6 +144,7 @@ cluster.
 ## What To Keep
 
 Keep:
+- `results/.../run_manifest.json`
 - `results/.../manifest.json`
 - `results/.../*.tsv.gz`
 - `results/.../sequences/targets/*.fa.gz`
