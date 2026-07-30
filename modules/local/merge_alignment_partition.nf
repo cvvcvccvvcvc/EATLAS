@@ -7,6 +7,8 @@ process MERGE_ALIGNMENT_PARTITION {
     val expected_strategies
     path taxonomy_presets
     path merge_script
+    path feature_coverage_script
+    path taxonomic_evidence_script
 
     output:
     tuple val(meta), path("${meta.partition_id}"), emit: partition_dirs
@@ -16,6 +18,7 @@ process MERGE_ALIGNMENT_PARTITION {
     def compactEventsArg = (params.compact_alignment_events || outputProfile == 'annotation-input') ? "--compact-events" : ""
     def taxonomyArg = outputProfile == 'annotation-input' ? "--taxonomy-presets \"${taxonomy_presets}\"" : ""
     """
+    export PYTHONPATH="\$PWD:\${PYTHONPATH:-}"
     python3 "${merge_script}" \\
         --result-root results \\
         --partition-id "${meta.partition_id}" \\

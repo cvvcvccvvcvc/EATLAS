@@ -202,6 +202,8 @@ workflow ALIGNMENT_STAGE {
     ensembl_compara_maf_chunk_script = file("${projectDir}/bin/run_ensembl_compara_maf_chunk_alignment.py")
     ensembl_compara_maf_gene_merge_script = file("${projectDir}/bin/merge_ensembl_compara_maf_gene.py")
     merge_script = file("${projectDir}/bin/merge_alignment_results.py")
+    feature_coverage_script = file("${projectDir}/bin/feature_coverage.py")
+    taxonomic_evidence_script = file("${projectDir}/bin/taxonomic_evidence.py")
 
     FETCH_TAXONOMY_PRESETS(orthologs_selected, taxonomy_script, taxonomy_classes)
     BUILD_ALIGNMENT_TASKS(
@@ -406,7 +408,9 @@ workflow ALIGNMENT_STAGE {
         BUILD_ALIGNMENT_TASKS.out.alignment_tasks,
         SELECTED_ALIGNMENT_STRATEGIES.join(','),
         FETCH_TAXONOMY_PRESETS.out.taxonomy_presets,
-        merge_script
+        merge_script,
+        feature_coverage_script,
+        taxonomic_evidence_script
     )
 
     MERGE_ALIGNMENT(
