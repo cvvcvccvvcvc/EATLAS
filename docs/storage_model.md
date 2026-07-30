@@ -78,11 +78,12 @@ contain:
 It is useful while developing or recovering a failed run with `-resume`, but it
 is not the data product.
 
-The `low_storage` profile is for runs where the published result layer is more
-important than resume. It disables process caching, enables Nextflow successful
-run cleanup, and moves terminal annotation outputs into the published annotation
-directory instead of keeping a second copy in `work/`. Do not rely on `-resume`
-with this profile after a successful run.
+The `low_storage` profile keeps the default process cache while a run is active
+or failed, enables Nextflow successful-run cleanup, and moves terminal
+annotation outputs into the published annotation directory instead of keeping a
+second copy in `work/`. A failed or interrupted run can use `-resume` while its
+work directory and Nextflow execution metadata remain. After a successful run,
+cleanup removes the task work, so that run is no longer reusable with `-resume`.
 
 Alignment task directories are metadata-only. They do not duplicate Stage 1
 target or ortholog FASTA files. Sequence-based aligner processes receive the
@@ -111,7 +112,7 @@ Control peak disk with:
 - `-work-dir` on scratch storage
 - `GAPH_WORK_DIR=/path/to/scratch/gaph_v2_work`
 - `NXF_CONDA_CACHEDIR=/path/to/shared/scratch/gaph_v2_conda`
-- `-profile low_storage` when resume is not required after successful completion
+- `-profile low_storage` when resume is required only until successful completion
 
 On Slurm, both paths must be visible from the controller and every compute node.
 The Conda cache is reusable infrastructure and should remain outside individual

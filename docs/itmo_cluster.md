@@ -134,9 +134,10 @@ per-user policy are not guaranteed for this project. The repository therefore
 sets `scratch = false` in the `slurm` profile. Large task data remains under
 `GAPH_WORK_DIR`; local profiles retain task scratch.
 
-The `low_storage` profile disables process cache and cleans successful task work.
-It minimizes retained data but does not provide useful `-resume` behavior after
-a successful run.
+The `low_storage` profile keeps process cache available while a run is active or
+failed, then cleans task work after the workflow finishes successfully. This
+supports recovery with `-resume` without retaining successful-run work
+indefinitely.
 
 ## Login
 

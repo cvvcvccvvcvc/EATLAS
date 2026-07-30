@@ -139,10 +139,10 @@ In the `slurm` profile, `executor.queueSize` limits how many jobs Nextflow keeps
 submitted to Slurm at once. It does not affect local runs, task CPU count, or
 threads inside an aligner process.
 
-Combine `slurm` with `low_storage` when preserving the published outputs matters
-more than preserving the execution cache. It disables process caching and cleans
-the work directory after a successful run, so do not expect `-resume` to reuse
-completed tasks from that run.
+Combine `slurm` with `low_storage` to retain process cache for recovery from a
+failed or interrupted run and clean the work directory after the workflow
+finishes successfully. Resume requires the original work directory and Nextflow
+execution metadata; after successful cleanup there is no task cache to reuse.
 
 ## End-To-End Smoke Test
 
