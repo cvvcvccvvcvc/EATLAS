@@ -183,22 +183,16 @@ class GnomadRegionCache:
         try:
             records = self._call_fetcher(first.chrom, first.start, last.end, attempts)
         except Exception as exc:
-            if len(tiles) > 1 and _is_split_worthy(exc):
+            if len(tiles) > 1 and (
+                _is_split_worthy(exc) or _is_retryable_fetch_error(exc)
+            ):
                 self._increment("split_count")
                 midpoint = len(tiles) // 2
                 return {
                     **self._fetch_and_store(tiles[:midpoint]),
                     **self._fetch_and_store(tiles[midpoint:]),
                 }
-            if len(tiles) > 1 and _is_retryable_without_split(exc):
-                records = self._call_fetcher(
-                    first.chrom,
-                    first.start,
-                    last.end,
-                    self.max_attempts,
-                )
-            else:
-                raise
+            raise
 
         records_by_tile = _partition_records(records, tiles)
         for tile in tiles:
@@ -368,5 +362,5 @@ def _is_split_worthy(exc: Exception) -> bool:
     )
 
 
-def _is_retryable_without_split(exc: Exception) -> bool:
+def _is_retryable_fetch_error(exc: Exception) -> bool:
     return is_retryable_network_error(exc) or "rate limit" in str(exc).lower()

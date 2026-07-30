@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from urllib.error import HTTPError
 
 from bin.gnomad_cache import GnomadRegionCache, tiles_for_region
 
@@ -55,6 +56,30 @@ def test_timeout_splits_group_until_tiles_succeed(tmp_path: Path) -> None:
         calls.append((chrom, start, end, max_attempts))
         if end - start + 1 > 25_000:
             raise TimeoutError("timed out")
+        return [variant(start)]
+
+    cache = GnomadRegionCache(tmp_path, fetcher=fetch)
+    records = cache.fetch_region("1", 1, 50_000)
+
+    assert [record["pos"] for record in records] == [1, 25_001]
+    assert calls == [
+        ("1", 1, 50_000, 2),
+        ("1", 1, 25_000, 10),
+        ("1", 25_001, 50_000, 10),
+    ]
+    assert cache.snapshot()["split_count"] == 1
+    assert cache.snapshot()["tile_write_count"] == 2
+
+
+def test_transient_http_error_splits_group_instead_of_retrying_large_region(
+    tmp_path: Path,
+) -> None:
+    calls = []
+
+    def fetch(chrom, start, end, *, max_attempts):
+        calls.append((chrom, start, end, max_attempts))
+        if end - start + 1 > 25_000:
+            raise HTTPError("", 500, "Internal Server Error", None, None)
         return [variant(start)]
 
     cache = GnomadRegionCache(tmp_path, fetcher=fetch)
