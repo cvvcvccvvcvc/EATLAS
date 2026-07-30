@@ -44,6 +44,7 @@ Core files:
 - `analytics/strategy_report.py` - completed-run analytics and HTML report entrypoint.
 - `analytics/analyses/` - bounded-memory scientific analyses.
 - `analytics/reporting/` - report sections and HTML composition.
+- `run_archiving/` - isolated CLI and Slurm wrapper for verified run archival.
 - `envs/fetch.yml` - minimal conda environment for stage 1.
 - `envs/alignment.yml` - CLI dependencies for stage 2.
 

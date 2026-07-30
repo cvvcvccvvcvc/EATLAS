@@ -1,0 +1,6 @@
+name: run-archiving
+channels:
+  - conda-forge
+dependencies:
+  - python=3.11
+  - rclone=1.74.3

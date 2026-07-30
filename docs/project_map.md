@@ -29,6 +29,7 @@ runs.
 - Runtime configuration: `nextflow.config`
 - Analytics report: `python -m analytics.strategy_report --run-dir <run-dir>`
 - Bulk VEP annotation: `python -m analytics.vep_annotation`
+- Run archive: `python -m run_archiving`
 - Local run profile: `-profile local`
 - Cluster run profile: `-profile slurm`
 
@@ -139,6 +140,15 @@ Runtime environments:
 
 Durable analytics artifacts belong under `<run-dir>/analytics/`. Presentation
 modules do not fetch data or own scientific calculations.
+
+## Run Archiving
+
+`run_archiving/` is isolated operational tooling for copying complete run
+directories to an rclone remote, verifying their content, restoring them, and
+removing a local copy only after a fresh remote verification. It does not
+participate in the Nextflow workflow or analytics package. Its environment,
+Slurm wrapper, and usage contract are documented in
+`run_archiving/README.md`.
 
 ## Output Boundary
 
