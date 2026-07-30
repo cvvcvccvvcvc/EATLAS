@@ -8,11 +8,15 @@ Production logic is in:
 - `main.nf`
 - `nextflow.config`
 - `bin/*.py`
+- `genomics/*.py`
+- `analytics/`
 - `envs/*.yml`
 
-Standalone validation and research packages live under `experiments/`.
-They may consume production outputs, but they should keep their scratch data and
-generated reports inside their own package directories.
+`genomics/` is the shared domain library used by both pipeline commands and
+completed-run analytics. `analytics/` owns reproducible analyses and report
+generation. Standalone research experiments live under `experiments/`; they may
+consume production outputs but keep their scratch data and generated reports
+inside their own package directories.
 
 Do not put experiments, ad hoc downloaded data, or smoke-test outputs in the
 repository root. Use `/private/tmp`, `/tmp`, or cluster scratch for temporary
@@ -22,6 +26,8 @@ runs.
 
 - Workflow entrypoint: `main.nf`
 - Runtime configuration: `nextflow.config`
+- Analytics report: `python -m analytics.strategy_report --run-dir <run-dir>`
+- Bulk VEP annotation: `python -m analytics.vep_annotation`
 - Local run profile: `-profile local`
 - Cluster run profile: `-profile slurm`
 
@@ -105,6 +111,33 @@ Runtime environments:
 - `bin/finalize_annotation_partitions.py`
   - streams partition annotations and strategy-support rows into canonical Stage 3 outputs
   - aggregates partition manifests without loading variant rows into memory
+
+## Shared Domain Library
+
+- `genomics/variants.py`
+  - canonical variant keys, normalization, and target-context lookup
+- `genomics/clinvar.py`
+  - ClinVar review-star and significance semantics
+- `genomics/gnomad.py`
+  - gnomAD API requests and response normalization
+- `genomics/gnomad_cache.py`
+  - reusable regional gnomAD response cache
+
+## Analytics Package
+
+- `analytics/strategy_report.py`
+  - command-line contract and report orchestration
+- `analytics/annotation/`
+  - VEP integration and consequence vocabularies
+- `analytics/analyses/`
+  - scientific calculations and bounded-memory aggregation
+- `analytics/io/`
+  - run input resolution and atomic artifact contracts
+- `analytics/reporting/`
+  - report sections, Plotly components, and final HTML document
+
+Durable analytics artifacts belong under `<run-dir>/analytics/`. Presentation
+modules do not fetch data or own scientific calculations.
 
 ## Output Boundary
 

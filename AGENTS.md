@@ -39,6 +39,10 @@ Core files:
 - `bin/run_nucmer_alignment.py` - nucmer execution and comparator parsing.
 - `bin/merge_alignment_results.py` - final alignment evidence merge.
 - `bin/annotate_events.py` - event key normalization and ClinVar/gnomAD annotation.
+- `genomics/` - shared variant, ClinVar, and gnomAD domain logic.
+- `analytics/strategy_report.py` - completed-run analytics and HTML report entrypoint.
+- `analytics/analyses/` - bounded-memory scientific analyses.
+- `analytics/reporting/` - report sections and HTML composition.
 - `envs/fetch.yml` - minimal conda environment for stage 1.
 - `envs/alignment.yml` - CLI dependencies for stage 2.
 

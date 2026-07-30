@@ -3,10 +3,32 @@
 This package contains analysis and reporting entrypoints for completed GAPH
 runs.
 
+## Package structure
+
+```text
+analytics/
+  strategy_report.py  # CLI contract and orchestration
+  vep_annotation.py   # resumable bulk-VEP command
+  annotation/         # VEP integration and consequence semantics
+  analyses/           # scientific calculations and aggregation
+  io/                 # run inputs and atomic artifact contracts
+  reporting/          # HTML sections and document composition
+```
+
+Cross-stage variant, ClinVar, and gnomAD rules live in the top-level
+`genomics/` package. Analytics modules must not be imported by pipeline
+commands.
+
 Create the reproducible analytics environment once with:
 
 ```bash
 micromamba create -f envs/analytics.yml
+```
+
+The same environment runs the complete Python test suite:
+
+```bash
+micromamba run -n gaph-v2-analytics python -m pytest -q
 ```
 
 Primary report:
