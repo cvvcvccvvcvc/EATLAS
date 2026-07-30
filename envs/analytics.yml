@@ -9,6 +9,7 @@ dependencies:
   - scipy
   - statsmodels=0.14
   - plotly
+  - python-duckdb=1.5
   - pybigwig
   - pysam
   - pytest
