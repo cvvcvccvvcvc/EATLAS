@@ -311,6 +311,12 @@ kept. Completed variant/gene results are additionally reused across runs from
 official indexed VEP reference cache in `$GAPH_VEP_CACHE_DIR`; incomplete
 network results are not stored in it.
 
+A 500,000-row benchmark sampled evenly from 40 of the 590-gene artifact's 475
+partitions. One-megabase and five-megabase tiles had the same 1.88 MB size and
+about 8.0-second lookup time; one-megabase tiles remain the default because
+they provide finer pruning for sparse regional requests without a measured
+cost.
+
 ## Compute-Node Preflight
 
 Before the first pipeline run:

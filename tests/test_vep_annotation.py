@@ -135,6 +135,20 @@ def test_partitioned_vep_annotation_resumes_and_finalizes(
     assert output["vep_status"].tolist() == ["ok", "ok", "invalid_variant_key"]
     assert output.loc[0, "vep_primary_consequence"] == "intron_variant"
 
+    seeded = bulk.seed_result_cache(
+        outdir=outdir,
+        cache_dir=tmp_path / "shared",
+    )
+    reseeded = bulk.seed_result_cache(
+        outdir=outdir,
+        cache_dir=tmp_path / "shared",
+    )
+
+    assert seeded["published_count"] == 2
+    assert seeded["skipped_count"] == 1
+    assert reseeded["published_count"] == 0
+    assert reseeded["existing_count"] == 2
+
 
 def test_prepare_refuses_to_reuse_a_different_partition_contract(tmp_path: Path) -> None:
     source = tmp_path / "variant_annotations.tsv.gz"

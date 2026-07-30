@@ -113,6 +113,15 @@ recompressing them:
 python -m analytics.vep_annotation finalize --run-dir "$RUN"
 ```
 
+An existing finalized artifact can seed the cross-run result cache without
+running VEP again:
+
+```bash
+python -m analytics.vep_annotation seed-cache \
+  --run-dir "$RUN" \
+  --vep-result-cache-dir "$GAPH_VEP_RESULT_CACHE_DIR"
+```
+
 The final table is
 `<run-dir>/analytics/vep_consequences/variant_annotations.vep.tsv.gz`. It keeps
 the source annotation columns and adds `vep_*` fields. Prepared inputs,

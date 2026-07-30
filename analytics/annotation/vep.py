@@ -78,12 +78,11 @@ def annotate_vep_consequences(
     if backend == "rest":
         release = release or _fetch_release(base_url, retries, timeout_seconds)
         # Preserve the original REST hash so existing caches remain reusable.
-        config = {
-            "base_url": base_url.rstrip("/"),
-            "options": VEP_OPTIONS,
-            "release": str(release),
-            "schema_version": 1,
-        }
+        config = vep_result_cache_config(
+            backend=backend,
+            release=str(release),
+            base_url=base_url,
+        )
     else:
         if release is None:
             raise ValueError("Local VEP requires an explicit release")
@@ -92,15 +91,11 @@ def annotate_vep_consequences(
         vep_cache_dir = Path(vep_cache_dir).expanduser()
         if not vep_cache_dir.is_dir():
             raise FileNotFoundError(f"Local VEP cache directory does not exist: {vep_cache_dir}")
-        config = {
-            "assembly": VEP_ASSEMBLY,
-            "backend": "local",
-            "options": VEP_OPTIONS,
-            "refseq": True,
-            "release": str(release),
-            "schema_version": 1,
-            "use_given_ref": True,
-        }
+        config = vep_result_cache_config(
+            backend=backend,
+            release=str(release),
+            base_url=base_url,
+        )
     config_hash = hashlib.sha256(json.dumps(config, sort_keys=True).encode()).hexdigest()
 
     result_cache = (
@@ -253,6 +248,34 @@ def _annotation_columns() -> list[str]:
         "impact",
         "variant_class",
     ]
+
+
+def vep_result_cache_config(
+    *,
+    backend: str,
+    release: str,
+    base_url: str = VEP_BASE_URL,
+) -> dict[str, object]:
+    """Return the semantic VEP configuration used to namespace shared results."""
+
+    if backend == "rest":
+        return {
+            "base_url": base_url.rstrip("/"),
+            "options": VEP_OPTIONS,
+            "release": str(release),
+            "schema_version": 1,
+        }
+    if backend == "local":
+        return {
+            "assembly": VEP_ASSEMBLY,
+            "backend": "local",
+            "options": VEP_OPTIONS,
+            "refseq": True,
+            "release": str(release),
+            "schema_version": 1,
+            "use_given_ref": True,
+        }
+    raise ValueError("VEP backend must be 'rest' or 'local'")
 
 
 def _empty_annotations() -> pd.DataFrame:

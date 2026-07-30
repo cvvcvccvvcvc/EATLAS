@@ -8,6 +8,7 @@ import gzip
 import json
 import os
 import shutil
+import sys
 import tempfile
 import time
 from collections import Counter
@@ -18,8 +19,12 @@ import pandas as pd
 
 from analytics.io.artifacts import path_metadata
 from genomics.variants import parse_variant_key
-from analytics.annotation.vep import annotate_vep_consequences
-from analytics.annotation.vep_result_cache import DEFAULT_TILE_SIZE_BP
+from analytics.annotation.vep import annotate_vep_consequences, vep_result_cache_config
+from analytics.annotation.vep_result_cache import (
+    ANNOTATION_COLUMNS,
+    DEFAULT_TILE_SIZE_BP,
+    VepResultCache,
+)
 
 
 SCHEMA_VERSION = 1
@@ -353,6 +358,94 @@ def finalize_annotations(*, outdir: Path) -> dict[str, object]:
     return {**manifest, "cache_hit": False}
 
 
+def seed_result_cache(
+    *,
+    outdir: Path,
+    cache_dir: Path,
+    tile_size_bp: int = DEFAULT_TILE_SIZE_BP,
+) -> dict[str, object]:
+    """Populate the shared cache from a completed partitioned VEP artifact."""
+
+    if tile_size_bp < 1:
+        raise ValueError("VEP result cache tile size must be >= 1")
+    plan = _require_plan(outdir)
+    final_manifest = _read_json(outdir / "manifest.json")
+    if final_manifest is None or final_manifest.get("status") != "complete":
+        raise ValueError("Finalize the VEP artifact before seeding the shared cache")
+    config = dict(final_manifest.get("config", {}))
+    backend = str(config.get("backend") or "")
+    release = str(config.get("release") or "")
+    cache = VepResultCache(
+        cache_dir,
+        config=vep_result_cache_config(backend=backend, release=release),
+        tile_size_bp=tile_size_bp,
+    )
+
+    totals: Counter[str] = Counter()
+    started = time.perf_counter()
+    for index, entry in enumerate(plan["partitions"], start=1):
+        partition_id = str(entry["partition_id"])
+        partition_manifest_path = outdir / "partitions" / f"{partition_id}.json"
+        partition_manifest = _read_json(partition_manifest_path)
+        if partition_manifest is None:
+            raise FileNotFoundError(
+                f"Missing VEP partition manifest: {partition_manifest_path}"
+            )
+        if partition_manifest.get("config") != config:
+            raise ValueError(f"VEP partition configuration changed: {partition_id}")
+        partition_path = outdir / "partitions" / f"{partition_id}.tsv.gz"
+        _require_file_identity(
+            partition_path,
+            dict(partition_manifest.get("output", {})),
+            f"output {partition_id}",
+        )
+        frame = pd.read_csv(
+            partition_path,
+            sep="\t",
+            compression="gzip",
+            header=None,
+            names=plan["output_columns"],
+            usecols=["variant_key", "gene_id", *VEP_COLUMNS],
+            dtype=str,
+            keep_default_na=False,
+        ).rename(columns={value: key for key, value in VEP_RENAME.items()})
+        published = cache.publish(frame[ANNOTATION_COLUMNS])
+        totals.update(
+            {
+                "accepted_count": int(published["accepted_count"]),
+                "skipped_count": int(published["skipped_count"]),
+                "existing_count": int(published["existing_count"]),
+                "published_count": int(published["published_count"]),
+                "fragment_count": int(published["fragment_count"]),
+            }
+        )
+        print(
+            f"Seeded {partition_id} ({index}/{plan['partition_count']}): "
+            f"{published['published_count']} new, "
+            f"{published['existing_count']} existing, "
+            f"{published['skipped_count']} skipped",
+            file=sys.stderr,
+            flush=True,
+        )
+
+    manifest = {
+        "schema_version": SCHEMA_VERSION,
+        "status": "complete",
+        "created_at": _timestamp(),
+        "source": _file_identity(outdir / "manifest.json"),
+        "partition_count": int(plan["partition_count"]),
+        "cache": {
+            "directory": str(cache.namespace_dir),
+            "config_hash": cache.config_hash,
+            "tile_size_bp": cache.tile_size_bp,
+        },
+        **dict(totals),
+        "elapsed_seconds": round(time.perf_counter() - started, 3),
+    }
+    _write_json_atomic(outdir / "vep_result_cache_seed.json", manifest)
+    return manifest
+
+
 def _vep_requests(frame: pd.DataFrame) -> tuple[pd.DataFrame, int]:
     rows = []
     invalid = 0
@@ -604,6 +697,28 @@ def parse_args() -> argparse.Namespace:
 
     finalize = subparsers.add_parser("finalize", help="Validate and join completed partitions.")
     _add_paths(finalize)
+
+    seed = subparsers.add_parser(
+        "seed-cache",
+        help="Populate the shared result cache from a finalized VEP artifact.",
+    )
+    _add_paths(seed)
+    seed.add_argument(
+        "--vep-result-cache-dir",
+        required=os.environ.get("GAPH_VEP_RESULT_CACHE_DIR") is None,
+        type=Path,
+        default=os.environ.get("GAPH_VEP_RESULT_CACHE_DIR") or None,
+    )
+    seed.add_argument(
+        "--vep-result-cache-tile-size-bp",
+        type=int,
+        default=int(
+            os.environ.get(
+                "GAPH_VEP_RESULT_CACHE_TILE_SIZE_BP",
+                str(DEFAULT_TILE_SIZE_BP),
+            )
+        ),
+    )
     return parser.parse_args()
 
 
@@ -650,8 +765,14 @@ def main() -> None:
             vep_result_cache_dir=args.vep_result_cache_dir,
             vep_result_cache_tile_size_bp=args.vep_result_cache_tile_size_bp,
         )
-    else:
+    elif args.command == "finalize":
         result = finalize_annotations(outdir=outdir)
+    else:
+        result = seed_result_cache(
+            outdir=outdir,
+            cache_dir=args.vep_result_cache_dir,
+            tile_size_bp=args.vep_result_cache_tile_size_bp,
+        )
     print(json.dumps(result, indent=2, sort_keys=True))
 
 
