@@ -119,7 +119,8 @@ def test_report_inputs_accept_annotation_directory_override(tmp_path: Path) -> N
         json.dumps(
             {
                 "gnomad_completion": {
-                    "source_annotation_dir": str(base_annotation_dir.resolve()),
+                    "source_annotation_dir": "/cluster/old/location/annotation",
+                    "source_annotation_relative_to_run": "annotation",
                 }
             }
         )

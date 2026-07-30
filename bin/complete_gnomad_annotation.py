@@ -295,6 +295,10 @@ def complete_gnomad_annotation(
     write_failures(outdir / "failures.tsv.gz", retained_failures)
 
     source_manifest = json.loads((source / "manifest.json").read_text())
+    try:
+        source_relative_to_run = original_source.relative_to(run_dir).as_posix()
+    except ValueError:
+        source_relative_to_run = ""
     recovered_failure_rows = len(region_rows) - sum(
         failed_gnomad_region(row) is not None for row in retained_failures
     )
@@ -323,6 +327,7 @@ def complete_gnomad_annotation(
         ),
         "gnomad_completion": {
             "source_annotation_dir": str(original_source),
+            "source_annotation_relative_to_run": source_relative_to_run,
             "attempted_region_count": len(regions),
             "recovered_region_count": len(successes),
             "remaining_region_count": len(fetch_failures),

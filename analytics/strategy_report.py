@@ -317,10 +317,16 @@ def resolve_run_inputs(run_dir: Path, annotation_dir: Path | None = None) -> Run
     recovery_manifest_path = annotation_dir / "manifest.json"
     if annotation_override and recovery_manifest_path.exists():
         recovery_manifest = json.loads(recovery_manifest_path.read_text())
-        recovery_source = (
-            recovery_manifest.get("gnomad_completion", {}).get("source_annotation_dir", "")
+        completion = recovery_manifest.get("gnomad_completion", {})
+        recovery_source_relative = completion.get(
+            "source_annotation_relative_to_run", ""
         )
-        if recovery_source:
+        recovery_source = completion.get("source_annotation_dir", "")
+        if recovery_source_relative:
+            reuse_base_support = (
+                run_dir / recovery_source_relative
+            ).resolve() == base_annotation_dir.resolve()
+        elif recovery_source:
             reuse_base_support = Path(recovery_source).expanduser().resolve() == base_annotation_dir.resolve()
 
     def annotation_support_path(filename: str) -> Path:

@@ -196,6 +196,10 @@ def test_completion_retries_failed_regions_and_preserves_other_columns(
     assert manifest["gnomad_region_success_count"] == 1
     assert manifest["gnomad_region_failure_count"] == 0
     assert manifest["gnomad_completion"]["updated_variant_context_count"] == 2
+    assert (
+        manifest["gnomad_completion"]["source_annotation_relative_to_run"]
+        == "annotation"
+    )
     assert manifest["gnomad_completion"]["shared_cache"]["enabled"] is True
     assert manifest["gnomad_completion"]["shared_cache"]["tile_write_count"] == 1
     assert not (
