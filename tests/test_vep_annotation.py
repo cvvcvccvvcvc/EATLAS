@@ -87,6 +87,8 @@ def test_partitioned_vep_annotation_resumes_and_finalizes(
         vep_executable="vep",
         vep_cache_dir=tmp_path / "cache",
         vep_forks=4,
+        vep_result_cache_dir=tmp_path / "shared",
+        vep_result_cache_tile_size_bp=5_000_000,
     )
     second = bulk.annotate_partition(
         outdir=outdir,
@@ -112,6 +114,8 @@ def test_partitioned_vep_annotation_resumes_and_finalizes(
     assert cached_first["cache_hit"]
     assert len(calls) == 1
     assert calls[0][1]["vep_forks"] == 4
+    assert calls[0][1]["vep_result_cache_dir"] == tmp_path / "shared"
+    assert calls[0][1]["vep_result_cache_tile_size_bp"] == 5_000_000
 
     manifest = bulk.finalize_annotations(outdir=outdir)
     cached_manifest = bulk.finalize_annotations(outdir=outdir)

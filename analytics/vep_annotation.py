@@ -19,6 +19,7 @@ import pandas as pd
 from analytics.io.artifacts import path_metadata
 from genomics.variants import parse_variant_key
 from analytics.annotation.vep import annotate_vep_consequences
+from analytics.annotation.vep_result_cache import DEFAULT_TILE_SIZE_BP
 
 
 SCHEMA_VERSION = 1
@@ -153,6 +154,8 @@ def annotate_partition(
     vep_cache_dir: Path | None = None,
     vep_forks: int = 1,
     rest_workers: int = 2,
+    vep_result_cache_dir: Path | None = None,
+    vep_result_cache_tile_size_bp: int = DEFAULT_TILE_SIZE_BP,
 ) -> dict[str, object]:
     """Annotate one prepared partition and publish it atomically."""
 
@@ -233,6 +236,8 @@ def annotate_partition(
                 vep_executable=vep_executable,
                 vep_cache_dir=vep_cache_dir,
                 vep_forks=vep_forks,
+                vep_result_cache_dir=vep_result_cache_dir,
+                vep_result_cache_tile_size_bp=vep_result_cache_tile_size_bp,
             )
     enriched = _merge_annotations(frame, annotations, invalid_keys)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -580,6 +585,21 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=int(os.environ.get("GAPH_VEP_FORKS", "4")),
     )
+    annotate.add_argument(
+        "--vep-result-cache-dir",
+        type=Path,
+        default=os.environ.get("GAPH_VEP_RESULT_CACHE_DIR") or None,
+    )
+    annotate.add_argument(
+        "--vep-result-cache-tile-size-bp",
+        type=int,
+        default=int(
+            os.environ.get(
+                "GAPH_VEP_RESULT_CACHE_TILE_SIZE_BP",
+                str(DEFAULT_TILE_SIZE_BP),
+            )
+        ),
+    )
     annotate.add_argument("--rest-workers", type=int, default=2)
 
     finalize = subparsers.add_parser("finalize", help="Validate and join completed partitions.")
@@ -627,6 +647,8 @@ def main() -> None:
             vep_cache_dir=args.vep_cache_dir,
             vep_forks=args.vep_forks,
             rest_workers=args.rest_workers,
+            vep_result_cache_dir=args.vep_result_cache_dir,
+            vep_result_cache_tile_size_bp=args.vep_result_cache_tile_size_bp,
         )
     else:
         result = finalize_annotations(outdir=outdir)
