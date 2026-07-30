@@ -104,6 +104,16 @@ sbatch run_archiving/slurm/run_archiving.sbatch archive \
 The exception applies only when the root manifest is absent. A manifest that
 says `running` or `failed` is always rejected.
 
+## List archives
+
+```bash
+"$GAPH_ROOT/envs/run-archiving/bin/python" -m run_archiving list
+```
+
+The command reads only the small completion markers and reports archive IDs,
+completion times, file counts, and sizes. It does not re-hash archived data.
+Incomplete uploads without `COMPLETE.json` are intentionally omitted.
+
 ## Verify and restore
 
 ```bash

@@ -11,6 +11,7 @@ from run_archiving.archive import (
     ArchiveError,
     archive_run,
     build_snapshot,
+    list_archives,
     remove_local_run,
     restore_run,
     verify_remote,
@@ -41,6 +42,18 @@ class LocalRemote:
     def read_text_optional(self, remote_path: str) -> str | None:
         path = self._path(remote_path)
         return path.read_text() if path.is_file() else None
+
+    def list_files(self, remote_path: str, *, include: str) -> tuple[str, ...]:
+        root = self._path(remote_path)
+        if not root.is_dir():
+            return ()
+        return tuple(
+            sorted(
+                path.relative_to(root).as_posix()
+                for path in root.rglob("*")
+                if path.is_file() and path.relative_to(root).match(include)
+            )
+        )
 
     @staticmethod
     def _copy_contents(source: Path, destination: Path) -> None:
@@ -164,6 +177,24 @@ def test_archive_verify_and_restore_round_trip(tmp_path: Path) -> None:
     )
     assert restored["status"] == "restored"
     assert build_snapshot(destination).tree_sha256 == build_snapshot(run_dir).tree_sha256
+
+
+def test_list_archives_reports_only_complete_runs(tmp_path: Path) -> None:
+    results_root = tmp_path / "results"
+    run_dir = _make_run(results_root)
+    client = LocalRemote(tmp_path / "remote")
+    archive_run(client, run_dir=run_dir, remote_root="drive:GAPH")
+    incomplete = (
+        tmp_path / "remote" / "GAPH" / "runs" / "incomplete" / "data" / "partial.txt"
+    )
+    incomplete.parent.mkdir(parents=True)
+    incomplete.write_text("partial")
+
+    listed = list_archives(client, remote_root="drive:GAPH")
+
+    assert [item["run_id"] for item in listed] == ["run_001"]
+    assert listed[0]["file_count"] == build_snapshot(run_dir).file_count
+    assert listed[0]["total_bytes"] == build_snapshot(run_dir).total_bytes
 
 
 def test_archive_requires_successful_root_run_manifest(tmp_path: Path) -> None:

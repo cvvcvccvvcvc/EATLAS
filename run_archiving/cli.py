@@ -10,6 +10,7 @@ from typing import Sequence
 from run_archiving.archive import (
     ArchiveError,
     archive_run,
+    list_archives,
     remove_local_run,
     restore_run,
     verify_remote,
@@ -34,6 +35,16 @@ def _config_default() -> Path | None:
         return Path(configured)
     standard = Path.home() / ".config" / "rclone" / "rclone.conf"
     return standard if standard.exists() else None
+
+
+def _format_bytes(value: int) -> str:
+    size = float(value)
+    units = ("B", "KiB", "MiB", "GiB", "TiB", "PiB")
+    for unit in units:
+        if size < 1024 or unit == units[-1]:
+            return f"{int(size)} {unit}" if unit == "B" else f"{size:.1f} {unit}"
+        size /= 1024
+    raise AssertionError("unreachable")
 
 
 def _add_remote_arguments(parser: argparse.ArgumentParser) -> None:
@@ -81,6 +92,11 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     _add_remote_arguments(archive_parser)
+
+    list_parser = subparsers.add_parser(
+        "list", help="list archives marked complete without rechecking their data"
+    )
+    _add_remote_arguments(list_parser)
 
     verify_parser = subparsers.add_parser(
         "verify", help="verify an existing remote archive"
@@ -146,6 +162,23 @@ def main(argv: Sequence[str] | None = None) -> int:
                 dry_run=args.dry_run,
                 allow_legacy_run=args.allow_legacy_run,
             )
+        elif args.command == "list":
+            archives = list_archives(client, remote_root=args.remote)
+            total_bytes = sum(int(item["total_bytes"]) for item in archives)
+            result = {
+                "status": "listed",
+                "remote": args.remote,
+                "archive_count": len(archives),
+                "total_bytes": total_bytes,
+                "total_size": _format_bytes(total_bytes),
+                "archives": [
+                    {
+                        **item,
+                        "size": _format_bytes(int(item["total_bytes"])),
+                    }
+                    for item in archives
+                ],
+            }
         elif args.command == "verify":
             manifest = verify_remote(
                 client, remote_root=args.remote, run_id=args.run_id

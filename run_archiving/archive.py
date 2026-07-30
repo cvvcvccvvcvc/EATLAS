@@ -8,7 +8,7 @@ import shutil
 import tempfile
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 from run_archiving import __version__
@@ -359,6 +359,78 @@ def _archive_paths(remote_root: str, run_id: str) -> dict[str, str]:
     }
 
 
+def _parse_completion_marker(text: str, run_id: str) -> dict[str, Any]:
+    try:
+        complete = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise ArchiveError("Remote completion marker is invalid JSON.") from exc
+    if not isinstance(complete, dict):
+        raise ArchiveError("Remote completion marker must be a JSON object.")
+    if complete.get("schema_version") != SCHEMA_VERSION:
+        raise ArchiveError("Remote completion marker has an unsupported schema.")
+    if complete.get("run_id") != run_id:
+        raise ArchiveError("Remote completion marker has a different run ID.")
+    if (
+        not isinstance(complete.get("completed_at"), str)
+        or not complete["completed_at"]
+    ):
+        raise ArchiveError("Remote completion marker has no completion time.")
+    for field in ("file_count", "total_bytes"):
+        value = complete.get(field)
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            raise ArchiveError(
+                f"Remote completion marker has an invalid {field.replace('_', ' ')}."
+            )
+    if not re.fullmatch(r"[0-9a-f]{64}", str(complete.get("tree_sha256", ""))):
+        raise ArchiveError("Remote completion marker has an invalid tree checksum.")
+    return complete
+
+
+def list_archives(
+    client: RcloneClient,
+    *,
+    remote_root: str,
+) -> list[dict[str, Any]]:
+    client.preflight(remote_root)
+    marker_pattern = "runs/*/_archive/COMPLETE.json"
+    marker_paths = client.list_files(remote_root, include=marker_pattern)
+    archives: list[dict[str, Any]] = []
+    seen_run_ids: set[str] = set()
+    for marker_path in marker_paths:
+        parts = PurePosixPath(marker_path).parts
+        if (
+            len(parts) != 4
+            or parts[0] != "runs"
+            or parts[2] != "_archive"
+            or parts[3] != "COMPLETE.json"
+        ):
+            raise ArchiveError(f"Unexpected archive marker path: {marker_path!r}")
+        run_id = _validate_run_id(parts[1])
+        if run_id in seen_run_ids:
+            raise ArchiveError(f"Duplicate remote archive marker for run {run_id!r}.")
+        seen_run_ids.add(run_id)
+        marker_text = client.read_text_optional(remote_join(remote_root, marker_path))
+        if marker_text is None:
+            raise ArchiveError(
+                f"Remote archive marker disappeared while listing run {run_id!r}."
+            )
+        complete = _parse_completion_marker(marker_text, run_id)
+        archives.append(
+            {
+                "run_id": run_id,
+                "archived_at": complete["completed_at"],
+                "file_count": complete["file_count"],
+                "total_bytes": complete["total_bytes"],
+                "tree_sha256": complete["tree_sha256"],
+            }
+        )
+    archives.sort(
+        key=lambda item: (str(item["archived_at"]), str(item["run_id"])),
+        reverse=True,
+    )
+    return archives
+
+
 def _load_remote_manifest(
     client: RcloneClient, remote_root: str, run_id: str
 ) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -366,10 +438,7 @@ def _load_remote_manifest(
     complete_text = client.read_text_optional(paths["complete"])
     if complete_text is None:
         raise ArchiveError(f"Remote archive is not marked complete: {paths['base']}")
-    try:
-        complete = json.loads(complete_text)
-    except json.JSONDecodeError as exc:
-        raise ArchiveError("Remote completion marker is invalid JSON.") from exc
+    complete = _parse_completion_marker(complete_text, run_id)
     with tempfile.TemporaryDirectory(prefix="run-archive-verify-") as temporary:
         manifest_path = Path(temporary) / "manifest.json"
         client.download_file(paths["manifest"], manifest_path)
@@ -379,10 +448,6 @@ def _load_remote_manifest(
         except json.JSONDecodeError as exc:
             raise ArchiveError("Remote archive manifest is invalid JSON.") from exc
     _validate_manifest(manifest, run_id)
-    if complete.get("schema_version") != SCHEMA_VERSION:
-        raise ArchiveError("Remote completion marker has an unsupported schema.")
-    if complete.get("run_id") != run_id:
-        raise ArchiveError("Remote completion marker has a different run ID.")
     if complete.get("file_count") != manifest.get("file_count"):
         raise ArchiveError("Remote completion marker has a different file count.")
     if complete.get("total_bytes") != manifest.get("total_bytes"):

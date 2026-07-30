@@ -123,6 +123,37 @@ class RcloneClient:
             f"{(result.stderr or result.stdout or '').strip()}"
         )
 
+    def list_files(self, remote_path: str, *, include: str) -> tuple[str, ...]:
+        result = self._run(
+            "lsjson",
+            remote_path,
+            "--recursive",
+            "--files-only",
+            "--include",
+            include,
+            "--no-modtime",
+            "--no-mimetype",
+            capture=True,
+        )
+        try:
+            payload = json.loads(result.stdout)
+        except json.JSONDecodeError as exc:
+            raise RcloneError(
+                f"Invalid JSON returned by 'rclone lsjson' for {remote_path}"
+            ) from exc
+        if not isinstance(payload, list):
+            raise RcloneError(
+                f"Invalid result returned by 'rclone lsjson' for {remote_path}"
+            )
+        paths: list[str] = []
+        for item in payload:
+            if not isinstance(item, dict) or not isinstance(item.get("Path"), str):
+                raise RcloneError(
+                    f"Invalid file row returned by 'rclone lsjson' for {remote_path}"
+                )
+            paths.append(item["Path"])
+        return tuple(sorted(paths))
+
     def copy_tree(
         self,
         source: str | Path,
