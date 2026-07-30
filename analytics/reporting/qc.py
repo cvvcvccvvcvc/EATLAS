@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import html
 from pathlib import Path
 
 import pandas as pd
@@ -374,6 +375,7 @@ def build_methods_sections(
     negative_controls: TargetSpaceNullAnalysis | None = None,
     report_timings: list[dict[str, object]] | None = None,
     taxonomy_summary: pd.DataFrame | None = None,
+    report_profile_path: Path | None = None,
 ) -> list[str]:
     files = [
         ("Run Dir", inputs.run_dir),
@@ -473,8 +475,15 @@ def build_methods_sections(
     if report_timings:
         sections.append("<details><summary>Report computation timing</summary>")
         sections.append(
-            "<p>Durations describe this report invocation; cache status is shown where the stage exposes it directly.</p>"
+            "<p>Wall and CPU durations describe this invocation. Process peak RSS is the "
+            "high-water mark reached by the report process at the end of each stage, not "
+            "memory allocated exclusively by that stage.</p>"
         )
+        if report_profile_path is not None:
+            sections.append(
+                "<p>Detailed nested profile: <code>"
+                f"{html.escape(str(report_profile_path))}</code>.</p>"
+            )
         sections.append(
             table_html(
                 pd.DataFrame(report_timings),

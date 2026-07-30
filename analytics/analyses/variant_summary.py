@@ -8,6 +8,7 @@ import math
 import sqlite3
 import tempfile
 from collections import Counter, defaultdict
+from contextlib import nullcontext
 from dataclasses import dataclass
 from itertools import combinations_with_replacement
 from pathlib import Path
@@ -16,6 +17,7 @@ from typing import Callable
 import numpy as np
 import pandas as pd
 
+from analytics.io.performance import PerformanceProfile
 from genomics.clinvar import CLINVAR_CLASS_ORDER
 from .target_context import context_at, read_disjoint_contexts
 from genomics.variants import (
@@ -1129,45 +1131,71 @@ def build_variant_summary(
     variant_strategy_support_path: Path | None = None,
     ortholog_evidence_summary_path: Path | None = None,
     chunk_size: int = 100_000,
+    performance_profile: PerformanceProfile | None = None,
 ) -> VariantSummary:
     """Aggregate a variant annotation table without retaining row-level data in memory."""
     work_dir.mkdir(parents=True, exist_ok=True)
     cache_path = work_dir / SUMMARY_CACHE_NAME
-    cached = _load_summary_cache(
-        cache_path,
-        path,
-        target_features_path,
-        genes_path,
-        annotation_failures_path,
-        variant_strategy_support_path,
-        ortholog_evidence_summary_path,
-        strategy_label,
+    cache_stage = (
+        performance_profile.stage("Variant summary cache lookup")
+        if performance_profile is not None
+        else nullcontext()
     )
+    with cache_stage:
+        cached = _load_summary_cache(
+            cache_path,
+            path,
+            target_features_path,
+            genes_path,
+            annotation_failures_path,
+            variant_strategy_support_path,
+            ortholog_evidence_summary_path,
+            strategy_label,
+        )
     if cached is not None:
         return cached
 
-    summary = _compute_variant_summary(
-        path,
-        work_dir,
-        target_features_path,
-        genes_path,
-        annotation_failures_path,
-        variant_strategy_support_path,
-        ortholog_evidence_summary_path,
-        strategy_label,
-        chunk_size,
+    aggregation_stage = (
+        performance_profile.stage("Variant summary aggregation")
+        if performance_profile is not None
+        else nullcontext()
     )
-    _write_summary_cache(
-        cache_path,
-        summary,
-        path,
-        target_features_path,
-        genes_path,
-        annotation_failures_path,
-        variant_strategy_support_path,
-        ortholog_evidence_summary_path,
-        strategy_label,
+    with aggregation_stage:
+        summary = _compute_variant_summary(
+            path,
+            work_dir,
+            target_features_path,
+            genes_path,
+            annotation_failures_path,
+            variant_strategy_support_path,
+            ortholog_evidence_summary_path,
+            strategy_label,
+            chunk_size,
+            performance_profile,
+        )
+        if performance_profile is not None:
+            performance_profile.add_metric("input_rows", summary.input_row_count)
+            performance_profile.add_metric(
+                "strategy_membership_rows", summary.strategy_record_count
+            )
+
+    write_stage = (
+        performance_profile.stage("Variant summary cache write")
+        if performance_profile is not None
+        else nullcontext()
     )
+    with write_stage:
+        _write_summary_cache(
+            cache_path,
+            summary,
+            path,
+            target_features_path,
+            genes_path,
+            annotation_failures_path,
+            variant_strategy_support_path,
+            ortholog_evidence_summary_path,
+            strategy_label,
+        )
     return summary
 
 
@@ -1181,6 +1209,7 @@ def _compute_variant_summary(
     ortholog_evidence_summary_path: Path | None,
     strategy_label: Callable[[str], str],
     chunk_size: int,
+    performance_profile: PerformanceProfile | None,
 ) -> VariantSummary:
     header = _header(path)
     missing = VARIANT_REQUIRED - set(header)
@@ -1411,6 +1440,11 @@ def _compute_variant_summary(
             )
     finally:
         connection.close()
+        if performance_profile is not None and database_path.exists():
+            performance_profile.add_metric(
+                "temporary_sqlite_bytes",
+                database_path.stat().st_size,
+            )
         database_path.unlink(missing_ok=True)
 
     pathogenic_rows = _add_pathogenic_strategy_support(

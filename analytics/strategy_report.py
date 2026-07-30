@@ -5,9 +5,6 @@ from __future__ import annotations
 
 import argparse
 import os
-import time
-from collections.abc import Iterator
-from contextlib import contextmanager
 from pathlib import Path
 
 import pandas as pd
@@ -32,6 +29,7 @@ from analytics.io.run_inputs import (
     validate_report_inputs,
 )
 from analytics.io.artifacts import write_text_atomic
+from analytics.io.performance import PerformanceProfile
 from analytics.reporting.components import strategy_label
 from analytics.reporting.conservation import build_clinvar_association_sections
 from analytics.reporting.document import render_html
@@ -158,21 +156,6 @@ def _default_vep_result_cache_dir() -> Path | None:
     return Path(gaph_root) / "cache" / "vep_results" if gaph_root else None
 
 
-@contextmanager
-def timed_stage(name: str, timings: list[dict[str, object]]) -> Iterator[dict[str, object]]:
-    entry: dict[str, object] = {"Stage": name, "Status": "completed", "Details": ""}
-    started = time.perf_counter()
-    try:
-        yield entry
-    except Exception:
-        entry["Status"] = "failed"
-        raise
-    finally:
-        entry["Seconds"] = round(time.perf_counter() - started, 3)
-        timings.append(entry)
-        print(f"{name}: {entry['Status']} in {entry['Seconds']:.3f} s")
-
-
 def main() -> None:
     args = parse_args()
     if args.target_space_null and args.target_space_null_sample_size < 1:
@@ -209,8 +192,14 @@ def main() -> None:
     if use_vep_consequences and args.vep_backend == "local" and args.vep_cache_dir is None:
         raise ValueError("--vep-cache-dir is required with --vep-backend local")
     out_html = resolve_out_html(args, inputs.run_dir)
-    report_started = time.perf_counter()
-    timings: list[dict[str, object]] = []
+    analytics_dir = inputs.run_dir / "analytics"
+    performance_path = analytics_dir / "performance" / f"{out_html.stem}.json"
+    performance = PerformanceProfile(
+        performance_path,
+        run_dir=inputs.run_dir,
+        report_path=out_html,
+        tracked_directory=analytics_dir,
+    )
 
     if args.vep_result_cache_dir is None:
         print("Shared VEP result cache: disabled")
@@ -221,10 +210,10 @@ def main() -> None:
             f"(tile size {args.vep_result_cache_tile_size_bp} bp)"
         )
     print(f"Streaming {inputs.variant_annotations_tsv}...")
-    with timed_stage("Variant summary", timings) as timing:
+    with performance.stage("Variant summary") as timing:
         variant_summary = build_variant_summary(
             inputs.variant_annotations_tsv,
-            inputs.run_dir / "analytics",
+            analytics_dir,
             strategy_label,
             target_features_path=inputs.target_features_tsv,
             genes_path=inputs.genes_tsv,
@@ -235,10 +224,11 @@ def main() -> None:
                 if inputs.ortholog_evidence_summary_tsv.exists()
                 else None
             ),
+            performance_profile=performance,
         )
-        timing["Details"] = "cache hit" if variant_summary.cache_hit else "cache miss"
+        timing["details"] = "cache hit" if variant_summary.cache_hit else "cache miss"
 
-    with timed_stage("Run summary inputs", timings):
+    with performance.stage("Run summary inputs"):
         cov = read_feature_coverage(inputs.feature_coverage_tsv)
         alignment_summary = read_strategy_summary(inputs.strategy_summary_tsv)
         fetch_manifest = read_json(inputs.fetch_manifest_json)
@@ -251,7 +241,7 @@ def main() -> None:
         taxonomy_summary = read_taxonomy_summary(inputs.taxonomy_summary_tsv)
 
     print("Computing strategy metrics...")
-    with timed_stage("Strategy metrics", timings):
+    with performance.stage("Strategy metrics"):
         strategy_stats_full = merge_alignment_summary(variant_summary.strategy_stats, alignment_summary)
         summary_columns = [
             "Strategy",
@@ -274,7 +264,7 @@ def main() -> None:
         strategies = variant_summary.strategies
 
     print("Computing ClinVar enrichment...")
-    with timed_stage("ClinVar enrichment", timings):
+    with performance.stage("ClinVar enrichment"):
         validation = build_validation(
             run_dir=inputs.run_dir,
             variant_annotations_tsv=inputs.variant_annotations_tsv,
@@ -293,7 +283,7 @@ def main() -> None:
         )
 
     print("Computing conservation-adjusted ClinVar validation...")
-    with timed_stage("Conservation-adjusted validation", timings):
+    with performance.stage("Conservation-adjusted validation"):
         conservation_analysis = build_conservation_analysis(
             inputs=inputs,
             validation=validation,
@@ -304,7 +294,7 @@ def main() -> None:
     negative_controls = None
     if args.target_space_null:
         print("Computing consequence-matched target-space null...")
-        with timed_stage("Target-space null", timings):
+        with performance.stage("Target-space null"):
             negative_controls = build_target_space_null(
                 run_dir=inputs.run_dir,
                 variant_annotations_tsv=inputs.variant_annotations_tsv,
@@ -326,82 +316,89 @@ def main() -> None:
                 vep_result_cache_tile_size_bp=args.vep_result_cache_tile_size_bp,
             )
     else:
-        timings.append(
-            {
-                "Stage": "Target-space null",
-                "Status": "disabled",
-                "Details": "Enable with --target-space-null",
-                "Seconds": 0.0,
-            }
+        performance.disabled_stage(
+            "Target-space null",
+            "Enable with --target-space-null",
         )
 
-    candidate_sections = build_variant_sections(variant_summary, strategy_stats)
-    candidate_sections.extend(
-        build_clinvar_gnomad_sections(variant_summary, strategy_stats_full)
-    )
-    candidate_sections.extend(build_feature_sections(cov))
-    sections = [
-        (
-            "overview",
-            "Overview",
-            build_overview(
-                variant_summary,
-                cov,
-                strategy_stats,
-                annotation_manifest,
-                input_gene_count,
+    with performance.stage("Report sections"):
+        candidate_sections = build_variant_sections(variant_summary, strategy_stats)
+        candidate_sections.extend(
+            build_clinvar_gnomad_sections(variant_summary, strategy_stats_full)
+        )
+        candidate_sections.extend(build_feature_sections(cov))
+        sections = [
+            (
+                "overview",
+                "Overview",
+                build_overview(
+                    variant_summary,
+                    cov,
+                    strategy_stats,
+                    annotation_manifest,
+                    input_gene_count,
+                ),
             ),
-        ),
-        ("candidates", "Candidate Profile", candidate_sections),
-        (
-            "ortholog-evidence",
-            "Ortholog Evidence",
-            build_ortholog_evidence_sections(
-                variant_summary,
-                taxonomy_summary=taxonomy_summary,
+            ("candidates", "Candidate Profile", candidate_sections),
+            (
+                "ortholog-evidence",
+                "Ortholog Evidence",
+                build_ortholog_evidence_sections(
+                    variant_summary,
+                    taxonomy_summary=taxonomy_summary,
+                ),
             ),
-        ),
-        (
-            "gnomad-stratification",
-            "gnomAD Stratification",
-            build_gnomad_stratification_sections(
-                variant_summary,
-                strategy_stats_full,
-                conservation_analysis.candidate,
+            (
+                "gnomad-stratification",
+                "gnomAD Stratification",
+                build_gnomad_stratification_sections(
+                    variant_summary,
+                    strategy_stats_full,
+                    conservation_analysis.candidate,
+                ),
             ),
-        ),
-        (
-            "target-space-null",
-            "Matched Control",
-            build_target_space_null_sections(
-                negative_controls,
-                enabled=args.target_space_null,
+            (
+                "target-space-null",
+                "Matched Control",
+                build_target_space_null_sections(
+                    negative_controls,
+                    enabled=args.target_space_null,
+                ),
             ),
-        ),
-        ("clinvar-association", "ClinVar Association", build_clinvar_association_sections(conservation_analysis)),
-        (
-            "qc",
-            "QC",
-            build_methods_sections(
-                inputs,
-                out_html,
-                variant_summary,
-                cov,
-                failures,
-                annotation_manifest,
-                alignment_manifest,
-                validation,
-                conservation_analysis,
-                negative_controls,
-                timings,
-                taxonomy_summary,
+            (
+                "clinvar-association",
+                "ClinVar Association",
+                build_clinvar_association_sections(conservation_analysis),
             ),
-        ),
-    ]
+            (
+                "qc",
+                "QC",
+                build_methods_sections(
+                    inputs,
+                    out_html,
+                    variant_summary,
+                    cov,
+                    failures,
+                    annotation_manifest,
+                    alignment_manifest,
+                    validation,
+                    conservation_analysis,
+                    negative_controls,
+                    performance.table_rows(),
+                    taxonomy_summary,
+                    performance_path,
+                ),
+            ),
+        ]
 
     print(f"Writing report to {out_html}...")
-    write_text_atomic(out_html, render_html(sections))
-    print(f"Done in {time.perf_counter() - report_started:.3f} s")
+    with performance.stage("HTML rendering"):
+        html = render_html(sections)
+    with performance.stage("HTML write"):
+        write_text_atomic(out_html, html)
+    performance.finish(artifacts=[out_html])
+    print(f"Performance profile: {performance_path}")
+    print(f"Done in {performance.total_wall_seconds:.3f} s")
 
 
 if __name__ == "__main__":

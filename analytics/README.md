@@ -168,6 +168,14 @@ When an analysis needs durable intermediate tables, write them under
 `<run-dir>/analytics/`. The source tree does not keep a default scratch/work
 directory.
 
+Each report invocation progressively writes
+`<run-dir>/analytics/performance/<report-stem>.json`. The profile records
+top-level and nested wall/CPU timing, process and child peak RSS, block-I/O
+counters, cache details, known temporary-file sizes, and the net size change of
+the run-local analytics directory. It is updated atomically after every
+completed or failed stage, so a long or interrupted cluster job still leaves
+useful diagnostics.
+
 The report reads `annotation/variant_annotations.tsv.gz` in chunks. It uses a
 temporary SQLite file under `<run-dir>/analytics/` to deduplicate
 variant-strategy records without loading the full annotation table into memory;

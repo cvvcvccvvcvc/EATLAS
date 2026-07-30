@@ -13,6 +13,7 @@ from analytics.analyses.variant_summary import (
     build_variant_summary,
     read_taxonomic_ortholog_evidence,
 )
+from analytics.io.performance import PerformanceProfile
 
 
 def test_clinvar_categories_distinguish_unclassified_records_from_absence() -> None:
@@ -124,15 +125,30 @@ def test_variant_summary_prefers_compact_ortholog_evidence_and_tracks_its_cache(
 
     write_compact(2)
     work_dir = tmp_path / "analytics"
-    summary = build_variant_summary(
-        annotations,
-        work_dir,
-        strategy_label=str,
-        variant_strategy_support_path=support,
-        ortholog_evidence_summary_path=compact,
+    profile = PerformanceProfile(
+        tmp_path / "performance.json",
+        run_dir=tmp_path,
+        report_path=tmp_path / "report.html",
     )
+    with profile.stage("Variant summary"):
+        summary = build_variant_summary(
+            annotations,
+            work_dir,
+            strategy_label=str,
+            variant_strategy_support_path=support,
+            ortholog_evidence_summary_path=compact,
+            performance_profile=profile,
+        )
+    profile.finish()
 
     assert summary.ortholog_evidence_available
+    aggregation = next(
+        stage
+        for stage in profile.stages
+        if stage["name"] == "Variant summary aggregation"
+    )
+    assert aggregation["parent_id"] == profile.stages[0]["id"]
+    assert aggregation["metrics"]["temporary_sqlite_bytes"] > 0
     assert set(summary.ortholog_evidence_cells["taxonomic_scope"]) == {"mammalia"}
     assert int(
         summary.ortholog_evidence_cells[
