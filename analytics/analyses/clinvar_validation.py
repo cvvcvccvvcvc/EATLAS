@@ -33,6 +33,7 @@ from genomics.variants import (
 )
 from analytics.annotation.consequences import VEP_CONSEQUENCE_ORDER
 from analytics.annotation.vep import annotate_vep_consequences
+from analytics.annotation.vep_result_cache import DEFAULT_TILE_SIZE_BP
 
 
 UNIVERSE_FIELDS = [
@@ -78,6 +79,8 @@ def build_validation(
     vep_executable: str | Path = "vep",
     vep_cache_dir: Path | None = None,
     vep_forks: int = 1,
+    vep_result_cache_dir: Path | None = None,
+    vep_result_cache_tile_size_bp: int = DEFAULT_TILE_SIZE_BP,
 ) -> ClinvarValidation:
     analytics_dir = run_dir / "analytics"
     analytics_dir.mkdir(parents=True, exist_ok=True)
@@ -108,6 +111,8 @@ def build_validation(
             vep_executable=vep_executable,
             vep_cache_dir=vep_cache_dir,
             vep_forks=vep_forks,
+            vep_result_cache_dir=vep_result_cache_dir,
+            vep_result_cache_tile_size_bp=vep_result_cache_tile_size_bp,
         )
         manifest = {**manifest, "consequence_source": "Ensembl VEP", "vep": vep_manifest}
         manifest_path = vep_manifest_path
@@ -139,6 +144,8 @@ def build_or_load_vep_universe(
     vep_executable: str | Path,
     vep_cache_dir: Path | None,
     vep_forks: int,
+    vep_result_cache_dir: Path | None = None,
+    vep_result_cache_tile_size_bp: int = DEFAULT_TILE_SIZE_BP,
 ) -> tuple[Path, Path, pd.DataFrame, dict[str, object]]:
     """Annotate the compact ClinVar validation universe once with RefSeq VEP."""
 
@@ -173,6 +180,8 @@ def build_or_load_vep_universe(
             vep_executable=vep_executable,
             vep_cache_dir=vep_cache_dir,
             vep_forks=vep_forks,
+            vep_result_cache_dir=vep_result_cache_dir,
+            vep_result_cache_tile_size_bp=vep_result_cache_tile_size_bp,
         )
     aggregated = _aggregate_vep_by_variant(annotations)
     enriched = universe.merge(

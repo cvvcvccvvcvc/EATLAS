@@ -28,8 +28,9 @@ def test_clinvar_vep_artifact_aggregates_genes_and_resumes(
     )
     universe.to_csv(universe_path, sep="\t", index=False, compression="gzip")
 
-    def fake_annotate(requests, _cache_path, **_kwargs):
+    def fake_annotate(requests, _cache_path, **kwargs):
         assert len(requests) == 3
+        assert kwargs["vep_result_cache_dir"] == tmp_path / "vep_result_cache"
         return (
             pd.DataFrame(
                 [
@@ -69,6 +70,7 @@ def test_clinvar_vep_artifact_aggregates_genes_and_resumes(
         vep_executable="vep",
         vep_cache_dir=tmp_path,
         vep_forks=2,
+        vep_result_cache_dir=tmp_path / "vep_result_cache",
     )
 
     assert output_path.exists()

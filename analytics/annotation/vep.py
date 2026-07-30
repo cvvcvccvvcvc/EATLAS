@@ -18,6 +18,7 @@ from pathlib import Path
 import pandas as pd
 
 from .consequences import VEP_CONSEQUENCE_ORDER
+from .vep_result_cache import DEFAULT_TILE_SIZE_BP, VepResultCache
 
 
 VEP_BASE_URL = "https://rest.ensembl.org"
@@ -47,6 +48,9 @@ def annotate_vep_consequences(
     vep_executable: str | Path = "vep",
     vep_cache_dir: Path | None = None,
     vep_forks: int = 1,
+    vep_result_cache_dir: Path | None = None,
+    vep_result_cache_tile_size_bp: int = DEFAULT_TILE_SIZE_BP,
+    publish_vep_result_cache: bool = True,
 ) -> tuple[pd.DataFrame, dict[str, object]]:
     """Annotate unique variant/gene pairs and persist completed work."""
 
@@ -99,11 +103,52 @@ def annotate_vep_consequences(
         }
     config_hash = hashlib.sha256(json.dumps(config, sort_keys=True).encode()).hexdigest()
 
+    result_cache = (
+        VepResultCache(
+            vep_result_cache_dir,
+            config=config,
+            tile_size_bp=vep_result_cache_tile_size_bp,
+        )
+        if vep_result_cache_dir is not None
+        else None
+    )
+    shared_cached: dict[tuple[str, str], dict[str, object]] = {}
+    shared_lookup: dict[str, object] | None = None
+    if result_cache is not None:
+        shared_frame, shared_lookup = result_cache.lookup(unique)
+        shared_cached = _annotation_map(shared_frame)
+
     cache_path.parent.mkdir(parents=True, exist_ok=True)
     with sqlite3.connect(cache_path) as connection:
         _initialize_cache(connection)
         wanted = list(unique[["variant_key", "gene_id"]].itertuples(index=False, name=None))
-        cached = _load_cached(connection, config_hash, wanted)
+        local_cached = _load_cached(connection, config_hash, wanted)
+        for key, shared in shared_cached.items():
+            local = local_cached.get(key)
+            if (
+                local is not None
+                and local["status"] != "no_response"
+                and not _annotations_equal(local, shared)
+            ):
+                raise ValueError(
+                    "Conflicting VEP result between the shared and per-run caches "
+                    f"for {key[0]} / gene {key[1]}"
+                )
+        if shared_cached:
+            _store_annotations(
+                connection,
+                config_hash,
+                str(release),
+                list(shared_cached.values()),
+            )
+
+        cached = {
+            key: item
+            for key, item in local_cached.items()
+            if key not in shared_cached
+        }
+        local_cached_count = len(cached)
+        cached.update(shared_cached)
         missing_rows = [
             row
             for row in unique.to_dict(orient="records")
@@ -158,6 +203,9 @@ def annotate_vep_consequences(
 
     ordered = [cached[(variant_key, gene_id)] for variant_key, gene_id in wanted]
     result = pd.DataFrame(ordered, columns=_annotation_columns())
+    shared_publish: dict[str, object] | None = None
+    if result_cache is not None and publish_vep_result_cache:
+        shared_publish = result_cache.publish(result)
     status_counts = result["status"].value_counts().sort_index().to_dict()
     summary = {
         "status": "complete",
@@ -166,11 +214,18 @@ def annotate_vep_consequences(
         "options": VEP_OPTIONS,
         "requested": len(wanted),
         "cached": len(wanted) - len(missing_rows),
+        "shared_cached": len(shared_cached),
+        "local_cached": local_cached_count,
         "queried": len(missing_rows),
         "batch_count": batch_count,
         "status_counts": {str(key): int(value) for key, value in status_counts.items()},
         "cache_path": str(cache_path),
     }
+    if result_cache is not None:
+        summary["shared_cache"] = {
+            "lookup": shared_lookup,
+            "publish": shared_publish,
+        }
     if backend == "rest":
         summary["base_url"] = base_url.rstrip("/")
     else:
@@ -202,6 +257,22 @@ def _annotation_columns() -> list[str]:
 
 def _empty_annotations() -> pd.DataFrame:
     return pd.DataFrame(columns=_annotation_columns())
+
+
+def _annotation_map(
+    frame: pd.DataFrame,
+) -> dict[tuple[str, str], dict[str, object]]:
+    return {
+        (str(item["variant_key"]), str(item["gene_id"])): item
+        for item in frame[_annotation_columns()].to_dict(orient="records")
+    }
+
+
+def _annotations_equal(
+    left: dict[str, object],
+    right: dict[str, object],
+) -> bool:
+    return all(left[column] == right[column] for column in _annotation_columns())
 
 
 def _fetch_release(base_url: str, retries: int, timeout_seconds: float) -> str:

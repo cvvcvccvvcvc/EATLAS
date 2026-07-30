@@ -34,6 +34,7 @@ from .external_evidence import build_external_evidence
 from .target_context import context_at, read_disjoint_contexts
 from genomics.variants import changed_target_position, parse_variant_key
 from analytics.annotation.vep import annotate_vep_consequences
+from analytics.annotation.vep_result_cache import DEFAULT_TILE_SIZE_BP
 
 
 DNA_BASES = ("A", "C", "G", "T")
@@ -80,6 +81,8 @@ def build_target_space_null(
     vep_executable: str | Path = "vep",
     vep_cache_dir: Path | None = None,
     vep_forks: int = 1,
+    vep_result_cache_dir: Path | None = None,
+    vep_result_cache_tile_size_bp: int = DEFAULT_TILE_SIZE_BP,
 ) -> TargetSpaceNullAnalysis:
     """Build or load the target-space null for one completed run."""
 
@@ -164,6 +167,8 @@ def build_target_space_null(
         vep_executable=vep_executable,
         vep_cache_dir=vep_cache_dir,
         vep_forks=vep_forks,
+        vep_result_cache_dir=vep_result_cache_dir,
+        vep_result_cache_tile_size_bp=vep_result_cache_tile_size_bp,
     )
     focal = _merge_vep(focal, focal_annotations)
     focal = focal[focal["vep_status"].eq("ok")].reset_index(drop=True)
@@ -182,6 +187,8 @@ def build_target_space_null(
         vep_executable=vep_executable,
         vep_cache_dir=vep_cache_dir,
         vep_forks=vep_forks,
+        vep_result_cache_dir=vep_result_cache_dir,
+        vep_result_cache_tile_size_bp=vep_result_cache_tile_size_bp,
     )
     if candidates.empty:
         raise ValueError("No consequence-matched target-space control candidates were available.")
@@ -510,6 +517,8 @@ def _annotate_candidate_controls(
     vep_executable: str | Path,
     vep_cache_dir: Path | None,
     vep_forks: int,
+    vep_result_cache_dir: Path | None,
+    vep_result_cache_tile_size_bp: int,
 ) -> tuple[pd.DataFrame, int, dict[str, object]]:
     unique_focal = focal.drop_duplicates(["variant_key", "gene_id"]).reset_index(drop=True)
     matched_parts = []
@@ -529,6 +538,8 @@ def _annotate_candidate_controls(
             vep_executable=vep_executable,
             vep_cache_dir=vep_cache_dir,
             vep_forks=vep_forks,
+            vep_result_cache_dir=vep_result_cache_dir,
+            vep_result_cache_tile_size_bp=vep_result_cache_tile_size_bp,
         )
         summaries.append(summary)
         candidates = _merge_vep(candidates, annotations)
@@ -564,6 +575,8 @@ def _merge_vep_summaries(
         "options": first.get("options", {}),
         "requested": sum(int(item.get("requested", 0)) for item in summaries),
         "cached": sum(int(item.get("cached", 0)) for item in summaries),
+        "shared_cached": sum(int(item.get("shared_cached", 0)) for item in summaries),
+        "local_cached": sum(int(item.get("local_cached", 0)) for item in summaries),
         "queried": sum(int(item.get("queried", 0)) for item in summaries),
         "batch_count": sum(int(item.get("batch_count", 0)) for item in summaries),
         "status_counts": dict(sorted(status_counts.items())),

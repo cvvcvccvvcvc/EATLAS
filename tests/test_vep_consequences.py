@@ -77,6 +77,66 @@ def test_sqlite_cache_reuses_completed_annotations(tmp_path: Path, monkeypatch) 
     pd.testing.assert_frame_equal(first, second)
 
 
+def test_shared_cache_reuses_annotations_across_run_caches(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    rows = pd.DataFrame(
+        [
+            {
+                "variant_key": "1:10:A>G",
+                "gene_id": "25",
+                "chrom": "1",
+                "pos": 10,
+                "ref": "A",
+                "alt": "G",
+            }
+        ]
+    )
+    calls = []
+
+    def fake_request(batch, *_args):
+        calls.append(batch)
+        return [
+            {
+                "variant_key": item["variant_key"],
+                "gene_id": item["gene_id"],
+                "status": "ok",
+                "primary_consequence": "missense_variant",
+                "consequence_terms": "missense_variant",
+                "transcript_id": "NM_1",
+                "mane_select": "NM_1",
+                "canonical": True,
+                "impact": "MODERATE",
+                "variant_class": "SNV",
+            }
+            for item in batch
+        ]
+
+    monkeypatch.setattr(vep, "_request_batch", fake_request)
+    shared = tmp_path / "shared"
+    first, first_summary = vep.annotate_vep_consequences(
+        rows,
+        tmp_path / "run_one.sqlite",
+        release="116",
+        vep_result_cache_dir=shared,
+    )
+    second, second_summary = vep.annotate_vep_consequences(
+        rows,
+        tmp_path / "run_two.sqlite",
+        release="116",
+        vep_result_cache_dir=shared,
+    )
+
+    assert len(calls) == 1
+    assert first_summary["queried"] == 1
+    assert first_summary["shared_cache"]["publish"]["published_count"] == 1
+    assert second_summary["shared_cached"] == 1
+    assert second_summary["local_cached"] == 0
+    assert second_summary["queried"] == 0
+    pd.testing.assert_frame_equal(first, second)
+
+
 def test_local_vep_uses_offline_refseq_cache_and_reuses_sqlite(
     tmp_path: Path,
     monkeypatch,

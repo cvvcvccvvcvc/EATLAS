@@ -63,7 +63,10 @@ def test_build_target_space_null_end_to_end_with_mocked_annotations(
     with gzip.open(target_dir / "1.fa.gz", "wt") as handle:
         handle.write(">1\n" + "A" * 20 + "\n")
 
-    def fake_vep(frame, _cache_path, **_kwargs):
+    vep_calls = []
+
+    def fake_vep(frame, _cache_path, **kwargs):
+        vep_calls.append(kwargs)
         result = frame[["variant_key", "gene_id"]].drop_duplicates().copy()
         result["status"] = "ok"
         result["primary_consequence"] = "missense_variant"
@@ -111,6 +114,7 @@ def test_build_target_space_null_end_to_end_with_mocked_annotations(
         resamples=100,
         seed=3,
         gnomad_cache_dir=tmp_path / "gnomad_cache",
+        vep_result_cache_dir=tmp_path / "vep_result_cache",
     )
 
     matched = pd.read_csv(analysis.matched_path, sep="\t", compression="gzip")
@@ -119,6 +123,11 @@ def test_build_target_space_null_end_to_end_with_mocked_annotations(
     assert set(matched["primary_consequence"]) == {"missense_variant"}
     assert set(matched["alt"]) == {"G"}
     assert analysis.manifest["matched_focal_count"] == 1
+    assert vep_calls
+    assert all(
+        call["vep_result_cache_dir"] == tmp_path / "vep_result_cache"
+        for call in vep_calls
+    )
 
 
 def test_contexts_keep_noncoding_exon_separate_from_other_sequence(tmp_path: Path) -> None:
