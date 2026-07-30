@@ -15,16 +15,16 @@ from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
 
-from fetch_gnomad_variants import fetch_region_variants_recursive, select_af_metrics
-from gnomad_cache import GnomadRegionCache
+if __package__ in {None, ""}:
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from analytics.core.variant_keys import (  # noqa: E402
+from genomics.gnomad import fetch_region_variants_recursive, select_af_metrics
+from genomics.gnomad_cache import GnomadRegionCache
+from genomics.variants import (
+    add_context_normalized_record,
     build_context_index,
-    contexts_for_variant,
     load_target_contexts,
     normalize_chrom,
-    normalize_vcf_key_for_context,
     parse_variant_key,
 )
 
@@ -129,23 +129,14 @@ def build_gnomad_cache(
                 str(record.get("ref", "")).upper(),
                 str(record.get("alt", "")).upper(),
             )
-            cache[key] = record
-            chrom, pos, ref, alt = key
-            matched_contexts = contexts_for_variant(context_index, chrom, pos)
-            if not matched_contexts:
-                status_counts["raw_no_context"] += 1
-                continue
-            for context in matched_contexts:
-                normalized, status = normalize_vcf_key_for_context(
-                    context,
-                    chrom,
-                    pos,
-                    ref,
-                    alt,
-                )
-                status_counts[status] += 1
-                if normalized:
-                    cache[normalized] = record
+            add_context_normalized_record(
+                cache,
+                key,
+                record,
+                contexts,
+                context_index,
+                status_counts,
+            )
     return cache, status_counts
 
 

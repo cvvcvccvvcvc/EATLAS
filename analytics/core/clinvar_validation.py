@@ -14,7 +14,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from .variant_keys import (
+from genomics.variants import (
     build_context_index,
     contexts_for_variant,
     load_target_contexts,

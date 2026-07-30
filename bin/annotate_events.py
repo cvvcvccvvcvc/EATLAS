@@ -2,7 +2,6 @@
 """Annotate TSV variants with ClinVar and gnomAD."""
 
 import argparse
-import bisect
 import csv
 import json
 import gzip
@@ -15,16 +14,25 @@ from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
 
-# Add bin to path so we can import fetch_gnomad_variants
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-try:
-    from fetch_gnomad_variants import GNOMAD_API_URL, fetch_region_variants_recursive, _select_af_metrics
-    from feature_coverage import load_snv_site_depth, site_aligned_ortholog_counts
-    from gnomad_cache import GnomadRegionCache
-    from ortholog_evidence_summary import write_ortholog_evidence_summary
-except ImportError as e:
-    print(f"Error importing fetch_gnomad_variants: {e}")
-    sys.exit(1)
+if __package__ in {None, ""}:
+    runtime_root = Path.cwd()
+    if not (runtime_root / "genomics").is_dir():
+        runtime_root = Path(__file__).resolve().parents[1]
+    sys.path.insert(0, str(runtime_root))
+
+from feature_coverage import load_snv_site_depth, site_aligned_ortholog_counts
+from genomics.gnomad import GNOMAD_API_URL, fetch_region_variants_recursive, select_af_metrics
+from genomics.gnomad_cache import GnomadRegionCache
+from genomics.variants import (
+    add_context_normalized_record,
+    build_context_index,
+    event_vcf_key,
+    load_target_contexts,
+    normalize_chrom,
+    refseq_accession_to_chrom,
+    variant_key_text,
+)
+from ortholog_evidence_summary import write_ortholog_evidence_summary
 
 try:
     import pysam
@@ -80,7 +88,6 @@ VARIANT_STRATEGY_SUPPORT_FIELDS = [
 
 FAILURE_FIELDS = ["source", "scope", "chrom", "start", "end", "failure_type", "message"]
 GNOMAD_DATASET = "gnomad_r4"
-DNA_BASES = frozenset("ACGT")
 
 CLINVAR_REVIEW_STARS = {
     "practice_guideline": "4",
@@ -126,25 +133,6 @@ def parse_args():
     )
     return parser.parse_args()
 
-def _refseq_accession_to_gnomad_chrom(chr_acc: str) -> str | None:
-    if not chr_acc: return None
-    c = str(chr_acc).strip()
-    if c.startswith("chr"): c = c[3:]
-    if c in {"X", "Y", "MT", "M"}: return "MT" if c == "M" else c
-    if c.isdigit():
-        val = int(c)
-        if val == 23: return "X"
-        if val == 24: return "Y"
-        return str(val)
-    import re
-    match = re.search(r"NC_0+(\d+)\.", c)
-    if not match: return None
-    num = int(match.group(1))
-    if num == 23: return "X"
-    if num == 24: return "Y"
-    if num in {12920, 1807}: return "MT"
-    return str(num)
-
 def cluster_positions(positions: list[int], max_gap: int = 100000) -> list[tuple[int, int]]:
     if not positions: return []
     positions = sorted(positions)
@@ -177,13 +165,6 @@ def split_values(value: str | None) -> set[str]:
     if not value:
         return set()
     return {item for item in str(value).replace("|", ",").split(",") if item}
-
-
-def lookup_key_text(key: tuple[str, int, str, str] | None) -> str:
-    if not key:
-        return ""
-    chrom, pos, ref, alt = key
-    return f"{chrom}:{pos}:{ref}>{alt}"
 
 
 def int_or_default(value, default: int = 0) -> int:
@@ -334,197 +315,6 @@ def failure_row(
     }
 
 
-def read_fasta_sequence(path: Path) -> str:
-    chunks = []
-    with open_text(path) as handle:
-        for line in handle:
-            if line.startswith(">"):
-                continue
-            chunks.append(line.strip())
-    return "".join(chunks).upper()
-
-
-def normalize_chrom(value: str | None) -> str | None:
-    if not value:
-        return None
-    c = str(value).strip()
-    if c.startswith("chr"):
-        c = c[3:]
-    if c == "M":
-        return "MT"
-    return c
-
-
-def load_target_contexts(genes_tsv: Path | None, target_sequences_dir: Path | None) -> dict[str, dict]:
-    if not genes_tsv and not target_sequences_dir:
-        logger.warning("No target context provided; ClinVar/gnomAD lookup will use raw event keys.")
-        return {}
-    if not genes_tsv or not target_sequences_dir:
-        raise ValueError("--genes-tsv and --target-sequences-dir must be provided together.")
-    if not genes_tsv.exists():
-        raise FileNotFoundError(f"Target genes table not found: {genes_tsv}")
-    if not target_sequences_dir.exists():
-        raise FileNotFoundError(f"Target sequences directory not found: {target_sequences_dir}")
-
-    contexts = {}
-    with open_text(genes_tsv) as handle:
-        reader = csv.DictReader(handle, delimiter="\t")
-        required = {"gene_id", "genomic_accession", "chromosome", "begin", "end"}
-        missing = required - set(reader.fieldnames or [])
-        if missing:
-            raise ValueError(f"Target genes table missing required columns: {', '.join(sorted(missing))}")
-        for row in reader:
-            gene_id = row["gene_id"]
-            fasta_path = target_sequences_dir / f"{gene_id}.fa.gz"
-            if not fasta_path.exists():
-                raise FileNotFoundError(f"Target FASTA not found for gene {gene_id}: {fasta_path}")
-            contexts[gene_id] = {
-                "gene_id": gene_id,
-                "accession": row["genomic_accession"],
-                "chrom": normalize_chrom(row["chromosome"]) or _refseq_accession_to_gnomad_chrom(row["genomic_accession"]),
-                "begin": int(row["begin"]),
-                "end": int(row["end"]),
-                "fasta_path": fasta_path,
-            }
-    logger.info(f"Loaded target context for {len(contexts)} gene(s).")
-    return contexts
-
-
-def context_sequence(context: dict) -> str:
-    seq = context.get("seq")
-    if seq is None:
-        seq = read_fasta_sequence(context["fasta_path"])
-        context["seq"] = seq
-    return seq
-
-
-def build_context_index(contexts: dict[str, dict]) -> dict[str, tuple[list[dict], list[int]]]:
-    by_chrom: dict[str, list[dict]] = defaultdict(list)
-    for context in contexts.values():
-        chrom = context.get("chrom")
-        if chrom:
-            by_chrom[chrom].append(context)
-
-    index: dict[str, tuple[list[dict], list[int]]] = {}
-    for chrom, rows in by_chrom.items():
-        rows.sort(key=lambda row: (int(row["begin"]), int(row["end"]), row["gene_id"]))
-        index[chrom] = (rows, [int(row["begin"]) for row in rows])
-    return index
-
-
-def normalize_vcf_key_for_context(
-    context: dict,
-    chrom: str,
-    pos: int,
-    ref: str,
-    alt: str,
-) -> tuple[tuple[str, int, str, str] | None, str]:
-    ref = (ref or "").upper()
-    alt = (alt or "").upper()
-    if not ref or not alt:
-        return None, "empty_vcf_allele"
-
-    seq = context_sequence(context)
-    pos0 = pos - int(context["begin"])
-    if pos0 < 0 or pos0 + len(ref) > len(seq):
-        return None, "out_of_target"
-    if seq[pos0 : pos0 + len(ref)] != ref:
-        return None, "ref_mismatch"
-
-    if len(ref) != len(alt):
-        while pos0 > 0 and ref[-1] == alt[-1]:
-            prev = seq[pos0 - 1]
-            ref = prev + ref[:-1]
-            alt = prev + alt[:-1]
-            pos0 -= 1
-
-    return (chrom, int(context["begin"]) + pos0, ref, alt), "ok"
-
-
-def event_vcf_key(row: dict, contexts: dict[str, dict]) -> tuple[tuple[str, int, str, str] | None, str]:
-    ref = str(row.get("ref") or "").upper()
-    alt = str(row.get("alt") or "").upper()
-    if any(base not in DNA_BASES for base in ref + alt):
-        return None, "non_concrete_allele"
-
-    gene_id = row.get("gene_id", "")
-    context = contexts.get(gene_id)
-    chrom = _refseq_accession_to_gnomad_chrom(row.get("genomic_accession", ""))
-    if not chrom:
-        return None, "unknown_chrom"
-
-    try:
-        raw_pos = int(row.get("genomic_start1", 0))
-    except ValueError:
-        return None, "bad_position"
-    raw_key = (chrom, raw_pos, ref, alt)
-
-    if not context:
-        return raw_key, "raw_no_context"
-
-    try:
-        start0 = int(row.get("target_start0", 0))
-    except ValueError:
-        return raw_key, "bad_target_position"
-
-    seq = context_sequence(context)
-    event_type = row.get("event_type", "")
-    if event_type == "snv":
-        if len(ref) != 1 or len(alt) != 1:
-            return raw_key, "bad_snv_allele"
-        vcf = (chrom, int(context["begin"]) + start0, ref, alt)
-    elif event_type == "del":
-        if not ref or alt:
-            return raw_key, "bad_del_allele"
-        if start0 <= 0:
-            return raw_key, "missing_left_anchor"
-        anchor = seq[start0 - 1]
-        vcf = (chrom, int(context["begin"]) + start0 - 1, anchor + ref, anchor)
-    elif event_type == "ins":
-        if ref or not alt:
-            return raw_key, "bad_ins_allele"
-        if start0 <= 0:
-            return raw_key, "missing_left_anchor"
-        anchor = seq[start0 - 1]
-        vcf = (chrom, int(context["begin"]) + start0 - 1, anchor, anchor + alt)
-    else:
-        return raw_key, "unsupported_event_type"
-
-    normalized, status = normalize_vcf_key_for_context(context, *vcf)
-    return (normalized or raw_key), status
-
-
-def contexts_for_variant(
-    context_index: dict[str, tuple[list[dict], list[int]]],
-    chrom: str,
-    pos: int,
-) -> list[dict]:
-    rows, starts = context_index.get(chrom, ([], []))
-    limit = bisect.bisect_right(starts, pos)
-    return [context for context in rows[:limit] if int(context["end"]) >= pos]
-
-
-def add_annotation_cache_entry(
-    cache: dict,
-    key: tuple[str, int, str, str],
-    value,
-    contexts: dict[str, dict],
-    context_index: dict[str, tuple[list[dict], list[int]]],
-    status_counts: Counter,
-) -> None:
-    cache[key] = value
-    chrom, pos, ref, alt = key
-    matched_contexts = contexts_for_variant(context_index, chrom, pos)
-    if not matched_contexts:
-        status_counts["raw_no_context"] += 1
-        return
-    for context in matched_contexts:
-        normalized, status = normalize_vcf_key_for_context(context, chrom, pos, ref, alt)
-        status_counts[status] += 1
-        if normalized:
-            cache[normalized] = value
-
-
 def fetch_gnomad_for_cluster(
     region_cache: GnomadRegionCache,
     chrom: str,
@@ -608,7 +398,7 @@ def clinvar_annotation_from_record(rec) -> dict[str, str]:
 
 
 def gnomad_annotation_from_variant(variant: dict) -> dict[str, str]:
-    af, af_source, *_ = _select_af_metrics(variant)
+    af, af_source, *_ = select_af_metrics(variant)
     return {
         "gnomad_af": format_float(af),
         "gnomad_af_source": af_source or "",
@@ -679,7 +469,7 @@ def build_clinvar_cache(
     cache = {}
     status_counts = Counter()
     for acc, positions in accession_positions.items():
-        chrom = _refseq_accession_to_gnomad_chrom(acc)
+        chrom = refseq_accession_to_chrom(acc)
         if not chrom:
             failures.append(
                 failure_row(
@@ -699,7 +489,7 @@ def build_clinvar_cache(
                     rec_alts = rec.alts or ()
                     annotation = clinvar_annotation_from_record(rec)
                     for alt in rec_alts:
-                        add_annotation_cache_entry(
+                        add_context_normalized_record(
                             cache,
                             (chrom, rec.pos, rec.ref, alt),
                             annotation,
@@ -751,7 +541,14 @@ def main():
         raise FileNotFoundError(f"ClinVar VCF index not found: {clinvar_tbi}")
 
     failures: list[dict] = []
-    contexts = load_target_contexts(args.genes_tsv, args.target_sequences_dir)
+    if bool(args.genes_tsv) != bool(args.target_sequences_dir):
+        raise ValueError("--genes-tsv and --target-sequences-dir must be provided together.")
+    if args.genes_tsv and args.target_sequences_dir:
+        contexts = load_target_contexts(args.genes_tsv, args.target_sequences_dir)
+        logger.info("Loaded target context for %s gene(s).", len(contexts))
+    else:
+        contexts = {}
+        logger.warning("No target context provided; ClinVar/gnomAD lookup will use raw event keys.")
     context_index = build_context_index(contexts)
 
     # 1. Read events once, collect lookup regions, and collapse repeated support rows.
@@ -782,7 +579,7 @@ def main():
             if acc and lookup_key:
                 accession_positions[acc].add(int(lookup_key[1]))
 
-            variant_key = lookup_key_text(lookup_key)
+            variant_key = variant_key_text(lookup_key)
             aggregate_key = variant_aggregate_key(row, variant_key)
             aggregate = variant_aggregates.get(aggregate_key)
             if aggregate is None:
@@ -819,7 +616,7 @@ def main():
     # 2. Determine gnomAD clusters
     gnomad_tasks = []
     for acc, positions in accession_positions.items():
-        chrom = _refseq_accession_to_gnomad_chrom(acc)
+        chrom = refseq_accession_to_chrom(acc)
         if not chrom:
             continue
         clusters = cluster_positions(list(positions), max_gap=200000)
@@ -854,7 +651,7 @@ def main():
                 gnomad_raw_variant_count += len(vars_list)
                 for v in vars_list:
                     key = (v["chrom"], int(v["pos"]), v["ref"], v["alt"])
-                    add_annotation_cache_entry(
+                    add_context_normalized_record(
                         gnomad_cache,
                         key,
                         v,

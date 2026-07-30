@@ -13,15 +13,15 @@ from pathlib import Path
 
 import pandas as pd
 
-from bin.gnomad_cache import GnomadRegionCache
-from bin.fetch_gnomad_variants import (
+from genomics.gnomad_cache import GnomadRegionCache
+from genomics.gnomad import (
     GNOMAD_API_URL,
     fetch_region_variants_recursive,
     select_af_metrics,
 )
 
 from .clinvar_validation import path_metadata
-from .variant_keys import normalize_chrom
+from genomics.variants import normalize_chrom
 
 
 CACHE_VERSION = 1

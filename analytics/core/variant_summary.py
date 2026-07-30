@@ -17,7 +17,7 @@ import numpy as np
 import pandas as pd
 
 from .target_context import context_at, read_disjoint_contexts
-from .variant_keys import (
+from genomics.variants import (
     RegionIndex,
     changed_target_position,
     gnomad_lookup_status,

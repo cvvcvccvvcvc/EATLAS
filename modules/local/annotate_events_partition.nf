@@ -4,6 +4,8 @@ process ANNOTATE_EVENTS_PARTITION {
     input:
     tuple val(meta), path(alignment_partition), path(genes_tsv), path(target_fastas, stageAs: 'targets/*'), path(target_features, stageAs: 'target_features/*')
     path annotate_script
+    path annotation_helpers
+    path genomics_sources, stageAs: 'genomics/*'
     path clinvar_vcf
     path clinvar_vcf_tbi
     val gnomad_cache_dir

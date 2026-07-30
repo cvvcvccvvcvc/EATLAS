@@ -21,7 +21,7 @@ from .conservation import (
     read_position_scores,
     score_positions,
 )
-from .variant_keys import gnomad_lookup_status, parse_variant_key, read_failed_regions
+from genomics.variants import gnomad_lookup_status, parse_variant_key, read_failed_regions
 
 
 CACHE_VERSION = 4

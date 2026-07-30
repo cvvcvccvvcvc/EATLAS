@@ -14,18 +14,11 @@ from pathlib import Path
 from typing import Callable
 from urllib.error import HTTPError, URLError
 
-try:
-    from .fetch_gnomad_variants import (
-        GNOMAD_MAX_ATTEMPTS,
-        fetch_region_variants_recursive,
-        is_retryable_network_error,
-    )
-except ImportError:  # Direct imports from scripts in bin/.
-    from fetch_gnomad_variants import (  # type: ignore[no-redef]
-        GNOMAD_MAX_ATTEMPTS,
-        fetch_region_variants_recursive,
-        is_retryable_network_error,
-    )
+from .gnomad import (
+    GNOMAD_MAX_ATTEMPTS,
+    fetch_region_variants_recursive,
+    is_retryable_network_error,
+)
 
 
 logger = logging.getLogger(__name__)

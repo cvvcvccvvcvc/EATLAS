@@ -26,7 +26,7 @@ from .clinvar_validation import directory_metadata, path_metadata, split_strateg
 from .conservation import annotate_track, parse_tracks
 from .external_evidence import build_external_evidence
 from .target_context import context_at, read_disjoint_contexts
-from .variant_keys import changed_target_position, parse_variant_key
+from genomics.variants import changed_target_position, parse_variant_key
 from .vep_consequences import annotate_vep_consequences
 
 

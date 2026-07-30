@@ -7,6 +7,8 @@ process ANNOTATE_EVENTS {
     path genes_tsv
     path sequences_dir
     path annotate_script
+    path annotation_helpers
+    path genomics_sources, stageAs: 'genomics/*'
     path clinvar_vcf
     path clinvar_vcf_tbi
     val gnomad_cache_dir

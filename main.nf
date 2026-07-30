@@ -474,12 +474,25 @@ workflow ANNOTATION_STAGE {
 
     main:
     annotate_script = file("${projectDir}/bin/annotate_events.py")
+    annotation_helpers = [
+        file("${projectDir}/bin/feature_coverage.py"),
+        file("${projectDir}/bin/ortholog_evidence_summary.py"),
+        file("${projectDir}/bin/taxonomic_evidence.py"),
+    ]
+    genomics_sources = [
+        file("${projectDir}/genomics/__init__.py"),
+        file("${projectDir}/genomics/gnomad.py"),
+        file("${projectDir}/genomics/gnomad_cache.py"),
+        file("${projectDir}/genomics/variants.py"),
+    ]
     ANNOTATE_EVENTS(
         events_tsv,
         segments_tsv,
         genes_tsv,
         sequences_dir,
         annotate_script,
+        annotation_helpers,
+        genomics_sources,
         clinvar_vcf,
         clinvar_vcf_tbi,
         gnomad_cache_dir
@@ -504,6 +517,17 @@ workflow PARTITIONED_ANNOTATION_STAGE {
 
     main:
     annotate_script = file("${projectDir}/bin/annotate_events.py")
+    annotation_helpers = [
+        file("${projectDir}/bin/feature_coverage.py"),
+        file("${projectDir}/bin/ortholog_evidence_summary.py"),
+        file("${projectDir}/bin/taxonomic_evidence.py"),
+    ]
+    genomics_sources = [
+        file("${projectDir}/genomics/__init__.py"),
+        file("${projectDir}/genomics/gnomad.py"),
+        file("${projectDir}/genomics/gnomad_cache.py"),
+        file("${projectDir}/genomics/variants.py"),
+    ]
     finalize_script = file("${projectDir}/bin/finalize_annotation_partitions.py")
     annotation_inputs = alignment_partitions
         .map { meta, dir -> tuple(meta.partition_id as String, meta, dir) }
@@ -516,6 +540,8 @@ workflow PARTITIONED_ANNOTATION_STAGE {
     ANNOTATE_EVENTS_PARTITION(
         annotation_inputs,
         annotate_script,
+        annotation_helpers,
+        genomics_sources,
         clinvar_vcf,
         clinvar_vcf_tbi,
         gnomad_cache_dir

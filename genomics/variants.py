@@ -6,7 +6,7 @@ import bisect
 import csv
 import gzip
 import re
-from collections import defaultdict
+from collections import Counter, defaultdict
 from pathlib import Path
 from typing import TypeAlias
 
@@ -256,3 +256,84 @@ def normalize_vcf_key_for_context(
             pos0 -= 1
 
     return (chrom, int(context["begin"]) + pos0, ref, alt), "ok"
+
+
+def event_vcf_key(
+    row: dict[str, object],
+    contexts: dict[str, dict],
+) -> tuple[tuple[str, int, str, str] | None, str]:
+    """Convert one normalized alignment event to a canonical VCF-style key."""
+
+    ref = str(row.get("ref") or "").upper()
+    alt = str(row.get("alt") or "").upper()
+    if any(base not in DNA_BASES for base in ref + alt):
+        return None, "non_concrete_allele"
+
+    gene_id = str(row.get("gene_id") or "")
+    context = contexts.get(gene_id)
+    chrom = refseq_accession_to_chrom(str(row.get("genomic_accession") or ""))
+    if not chrom:
+        return None, "unknown_chrom"
+
+    try:
+        raw_pos = int(row.get("genomic_start1") or 0)
+    except (TypeError, ValueError):
+        return None, "bad_position"
+    raw_key = (chrom, raw_pos, ref, alt)
+
+    if not context:
+        return raw_key, "raw_no_context"
+
+    try:
+        start0 = int(row.get("target_start0") or 0)
+    except (TypeError, ValueError):
+        return raw_key, "bad_target_position"
+
+    sequence = context_sequence(context)
+    event_type = str(row.get("event_type") or "")
+    if event_type == "snv":
+        if len(ref) != 1 or len(alt) != 1:
+            return raw_key, "bad_snv_allele"
+        vcf_key = (chrom, int(context["begin"]) + start0, ref, alt)
+    elif event_type == "del":
+        if not ref or alt:
+            return raw_key, "bad_del_allele"
+        if start0 <= 0:
+            return raw_key, "missing_left_anchor"
+        anchor = sequence[start0 - 1]
+        vcf_key = (chrom, int(context["begin"]) + start0 - 1, anchor + ref, anchor)
+    elif event_type == "ins":
+        if ref or not alt:
+            return raw_key, "bad_ins_allele"
+        if start0 <= 0:
+            return raw_key, "missing_left_anchor"
+        anchor = sequence[start0 - 1]
+        vcf_key = (chrom, int(context["begin"]) + start0 - 1, anchor, anchor + alt)
+    else:
+        return raw_key, "unsupported_event_type"
+
+    normalized, status = normalize_vcf_key_for_context(context, *vcf_key)
+    return normalized or raw_key, status
+
+
+def add_context_normalized_record(
+    cache: dict[tuple[str, int, str, str], object],
+    key: tuple[str, int, str, str],
+    value: object,
+    contexts: dict[str, dict],
+    context_index: dict[str, tuple[list[dict], list[int]]],
+    status_counts: Counter,
+) -> None:
+    """Index a record by its source key and every valid target-normalized key."""
+
+    cache[key] = value
+    chrom, pos, ref, alt = key
+    matched_contexts = contexts_for_variant(context_index, chrom, pos)
+    if not matched_contexts:
+        status_counts["raw_no_context"] += 1
+        return
+    for context in matched_contexts:
+        normalized, status = normalize_vcf_key_for_context(context, chrom, pos, ref, alt)
+        status_counts[status] += 1
+        if normalized:
+            cache[normalized] = value

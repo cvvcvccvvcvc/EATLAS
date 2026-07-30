@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from urllib.error import HTTPError
 
-from bin.gnomad_cache import GnomadRegionCache, tiles_for_region
+from genomics.gnomad_cache import GnomadRegionCache, tiles_for_region
 
 
 def variant(pos: int) -> dict:

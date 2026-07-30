@@ -1,16 +1,10 @@
 from __future__ import annotations
 
-import sys
-from pathlib import Path
 from urllib.error import HTTPError, URLError
 
 import pytest
 
-
-BIN_DIR = Path(__file__).resolve().parents[1] / "bin"
-sys.path.insert(0, str(BIN_DIR))
-
-import fetch_gnomad_variants as gnomad  # noqa: E402
+from genomics import gnomad
 
 
 SUCCESS_RESPONSE = {

@@ -15,7 +15,7 @@ import pandas as pd
 
 from .stats import benjamini_hochberg, enrichment_result, mantel_haenszel_adjusted
 from .target_context import context_at, read_disjoint_contexts
-from .variant_keys import changed_target_position, parse_variant_key
+from genomics.variants import changed_target_position, parse_variant_key
 
 
 SCORE_COLUMN = "phyloP100way"
