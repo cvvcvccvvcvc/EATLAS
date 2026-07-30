@@ -51,7 +51,7 @@ VARIANT_USECOLS = [
 ]
 VEP_USECOLS = ["vep_status", "vep_primary_consequence"]
 VARIANT_REQUIRED = {"variant_key", "gene_id", "event_type", "strategies"}
-SUMMARY_CACHE_VERSION = 10
+SUMMARY_CACHE_VERSION = 11
 SUMMARY_CACHE_NAME = "variant_summary.json.gz"
 SPECIAL_FLOAT_KEY = "__gaph_float__"
 ORTHOLOG_EVIDENCE_COLUMNS = [
@@ -179,6 +179,7 @@ def _summary_payload(
     genes: Path | None,
     annotation_failures: Path | None,
     variant_strategy_support: Path | None,
+    ortholog_evidence_summary: Path | None,
     strategy_label: Callable[[str], str],
 ) -> dict[str, object]:
     overlap = None
@@ -216,6 +217,11 @@ def _summary_payload(
         "variant_strategy_support": (
             _input_metadata(variant_strategy_support)
             if variant_strategy_support is not None
+            else None
+        ),
+        "ortholog_evidence_summary": (
+            _input_metadata(ortholog_evidence_summary)
+            if ortholog_evidence_summary is not None
             else None
         ),
         "strategy_labels": {
@@ -299,6 +305,7 @@ def _load_summary_cache(
     genes: Path | None,
     annotation_failures: Path | None,
     variant_strategy_support: Path | None,
+    ortholog_evidence_summary: Path | None,
     strategy_label: Callable[[str], str],
 ) -> VariantSummary | None:
     if not cache_path.exists():
@@ -328,6 +335,13 @@ def _load_summary_cache(
         )
         if payload.get("variant_strategy_support") != expected_support:
             return None
+        expected_ortholog_evidence = (
+            _input_metadata(ortholog_evidence_summary)
+            if ortholog_evidence_summary is not None
+            else None
+        )
+        if payload.get("ortholog_evidence_summary") != expected_ortholog_evidence:
+            return None
         labels = payload.get("strategy_labels", {})
         if any(strategy_label(strategy) != label for strategy, label in labels.items()):
             return None
@@ -344,6 +358,7 @@ def _write_summary_cache(
     genes: Path | None,
     annotation_failures: Path | None,
     variant_strategy_support: Path | None,
+    ortholog_evidence_summary: Path | None,
     strategy_label: Callable[[str], str],
 ) -> None:
     payload = _summary_payload(
@@ -353,6 +368,7 @@ def _write_summary_cache(
         genes,
         annotation_failures,
         variant_strategy_support,
+        ortholog_evidence_summary,
         strategy_label,
     )
     with tempfile.NamedTemporaryFile(
@@ -1111,6 +1127,7 @@ def build_variant_summary(
     genes_path: Path | None = None,
     annotation_failures_path: Path | None = None,
     variant_strategy_support_path: Path | None = None,
+    ortholog_evidence_summary_path: Path | None = None,
     chunk_size: int = 100_000,
 ) -> VariantSummary:
     """Aggregate a variant annotation table without retaining row-level data in memory."""
@@ -1123,6 +1140,7 @@ def build_variant_summary(
         genes_path,
         annotation_failures_path,
         variant_strategy_support_path,
+        ortholog_evidence_summary_path,
         strategy_label,
     )
     if cached is not None:
@@ -1135,6 +1153,7 @@ def build_variant_summary(
         genes_path,
         annotation_failures_path,
         variant_strategy_support_path,
+        ortholog_evidence_summary_path,
         strategy_label,
         chunk_size,
     )
@@ -1146,6 +1165,7 @@ def build_variant_summary(
         genes_path,
         annotation_failures_path,
         variant_strategy_support_path,
+        ortholog_evidence_summary_path,
         strategy_label,
     )
     return summary
@@ -1158,6 +1178,7 @@ def _compute_variant_summary(
     genes_path: Path | None,
     annotation_failures_path: Path | None,
     variant_strategy_support_path: Path | None,
+    ortholog_evidence_summary_path: Path | None,
     strategy_label: Callable[[str], str],
     chunk_size: int,
 ) -> VariantSummary:
@@ -1372,15 +1393,22 @@ def _compute_variant_summary(
             ).fetchone()[0]
         )
         gnomad_af_summary = _gnomad_af_summary(connection, strategy_label)
-        (
-            ortholog_evidence_available,
-            ortholog_evidence_cells,
-            ortholog_evidence_distributions,
-        ) = _ortholog_evidence_summary(
-            connection,
-            variant_strategy_support_path,
-            chunk_size,
-        )
+        if ortholog_evidence_summary_path is not None:
+            (
+                ortholog_evidence_available,
+                ortholog_evidence_cells,
+                ortholog_evidence_distributions,
+            ) = read_taxonomic_ortholog_evidence(ortholog_evidence_summary_path)
+        else:
+            (
+                ortholog_evidence_available,
+                ortholog_evidence_cells,
+                ortholog_evidence_distributions,
+            ) = _ortholog_evidence_summary(
+                connection,
+                variant_strategy_support_path,
+                chunk_size,
+            )
     finally:
         connection.close()
         database_path.unlink(missing_ok=True)

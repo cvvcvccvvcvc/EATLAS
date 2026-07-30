@@ -72,6 +72,99 @@ def test_taxonomic_ortholog_evidence_uses_absolute_alt_support(tmp_path: Path) -
     assert int(distributions[distributions["metric"].eq("exact_alt")]["variant_count"].sum()) == 18
 
 
+def test_variant_summary_prefers_compact_ortholog_evidence_and_tracks_its_cache(
+    tmp_path: Path,
+) -> None:
+    annotations = tmp_path / "variant_annotations.tsv.gz"
+    support = tmp_path / "variant_strategy_support.tsv.gz"
+    compact = tmp_path / "ortholog_evidence_summary.tsv.gz"
+    pd.DataFrame(
+        [
+            {
+                "variant_key": "1:100:A>G",
+                "gene_id": "1",
+                "event_type": "snv",
+                "ref": "A",
+                "alt": "G",
+                "lookup_status": "ok",
+                "strategies": "s1",
+            }
+        ],
+        columns=VARIANT_USECOLS,
+    ).fillna("").to_csv(annotations, sep="\t", index=False, compression="gzip")
+    pd.DataFrame(
+        [
+            {
+                "variant_key": "1:100:A>G",
+                "gene_id": "1",
+                "strategy": "s1",
+                "alt_support_row_count": 11,
+                "alt_support_ortholog_count": 11,
+                "site_aligned_ortholog_count": 10,
+            }
+        ]
+    ).to_csv(support, sep="\t", index=False, compression="gzip")
+
+    def write_compact(found: int) -> None:
+        pd.DataFrame(
+            [
+                {
+                    "strategy": "s1",
+                    "target_context": "cds",
+                    "taxonomic_scope": "mammalia",
+                    "evidence_unit": "species",
+                    "site_aligned_count": 10,
+                    "alt_support_count": 5,
+                    "gnomad_found_count": found,
+                    "gnomad_not_found_count": 1,
+                    "gnomad_lookup_failed_count": 0,
+                }
+            ]
+        ).to_csv(compact, sep="\t", index=False, compression="gzip")
+
+    write_compact(2)
+    work_dir = tmp_path / "analytics"
+    summary = build_variant_summary(
+        annotations,
+        work_dir,
+        strategy_label=str,
+        variant_strategy_support_path=support,
+        ortholog_evidence_summary_path=compact,
+    )
+
+    assert summary.ortholog_evidence_available
+    assert set(summary.ortholog_evidence_cells["taxonomic_scope"]) == {"mammalia"}
+    assert int(
+        summary.ortholog_evidence_cells[
+            summary.ortholog_evidence_cells["quantile_count"].eq(2)
+        ]["gnomad_found_count"].sum()
+    ) == 2
+
+    cached = build_variant_summary(
+        annotations,
+        work_dir,
+        strategy_label=str,
+        variant_strategy_support_path=support,
+        ortholog_evidence_summary_path=compact,
+    )
+    assert cached.cache_hit
+
+    write_compact(3)
+    rebuilt = build_variant_summary(
+        annotations,
+        work_dir,
+        strategy_label=str,
+        variant_strategy_support_path=support,
+        ortholog_evidence_summary_path=compact,
+    )
+    assert not rebuilt.cache_hit
+    assert int(
+        rebuilt.ortholog_evidence_cells[
+            rebuilt.ortholog_evidence_cells["quantile_count"].eq(2)
+        ]["gnomad_found_count"].sum()
+    ) == 3
+
+
 def test_variant_summary_accepts_compact_annotation_schema(tmp_path: Path) -> None:
     annotations = tmp_path / "variant_annotations.tsv.gz"
     rows = [

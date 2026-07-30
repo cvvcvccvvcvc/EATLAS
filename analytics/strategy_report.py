@@ -8,7 +8,6 @@ import os
 import time
 from collections.abc import Iterator
 from contextlib import contextmanager
-from dataclasses import replace
 from pathlib import Path
 
 import pandas as pd
@@ -19,10 +18,7 @@ from analytics.analyses.conservation_analysis import (
     build_conservation_analysis,
 )
 from analytics.analyses.matched_control import build_target_space_null
-from analytics.analyses.variant_summary import (
-    build_variant_summary,
-    read_taxonomic_ortholog_evidence,
-)
+from analytics.analyses.variant_summary import build_variant_summary
 from analytics.io.run_inputs import (
     bulk_vep_release,
     read_failures,
@@ -234,17 +230,12 @@ def main() -> None:
             genes_path=inputs.genes_tsv,
             annotation_failures_path=inputs.annotation_failures_tsv,
             variant_strategy_support_path=inputs.variant_strategy_support_tsv,
-        )
-        if inputs.ortholog_evidence_summary_tsv.exists():
-            available, cells, distributions = read_taxonomic_ortholog_evidence(
+            ortholog_evidence_summary_path=(
                 inputs.ortholog_evidence_summary_tsv
-            )
-            variant_summary = replace(
-                variant_summary,
-                ortholog_evidence_available=available,
-                ortholog_evidence_cells=cells,
-                ortholog_evidence_distributions=distributions,
-            )
+                if inputs.ortholog_evidence_summary_tsv.exists()
+                else None
+            ),
+        )
         timing["Details"] = "cache hit" if variant_summary.cache_hit else "cache miss"
 
     with timed_stage("Run summary inputs", timings):

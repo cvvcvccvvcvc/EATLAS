@@ -165,6 +165,10 @@ variant-strategy records without loading the full annotation table into memory;
 the file is removed when aggregation finishes or fails. The compact final
 aggregation is cached as `<run-dir>/analytics/variant_summary.json.gz` and is
 reused while the annotation input and summary schema remain unchanged.
+Current runs load ortholog-evidence heatmaps from the compact
+`annotation/ortholog_evidence_summary.tsv.gz`; the report reconstructs those
+aggregates from `variant_strategy_support.tsv.gz` only for legacy runs that do
+not publish the compact table.
 The report requires the canonical `alignment/strategy_summary.tsv.gz`; it does
 not reconstruct that aggregate from a raw per-ortholog table.
 
