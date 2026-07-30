@@ -4,8 +4,8 @@ from pathlib import Path
 
 import pandas as pd
 
-from analytics.core import external_evidence
-from analytics.core.external_evidence import _annotate_gnomad, categorize_clinvar_sig
+from analytics.analyses import external_evidence
+from analytics.analyses.external_evidence import _annotate_gnomad, categorize_clinvar_sig
 
 
 def test_clinvar_categories_keep_missing_classification_separate() -> None:

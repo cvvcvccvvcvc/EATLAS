@@ -8,12 +8,12 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from analytics.core import conservation as conservation_module
-from analytics.core import conservation_validation as validation_module
-from analytics.core.clinvar_validation import parse_molecular_consequences
-from analytics.core.conservation import DEFAULT_TRACK_NAMES, PositionScores, Track, annotate_track, score_positions
-from analytics.core.stats import benjamini_hochberg
-from analytics.core.conservation_validation import (
+from analytics.analyses import conservation as conservation_module
+from analytics.analyses import conservation_validation as validation_module
+from analytics.analyses.clinvar_validation import parse_molecular_consequences
+from analytics.analyses.conservation import DEFAULT_TRACK_NAMES, PositionScores, Track, annotate_track, score_positions
+from analytics.analyses.statistics import benjamini_hochberg
+from analytics.analyses.conservation_validation import (
     CONSEQUENCE_OPTIONS,
     SCORE_COLUMN,
     TARGET_CONTEXT_OPTIONS,

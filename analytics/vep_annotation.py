@@ -16,9 +16,9 @@ from pathlib import Path
 
 import pandas as pd
 
-from analytics.core.clinvar_validation import path_metadata
+from analytics.analyses.clinvar_validation import path_metadata
 from genomics.variants import parse_variant_key
-from analytics.core.vep_consequences import annotate_vep_consequences
+from analytics.annotation.vep import annotate_vep_consequences
 
 
 SCHEMA_VERSION = 1

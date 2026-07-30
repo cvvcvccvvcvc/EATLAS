@@ -6,7 +6,7 @@ from types import SimpleNamespace
 
 import pandas as pd
 
-from analytics.core.negative_controls import TargetSpaceNullAnalysis
+from analytics.analyses.matched_control import TargetSpaceNullAnalysis
 from analytics.strategy_report import (
     RunInputs,
     build_variant_sections,

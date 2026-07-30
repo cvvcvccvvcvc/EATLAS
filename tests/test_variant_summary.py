@@ -4,7 +4,7 @@ import csv
 import gzip
 from pathlib import Path
 
-from analytics.core.variant_summary import (
+from analytics.analyses.variant_summary import (
     VEP_USECOLS,
     VARIANT_USECOLS,
     build_variant_summary,

@@ -24,7 +24,7 @@ from genomics.variants import (
     variant_key_text,
     variant_type,
 )
-from .vep_consequences import VEP_CONSEQUENCE_ORDER, annotate_vep_consequences
+from analytics.annotation.vep import VEP_CONSEQUENCE_ORDER, annotate_vep_consequences
 
 
 UNIVERSE_FIELDS = [

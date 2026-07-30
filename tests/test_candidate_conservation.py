@@ -4,8 +4,8 @@ import csv
 import gzip
 from pathlib import Path
 
-from analytics.core import candidate_conservation as candidate
-from analytics.core.conservation import PositionScores, parse_tracks
+from analytics.analyses import candidate_conservation as candidate
+from analytics.analyses.conservation import PositionScores, parse_tracks
 
 
 def test_candidate_conservation_deduplicates_memberships_and_reuses_cache(

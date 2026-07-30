@@ -6,7 +6,7 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
-from analytics.core import vep_consequences as vep
+from analytics.annotation import vep
 
 
 def test_parse_record_selects_target_gene_and_most_severe_term() -> None:

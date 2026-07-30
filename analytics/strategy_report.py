@@ -23,10 +23,10 @@ from plotly.subplots import make_subplots
 from scipy.cluster.hierarchy import leaves_list, linkage
 from scipy.spatial.distance import squareform
 
-from analytics.core.clinvar_validation import build_validation
-from analytics.core.candidate_conservation import CandidateConservation, build_candidate_conservation
-from analytics.core.conservation import DEFAULT_TRACK_NAMES, build_conservation_annotations, universe_rows
-from analytics.core.conservation_validation import (
+from analytics.analyses.clinvar_validation import build_validation
+from analytics.analyses.candidate_conservation import CandidateConservation, build_candidate_conservation
+from analytics.analyses.conservation import DEFAULT_TRACK_NAMES, build_conservation_annotations, universe_rows
+from analytics.analyses.conservation_validation import (
     CONSEQUENCE_OPTIONS,
     CONSEQUENCE_TERMS,
     PHYLOP_BANDS,
@@ -38,8 +38,8 @@ from analytics.core.conservation_validation import (
     build_conservation_cohort,
     compute_conservation_validation,
 )
-from analytics.core.negative_controls import TargetSpaceNullAnalysis, build_target_space_null
-from analytics.core.variant_summary import (
+from analytics.analyses.matched_control import TargetSpaceNullAnalysis, build_target_space_null
+from analytics.analyses.variant_summary import (
     StrategyOverlap,
     VariantSummary,
     build_variant_summary,

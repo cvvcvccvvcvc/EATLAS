@@ -27,7 +27,7 @@ from .conservation import annotate_track, parse_tracks
 from .external_evidence import build_external_evidence
 from .target_context import context_at, read_disjoint_contexts
 from genomics.variants import changed_target_position, parse_variant_key
-from .vep_consequences import annotate_vep_consequences
+from analytics.annotation.vep import annotate_vep_consequences
 
 
 DNA_BASES = ("A", "C", "G", "T")

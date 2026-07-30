@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from analytics.core import clinvar_validation
+from analytics.analyses import clinvar_validation
 
 
 def test_clinvar_vep_artifact_aggregates_genes_and_resumes(

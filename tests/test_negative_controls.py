@@ -5,15 +5,15 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from analytics.core import negative_controls as controls
-from analytics.core.negative_controls import (
+from analytics.analyses import matched_control as controls
+from analytics.analyses.matched_control import (
     _build_matched_rows,
     _generate_candidate_controls,
     _matched_ecdf,
     _matched_metric_summary,
     _matched_summary,
 )
-from analytics.core.target_context import read_disjoint_contexts
+from analytics.analyses.target_context import read_disjoint_contexts
 
 
 def test_build_target_space_null_end_to_end_with_mocked_annotations(

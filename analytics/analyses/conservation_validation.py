@@ -13,7 +13,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from .stats import benjamini_hochberg, enrichment_result, mantel_haenszel_adjusted
+from .statistics import benjamini_hochberg, enrichment_result, mantel_haenszel_adjusted
 from .target_context import context_at, read_disjoint_contexts
 from genomics.variants import changed_target_position, parse_variant_key
 
