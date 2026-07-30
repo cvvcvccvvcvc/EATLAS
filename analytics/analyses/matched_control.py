@@ -28,6 +28,7 @@ from analytics.io.artifacts import (
     write_json_atomic,
     write_tsv_atomic,
 )
+from analytics.io.performance import PerformanceProfile, profile_stage
 from .clinvar_validation import split_strategies
 from .conservation import annotate_track, parse_tracks
 from .external_evidence import build_external_evidence
@@ -83,6 +84,7 @@ def build_target_space_null(
     vep_forks: int = 1,
     vep_result_cache_dir: Path | None = None,
     vep_result_cache_tile_size_bp: int = DEFAULT_TILE_SIZE_BP,
+    performance_profile: PerformanceProfile | None = None,
 ) -> TargetSpaceNullAnalysis:
     """Build or load the target-space null for one completed run."""
 
@@ -120,7 +122,14 @@ def build_target_space_null(
         },
         "conservation_track": "phyloP100way",
     }
-    if _cache_is_valid(manifest_path, expected_inputs, [matched_path, conservation_path]):
+    with profile_stage(performance_profile, "Target-null cache lookup") as timing:
+        cache_hit = _cache_is_valid(
+            manifest_path,
+            expected_inputs,
+            [matched_path, conservation_path],
+        )
+        timing["details"] = "cache hit" if cache_hit else "cache miss"
+    if cache_hit:
         manifest = json.loads(manifest_path.read_text())
         return _load_analysis(
             matched_path,
@@ -134,74 +143,128 @@ def build_target_space_null(
             external_evidence_path,
             external_evidence_manifest_path,
             gnomad_cache_dir,
+            performance_profile,
         )
 
-    genes = _read_genes(genes_tsv)
-    contexts = read_disjoint_contexts(
-        target_features_tsv,
-        {gene_id: int(gene["length"]) for gene_id, gene in genes.items()},
-    )
-    focal = _sample_focal_snvs(
-        variant_annotations_tsv,
-        contexts,
-        genes,
-        strategies,
-        sample_size_per_strategy,
-        seed,
-    )
-    if focal.empty:
-        raise ValueError("No normalized GAPH SNVs were available for the target-space null.")
-    sampled_focal_count = len(focal)
+    with profile_stage(performance_profile, "Target-null focal sampling") as timing:
+        genes = _read_genes(genes_tsv)
+        contexts = read_disjoint_contexts(
+            target_features_tsv,
+            {gene_id: int(gene["length"]) for gene_id, gene in genes.items()},
+        )
+        focal = _sample_focal_snvs(
+            variant_annotations_tsv,
+            contexts,
+            genes,
+            strategies,
+            sample_size_per_strategy,
+            seed,
+        )
+        if focal.empty:
+            raise ValueError("No normalized GAPH SNVs were available for the target-space null.")
+        sampled_focal_count = len(focal)
 
-    sequences = _read_target_sequences(target_sequences_dir, set(focal["gene_id"]))
-    focal, reference_mismatch_count = _validate_focal_reference(focal, genes, sequences)
-    reference_valid_focal_count = len(focal)
-    if focal.empty:
-        raise ValueError("No sampled GAPH SNVs matched the target reference sequence.")
+        sequences = _read_target_sequences(target_sequences_dir, set(focal["gene_id"]))
+        focal, reference_mismatch_count = _validate_focal_reference(focal, genes, sequences)
+        reference_valid_focal_count = len(focal)
+        if focal.empty:
+            raise ValueError("No sampled GAPH SNVs matched the target reference sequence.")
+        timing["metrics"] = {
+            "sampled_focals": int(sampled_focal_count),
+            "reference_valid_focals": int(reference_valid_focal_count),
+        }
 
-    focal_annotations, focal_vep = annotate_vep_consequences(
-        focal[["variant_key", "gene_id", "chrom", "pos", "ref", "alt"]],
-        vep_cache_path,
-        backend=vep_backend,
-        release=vep_release,
-        vep_executable=vep_executable,
-        vep_cache_dir=vep_cache_dir,
-        vep_forks=vep_forks,
-        vep_result_cache_dir=vep_result_cache_dir,
-        vep_result_cache_tile_size_bp=vep_result_cache_tile_size_bp,
-    )
-    focal = _merge_vep(focal, focal_annotations)
-    focal = focal[focal["vep_status"].eq("ok")].reset_index(drop=True)
-    if focal.empty:
-        raise ValueError("VEP returned no target-gene consequences for sampled GAPH SNVs.")
+    with profile_stage(performance_profile, "Target-null focal VEP") as timing:
+        focal_annotations, focal_vep = annotate_vep_consequences(
+            focal[["variant_key", "gene_id", "chrom", "pos", "ref", "alt"]],
+            vep_cache_path,
+            backend=vep_backend,
+            release=vep_release,
+            vep_executable=vep_executable,
+            vep_cache_dir=vep_cache_dir,
+            vep_forks=vep_forks,
+            vep_result_cache_dir=vep_result_cache_dir,
+            vep_result_cache_tile_size_bp=vep_result_cache_tile_size_bp,
+        )
+        focal = _merge_vep(focal, focal_annotations)
+        focal = focal[focal["vep_status"].eq("ok")].reset_index(drop=True)
+        if focal.empty:
+            raise ValueError("VEP returned no target-gene consequences for sampled GAPH SNVs.")
+        timing["metrics"] = {
+            "requested": int(focal_vep.get("requested", 0)),
+            "queried": int(focal_vep.get("queried", 0)),
+            "retained_focals": int(focal["focal_id"].nunique()),
+        }
 
-    candidates, generated_candidate_count, candidate_vep = _annotate_candidate_controls(
-        focal,
-        contexts,
-        genes,
-        sequences,
-        vep_cache_path,
-        str(focal_vep["release"]),
-        seed,
-        vep_backend=vep_backend,
-        vep_executable=vep_executable,
-        vep_cache_dir=vep_cache_dir,
-        vep_forks=vep_forks,
-        vep_result_cache_dir=vep_result_cache_dir,
-        vep_result_cache_tile_size_bp=vep_result_cache_tile_size_bp,
-    )
-    if candidates.empty:
-        raise ValueError("No consequence-matched target-space control candidates were available.")
+    with profile_stage(performance_profile, "Target-null control VEP") as timing:
+        candidates, generated_candidate_count, candidate_vep = _annotate_candidate_controls(
+            focal,
+            contexts,
+            genes,
+            sequences,
+            vep_cache_path,
+            str(focal_vep["release"]),
+            seed,
+            vep_backend=vep_backend,
+            vep_executable=vep_executable,
+            vep_cache_dir=vep_cache_dir,
+            vep_forks=vep_forks,
+            vep_result_cache_dir=vep_result_cache_dir,
+            vep_result_cache_tile_size_bp=vep_result_cache_tile_size_bp,
+        )
+        if candidates.empty:
+            raise ValueError(
+                "No consequence-matched target-space control candidates were available."
+            )
+        timing["metrics"] = {
+            "generated_candidates": int(generated_candidate_count),
+            "consequence_matched_candidates": int(len(candidates)),
+            "vep_requested": int(candidate_vep.get("requested", 0)),
+            "vep_queried": int(candidate_vep.get("queried", 0)),
+        }
 
-    observed_controls = _collect_observed_control_keys(variant_annotations_tsv, candidates)
-    matched = _build_matched_rows(focal, candidates, observed_controls)
-    if matched.empty:
-        raise ValueError("No consequence-matched target-space controls were available.")
-    matching_diagnostics = _matching_diagnostics(focal, matched)
+    with profile_stage(
+        performance_profile,
+        "Target-null observed-control exclusion",
+    ) as timing:
+        observed_controls = _collect_observed_control_keys(
+            variant_annotations_tsv,
+            candidates,
+        )
+        timing["metrics"] = {"observed_memberships": int(len(observed_controls))}
 
-    conservation_rows, conservation_manifest = _annotate_conservation(matched, conservation_path)
-    matched = matched.merge(conservation_rows, on="variant_key", how="left", validate="many_to_one")
-    _write_tsv(matched_path, matched)
+    with profile_stage(performance_profile, "Target-null matching") as timing:
+        matched = _build_matched_rows(focal, candidates, observed_controls)
+        if matched.empty:
+            raise ValueError("No consequence-matched target-space controls were available.")
+        matching_diagnostics = _matching_diagnostics(focal, matched)
+        timing["metrics"] = {
+            "matched_focals": int(
+                matched.loc[matched["role"] == "observed", "focal_id"].nunique()
+            ),
+            "matched_controls": int((matched["role"] == "control").sum()),
+        }
+
+    with profile_stage(performance_profile, "Target-null phyloP") as timing:
+        conservation_rows, conservation_manifest = _annotate_conservation(
+            matched,
+            conservation_path,
+        )
+        matched = matched.merge(
+            conservation_rows,
+            on="variant_key",
+            how="left",
+            validate="many_to_one",
+        )
+        timing["metrics"] = {
+            "unique_positions": int(conservation_manifest.get("unique_positions", 0)),
+            "annotated_positions": int(
+                conservation_manifest.get("annotated_positions", 0)
+            ),
+        }
+
+    with profile_stage(performance_profile, "Target-null artifact write"):
+        _write_tsv(matched_path, matched)
 
     manifest = {
         "inputs": expected_inputs,
@@ -241,6 +304,7 @@ def build_target_space_null(
         external_evidence_path,
         external_evidence_manifest_path,
         gnomad_cache_dir,
+        performance_profile,
     )
 
 
@@ -269,9 +333,19 @@ def _load_analysis(
     external_evidence_path: Path,
     external_evidence_manifest_path: Path,
     gnomad_cache_dir: Path | None,
+    performance_profile: PerformanceProfile | None,
 ) -> TargetSpaceNullAnalysis:
-    matched = pd.read_csv(matched_path, sep="\t", compression="gzip", keep_default_na=False)
-    matched["phyloP100way"] = pd.to_numeric(matched["phyloP100way"], errors="coerce")
+    with profile_stage(performance_profile, "Target-null cached artifact read"):
+        matched = pd.read_csv(
+            matched_path,
+            sep="\t",
+            compression="gzip",
+            keep_default_na=False,
+        )
+        matched["phyloP100way"] = pd.to_numeric(
+            matched["phyloP100way"],
+            errors="coerce",
+        )
     return _summarize_analysis(
         matched,
         manifest,
@@ -285,6 +359,7 @@ def _load_analysis(
         external_evidence_path,
         external_evidence_manifest_path,
         gnomad_cache_dir,
+        performance_profile,
     )
 
 
@@ -752,86 +827,112 @@ def _summarize_analysis(
     external_evidence_path: Path,
     external_evidence_manifest_path: Path,
     gnomad_cache_dir: Path | None,
+    performance_profile: PerformanceProfile | None,
 ) -> TargetSpaceNullAnalysis:
     matched = matched.copy()
     matched["phyloP100way"] = pd.to_numeric(matched["phyloP100way"], errors="coerce")
-    evidence, evidence_manifest = build_external_evidence(
-        matched=matched,
-        matched_path=matched_path,
-        clinvar_vcf=clinvar_vcf,
-        output_path=external_evidence_path,
-        manifest_path=external_evidence_manifest_path,
-        gnomad_cache_dir=gnomad_cache_dir,
-    )
-    matched = matched.merge(evidence, on="variant_key", how="left", validate="many_to_one")
-    matched["gnomad_found_value"] = np.where(
-        matched["gnomad_status"].eq("ok"),
-        matched["gnomad_found"].astype(float),
-        np.nan,
-    )
-    matched["gnomad_af_value"] = pd.to_numeric(matched["gnomad_af"], errors="coerce").where(
-        matched["gnomad_status"].eq("ok") & pd.to_numeric(matched["gnomad_af"], errors="coerce").gt(0)
-    )
-    matched["clinvar_found_value"] = matched["clinvar_found"].astype(float)
+    with profile_stage(performance_profile, "Target-null external evidence") as timing:
+        evidence, evidence_manifest = build_external_evidence(
+            matched=matched,
+            matched_path=matched_path,
+            clinvar_vcf=clinvar_vcf,
+            output_path=external_evidence_path,
+            manifest_path=external_evidence_manifest_path,
+            gnomad_cache_dir=gnomad_cache_dir,
+        )
+        matched = matched.merge(
+            evidence,
+            on="variant_key",
+            how="left",
+            validate="many_to_one",
+        )
+        timing["metrics"] = {
+            "unique_alleles": int(matched["variant_key"].nunique()),
+            "gnomad_queried_alleles": int(
+                evidence_manifest.get("gnomad", {}).get("queried_allele_count", 0)
+            ),
+        }
 
-    gnomad_found = _matched_metric_summary(
-        matched,
-        ["strategy"],
-        "gnomad_found_value",
-        "mean",
-        resamples,
-        seed + 2,
-        status_column="gnomad_status",
-    )
-    gnomad_found.insert(1, "metric", "found_fraction")
-    gnomad_af = _matched_metric_summary(
-        matched,
-        ["strategy"],
-        "gnomad_af_value",
-        "median",
-        resamples,
-        seed + 3,
-        status_column="gnomad_status",
-    )
-    gnomad_af.insert(1, "metric", "median_af")
-    clinvar_found = _matched_metric_summary(
-        matched,
-        ["strategy"],
-        "clinvar_found_value",
-        "mean",
-        resamples,
-        seed + 4,
-    )
-
-    clinvar_classes = []
-    for index, category in enumerate(["B/LB", "P/LP", "VUS", "Other"]):
-        value_column = f"clinvar_class_{index}"
-        matched[value_column] = np.where(
-            matched["clinvar_classified"].astype(bool),
-            matched["clinvar_class"].eq(category).astype(float),
+    with profile_stage(performance_profile, "Target-null resampling") as timing:
+        matched["gnomad_found_value"] = np.where(
+            matched["gnomad_status"].eq("ok"),
+            matched["gnomad_found"].astype(float),
             np.nan,
         )
-        category_summary = _matched_metric_summary(
+        gnomad_af_values = pd.to_numeric(matched["gnomad_af"], errors="coerce")
+        matched["gnomad_af_value"] = gnomad_af_values.where(
+            matched["gnomad_status"].eq("ok") & gnomad_af_values.gt(0)
+        )
+        matched["clinvar_found_value"] = matched["clinvar_found"].astype(float)
+
+        gnomad_found = _matched_metric_summary(
             matched,
             ["strategy"],
-            value_column,
+            "gnomad_found_value",
             "mean",
             resamples,
-            seed + 10 + index,
+            seed + 2,
+            status_column="gnomad_status",
         )
-        category_summary.insert(1, "clinvar_class", category)
-        clinvar_classes.append(category_summary)
+        gnomad_found.insert(1, "metric", "found_fraction")
+        gnomad_af = _matched_metric_summary(
+            matched,
+            ["strategy"],
+            "gnomad_af_value",
+            "median",
+            resamples,
+            seed + 3,
+            status_column="gnomad_status",
+        )
+        gnomad_af.insert(1, "metric", "median_af")
+        clinvar_found = _matched_metric_summary(
+            matched,
+            ["strategy"],
+            "clinvar_found_value",
+            "mean",
+            resamples,
+            seed + 4,
+        )
 
-    analysis_manifest = {**manifest, "external_evidence": evidence_manifest}
-    return TargetSpaceNullAnalysis(
-        summary=_matched_summary(matched, ["strategy"], resamples, seed),
-        consequence_summary=_matched_summary(
+        clinvar_classes = []
+        for index, category in enumerate(["B/LB", "P/LP", "VUS", "Other"]):
+            value_column = f"clinvar_class_{index}"
+            matched[value_column] = np.where(
+                matched["clinvar_classified"].astype(bool),
+                matched["clinvar_class"].eq(category).astype(float),
+                np.nan,
+            )
+            category_summary = _matched_metric_summary(
+                matched,
+                ["strategy"],
+                value_column,
+                "mean",
+                resamples,
+                seed + 10 + index,
+            )
+            category_summary.insert(1, "clinvar_class", category)
+            clinvar_classes.append(category_summary)
+
+        summary = _matched_summary(matched, ["strategy"], resamples, seed)
+        consequence_summary = _matched_summary(
             matched,
             ["strategy", "primary_consequence"],
             resamples,
             seed + 1,
-        ),
-        ecdf=_matched_ecdf(matched),
+        )
+        ecdf = _matched_ecdf(matched)
+        timing["metrics"] = {
+            "resamples": int(resamples),
+            "matched_focal_memberships": int(summary["matched_focals"].sum())
+            if not summary.empty
+            else 0,
+        }
+
+    analysis_manifest = {**manifest, "external_evidence": evidence_manifest}
+    return TargetSpaceNullAnalysis(
+        summary=summary,
+        consequence_summary=consequence_summary,
+        ecdf=ecdf,
         gnomad_summary=pd.concat([gnomad_found, gnomad_af], ignore_index=True),
         clinvar_summary=clinvar_found,
         clinvar_class_summary=pd.concat(clinvar_classes, ignore_index=True),

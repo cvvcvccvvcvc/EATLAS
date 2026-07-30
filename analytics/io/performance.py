@@ -288,3 +288,16 @@ class PerformanceProfile:
 
     def _flush(self) -> None:
         write_json_atomic(self.path, self._payload())
+
+
+@contextmanager
+def profile_stage(
+    profile: PerformanceProfile | None,
+    name: str,
+) -> Iterator[dict[str, object]]:
+    """Open a persisted stage when profiling is enabled."""
+    if profile is None:
+        yield {}
+        return
+    with profile.stage(name) as record:
+        yield record

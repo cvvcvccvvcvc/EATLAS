@@ -21,6 +21,7 @@ from analytics.io.artifacts import (
     write_text_atomic,
     write_tsv_atomic,
 )
+from analytics.io.performance import PerformanceProfile, profile_stage
 from genomics.variants import (
     build_context_index,
     contexts_for_variant,
@@ -51,7 +52,9 @@ UNIVERSE_FIELDS = [
     "gene_ids",
 ]
 CACHE_VERSION = 4
+OBSERVED_MEMBERSHIP_CACHE_VERSION = 1
 VALIDATION_TYPES = ["snv", "indel"]
+OBSERVED_MEMBERSHIP_COLUMNS = ["strategy", "variant_type", "variant_key"]
 
 
 @dataclass(frozen=True)
@@ -63,6 +66,8 @@ class ClinvarValidation:
     observed_by_strategy_type: dict[tuple[str, str], set[str]]
     consequence_column: str = "clinvar_mc_terms"
     consequence_source: str = "ClinVar MC"
+    observed_memberships_path: Path | None = None
+    observed_memberships_manifest_path: Path | None = None
 
 
 def build_validation(
@@ -81,6 +86,7 @@ def build_validation(
     vep_forks: int = 1,
     vep_result_cache_dir: Path | None = None,
     vep_result_cache_tile_size_bp: int = DEFAULT_TILE_SIZE_BP,
+    performance_profile: PerformanceProfile | None = None,
 ) -> ClinvarValidation:
     analytics_dir = run_dir / "analytics"
     analytics_dir.mkdir(parents=True, exist_ok=True)
@@ -88,41 +94,69 @@ def build_validation(
     manifest_path = analytics_dir / "clinvar_universe.snv_indel.manifest.json"
     regions_path = analytics_dir / "clinvar_target_regions.bed"
 
-    manifest = build_or_load_clinvar_universe(
-        genes_tsv=genes_tsv,
-        target_sequences_dir=target_sequences_dir,
-        clinvar_vcf=clinvar_vcf,
-        universe_path=universe_path,
-        manifest_path=manifest_path,
-        regions_path=regions_path,
-    )
-    universe = pd.read_csv(universe_path, sep="\t", compression="gzip", keep_default_na=False)
+    with profile_stage(performance_profile, "ClinVar universe") as timing:
+        manifest = build_or_load_clinvar_universe(
+            genes_tsv=genes_tsv,
+            target_sequences_dir=target_sequences_dir,
+            clinvar_vcf=clinvar_vcf,
+            universe_path=universe_path,
+            manifest_path=manifest_path,
+            regions_path=regions_path,
+        )
+        universe = pd.read_csv(
+            universe_path,
+            sep="\t",
+            compression="gzip",
+            keep_default_na=False,
+        )
+        timing["metrics"] = {"alleles": int(len(universe))}
+    membership_universe_path = universe_path
     consequence_column = "clinvar_mc_terms"
     consequence_source = "ClinVar MC"
     if use_vep_consequences:
         if not vep_release:
             raise ValueError("A pinned VEP release is required for ClinVar consequence annotation")
-        universe_path, vep_manifest_path, universe, vep_manifest = build_or_load_vep_universe(
-            universe=universe,
-            universe_path=universe_path,
-            analytics_dir=analytics_dir,
-            backend=vep_backend,
-            release=str(vep_release),
-            vep_executable=vep_executable,
-            vep_cache_dir=vep_cache_dir,
-            vep_forks=vep_forks,
-            vep_result_cache_dir=vep_result_cache_dir,
-            vep_result_cache_tile_size_bp=vep_result_cache_tile_size_bp,
-        )
+        with profile_stage(performance_profile, "ClinVar VEP consequences") as timing:
+            universe_path, vep_manifest_path, universe, vep_manifest = build_or_load_vep_universe(
+                universe=universe,
+                universe_path=universe_path,
+                analytics_dir=analytics_dir,
+                backend=vep_backend,
+                release=str(vep_release),
+                vep_executable=vep_executable,
+                vep_cache_dir=vep_cache_dir,
+                vep_forks=vep_forks,
+                vep_result_cache_dir=vep_result_cache_dir,
+                vep_result_cache_tile_size_bp=vep_result_cache_tile_size_bp,
+            )
+            timing["details"] = "cache hit" if vep_manifest["cache_hit"] else "cache miss"
+            timing["metrics"] = {
+                "alleles": int(len(universe)),
+                "requested": int(vep_manifest.get("request_count", 0)),
+            }
         manifest = {**manifest, "consequence_source": "Ensembl VEP", "vep": vep_manifest}
         manifest_path = vep_manifest_path
         consequence_column = "vep_consequence_terms"
         consequence_source = "Ensembl VEP"
-    observed_by_strategy_type = collect_observed_keys_by_strategy_type(
-        universe=universe,
-        variant_annotations_tsv=variant_annotations_tsv,
-        strategies=strategies,
-    )
+    with profile_stage(performance_profile, "ClinVar observed memberships") as timing:
+        (
+            observed_by_strategy_type,
+            membership_manifest,
+            observed_memberships_path,
+            observed_memberships_manifest_path,
+        ) = build_or_load_observed_keys_by_strategy_type(
+            universe=universe,
+            universe_path=membership_universe_path,
+            variant_annotations_tsv=variant_annotations_tsv,
+            strategies=strategies,
+            analytics_dir=analytics_dir,
+        )
+        timing["details"] = (
+            "cache hit" if membership_manifest["cache_hit"] else "cache miss"
+        )
+        timing["metrics"] = {
+            "memberships": int(membership_manifest["membership_count"]),
+        }
     return ClinvarValidation(
         universe_path,
         manifest_path,
@@ -131,6 +165,8 @@ def build_validation(
         observed_by_strategy_type,
         consequence_column,
         consequence_source,
+        observed_memberships_path,
+        observed_memberships_manifest_path,
     )
 
 
@@ -599,6 +635,96 @@ def gene_sort_key(value: str) -> tuple[int, str]:
 def write_universe(path: Path, rows: list[dict[str, str]]) -> None:
     frame = pd.DataFrame.from_records(rows, columns=UNIVERSE_FIELDS)
     write_tsv_atomic(path, frame)
+
+
+def build_or_load_observed_keys_by_strategy_type(
+    *,
+    universe: pd.DataFrame,
+    universe_path: Path,
+    variant_annotations_tsv: Path,
+    strategies: list[str],
+    analytics_dir: Path,
+) -> tuple[dict[tuple[str, str], set[str]], dict[str, object], Path, Path]:
+    output_path = analytics_dir / "clinvar_observed_memberships.tsv.gz"
+    manifest_path = analytics_dir / "clinvar_observed_memberships.manifest.json"
+    expected_inputs = {
+        "cache_version": OBSERVED_MEMBERSHIP_CACHE_VERSION,
+        "variant_annotations": path_metadata(variant_annotations_tsv),
+        "clinvar_universe": path_metadata(universe_path),
+        "strategies": sorted(strategies),
+    }
+    if output_path.exists() and manifest_path.exists():
+        try:
+            manifest = json.loads(manifest_path.read_text())
+            if (
+                manifest.get("complete") is True
+                and manifest.get("inputs") == expected_inputs
+                and manifest.get("output") == path_metadata(output_path)
+            ):
+                frame = pd.read_csv(
+                    output_path,
+                    sep="\t",
+                    compression="gzip",
+                    keep_default_na=False,
+                )
+                _validate_observed_membership_columns(frame)
+                return (
+                    _observed_membership_sets(frame, strategies),
+                    {**manifest, "cache_hit": True},
+                    output_path,
+                    manifest_path,
+                )
+        except (OSError, json.JSONDecodeError, ValueError):
+            pass
+
+    observed = collect_observed_keys_by_strategy_type(
+        universe=universe,
+        variant_annotations_tsv=variant_annotations_tsv,
+        strategies=strategies,
+    )
+    rows = [
+        {
+            "strategy": strategy,
+            "variant_type": variant_type,
+            "variant_key": variant_key,
+        }
+        for (strategy, variant_type), keys in sorted(observed.items())
+        for variant_key in sorted(keys)
+    ]
+    frame = pd.DataFrame(rows, columns=OBSERVED_MEMBERSHIP_COLUMNS)
+    write_tsv_atomic(output_path, frame)
+    manifest = {
+        "complete": True,
+        "inputs": expected_inputs,
+        "membership_count": int(len(frame)),
+        "output": path_metadata(output_path),
+    }
+    write_json_atomic(manifest_path, manifest)
+    return observed, {**manifest, "cache_hit": False}, output_path, manifest_path
+
+
+def _validate_observed_membership_columns(frame: pd.DataFrame) -> None:
+    missing = set(OBSERVED_MEMBERSHIP_COLUMNS) - set(frame.columns)
+    if missing:
+        raise ValueError(
+            "ClinVar observed-membership cache missing columns: "
+            f"{', '.join(sorted(missing))}"
+        )
+
+
+def _observed_membership_sets(
+    frame: pd.DataFrame,
+    strategies: list[str],
+) -> dict[tuple[str, str], set[str]]:
+    observed = {
+        (strategy, variant_type): set()
+        for strategy in strategies
+        for variant_type in VALIDATION_TYPES
+    }
+    for row in frame.itertuples(index=False):
+        key = (str(row.strategy), str(row.variant_type))
+        observed.setdefault(key, set()).add(str(row.variant_key))
+    return observed
 
 
 def collect_observed_keys_by_strategy_type(

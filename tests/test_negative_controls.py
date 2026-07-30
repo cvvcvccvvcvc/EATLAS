@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import numpy as np
@@ -14,6 +15,7 @@ from analytics.analyses.matched_control import (
     _matched_summary,
 )
 from analytics.analyses.target_context import read_disjoint_contexts
+from analytics.io.performance import PerformanceProfile
 
 
 def test_build_target_space_null_end_to_end_with_mocked_annotations(
@@ -101,6 +103,12 @@ def test_build_target_space_null_end_to_end_with_mocked_annotations(
     monkeypatch.setattr(controls, "annotate_vep_consequences", fake_vep)
     monkeypatch.setattr(controls, "_annotate_conservation", fake_conservation)
     monkeypatch.setattr(controls, "build_external_evidence", fake_external_evidence)
+    performance_path = run_dir / "analytics" / "performance.json"
+    performance = PerformanceProfile(
+        performance_path,
+        run_dir=run_dir,
+        report_path=run_dir / "report.html",
+    )
 
     analysis = controls.build_target_space_null(
         run_dir=run_dir,
@@ -115,6 +123,7 @@ def test_build_target_space_null_end_to_end_with_mocked_annotations(
         seed=3,
         gnomad_cache_dir=tmp_path / "gnomad_cache",
         vep_result_cache_dir=tmp_path / "vep_result_cache",
+        performance_profile=performance,
     )
 
     matched = pd.read_csv(analysis.matched_path, sep="\t", compression="gzip")
@@ -128,6 +137,20 @@ def test_build_target_space_null_end_to_end_with_mocked_annotations(
         call["vep_result_cache_dir"] == tmp_path / "vep_result_cache"
         for call in vep_calls
     )
+    stage_names = {
+        stage["name"]
+        for stage in json.loads(performance_path.read_text())["stages"]
+    }
+    assert {
+        "Target-null focal sampling",
+        "Target-null focal VEP",
+        "Target-null control VEP",
+        "Target-null observed-control exclusion",
+        "Target-null matching",
+        "Target-null phyloP",
+        "Target-null external evidence",
+        "Target-null resampling",
+    }.issubset(stage_names)
 
 
 def test_contexts_keep_noncoding_exon_separate_from_other_sequence(tmp_path: Path) -> None:

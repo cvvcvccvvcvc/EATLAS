@@ -3,6 +3,7 @@ from __future__ import annotations
 import shutil
 import subprocess
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import pandas as pd
@@ -342,9 +343,10 @@ def test_continuous_model_exports_strategy_eligibility_mask(
     observed_keys = set(cohort.loc[cohort.index % 3 != 0, "variant_key"])
     captured = {}
 
-    def fake_run_firth_models(*, model_data, specs, **_kwargs):
+    def fake_run_firth_models(*, model_data, specs, **kwargs):
         captured["model_data"] = model_data
         captured["specs"] = specs
+        captured["workers"] = kwargs["workers"]
         fitted = specs[["analysis_id"]].copy()
         fitted["odds_ratio"] = 1.0
         fitted["ci_low"] = 0.5
@@ -364,10 +366,12 @@ def test_continuous_model_exports_strategy_eligibility_mask(
         strategies=["s1"],
         analytics_dir=tmp_path,
         eligible_gene_ids_by_strategy={"s1": {"1"}},
+        firth_workers=3,
     )
 
     assert captured["model_data"]["eligible_0"].sum() == 60
     assert set(captured["specs"]["eligibility_column"]) == {"eligible_0"}
+    assert captured["workers"] == 3
     assert set(captured["specs"]["target_context"]) == {"all", "cds"}
     selected = results[
         results["variant_type"].eq("snv")
@@ -375,6 +379,66 @@ def test_continuous_model_exports_strategy_eligibility_mask(
         & results["consequence"].eq("missense")
     ].iloc[0]
     assert selected["usable_rows"] == 60
+
+
+def test_firth_runner_bounds_workers_and_disables_nested_blas_threads(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    model_data = synthetic_cohort(20)
+    model_data["observed_0"] = (model_data.index % 2).astype(int)
+    model_data["eligible_0"] = 1
+    specs = pd.DataFrame(
+        [
+            {
+                "analysis_id": f"model_{index}",
+                "observation_column": "observed_0",
+                "eligibility_column": "eligible_0",
+                "variant_type": "snv",
+                "target_context": "all",
+                "consequence": "missense",
+            }
+            for index in range(3)
+        ]
+    )
+
+    def fake_run(command, **kwargs):
+        assert command[-1] == "3"
+        for variable in (
+            "OMP_NUM_THREADS",
+            "OPENBLAS_NUM_THREADS",
+            "MKL_NUM_THREADS",
+            "VECLIB_MAXIMUM_THREADS",
+            "NUMEXPR_NUM_THREADS",
+        ):
+            assert kwargs["env"][variable] == "1"
+        pd.DataFrame(
+            {
+                "analysis_id": specs["analysis_id"],
+                "odds_ratio": 1.0,
+                "ci_low": 0.5,
+                "ci_high": 2.0,
+                "plr_p": 1.0,
+                "status": "estimated",
+                "reason": "",
+            }
+        ).to_csv(command[5], sep="\t", index=False)
+        pd.DataFrame(
+            {"component": ["R", "logistf"], "version": ["test", "test"]}
+        ).to_csv(command[6], sep="\t", index=False)
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(validation_module.subprocess, "run", fake_run)
+    fitted, versions = validation_module.run_firth_models(
+        model_data=model_data,
+        specs=specs,
+        analytics_dir=tmp_path,
+        rscript="/fake/Rscript",
+        workers=8,
+    )
+
+    assert len(fitted) == 3
+    assert versions == {"R": "test", "logistf": "test"}
 
 
 def test_firth_model_returns_profile_likelihood_result_when_r_is_available(tmp_path: Path) -> None:

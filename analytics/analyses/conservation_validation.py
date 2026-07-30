@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import os
 import shutil
 import subprocess
 import tempfile
@@ -19,6 +20,7 @@ from analytics.annotation.consequences import (
     validation_consequence_membership_mask as consequence_membership_mask,
     validation_consequence_memberships_text as consequence_memberships_text,
 )
+from analytics.io.performance import PerformanceProfile, profile_stage
 from .statistics import benjamini_hochberg, enrichment_result, mantel_haenszel_adjusted
 from .target_context import context_at, read_disjoint_contexts
 from genomics.variants import changed_target_position, parse_variant_key
@@ -205,27 +207,34 @@ def compute_conservation_validation(
     analytics_dir: Path,
     eligible_gene_ids_by_strategy: dict[str, set[str]] | None = None,
     rscript: str | None = None,
+    firth_workers: int = 1,
+    performance_profile: PerformanceProfile | None = None,
 ) -> ConservationValidation:
-    unadjusted = compute_unadjusted_enrichment(
-        cohort=cohort.variants,
-        observed_by_strategy_type=observed_by_strategy_type,
-        strategies=strategies,
-        eligible_gene_ids_by_strategy=eligible_gene_ids_by_strategy,
-    )
-    fixed_bins, fixed_adjusted = compute_fixed_band_enrichment(
-        cohort=cohort.variants,
-        observed_by_strategy_type=observed_by_strategy_type,
-        strategies=strategies,
-        eligible_gene_ids_by_strategy=eligible_gene_ids_by_strategy,
-    )
-    continuous, distributions, versions = compute_continuous_firth(
-        cohort=cohort.variants,
-        observed_by_strategy_type=observed_by_strategy_type,
-        strategies=strategies,
-        analytics_dir=analytics_dir,
-        eligible_gene_ids_by_strategy=eligible_gene_ids_by_strategy,
-        rscript=rscript,
-    )
+    with profile_stage(performance_profile, "Unadjusted ClinVar association"):
+        unadjusted = compute_unadjusted_enrichment(
+            cohort=cohort.variants,
+            observed_by_strategy_type=observed_by_strategy_type,
+            strategies=strategies,
+            eligible_gene_ids_by_strategy=eligible_gene_ids_by_strategy,
+        )
+    with profile_stage(performance_profile, "Fixed-band ClinVar association"):
+        fixed_bins, fixed_adjusted = compute_fixed_band_enrichment(
+            cohort=cohort.variants,
+            observed_by_strategy_type=observed_by_strategy_type,
+            strategies=strategies,
+            eligible_gene_ids_by_strategy=eligible_gene_ids_by_strategy,
+        )
+    with profile_stage(performance_profile, "Continuous ClinVar association"):
+        continuous, distributions, versions = compute_continuous_firth(
+            cohort=cohort.variants,
+            observed_by_strategy_type=observed_by_strategy_type,
+            strategies=strategies,
+            analytics_dir=analytics_dir,
+            eligible_gene_ids_by_strategy=eligible_gene_ids_by_strategy,
+            rscript=rscript,
+            firth_workers=firth_workers,
+            performance_profile=performance_profile,
+        )
     return ConservationValidation(
         cohort,
         unadjusted,
@@ -509,7 +518,11 @@ def compute_continuous_firth(
     analytics_dir: Path,
     eligible_gene_ids_by_strategy: dict[str, set[str]] | None = None,
     rscript: str | None = None,
+    firth_workers: int = 1,
+    performance_profile: PerformanceProfile | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame, dict[str, str]]:
+    if firth_workers < 1:
+        raise ValueError("firth_workers must be >= 1")
     model_rows: list[dict[str, object]] = []
     distribution_rows: list[dict[str, object]] = []
     fit_specs: list[dict[str, str]] = []
@@ -532,72 +545,83 @@ def compute_continuous_firth(
                 lambda value: int(bool(eligible.intersection(str(value).split("|"))))
             )
 
-    for analysis_index, (
-        strategy,
-        variant_key,
-        target_context_key,
-        consequence_key,
-        working,
-    ) in enumerate(
-        selector_frames(
-            cohort,
-            observed_by_strategy_type,
-            strategies,
-            eligible_gene_ids_by_strategy,
-        )
-    ):
-        working = working[np.isfinite(working[SCORE_COLUMN])].copy()
-        analysis_id = f"model_{analysis_index}"
-        metrics = continuous_metrics(working)
-        reason = continuous_estimability_reason(working)
-        model_rows.append(
-            {
-                "analysis_id": analysis_id,
-                "strategy": strategy,
-                "variant_type": variant_key,
-                "target_context": target_context_key,
-                "consequence": consequence_key,
-                **metrics,
-                "spline_df": SPLINE_DF,
-                "odds_ratio": float("nan"),
-                "ci_low": float("nan"),
-                "ci_high": float("nan"),
-                "plr_p": float("nan"),
-                "status": "not_estimable" if reason else "pending",
-                "reason": reason,
-            }
-        )
-        distribution_rows.extend(
-            distribution_detail_rows(
-                working,
-                strategy,
-                variant_key,
-                target_context_key,
-                consequence_key,
+    with profile_stage(performance_profile, "Firth selector preparation") as timing:
+        for analysis_index, (
+            strategy,
+            variant_key,
+            target_context_key,
+            consequence_key,
+            working,
+        ) in enumerate(
+            selector_frames(
+                cohort,
+                observed_by_strategy_type,
+                strategies,
+                eligible_gene_ids_by_strategy,
             )
-        )
-        if not reason:
-            fit_specs.append(
+        ):
+            working = working[np.isfinite(working[SCORE_COLUMN])].copy()
+            analysis_id = f"model_{analysis_index}"
+            metrics = continuous_metrics(working)
+            reason = continuous_estimability_reason(working)
+            model_rows.append(
                 {
                     "analysis_id": analysis_id,
                     "strategy": strategy,
-                    "observation_column": observation_columns[strategy],
-                    "eligibility_column": eligibility_columns[strategy],
                     "variant_type": variant_key,
                     "target_context": target_context_key,
                     "consequence": consequence_key,
+                    **metrics,
+                    "spline_df": SPLINE_DF,
+                    "odds_ratio": float("nan"),
+                    "ci_low": float("nan"),
+                    "ci_high": float("nan"),
+                    "plr_p": float("nan"),
+                    "status": "not_estimable" if reason else "pending",
+                    "reason": reason,
                 }
             )
+            distribution_rows.extend(
+                distribution_detail_rows(
+                    working,
+                    strategy,
+                    variant_key,
+                    target_context_key,
+                    consequence_key,
+                )
+            )
+            if not reason:
+                fit_specs.append(
+                    {
+                        "analysis_id": analysis_id,
+                        "strategy": strategy,
+                        "observation_column": observation_columns[strategy],
+                        "eligibility_column": eligibility_columns[strategy],
+                        "variant_type": variant_key,
+                        "target_context": target_context_key,
+                        "consequence": consequence_key,
+                    }
+                )
+        timing["metrics"] = {
+            "selectors": int(len(model_rows)),
+            "estimable_models": int(len(fit_specs)),
+        }
 
     results = pd.DataFrame(model_rows)
     versions: dict[str, str] = {}
     if fit_specs:
-        fitted, versions = run_firth_models(
-            model_data=model_data,
-            specs=pd.DataFrame(fit_specs),
-            analytics_dir=analytics_dir,
-            rscript=rscript,
-        )
+        with profile_stage(performance_profile, "Firth model fitting") as timing:
+            fitted, versions = run_firth_models(
+                model_data=model_data,
+                specs=pd.DataFrame(fit_specs),
+                analytics_dir=analytics_dir,
+                rscript=rscript,
+                workers=firth_workers,
+            )
+            timing["metrics"] = {
+                "models": int(len(fit_specs)),
+                "workers": int(min(firth_workers, len(fit_specs))),
+            }
         fitted_by_id = fitted.set_index("analysis_id").to_dict("index")
         for index, row in results.iterrows():
             fitted_row = fitted_by_id.get(str(row["analysis_id"]))
@@ -744,7 +768,10 @@ def run_firth_models(
     specs: pd.DataFrame,
     analytics_dir: Path,
     rscript: str | None = None,
+    workers: int = 1,
 ) -> tuple[pd.DataFrame, dict[str, str]]:
+    if workers < 1:
+        raise ValueError("workers must be >= 1")
     executable = rscript or shutil.which("Rscript")
     if not executable:
         raise FileNotFoundError(
@@ -776,6 +803,15 @@ def run_firth_models(
         versions_path = temp_dir / "versions.tsv"
         export.to_csv(data_path, sep="\t", index=False)
         specs.to_csv(specs_path, sep="\t", index=False)
+        environment = os.environ.copy()
+        for variable in (
+            "OMP_NUM_THREADS",
+            "OPENBLAS_NUM_THREADS",
+            "MKL_NUM_THREADS",
+            "VECLIB_MAXIMUM_THREADS",
+            "NUMEXPR_NUM_THREADS",
+        ):
+            environment[variable] = "1"
         proc = subprocess.run(
             [
                 str(executable),
@@ -785,10 +821,12 @@ def run_firth_models(
                 str(specs_path),
                 str(output_path),
                 str(versions_path),
+                str(min(workers, len(specs))),
             ],
             text=True,
             capture_output=True,
             check=False,
+            env=environment,
         )
         if proc.returncode != 0:
             message = proc.stderr.strip() or proc.stdout.strip() or "unknown R error"

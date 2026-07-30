@@ -64,7 +64,8 @@ python -m analytics.strategy_report \
   --vep-executable "$GAPH_VEP_EXECUTABLE" \
   --vep-cache-dir "$GAPH_VEP_CACHE_DIR" \
   --vep-result-cache-dir "$GAPH_VEP_RESULT_CACHE_DIR" \
-  --vep-forks 4
+  --vep-forks 4 \
+  --firth-workers 8
 ```
 
 The executable may be a wrapper around a containerized VEP. It must expose the
@@ -176,6 +177,11 @@ the run-local analytics directory. It is updated atomically after every
 completed or failed stage, so a long or interrupted cluster job still leaves
 useful diagnostics.
 
+Independent continuous-association models run in parallel through
+`--firth-workers`. The default uses the Slurm CPU allocation, or the host CPU
+count outside Slurm, capped at eight workers. `GAPH_FIRTH_WORKERS` overrides
+that default.
+
 The report reads `annotation/variant_annotations.tsv.gz` in chunks. It uses a
 temporary SQLite file under `<run-dir>/analytics/` to deduplicate
 variant-strategy records without loading the full annotation table into memory;
@@ -195,7 +201,14 @@ The strategy report writes its ClinVar validation universe under:
 <run-dir>/analytics/clinvar_universe.snv_indel.tsv.gz
 <run-dir>/analytics/clinvar_universe.snv_indel.manifest.json
 <run-dir>/analytics/clinvar_target_regions.bed
+<run-dir>/analytics/clinvar_observed_memberships.tsv.gz
+<run-dir>/analytics/clinvar_observed_memberships.manifest.json
 ```
+
+The observed-membership cache stores only unique
+`strategy x variant_type x variant_key` rows. A matching annotation table,
+ClinVar universe, and strategy set reuse it without rescanning the full
+candidate annotation file.
 
 Validation statistics are computed separately for SNV and INDEL rows. The
 conservation-adjusted blocks also write:

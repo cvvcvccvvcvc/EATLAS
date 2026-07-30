@@ -654,6 +654,17 @@ def build_methods_sections(
             ("ClinVar universe", validation.universe_path),
             ("ClinVar universe manifest", validation.manifest_path),
         ]
+        if validation.observed_memberships_path is not None:
+            validation_files.append(
+                ("ClinVar observed memberships", validation.observed_memberships_path)
+            )
+        if validation.observed_memberships_manifest_path is not None:
+            validation_files.append(
+                (
+                    "ClinVar observed-membership manifest",
+                    validation.observed_memberships_manifest_path,
+                )
+            )
         regions_bed = validation.manifest.get("regions_bed", "")
         if regions_bed:
             validation_files.append(("ClinVar target regions", Path(regions_bed)))

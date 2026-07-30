@@ -1,12 +1,17 @@
 suppressPackageStartupMessages(library(logistf))
 
 args <- commandArgs(trailingOnly = TRUE)
-if (length(args) != 4) {
-  stop("usage: firth_logistic.R <cohort.tsv> <specs.tsv> <results.tsv> <versions.tsv>")
+if (length(args) != 5) {
+  stop("usage: firth_logistic.R <cohort.tsv> <specs.tsv> <results.tsv> <versions.tsv> <workers>")
 }
 
 cohort <- read.delim(args[[1]], check.names = FALSE, stringsAsFactors = FALSE)
 specs <- read.delim(args[[2]], check.names = FALSE, stringsAsFactors = FALSE)
+workers <- suppressWarnings(as.integer(args[[5]]))
+if (is.na(workers) || workers < 1) {
+  stop("workers must be a positive integer")
+}
+workers <- min(workers, nrow(specs))
 
 matches_variant_type <- function(values, selector) {
   if (selector == "all") return(rep(TRUE, length(values)))
@@ -68,7 +73,19 @@ fit_one <- function(spec) {
   })
 }
 
-results <- do.call(rbind, lapply(seq_len(nrow(specs)), function(index) fit_one(specs[index, ])))
+fit_indices <- seq_len(nrow(specs))
+if (workers > 1 && .Platform$OS.type != "windows") {
+  fitted <- parallel::mclapply(
+    fit_indices,
+    function(index) fit_one(specs[index, ]),
+    mc.cores = workers,
+    mc.preschedule = TRUE,
+    mc.set.seed = FALSE
+  )
+} else {
+  fitted <- lapply(fit_indices, function(index) fit_one(specs[index, ]))
+}
+results <- do.call(rbind, fitted)
 write.table(results, args[[3]], sep = "\t", row.names = FALSE, quote = FALSE, na = "")
 
 versions <- data.frame(
