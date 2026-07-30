@@ -306,3 +306,52 @@ def test_taxonomic_site_depth_collapses_members_by_rank(tmp_path: Path) -> None:
     assert row["all__genus"] == "1"
     assert row["mammalia__family"] == "1"
     assert row["primates__ortholog"] == "0"
+
+
+def test_taxonomic_site_depth_sorts_gene_id_prefixes_by_output_columns(
+    tmp_path: Path,
+) -> None:
+    taxonomy = tmp_path / "taxonomy.tsv.gz"
+    write_tsv_gz(
+        taxonomy,
+        [
+            {
+                "tax_id": "11",
+                "species_id": "11",
+                "genus_id": "10",
+                "family_id": "9",
+                "order_id": "8",
+                "parent_tax_ids": "2759,33208,7742,32523,32524,40674,11",
+            }
+        ],
+    )
+    segments = tmp_path / "segments.tsv.gz"
+    write_tsv_gz(
+        segments,
+        [
+            {
+                "gene_id": gene_id,
+                "strategy": "s1",
+                "ortholog_gene_id": f"{gene_id}01",
+                "tax_id": "11",
+                "target_start0": 0,
+                "target_end0": 20,
+            }
+            for gene_id in ("466", "4665")
+        ],
+    )
+    output = tmp_path / "depth.tsv.gz"
+
+    count = write_snv_taxonomic_depth(
+        [segments],
+        [
+            {"gene_id": "466", "strategy": "s1", "target_start0": 13},
+            {"gene_id": "4665", "strategy": "s1", "target_start0": 13},
+        ],
+        taxonomy,
+        output,
+        tmp_path,
+    )
+
+    assert count == 2
+    assert [row["gene_id"] for row in read_tsv_gz(output)] == ["466", "4665"]

@@ -941,14 +941,14 @@ def write_snv_taxonomic_depth(
         group_refcounts: dict[str, int] = {}
         counts = {key: 0 for key in COUNT_KEYS}
         current_group = ""
-        with gzip.open(output, "wt", newline="") as handle:
+        depth_raw = temp_dir / "depth.raw.tsv"
+        with depth_raw.open("w", newline="") as handle:
             writer = csv.DictWriter(
                 handle,
                 fieldnames=SNV_TAXONOMIC_DEPTH_FIELDS,
                 delimiter="\t",
                 lineterminator="\n",
             )
-            writer.writeheader()
             with sweep_sorted.open() as source:
                 for line in source:
                     group, position, kind, ortholog_gene_id, tax_id = line.rstrip("\n").split("\t")
@@ -999,6 +999,25 @@ def write_snv_taxonomic_depth(
                         row_count += 1
         if active:
             raise ValueError(f"Taxonomic interval sweep ended with active members for {current_group}")
+
+        depth_sorted = temp_dir / "depth.sorted.tsv"
+        _sort_file(
+            depth_raw,
+            depth_sorted,
+            temp_dir,
+            ["-k1,1", "-k2,2", "-k3,3n"],
+            env=env,
+        )
+        with gzip.open(output, "wt", newline="") as handle:
+            writer = csv.DictWriter(
+                handle,
+                fieldnames=SNV_TAXONOMIC_DEPTH_FIELDS,
+                delimiter="\t",
+                lineterminator="\n",
+            )
+            writer.writeheader()
+            with depth_sorted.open() as source:
+                shutil.copyfileobj(source, handle)
         return row_count
 
 
