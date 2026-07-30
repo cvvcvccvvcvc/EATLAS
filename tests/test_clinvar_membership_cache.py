@@ -2,11 +2,63 @@ from __future__ import annotations
 
 import csv
 import gzip
+import stat
+import sys
 from pathlib import Path
 
 import pandas as pd
+import pytest
 
 from analytics.analyses import clinvar_validation
+
+
+def test_clinvar_universe_writer_preserves_schema_and_shared_permissions(
+    tmp_path: Path,
+) -> None:
+    universe_path = tmp_path / "clinvar_universe.tsv.gz"
+    row = dict.fromkeys(clinvar_validation.UNIVERSE_FIELDS, "")
+    row.update({"variant_key": "1:10:A>G", "variant_type": "snv", "pos": 10})
+
+    clinvar_validation.write_universe(universe_path, [row])
+
+    observed = pd.read_csv(
+        universe_path,
+        sep="\t",
+        compression="gzip",
+        keep_default_na=False,
+    )
+    assert observed.columns.tolist() == clinvar_validation.UNIVERSE_FIELDS
+    assert observed.loc[0, "variant_key"] == "1:10:A>G"
+    assert stat.S_IMODE(universe_path.stat().st_mode) == 0o644
+
+
+def test_tabix_output_is_streamed_and_errors_are_reported(tmp_path: Path) -> None:
+    tabix = tmp_path / "tabix"
+    tabix.write_text(
+        f"#!{sys.executable}\n"
+        "import sys\n"
+        "if any(arg.endswith('fail.vcf.gz') for arg in sys.argv):\n"
+        "    print('query failed', file=sys.stderr)\n"
+        "    raise SystemExit(2)\n"
+        "print('first')\n"
+        "print('second')\n"
+    )
+    tabix.chmod(0o755)
+
+    with clinvar_validation.tabix_output_lines(
+        str(tabix),
+        tmp_path / "ok.vcf.gz",
+        tmp_path / "regions.bed",
+    ) as lines:
+        assert list(lines) == ["first\n", "second\n"]
+
+    with pytest.raises(RuntimeError, match="query failed"):
+        with clinvar_validation.tabix_output_lines(
+            str(tabix),
+            tmp_path / "fail.vcf.gz",
+            tmp_path / "regions.bed",
+        ) as lines:
+            list(lines)
 
 
 def test_observed_clinvar_memberships_are_cached_and_reused(

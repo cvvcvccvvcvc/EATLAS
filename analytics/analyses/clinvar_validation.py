@@ -4,13 +4,18 @@ from __future__ import annotations
 
 import csv
 import gzip
+import io
 import json
+import os
 import shutil
 import subprocess
 import tempfile
 from collections import Counter, defaultdict
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TextIO
 
 import pandas as pd
 
@@ -454,81 +459,76 @@ def query_clinvar_variant_universe(
     if tabix is None:
         raise FileNotFoundError("tabix executable not found; it is required for indexed ClinVar queries.")
 
-    proc = subprocess.run(
-        [tabix, "-R", str(regions_path), str(clinvar_vcf)],
-        text=True,
-        capture_output=True,
-        check=False,
-    )
-    if proc.returncode not in (0, 1):
-        raise RuntimeError(f"tabix ClinVar query failed: {proc.stderr.strip()}")
-
     raw_by_key: dict[str, dict[str, object]] = {}
     counts = Counter()
-    for line in proc.stdout.splitlines():
-        if not line or line.startswith("#"):
-            continue
-        fields = line.split("\t")
-        if len(fields) < 8:
-            continue
-        chrom, pos_text, rec_id, ref, alt_text, _qual, _filter, info_text = fields[:8]
-        chrom = normalize_chrom(chrom) or ""
-        pos = int(pos_text)
-        ref = ref.upper()
-        sig = info_value(info_text, "CLNSIG")
-        molecular_consequences = parse_molecular_consequences(info_value(info_text, "MC"))
-        label = clinvar_label(sig)
-        for alt in alt_text.split(","):
-            alt = alt.upper()
-            vtype = variant_type(ref, alt)
-            if vtype == "unsupported":
-                counts["excluded_unsupported_allele_count"] += 1
+    with tabix_output_lines(tabix, clinvar_vcf, regions_path) as output_lines:
+        for line in output_lines:
+            line = line.rstrip("\n")
+            if not line or line.startswith("#"):
                 continue
-            if vtype == "complex":
-                counts["excluded_complex_allele_count"] += 1
+            fields = line.split("\t")
+            if len(fields) < 8:
                 continue
-            counts["raw_allele_count"] += 1
-            counts[f"raw_{vtype}_allele_count"] += 1
-            if label.startswith("excluded_"):
-                counts[f"{label}_count"] += 1
-                counts[f"{label}_{vtype}_count"] += 1
-            if label not in {"benign", "pathogenic"}:
-                continue
+            chrom, pos_text, rec_id, ref, alt_text, _qual, _filter, info_text = fields[:8]
+            chrom = normalize_chrom(chrom) or ""
+            pos = int(pos_text)
+            ref = ref.upper()
+            sig = info_value(info_text, "CLNSIG")
+            molecular_consequences = parse_molecular_consequences(info_value(info_text, "MC"))
+            label = clinvar_label(sig)
+            for alt in alt_text.split(","):
+                alt = alt.upper()
+                vtype = variant_type(ref, alt)
+                if vtype == "unsupported":
+                    counts["excluded_unsupported_allele_count"] += 1
+                    continue
+                if vtype == "complex":
+                    counts["excluded_complex_allele_count"] += 1
+                    continue
+                counts["raw_allele_count"] += 1
+                counts[f"raw_{vtype}_allele_count"] += 1
+                if label.startswith("excluded_"):
+                    counts[f"{label}_count"] += 1
+                    counts[f"{label}_{vtype}_count"] += 1
+                if label not in {"benign", "pathogenic"}:
+                    continue
 
-            normalized_items = normalize_clinvar_allele_for_targets(context_index, chrom, pos, ref, alt)
-            if not normalized_items:
-                counts[f"excluded_normalization_{vtype}_count"] += 1
-                continue
-            for key, key_type, context in normalized_items:
-                key_text = variant_key_text(key)
-                entry = raw_by_key.setdefault(
-                    key_text,
-                    {
-                        "variant_key": key_text,
-                        "variant_type": key_type,
-                        "chrom": key[0],
-                        "pos": key[1],
-                        "ref": key[2],
-                        "alt": key[3],
-                        "labels": set(),
-                        "clinvar_ids": set(),
-                        "clinvar_sigs": set(),
-                        "clinvar_mc_so_ids": set(),
-                        "clinvar_mc_terms": set(),
-                        "gene_ids": set(),
-                    },
+                normalized_items = normalize_clinvar_allele_for_targets(
+                    context_index, chrom, pos, ref, alt
                 )
-                entry["labels"].add(label)
-                if rec_id and rec_id != ".":
-                    entry["clinvar_ids"].add(rec_id)
-                if sig:
-                    entry["clinvar_sigs"].add(sig)
-                for so_id, term in molecular_consequences:
-                    if so_id:
-                        entry["clinvar_mc_so_ids"].add(so_id)
-                    if term:
-                        entry["clinvar_mc_terms"].add(term)
-                entry["gene_ids"].add(str(context["gene_id"]))
+                if not normalized_items:
+                    counts[f"excluded_normalization_{vtype}_count"] += 1
+                    continue
+                for key, key_type, context in normalized_items:
+                    key_text = variant_key_text(key)
+                    entry = raw_by_key.setdefault(
+                        key_text,
+                        {
+                            "variant_key": key_text,
+                            "variant_type": key_type,
+                            "chrom": key[0],
+                            "pos": key[1],
+                            "ref": key[2],
+                            "alt": key[3],
+                            "labels": set(),
+                            "clinvar_ids": set(),
+                            "clinvar_sigs": set(),
+                            "clinvar_mc_so_ids": set(),
+                            "clinvar_mc_terms": set(),
+                            "gene_ids": set(),
+                        },
+                    )
+                    entry["labels"].add(label)
+                    if rec_id and rec_id != ".":
+                        entry["clinvar_ids"].add(rec_id)
+                    if sig:
+                        entry["clinvar_sigs"].add(sig)
+                    for so_id, term in molecular_consequences:
+                        if so_id:
+                            entry["clinvar_mc_so_ids"].add(so_id)
+                        if term:
+                            entry["clinvar_mc_terms"].add(term)
+                    entry["gene_ids"].add(str(context["gene_id"]))
 
     rows = []
     for entry in raw_by_key.values():
@@ -561,6 +561,39 @@ def query_clinvar_variant_universe(
         )
     rows.sort(key=lambda row: (row["variant_type"], chrom_sort_key(str(row["chrom"])), int(row["pos"]), row["ref"], row["alt"]))
     return rows, counts
+
+
+@contextmanager
+def tabix_output_lines(
+    tabix: str,
+    clinvar_vcf: Path,
+    regions_path: Path,
+) -> Iterator[TextIO]:
+    with tempfile.TemporaryFile(mode="w+", encoding="utf-8") as stderr_handle:
+        proc = subprocess.Popen(
+            [tabix, "-R", str(regions_path), str(clinvar_vcf)],
+            text=True,
+            encoding="utf-8",
+            stdout=subprocess.PIPE,
+            stderr=stderr_handle,
+        )
+        if proc.stdout is None:
+            proc.kill()
+            proc.wait()
+            raise RuntimeError("tabix ClinVar query did not provide an output stream.")
+        try:
+            yield proc.stdout
+        except BaseException:
+            proc.kill()
+            proc.wait()
+            raise
+        finally:
+            proc.stdout.close()
+        returncode = proc.wait()
+        stderr_handle.seek(0)
+        stderr = stderr_handle.read().strip()
+    if returncode not in (0, 1):
+        raise RuntimeError(f"tabix ClinVar query failed: {stderr}")
 
 
 def normalize_clinvar_allele_for_targets(
@@ -633,8 +666,44 @@ def gene_sort_key(value: str) -> tuple[int, str]:
 
 
 def write_universe(path: Path, rows: list[dict[str, str]]) -> None:
-    frame = pd.DataFrame.from_records(rows, columns=UNIVERSE_FIELDS)
-    write_tsv_atomic(path, frame)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            dir=path.parent,
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as handle:
+            temporary_path = Path(handle.name)
+        with temporary_path.open("wb") as raw_handle:
+            with gzip.GzipFile(
+                filename="",
+                mode="wb",
+                compresslevel=6,
+                fileobj=raw_handle,
+                mtime=0,
+            ) as gzip_handle:
+                with io.TextIOWrapper(
+                    gzip_handle,
+                    encoding="utf-8",
+                    newline="",
+                ) as text_handle:
+                    writer = csv.DictWriter(
+                        text_handle,
+                        fieldnames=UNIVERSE_FIELDS,
+                        delimiter="\t",
+                        lineterminator="\n",
+                    )
+                    writer.writeheader()
+                    writer.writerows(rows)
+            raw_handle.flush()
+            os.fsync(raw_handle.fileno())
+        temporary_path.chmod(0o644)
+        temporary_path.replace(path)
+    finally:
+        if temporary_path is not None:
+            temporary_path.unlink(missing_ok=True)
 
 
 def build_or_load_observed_keys_by_strategy_type(

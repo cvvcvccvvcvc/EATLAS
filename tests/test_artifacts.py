@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import stat
 from pathlib import Path
 
 import pandas as pd
@@ -29,3 +30,5 @@ def test_artifact_helpers_write_and_identify_outputs(tmp_path: Path) -> None:
     assert metadata["file_count"] == 1
     assert metadata["files"][0]["path"] == "1.fa.gz"
     assert path_metadata(table_path)["mtime_ns"] > 0
+    assert stat.S_IMODE(table_path.stat().st_mode) == 0o644
+    assert stat.S_IMODE(manifest_path.stat().st_mode) == 0o644

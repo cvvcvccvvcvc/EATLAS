@@ -52,6 +52,7 @@ def write_text_atomic(path: Path, text: str) -> None:
             handle.write(text)
             handle.flush()
             os.fsync(handle.fileno())
+        temporary_path.chmod(0o644)
         temporary_path.replace(path)
     finally:
         if temporary_path is not None:
