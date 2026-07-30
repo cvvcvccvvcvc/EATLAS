@@ -216,7 +216,7 @@ package caches in `/mnt/tank/scratch`:
 
 ```bash
 export GAPH_ROOT="/mnt/tank/scratch/$USER/gaph_v2"
-mkdir -p "$GAPH_ROOT"/{bin,cache/gnomad,conda,envs,micromamba,nextflow,results,work}
+mkdir -p "$GAPH_ROOT"/{bin,cache/gnomad,cache/vep_results,conda,envs,micromamba,nextflow,results,work}
 
 curl -Ls https://micro.mamba.pm/api/micromamba/linux-64/latest \
   | tar -xvj -C "$GAPH_ROOT" bin/micromamba
@@ -250,6 +250,8 @@ export GAPH_VEP_BACKEND="local"
 export GAPH_VEP_RELEASE="116"
 export GAPH_VEP_EXECUTABLE="$GAPH_ROOT/bin/gaph-vep116"
 export GAPH_VEP_CACHE_DIR="$GAPH_ROOT/reference/vep"
+export GAPH_VEP_RESULT_CACHE_DIR="$GAPH_ROOT/cache/vep_results"
+export GAPH_VEP_RESULT_CACHE_TILE_SIZE_BP="1000000"
 export GAPH_VEP_FORKS="4"
 export NXF_CONDA_CACHEDIR="$GAPH_ROOT/conda/envs"
 export MAMBA_ROOT_PREFIX="$GAPH_ROOT/micromamba"
@@ -304,7 +306,10 @@ partitions at the default 250,000 rows. Benchmark one representative partition
 before choosing Slurm-array concurrency: each task uses four VEP workers, and
 concurrent tasks also share the same network-backed 25 GB cache. Completed
 partition outputs are the resume boundary; no full-candidate SQLite cache is
-kept.
+kept. Completed variant/gene results are additionally reused across runs from
+`$GAPH_VEP_RESULT_CACHE_DIR`. This is a sparse Parquet cache separate from the
+official indexed VEP reference cache in `$GAPH_VEP_CACHE_DIR`; incomplete
+network results are not stored in it.
 
 ## Compute-Node Preflight
 

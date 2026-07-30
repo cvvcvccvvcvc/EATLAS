@@ -63,6 +63,7 @@ python -m analytics.strategy_report \
   --vep-release 116 \
   --vep-executable "$GAPH_VEP_EXECUTABLE" \
   --vep-cache-dir "$GAPH_VEP_CACHE_DIR" \
+  --vep-result-cache-dir "$GAPH_VEP_RESULT_CACHE_DIR" \
   --vep-forks 4
 ```
 
@@ -71,6 +72,15 @@ ordinary VEP CLI and be able to read the cache and run analytics paths. Local
 VEP uses GRCh38, RefSeq transcripts, `pick_allele_gene`, and the uploaded
 normalized REF/ALT alleles; basic consequence annotation does not require a
 reference FASTA.
+
+`GAPH_VEP_CACHE_DIR` is the official indexed RefSeq reference cache used by the
+VEP executable. `GAPH_VEP_RESULT_CACHE_DIR` is a separate sparse cross-run cache
+of completed variant/gene results. The latter stores immutable regional Parquet
+fragments with Zstandard compression, namespaces them by the complete VEP
+configuration, and never retains transient `no_response` results. Matched
+control still keeps its per-run SQLite database as its resume checkpoint.
+When `GAPH_VEP_RESULT_CACHE_DIR` is unset but `GAPH_ROOT` is available, reports
+default to `$GAPH_ROOT/cache/vep_results`.
 
 Full candidate annotation is a separate resumable precompute, not an implicit
 part of HTML generation. Prepare deterministic input partitions once:
@@ -92,6 +102,7 @@ python -m analytics.vep_annotation annotate \
   --vep-release 116 \
   --vep-executable "$GAPH_VEP_EXECUTABLE" \
   --vep-cache-dir "$GAPH_VEP_CACHE_DIR" \
+  --vep-result-cache-dir "$GAPH_VEP_RESULT_CACHE_DIR" \
   --vep-forks 4
 ```
 

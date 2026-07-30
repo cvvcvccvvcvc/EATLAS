@@ -130,6 +130,18 @@ def parse_args() -> argparse.Namespace:
         help="Local indexed VEP cache root. Required with --vep-backend local.",
     )
     parser.add_argument(
+        "--vep-result-cache-dir",
+        type=Path,
+        default=_default_vep_result_cache_dir(),
+        help="Shared cross-run cache for completed VEP results.",
+    )
+    parser.add_argument(
+        "--vep-result-cache-tile-size-bp",
+        type=int,
+        default=int(os.environ.get("GAPH_VEP_RESULT_CACHE_TILE_SIZE_BP", "1000000")),
+        help="Genomic tile size for the shared VEP result cache. Default: 1000000.",
+    )
+    parser.add_argument(
         "--vep-forks",
         type=int,
         default=int(os.environ.get("GAPH_VEP_FORKS", "4")),
@@ -140,6 +152,14 @@ def parse_args() -> argparse.Namespace:
 
 def project_root() -> Path:
     return Path(__file__).resolve().parents[1]
+
+
+def _default_vep_result_cache_dir() -> Path | None:
+    configured = os.environ.get("GAPH_VEP_RESULT_CACHE_DIR")
+    if configured:
+        return Path(configured)
+    gaph_root = os.environ.get("GAPH_ROOT")
+    return Path(gaph_root) / "cache" / "vep_results" if gaph_root else None
 
 
 @contextmanager
@@ -165,6 +185,8 @@ def main() -> None:
         raise ValueError("--target-space-null-resamples must be >= 100")
     if args.target_space_null and args.vep_forks < 1:
         raise ValueError("--vep-forks must be >= 1")
+    if args.vep_result_cache_tile_size_bp < 1:
+        raise ValueError("--vep-result-cache-tile-size-bp must be >= 1")
     if args.target_space_null and args.vep_backend == "local" and args.vep_cache_dir is None:
         raise ValueError("--vep-cache-dir is required with --vep-backend local")
     if args.target_space_null and args.vep_backend == "local" and not args.vep_release:
@@ -194,6 +216,14 @@ def main() -> None:
     report_started = time.perf_counter()
     timings: list[dict[str, object]] = []
 
+    if args.vep_result_cache_dir is None:
+        print("Shared VEP result cache: disabled")
+    else:
+        print(
+            "Shared VEP result cache: "
+            f"{args.vep_result_cache_dir.expanduser()} "
+            f"(tile size {args.vep_result_cache_tile_size_bp} bp)"
+        )
     print(f"Streaming {inputs.variant_annotations_tsv}...")
     with timed_stage("Variant summary", timings) as timing:
         variant_summary = build_variant_summary(
@@ -267,6 +297,8 @@ def main() -> None:
             vep_executable=args.vep_executable,
             vep_cache_dir=args.vep_cache_dir,
             vep_forks=args.vep_forks,
+            vep_result_cache_dir=args.vep_result_cache_dir,
+            vep_result_cache_tile_size_bp=args.vep_result_cache_tile_size_bp,
         )
 
     print("Computing conservation-adjusted ClinVar validation...")
@@ -299,6 +331,8 @@ def main() -> None:
                 vep_executable=args.vep_executable,
                 vep_cache_dir=args.vep_cache_dir,
                 vep_forks=args.vep_forks,
+                vep_result_cache_dir=args.vep_result_cache_dir,
+                vep_result_cache_tile_size_bp=args.vep_result_cache_tile_size_bp,
             )
     else:
         timings.append(
