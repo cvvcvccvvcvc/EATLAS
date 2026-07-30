@@ -16,6 +16,7 @@ from typing import Callable
 import numpy as np
 import pandas as pd
 
+from genomics.clinvar import CLINVAR_CLASS_ORDER
 from .target_context import context_at, read_disjoint_contexts
 from genomics.variants import (
     RegionIndex,
@@ -50,7 +51,7 @@ VARIANT_USECOLS = [
 ]
 VEP_USECOLS = ["vep_status", "vep_primary_consequence"]
 VARIANT_REQUIRED = {"variant_key", "gene_id", "event_type", "strategies"}
-SUMMARY_CACHE_VERSION = 9
+SUMMARY_CACHE_VERSION = 10
 SUMMARY_CACHE_NAME = "variant_summary.json.gz"
 SPECIAL_FLOAT_KEY = "__gaph_float__"
 ORTHOLOG_EVIDENCE_COLUMNS = [
@@ -375,19 +376,24 @@ def _header(path: Path) -> list[str]:
     return pd.read_csv(path, sep="\t", compression=compression, nrows=0).columns.tolist()
 
 
-def _categorize_clinvar(values: pd.Series) -> pd.Series:
+def _categorize_clinvar(values: pd.Series, record_presence: pd.Series) -> pd.Categorical:
     text = values.fillna("").astype(str).str.lower()
     category = pd.Series("Other", index=values.index, dtype="object")
-    category[text.eq("")] = "Not Found"
+    if pd.api.types.is_bool_dtype(record_presence.dtype):
+        found = record_presence.fillna(False)
+    else:
+        found = record_presence.fillna("").astype(str).ne("")
+    category[~found] = "Not in ClinVar"
+    category[found & text.eq("")] = "Unclassified"
     conflicting = text.str.contains("conflicting", na=False)
     uncertain = text.str.contains("uncertain|vus", regex=True, na=False)
     benign = text.str.contains("benign", na=False)
     pathogenic = text.str.contains("pathogenic", na=False)
-    category[conflicting] = "Other"
-    category[uncertain & ~conflicting] = "VUS"
-    category[pathogenic & ~benign & ~uncertain & ~conflicting] = "P/LP"
-    category[benign & ~pathogenic & ~uncertain & ~conflicting] = "B/LB"
-    return category
+    category[found & conflicting] = "Other"
+    category[found & uncertain & ~conflicting] = "VUS"
+    category[found & pathogenic & ~benign & ~uncertain & ~conflicting] = "P/LP"
+    category[found & benign & ~pathogenic & ~uncertain & ~conflicting] = "B/LB"
+    return pd.Categorical(category, categories=CLINVAR_CLASS_ORDER, ordered=True)
 
 
 def _normalize_chunk(
@@ -438,9 +444,18 @@ def _normalize_chunk(
         df["target_start0"] = pd.NA
     for column in ["support_row_count", "support_ortholog_count", "clinvar_scv_count"]:
         df[column] = pd.to_numeric(df[column], errors="coerce").fillna(0).astype("int64")
-    df["clinvar_found"] = df["clinvar_id"].astype(str) != ""
+    clinvar_evidence_columns = [
+        "clinvar_id",
+        "clinvar_allele_id",
+        "clinvar_sig",
+        "clinvar_revstat",
+        "clinvar_hgvs",
+        "clinvar_disease",
+        "clinvar_variant_type",
+    ]
+    df["clinvar_found"] = df[clinvar_evidence_columns].fillna("").astype(str).ne("").any(axis=1)
     df["clinvar_classified"] = df["clinvar_sig"].astype(str) != ""
-    df["clinvar_category"] = _categorize_clinvar(df["clinvar_sig"])
+    df["clinvar_category"] = _categorize_clinvar(df["clinvar_sig"], df["clinvar_found"])
     if has_vep_consequences:
         df["consequence"] = df["vep_primary_consequence"].where(
             df["vep_status"].astype(str).eq("ok"),

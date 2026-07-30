@@ -21,6 +21,7 @@ if __package__ in {None, ""}:
     sys.path.insert(0, str(runtime_root))
 
 from feature_coverage import load_snv_site_depth, site_aligned_ortholog_counts
+from genomics.clinvar import review_stars as clinvar_review_stars
 from genomics.gnomad import GNOMAD_API_URL, fetch_region_variants_recursive, select_af_metrics
 from genomics.gnomad_cache import GnomadRegionCache
 from genomics.variants import (
@@ -88,21 +89,6 @@ VARIANT_STRATEGY_SUPPORT_FIELDS = [
 
 FAILURE_FIELDS = ["source", "scope", "chrom", "start", "end", "failure_type", "message"]
 GNOMAD_DATASET = "gnomad_r4"
-
-CLINVAR_REVIEW_STARS = {
-    "practice_guideline": "4",
-    "reviewed_by_expert_panel": "3",
-    "criteria_provided,_multiple_submitters,_no_conflicts": "2",
-    "criteria_provided,_multiple_submitters": "2",
-    "criteria_provided,_conflicting_classifications": "1",
-    "criteria_provided,_conflicting_interpretations": "1",
-    "criteria_provided,_single_submitter": "1",
-    "no_assertion_criteria_provided": "0",
-    "no_assertion_provided": "0",
-    "no_classification_provided": "0",
-    "no_classification_for_the_individual_variant": "0",
-}
-
 
 @dataclass(slots=True)
 class StrategySupport:
@@ -343,30 +329,6 @@ def format_review_status_value(value) -> str:
 
 def empty_annotation(columns: list[str]) -> dict[str, str]:
     return {column: "" for column in columns}
-
-
-def normalize_review_status(value: str) -> str:
-    return str(value or "").strip().lower().replace(" ", "_")
-
-
-def clinvar_review_stars(review_status: str) -> tuple[str, str]:
-    if not review_status:
-        return "", "missing"
-    statuses = [normalize_review_status(item) for item in review_status.split("|") if item]
-    if not statuses:
-        return "", "missing"
-
-    stars = []
-    for status in statuses:
-        star_value = CLINVAR_REVIEW_STARS.get(status)
-        if star_value is None:
-            return "", f"unmapped:{status}"
-        stars.append(star_value)
-
-    unique_stars = sorted(set(stars))
-    if len(unique_stars) != 1:
-        return "", "ambiguous_multiple_review_statuses"
-    return unique_stars[0], "mapped"
 
 
 def count_pipe_values(value: str) -> str:

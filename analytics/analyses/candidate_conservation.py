@@ -11,20 +11,20 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+from analytics.io.artifacts import path_metadata, write_json_atomic, write_tsv_atomic
 from .clinvar_validation import split_strategies
 from .conservation import (
     DEFAULT_TRACK_NAMES,
     PositionScores,
     format_chrom,
     parse_tracks,
-    path_metadata,
     read_position_scores,
     score_positions,
 )
 from genomics.variants import gnomad_lookup_status, parse_variant_key, read_failed_regions
 
 
-CACHE_VERSION = 4
+CACHE_VERSION = 5
 QUANTILES = np.linspace(0.0, 1.0, 101)
 MAX_HISTOGRAM_BINS = 80
 REQUIRED_COLUMNS = {
@@ -115,8 +115,8 @@ def build_candidate_conservation(
         chunk_size,
         gnomad_failed_regions,
     )
-    _write_frame(distributions_path, distributions)
-    _write_frame(histograms_path, histograms)
+    write_tsv_atomic(distributions_path, distributions)
+    write_tsv_atomic(histograms_path, histograms)
     manifest = {
         "inputs": expected_inputs,
         "complete": position_scores.summary.get("status") == "complete",
@@ -128,8 +128,12 @@ def build_candidate_conservation(
         "histogram_rule": "Freedman-Diaconis with an 80-bin display cap",
         "distributions_tsv": str(distributions_path),
         "histograms_tsv": str(histograms_path),
+        "outputs": {
+            distributions_path.name: path_metadata(distributions_path),
+            histograms_path.name: path_metadata(histograms_path),
+        },
     }
-    _write_json(manifest_path, manifest)
+    write_json_atomic(manifest_path, manifest)
     return CandidateConservation(
         distributions_path,
         histograms_path,
@@ -155,7 +159,15 @@ def _load_cache(
         return None
     try:
         manifest = json.loads(manifest_path.read_text())
-        if manifest.get("inputs") != expected_inputs or manifest.get("complete") is not True:
+        expected_outputs = {
+            distributions_path.name: path_metadata(distributions_path),
+            histograms_path.name: path_metadata(histograms_path),
+        }
+        if (
+            manifest.get("inputs") != expected_inputs
+            or manifest.get("complete") is not True
+            or manifest.get("outputs") != expected_outputs
+        ):
             return None
         distributions = pd.read_csv(distributions_path, sep="\t", compression="gzip")
         histograms = pd.read_csv(histograms_path, sep="\t", compression="gzip")
@@ -432,26 +444,3 @@ def _required_positions(
     positions, _basis = score_positions(int(pos), str(ref), str(alt))
     formatted_chrom = format_chrom(chrom, chrom_style)
     return [(formatted_chrom, position) for position in positions if position >= 0]
-
-
-def _write_frame(path: Path, frame: pd.DataFrame) -> None:
-    with tempfile.NamedTemporaryFile(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent, delete=False) as handle:
-        temporary = Path(handle.name)
-    try:
-        frame.to_csv(temporary, sep="\t", index=False, compression="gzip", lineterminator="\n")
-        temporary.chmod(0o644)
-        temporary.replace(path)
-    finally:
-        temporary.unlink(missing_ok=True)
-
-
-def _write_json(path: Path, payload: dict) -> None:
-    with tempfile.NamedTemporaryFile(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent, mode="w", delete=False) as handle:
-        temporary = Path(handle.name)
-        json.dump(payload, handle, indent=2, sort_keys=True)
-        handle.write("\n")
-    try:
-        temporary.chmod(0o644)
-        temporary.replace(path)
-    finally:
-        temporary.unlink(missing_ok=True)

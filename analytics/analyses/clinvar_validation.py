@@ -14,6 +14,13 @@ from pathlib import Path
 
 import pandas as pd
 
+from analytics.io.artifacts import (
+    directory_metadata,
+    path_metadata,
+    write_json_atomic,
+    write_text_atomic,
+    write_tsv_atomic,
+)
 from genomics.variants import (
     build_context_index,
     contexts_for_variant,
@@ -24,7 +31,8 @@ from genomics.variants import (
     variant_key_text,
     variant_type,
 )
-from analytics.annotation.vep import VEP_CONSEQUENCE_ORDER, annotate_vep_consequences
+from analytics.annotation.consequences import VEP_CONSEQUENCE_ORDER
+from analytics.annotation.vep import annotate_vep_consequences
 
 
 UNIVERSE_FIELDS = [
@@ -41,7 +49,7 @@ UNIVERSE_FIELDS = [
     "clinvar_mc_terms",
     "gene_ids",
 ]
-CACHE_VERSION = 3
+CACHE_VERSION = 4
 VALIDATION_TYPES = ["snv", "indel"]
 
 
@@ -175,7 +183,7 @@ def build_or_load_vep_universe(
     )
     if enriched["vep_status"].isna().any():
         raise ValueError("VEP did not return a status for every ClinVar allele")
-    _write_frame_atomic(enriched, output_path)
+    write_tsv_atomic(output_path, enriched)
     manifest = {
         "status": "complete",
         "contract": contract,
@@ -188,7 +196,7 @@ def build_or_load_vep_universe(
         "vep": summary,
         "output": path_metadata(output_path),
     }
-    _write_json_atomic(manifest, manifest_path)
+    write_json_atomic(manifest_path, manifest)
     return output_path, manifest_path, enriched, {**manifest, "cache_hit": False}
 
 
@@ -255,34 +263,6 @@ def _aggregate_vep_by_variant(annotations: pd.DataFrame) -> pd.DataFrame:
     )
 
 
-def _write_frame_atomic(frame: pd.DataFrame, path: Path) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with tempfile.NamedTemporaryFile(dir=path.parent, suffix=".tsv.gz", delete=False) as handle:
-        temporary = Path(handle.name)
-    try:
-        frame.to_csv(
-            temporary,
-            sep="\t",
-            index=False,
-            lineterminator="\n",
-            compression={"method": "gzip", "compresslevel": 6, "mtime": 0},
-        )
-        temporary.replace(path)
-    finally:
-        temporary.unlink(missing_ok=True)
-
-
-def _write_json_atomic(payload: dict[str, object], path: Path) -> None:
-    with tempfile.NamedTemporaryFile(dir=path.parent, suffix=".json", mode="w", delete=False) as handle:
-        temporary = Path(handle.name)
-        json.dump(payload, handle, indent=2, sort_keys=True)
-        handle.write("\n")
-    try:
-        temporary.replace(path)
-    finally:
-        temporary.unlink(missing_ok=True)
-
-
 def build_or_load_clinvar_universe(
     *,
     genes_tsv: Path,
@@ -294,7 +274,7 @@ def build_or_load_clinvar_universe(
 ) -> dict:
     expected_inputs = {
         "genes_tsv": path_metadata(genes_tsv),
-        "target_sequences_dir": directory_metadata(target_sequences_dir),
+        "target_sequences_dir": directory_metadata(target_sequences_dir, "*.fa.gz"),
         "clinvar_vcf": path_metadata(clinvar_vcf),
         "clinvar_tbi": path_metadata(Path(f"{clinvar_vcf}.tbi")),
         "mode": "snv_indel",
@@ -302,7 +282,11 @@ def build_or_load_clinvar_universe(
     }
     if universe_path.exists() and manifest_path.exists():
         manifest = json.loads(manifest_path.read_text())
-        if manifest.get("inputs") == expected_inputs:
+        if (
+            manifest.get("complete") is True
+            and manifest.get("inputs") == expected_inputs
+            and manifest.get("output") == path_metadata(universe_path)
+        ):
             return manifest
 
     genes = read_genes(genes_tsv)
@@ -315,6 +299,7 @@ def build_or_load_clinvar_universe(
     row_counts = Counter((row["variant_type"], row["label_class"]) for row in rows)
     manifest = {
         "inputs": expected_inputs,
+        "complete": True,
         "target_gene_count": len(genes),
         "target_region_count": len(intervals),
         "raw_allele_count": counts["raw_allele_count"],
@@ -354,8 +339,9 @@ def build_or_load_clinvar_universe(
         ),
         "regions_bed": str(regions_path),
         "universe_tsv": str(universe_path),
+        "output": path_metadata(universe_path),
     }
-    manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
+    write_json_atomic(manifest_path, manifest)
     return manifest
 
 
@@ -407,10 +393,11 @@ def chrom_sort_key(chrom: str) -> tuple[int, str]:
 
 
 def write_regions_bed(path: Path, intervals: list[tuple[str, int, int]]) -> None:
-    with path.open("w", newline="") as handle:
-        writer = csv.writer(handle, delimiter="\t", lineterminator="\n")
-        for chrom, start1, end1 in intervals:
-            writer.writerow([chrom, max(0, start1 - 1), end1])
+    lines = [
+        f"{chrom}\t{max(0, start1 - 1)}\t{end1}\n"
+        for chrom, start1, end1 in intervals
+    ]
+    write_text_atomic(path, "".join(lines))
 
 
 def query_clinvar_variant_universe(
@@ -601,11 +588,8 @@ def gene_sort_key(value: str) -> tuple[int, str]:
 
 
 def write_universe(path: Path, rows: list[dict[str, str]]) -> None:
-    with gzip.open(path, "wt", newline="") as handle:
-        writer = csv.DictWriter(handle, fieldnames=UNIVERSE_FIELDS, delimiter="\t", lineterminator="\n")
-        writer.writeheader()
-        for row in rows:
-            writer.writerow({field: row.get(field, "") for field in UNIVERSE_FIELDS})
+    frame = pd.DataFrame.from_records(rows, columns=UNIVERSE_FIELDS)
+    write_tsv_atomic(path, frame)
 
 
 def collect_observed_keys_by_strategy_type(
@@ -647,28 +631,3 @@ def collect_observed_keys_by_strategy_type(
 
 def split_strategies(value: str) -> list[str]:
     return [item.strip() for item in str(value or "").split(",") if item.strip()]
-
-
-def path_metadata(path: Path) -> dict[str, object]:
-    if not path.exists():
-        raise FileNotFoundError(path)
-    stat = path.stat()
-    return {"path": str(path.resolve()), "size_bytes": stat.st_size, "mtime": int(stat.st_mtime)}
-
-
-def directory_metadata(path: Path) -> dict[str, object]:
-    if not path.exists():
-        raise FileNotFoundError(path)
-    files = sorted(item for item in path.glob("*.fa.gz") if item.is_file())
-    sizes = 0
-    mtimes = []
-    for item in files:
-        stat = item.stat()
-        sizes += stat.st_size
-        mtimes.append(int(stat.st_mtime))
-    return {
-        "path": str(path.resolve()),
-        "file_count": len(files),
-        "size_bytes": sizes,
-        "max_mtime": max(mtimes) if mtimes else 0,
-    }

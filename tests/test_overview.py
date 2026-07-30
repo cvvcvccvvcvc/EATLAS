@@ -4,7 +4,7 @@ from types import SimpleNamespace
 
 import pandas as pd
 
-from analytics.strategy_report import (
+from analytics.reporting.overview import (
     alignment_summary_for_report,
     build_overview,
     overview_strategy_table,

@@ -7,12 +7,13 @@ import concurrent.futures
 import json
 import shutil
 import subprocess
-import tempfile
 from collections import defaultdict
 from pathlib import Path
 
 import pandas as pd
 
+from analytics.io.artifacts import path_metadata, write_json_atomic, write_tsv_atomic
+from genomics.clinvar import record_category, significance_class
 from genomics.gnomad_cache import GnomadRegionCache
 from genomics.gnomad import (
     GNOMAD_API_URL,
@@ -20,11 +21,10 @@ from genomics.gnomad import (
     select_af_metrics,
 )
 
-from .clinvar_validation import path_metadata
 from genomics.variants import normalize_chrom
 
 
-CACHE_VERSION = 1
+CACHE_VERSION = 2
 GNOMAD_DATASET = "gnomad_r4"
 GNOMAD_CLUSTER_GAP_BP = 200_000
 GNOMAD_WORKERS = 5
@@ -63,7 +63,10 @@ def build_external_evidence(
     if output_path.exists() and manifest_path.exists():
         try:
             cached_manifest = json.loads(manifest_path.read_text())
-            if cached_manifest.get("inputs") == expected_inputs:
+            if (
+                cached_manifest.get("inputs") == expected_inputs
+                and cached_manifest.get("output") == path_metadata(output_path)
+            ):
                 cached_evidence = _read_evidence(output_path)
         except (OSError, json.JSONDecodeError):
             cached_manifest = {}
@@ -113,7 +116,7 @@ def build_external_evidence(
         how="left",
         validate="one_to_one",
     )
-    _write_evidence(output_path, evidence)
+    write_tsv_atomic(output_path, evidence)
 
     failed_allele_count = int((~evidence["gnomad_status"].eq("ok")).sum())
     gnomad_summary.update(
@@ -137,8 +140,9 @@ def build_external_evidence(
         "gnomad_found_count": int(evidence["gnomad_found"].sum()),
         "gnomad": gnomad_summary,
         "evidence_tsv": str(output_path),
+        "output": path_metadata(output_path),
     }
-    _write_manifest(manifest_path, manifest)
+    write_json_atomic(manifest_path, manifest)
     return evidence, manifest
 
 
@@ -150,33 +154,6 @@ def _empty_gnomad_evidence(variants: pd.DataFrame) -> pd.DataFrame:
     return frame
 
 
-def _write_evidence(path: Path, frame: pd.DataFrame) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with tempfile.NamedTemporaryFile(dir=path.parent, suffix=".tsv.gz", delete=False) as handle:
-        temporary_path = Path(handle.name)
-    try:
-        frame.to_csv(
-            temporary_path,
-            sep="\t",
-            index=False,
-            compression="gzip",
-            lineterminator="\n",
-        )
-        temporary_path.replace(path)
-    finally:
-        temporary_path.unlink(missing_ok=True)
-
-
-def _write_manifest(path: Path, manifest: dict[str, object]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with tempfile.NamedTemporaryFile("w", dir=path.parent, suffix=".json", delete=False) as handle:
-        temporary_path = Path(handle.name)
-        json.dump(manifest, handle, indent=2, sort_keys=True)
-        handle.write("\n")
-    try:
-        temporary_path.replace(path)
-    finally:
-        temporary_path.unlink(missing_ok=True)
 
 
 def _read_evidence(path: Path) -> pd.DataFrame:
@@ -192,21 +169,7 @@ def _read_evidence(path: Path) -> pd.DataFrame:
 
 def categorize_clinvar_sig(value: str) -> str:
     """Map unambiguous ClinVar significance text to a report class."""
-
-    text = str(value or "").lower()
-    if not text:
-        return ""
-    if "conflicting" in text:
-        return "Other"
-    if "uncertain" in text or "vus" in text:
-        return "VUS"
-    benign = "benign" in text
-    pathogenic = "pathogenic" in text
-    if benign and not pathogenic:
-        return "B/LB"
-    if pathogenic and not benign:
-        return "P/LP"
-    return "Other"
+    return significance_class(value) or ""
 
 
 def _annotate_clinvar(variants: pd.DataFrame, clinvar_vcf: Path) -> pd.DataFrame:
@@ -262,7 +225,7 @@ def _annotate_clinvar(variants: pd.DataFrame, clinvar_vcf: Path) -> pd.DataFrame
                 "variant_key": variant_key,
                 "clinvar_found": variant_key in found,
                 "clinvar_classified": bool(sig),
-                "clinvar_class": categorize_clinvar_sig(sig),
+                "clinvar_class": record_category(sig, found=variant_key in found),
             }
         )
     return pd.DataFrame(rows)

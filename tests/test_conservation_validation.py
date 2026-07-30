@@ -14,7 +14,6 @@ from analytics.analyses.clinvar_validation import parse_molecular_consequences
 from analytics.analyses.conservation import DEFAULT_TRACK_NAMES, PositionScores, Track, annotate_track, score_positions
 from analytics.analyses.statistics import benjamini_hochberg
 from analytics.analyses.conservation_validation import (
-    CONSEQUENCE_OPTIONS,
     SCORE_COLUMN,
     TARGET_CONTEXT_OPTIONS,
     VARIANT_TYPE_OPTIONS,
@@ -23,8 +22,11 @@ from analytics.analyses.conservation_validation import (
     compute_continuous_firth,
     compute_fixed_band_enrichment,
     compute_unadjusted_enrichment,
-    consequence_membership_mask,
-    consequence_memberships,
+)
+from analytics.annotation.consequences import (
+    VALIDATION_CONSEQUENCE_OPTIONS as CONSEQUENCE_OPTIONS,
+    validation_consequence_membership_mask as consequence_membership_mask,
+    validation_consequence_memberships as consequence_memberships,
 )
 
 

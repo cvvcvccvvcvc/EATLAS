@@ -22,7 +22,13 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from .clinvar_validation import directory_metadata, path_metadata, split_strategies
+from analytics.io.artifacts import (
+    directory_metadata,
+    path_metadata,
+    write_json_atomic,
+    write_tsv_atomic,
+)
+from .clinvar_validation import split_strategies
 from .conservation import annotate_track, parse_tracks
 from .external_evidence import build_external_evidence
 from .target_context import context_at, read_disjoint_contexts
@@ -31,7 +37,7 @@ from analytics.annotation.vep import annotate_vep_consequences
 
 
 DNA_BASES = ("A", "C", "G", "T")
-CONTROL_VERSION = 3
+CONTROL_VERSION = 4
 MATCHED_POOL_SIZE = 5
 CANDIDATE_POOL_SIZE = MATCHED_POOL_SIZE * 3
 CANDIDATE_FOCAL_CHUNK_SIZE = 2_000
@@ -96,7 +102,7 @@ def build_target_space_null(
         "variant_annotations": path_metadata(variant_annotations_tsv),
         "target_features": path_metadata(target_features_tsv),
         "genes": path_metadata(genes_tsv),
-        "target_sequences": directory_metadata(target_sequences_dir),
+        "target_sequences": directory_metadata(target_sequences_dir, "*.fa.gz"),
         "strategies": sorted(strategies),
         "sample_size_per_strategy": sample_size_per_strategy,
         "matched_pool_size": MATCHED_POOL_SIZE,
@@ -206,11 +212,15 @@ def build_target_space_null(
         "focal_vep": focal_vep,
         "candidate_vep": candidate_vep,
         "conservation": conservation_manifest,
+        "outputs": {
+            matched_path.name: path_metadata(matched_path),
+            conservation_path.name: path_metadata(conservation_path),
+        },
         "matched_tsv": str(matched_path),
         "conservation_tsv": str(conservation_path),
         "vep_cache": str(vep_cache_path),
     }
-    manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
+    write_json_atomic(manifest_path, manifest)
     return _summarize_analysis(
         matched,
         manifest,
@@ -234,7 +244,10 @@ def _cache_is_valid(manifest_path: Path, expected_inputs: dict, outputs: list[Pa
         manifest = json.loads(manifest_path.read_text())
     except (OSError, json.JSONDecodeError):
         return False
-    return manifest.get("complete") is not False and manifest.get("inputs") == expected_inputs
+    if manifest.get("complete") is not True or manifest.get("inputs") != expected_inputs:
+        return False
+    expected_outputs = {path.name: path_metadata(path) for path in outputs}
+    return manifest.get("outputs") == expected_outputs
 
 
 def _load_analysis(
@@ -269,7 +282,7 @@ def _load_analysis(
 
 
 def _write_tsv(path: Path, frame: pd.DataFrame) -> None:
-    frame.to_csv(path, sep="\t", index=False, compression="gzip", lineterminator="\n")
+    write_tsv_atomic(path, frame)
 
 
 def _read_genes(path: Path) -> dict[str, dict[str, object]]:

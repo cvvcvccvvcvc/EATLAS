@@ -7,23 +7,27 @@ from types import SimpleNamespace
 import pandas as pd
 
 from analytics.analyses.matched_control import TargetSpaceNullAnalysis
-from analytics.strategy_report import (
-    RunInputs,
-    build_variant_sections,
-    build_ortholog_evidence_sections,
-    build_target_space_null_sections,
-    build_target_space_null_qc_sections,
+from analytics.io.run_inputs import RunInputs, resolve_run_inputs, validate_report_inputs
+from analytics.reporting.components import dataframe_records, format_table_dataframe
+from analytics.reporting.conservation import (
     clinvar_association_view,
-    dataframe_records,
-    format_table_dataframe,
-    gnomad_stratification_figure,
     hidden_clinvar_association_views,
-    overview_strategy_table,
+)
+from analytics.reporting.matched_control import (
+    build_target_space_null_qc_sections,
+    build_target_space_null_sections,
+)
+from analytics.reporting.document import render_html
+from analytics.reporting.ortholog_evidence import (
+    build_ortholog_evidence_sections,
     ortholog_evidence_distribution_figure,
     ortholog_evidence_distribution_stats,
     ortholog_evidence_figure,
-    resolve_run_inputs,
-    validate_report_inputs,
+)
+from analytics.reporting.overview import overview_strategy_table
+from analytics.reporting.variant_profile import (
+    build_variant_sections,
+    gnomad_stratification_figure,
 )
 
 
@@ -194,10 +198,16 @@ def test_single_strategy_candidate_profile_loads_plotly_without_overlap() -> Non
     )
     stats = pd.DataFrame([{"Strategy": "s1", "Unique Variants": 10}])
 
-    html = "".join(build_variant_sections(summary, stats, include_plotly=True))
+    html = "".join(build_variant_sections(summary, stats))
 
-    assert "cdn.plot.ly" in html
+    assert "cdn.plot.ly" not in html
     assert "Variant type composition by strategy" in html
+
+
+def test_report_document_loads_plotly_once() -> None:
+    html = render_html([("one", "One", ["<div>plot</div>"]), ("two", "Two", [])])
+
+    assert html.count("cdn.plot.ly") == 1
 
 
 def test_ortholog_evidence_section_renders_three_context_heatmaps() -> None:
@@ -269,7 +279,6 @@ def test_ortholog_evidence_section_renders_three_context_heatmaps() -> None:
     html = "".join(
         build_ortholog_evidence_sections(
             summary,
-            include_plotly=True,
             taxonomy_summary=taxonomy_summary,
         )
     )
@@ -303,7 +312,7 @@ def test_ortholog_evidence_section_explains_legacy_output() -> None:
         ortholog_evidence_distributions=pd.DataFrame(),
     )
 
-    html = "".join(build_ortholog_evidence_sections(summary, include_plotly=False))
+    html = "".join(build_ortholog_evidence_sections(summary))
 
     assert "predates site-aligned ortholog depth" in html
 
@@ -478,7 +487,7 @@ def test_target_space_null_section_reports_consequence_matched_design(tmp_path: 
         resamples=1_000,
     )
 
-    html = "".join(build_target_space_null_sections(analysis, include_plotly=False))
+    html = "".join(build_target_space_null_sections(analysis))
 
     assert "Matched Control" in html
     assert "Sampled / matched focal SNVs" in html
@@ -506,7 +515,6 @@ def test_target_space_null_section_reports_disabled_state() -> None:
     html = "".join(
         build_target_space_null_sections(
             None,
-            include_plotly=False,
             enabled=False,
         )
     )

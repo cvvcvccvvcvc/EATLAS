@@ -16,7 +16,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from analytics.analyses.clinvar_validation import path_metadata
+from analytics.io.artifacts import path_metadata
 from genomics.variants import parse_variant_key
 from analytics.annotation.vep import annotate_vep_consequences
 

@@ -13,6 +13,8 @@ from pathlib import Path
 
 import pandas as pd
 
+from analytics.io.artifacts import path_metadata, write_json_atomic, write_tsv_atomic
+
 try:
     import pyBigWig
 except ImportError:  # pragma: no cover - depends on the local analytics env
@@ -64,7 +66,7 @@ DEFAULT_TRACKS = {
     ),
 }
 DEFAULT_TRACK_NAMES = "phyloP100way"
-CACHE_VERSION = 3
+CACHE_VERSION = 4
 CONSERVATION_FIELDS = [
     "variant_key",
     "variant_type",
@@ -108,7 +110,10 @@ def build_conservation_annotations(
     previous_manifest = None
     if annotations_path.exists() and manifest_path.exists():
         candidate = json.loads(manifest_path.read_text())
-        if candidate.get("inputs") == expected_inputs:
+        if (
+            candidate.get("inputs") == expected_inputs
+            and candidate.get("output") == path_metadata(annotations_path)
+        ):
             if candidate.get("complete") is True:
                 annotations = read_annotations(annotations_path, score_columns)
                 return ConservationAnnotations(annotations_path, manifest_path, annotations, candidate, score_columns)
@@ -160,8 +165,9 @@ def build_conservation_annotations(
         "score_columns": score_columns,
         "tracks": summaries,
         "annotation_tsv": str(annotations_path),
+        "output": path_metadata(annotations_path),
     }
-    manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
+    write_json_atomic(manifest_path, manifest)
     annotations = read_annotations(annotations_path, score_columns)
     return ConservationAnnotations(annotations_path, manifest_path, annotations, manifest, score_columns)
 
@@ -265,11 +271,8 @@ def read_annotation_rows(path: Path, score_columns: list[str]) -> list[dict[str,
 
 def write_annotations(path: Path, rows: list[dict[str, str]], score_columns: list[str]) -> None:
     fields = [*CONSERVATION_FIELDS, *score_columns]
-    with open_text(path, "wt") as handle:
-        writer = csv.DictWriter(handle, fieldnames=fields, delimiter="\t", lineterminator="\n")
-        writer.writeheader()
-        for row in rows:
-            writer.writerow({field: row.get(field, "") for field in fields})
+    frame = pd.DataFrame.from_records(rows, columns=fields)
+    write_tsv_atomic(path, frame)
 
 
 def base_chrom(value: object) -> str:
@@ -574,10 +577,3 @@ def read_values_with_retries(
 def sleep_before_retry(base_seconds: float, attempt: int) -> None:
     if base_seconds > 0:
         time.sleep(base_seconds * (2 ** (attempt - 1)))
-
-
-def path_metadata(path: Path) -> dict[str, object]:
-    if not path.exists():
-        raise FileNotFoundError(path)
-    stat = path.stat()
-    return {"path": str(path.resolve()), "size_bytes": stat.st_size, "mtime": int(stat.st_mtime)}

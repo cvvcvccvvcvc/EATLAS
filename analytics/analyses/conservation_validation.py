@@ -13,6 +13,12 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+from analytics.annotation.consequences import (
+    VALIDATION_CONSEQUENCE_BITS as CONSEQUENCE_BITS,
+    VALIDATION_CONSEQUENCE_OPTIONS as CONSEQUENCE_OPTIONS,
+    validation_consequence_membership_mask as consequence_membership_mask,
+    validation_consequence_memberships_text as consequence_memberships_text,
+)
 from .statistics import benjamini_hochberg, enrichment_result, mantel_haenszel_adjusted
 from .target_context import context_at, read_disjoint_contexts
 from genomics.variants import changed_target_position, parse_variant_key
@@ -40,67 +46,6 @@ TARGET_CONTEXT_OPTIONS = [
     ("intron", "Intron"),
 ]
 TARGET_CONTEXT_VALUES = ("cds", "utr", "other_exon", "intron", "other")
-
-CONSEQUENCE_OPTIONS = [
-    ("all", "All consequences"),
-    ("missense", "Missense"),
-    ("synonymous", "Synonymous"),
-    ("protein_truncating", "Protein-truncating / frameshift"),
-    ("canonical_splice", "Canonical splice"),
-    ("inframe_protein_altering", "In-frame / protein-altering"),
-    ("splice_region", "Splice region"),
-    ("intronic", "Intronic"),
-    ("utr_noncoding", "UTR / noncoding"),
-    ("other", "Other"),
-]
-
-CONSEQUENCE_TERMS = {
-    "missense": {"missense_variant"},
-    "synonymous": {"synonymous_variant", "stop_retained_variant"},
-    "protein_truncating": {
-        "frameshift_variant",
-        "nonsense",
-        "start_lost",
-        "stop_gained",
-        "transcript_ablation",
-    },
-    "canonical_splice": {"splice_acceptor_variant", "splice_donor_variant"},
-    "inframe_protein_altering": {
-        "coding_sequence_variant",
-        "inframe_deletion",
-        "inframe_insertion",
-        "protein_altering_variant",
-        "stop_lost",
-    },
-    "splice_region": {
-        "splice_donor_5th_base_variant",
-        "splice_donor_region_variant",
-        "splice_polypyrimidine_tract_variant",
-        "splice_region_variant",
-    },
-    "intronic": {"intron_variant"},
-    "utr_noncoding": {
-        "3_prime_UTR_variant",
-        "5_prime_UTR_variant",
-        "downstream_gene_variant",
-        "mature_miRNA_variant",
-        "non_coding_transcript_exon_variant",
-        "non_coding_transcript_variant",
-        "non-coding_transcript_variant",
-        "regulatory_region_ablation",
-        "regulatory_region_amplification",
-        "regulatory_region_variant",
-        "TF_binding_site_variant",
-        "upstream_gene_variant",
-    },
-}
-CONSEQUENCE_BITS = {
-    key: 1 << index
-    for index, (key, _label) in enumerate(CONSEQUENCE_OPTIONS)
-    if key != "all"
-}
-RECOGNIZED_CONSEQUENCE_TERMS = set().union(*CONSEQUENCE_TERMS.values())
-
 
 @dataclass(frozen=True)
 class ConservationCohort:
@@ -236,28 +181,6 @@ def assign_target_contexts(
         for row in variants[["variant_key", "gene_ids"]].itertuples(index=False)
     ]
     return pd.Series(values, index=variants.index, dtype="object")
-
-
-def consequence_memberships(terms_text: str) -> set[str]:
-    terms = {term.strip() for term in str(terms_text or "").split("|") if term.strip()}
-    memberships = {
-        group
-        for group, accepted_terms in CONSEQUENCE_TERMS.items()
-        if terms & accepted_terms
-    }
-    if not terms or terms - RECOGNIZED_CONSEQUENCE_TERMS:
-        memberships.add("other")
-    return memberships
-
-
-def consequence_memberships_text(terms_text: str) -> str:
-    memberships = consequence_memberships(terms_text)
-    order = [key for key, _label in CONSEQUENCE_OPTIONS if key != "all"]
-    return "|".join(key for key in order if key in memberships)
-
-
-def consequence_membership_mask(terms_text: str) -> int:
-    return sum(CONSEQUENCE_BITS[group] for group in consequence_memberships(terms_text))
 
 
 def split_memberships(value: str) -> set[str]:

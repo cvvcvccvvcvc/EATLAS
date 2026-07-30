@@ -4,12 +4,24 @@ import csv
 import gzip
 from pathlib import Path
 
+import pandas as pd
+
 from analytics.analyses.variant_summary import (
     VEP_USECOLS,
     VARIANT_USECOLS,
+    _categorize_clinvar,
     build_variant_summary,
     read_taxonomic_ortholog_evidence,
 )
+
+
+def test_clinvar_categories_distinguish_unclassified_records_from_absence() -> None:
+    categories = _categorize_clinvar(
+        pd.Series(["", "", "Benign"]),
+        pd.Series(["", "VCV1", "VCV2"]),
+    )
+
+    assert list(categories.astype(str)) == ["Not in ClinVar", "Unclassified", "B/LB"]
 
 
 def test_taxonomic_ortholog_evidence_uses_absolute_alt_support(tmp_path: Path) -> None:

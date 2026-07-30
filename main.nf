@@ -481,6 +481,7 @@ workflow ANNOTATION_STAGE {
     ]
     genomics_sources = [
         file("${projectDir}/genomics/__init__.py"),
+        file("${projectDir}/genomics/clinvar.py"),
         file("${projectDir}/genomics/gnomad.py"),
         file("${projectDir}/genomics/gnomad_cache.py"),
         file("${projectDir}/genomics/variants.py"),
@@ -524,6 +525,7 @@ workflow PARTITIONED_ANNOTATION_STAGE {
     ]
     genomics_sources = [
         file("${projectDir}/genomics/__init__.py"),
+        file("${projectDir}/genomics/clinvar.py"),
         file("${projectDir}/genomics/gnomad.py"),
         file("${projectDir}/genomics/gnomad_cache.py"),
         file("${projectDir}/genomics/variants.py"),
