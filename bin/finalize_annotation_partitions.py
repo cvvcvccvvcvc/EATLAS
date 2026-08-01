@@ -19,6 +19,8 @@ COUNT_FIELDS = [
     "annotated_variant_context_count",
     "variant_strategy_support_count",
     "variant_strategy_support_missing_key_count",
+    "variant_ortholog_support_count",
+    "variant_ortholog_support_missing_key_count",
     "variant_strategy_site_depth_count",
     "target_context_count",
     "clinvar_cached_variant_count",
@@ -221,6 +223,11 @@ def main() -> None:
         "variant_strategy_support.tsv.gz",
         args.outdir / "variant_strategy_support.tsv.gz",
     )
+    ortholog_support_count = merge_tsv_gz(
+        partitions,
+        "variant_ortholog_support.tsv.gz",
+        args.outdir / "variant_ortholog_support.tsv.gz",
+    )
     ortholog_evidence_count = merge_ortholog_evidence(
         partitions,
         args.outdir / "ortholog_evidence_summary.tsv.gz",
@@ -240,6 +247,11 @@ def main() -> None:
         raise ValueError(
             "Variant-strategy support row count does not match partition manifests: "
             f"rows={support_count}, manifests={counts['variant_strategy_support_count']}"
+        )
+    if counts["variant_ortholog_support_count"] != ortholog_support_count:
+        raise ValueError(
+            "Variant-ortholog support row count does not match partition manifests: "
+            f"rows={ortholog_support_count}, manifests={counts['variant_ortholog_support_count']}"
         )
     manifest_failure_count = sum(
         int(manifest.get("failure_count") or 0) for _path, manifest in partitions
@@ -267,6 +279,7 @@ def main() -> None:
         **counters,
         "annotated_variant_context_count": annotation_count,
         "variant_strategy_support_count": support_count,
+        "variant_ortholog_support_count": ortholog_support_count,
         "ortholog_evidence_summary_count": ortholog_evidence_count,
         "failure_count": failure_count,
         "clinvar_vcf": first_manifest.get("clinvar_vcf", {}),

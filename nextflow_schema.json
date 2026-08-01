@@ -32,6 +32,10 @@
                     "type": "string",
                     "description": "Path to events TSV for annotation stage"
                 },
+                "event_ortholog_support_tsv": {
+                    "type": "string",
+                    "description": "Path to event_ortholog_support.tsv.gz when annotating compact alignment events. Raw events retain ortholog identity and do not require this input."
+                },
                 "segments_tsv": {
                     "type": "string",
                     "description": "Path to alignment segments TSV for annotation-stage site depth"

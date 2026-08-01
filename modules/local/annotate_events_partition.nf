@@ -19,6 +19,7 @@ process ANNOTATE_EVENTS_PARTITION {
     GAPH_GNOMAD_CACHE_DIR="${gnomad_cache_dir}" \\
     python3 "${annotate_script}" \\
         --events-tsv "${alignment_partition}/alignment_events.tsv.gz" \\
+        --event-ortholog-support-tsv "${alignment_partition}/event_ortholog_support.tsv.gz" \\
         --snv-site-depth-tsv "${alignment_partition}/snv_site_depth.tsv.gz" \\
         --snv-taxonomic-depth-tsv "${alignment_partition}/snv_taxonomic_depth.tsv.gz" \\
         --snv-alt-taxonomic-support-tsv "${alignment_partition}/snv_alt_taxonomic_support.tsv.gz" \\

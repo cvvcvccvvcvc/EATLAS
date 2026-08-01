@@ -103,6 +103,10 @@ if (params.stage == 'annotate' && !params.segments_tsv) {
     error "Missing required parameter for --stage annotate: --segments_tsv"
 }
 
+if (params.stage == 'annotate' && params.event_ortholog_support_tsv && !file(params.event_ortholog_support_tsv).exists()) {
+    error "Event ortholog support TSV not found: ${params.event_ortholog_support_tsv}"
+}
+
 if (params.stage == 'annotate' && !params.fetch_dir) {
     error "Missing required parameter for --stage annotate: --fetch_dir"
 }
@@ -437,6 +441,7 @@ workflow ALIGNMENT_STAGE {
     segments = MERGE_ALIGNMENT.out.segments
     feature_coverage = MERGE_ALIGNMENT.out.feature_coverage
     events = MERGE_ALIGNMENT.out.events
+    event_ortholog_support = MERGE_ALIGNMENT.out.event_ortholog_support
     failures = MERGE_ALIGNMENT.out.failures
     partitions = MERGE_ALIGNMENT_PARTITION.out.partition_dirs
     partition_genes = partition_genes
@@ -460,6 +465,7 @@ workflow ALIGNMENT_STAGE_FROM_DIR {
     )
     emit:
     events = ALIGNMENT_STAGE.out.events
+    event_ortholog_support = ALIGNMENT_STAGE.out.event_ortholog_support
     genes = genes
     sequences = sequences
 }
@@ -467,6 +473,7 @@ workflow ALIGNMENT_STAGE_FROM_DIR {
 workflow ANNOTATION_STAGE {
     take:
     events_tsv
+    event_ortholog_support_tsv
     segments_tsv
     genes_tsv
     sequences_dir
@@ -490,6 +497,7 @@ workflow ANNOTATION_STAGE {
     ]
     ANNOTATE_EVENTS(
         events_tsv,
+        event_ortholog_support_tsv,
         segments_tsv,
         genes_tsv,
         sequences_dir,
@@ -504,6 +512,7 @@ workflow ANNOTATION_STAGE {
     emit:
     variant_annotations = ANNOTATE_EVENTS.out.variant_annotations
     variant_strategy_support = ANNOTATE_EVENTS.out.variant_strategy_support
+    variant_ortholog_support = ANNOTATE_EVENTS.out.variant_ortholog_support
     manifest = ANNOTATE_EVENTS.out.manifest
     failures = ANNOTATE_EVENTS.out.failures
 }
@@ -558,6 +567,7 @@ workflow PARTITIONED_ANNOTATION_STAGE {
     emit:
     variant_annotations = FINALIZE_ANNOTATION.out.variant_annotations
     variant_strategy_support = FINALIZE_ANNOTATION.out.variant_strategy_support
+    variant_ortholog_support = FINALIZE_ANNOTATION.out.variant_ortholog_support
     ortholog_evidence_summary = FINALIZE_ANNOTATION.out.ortholog_evidence_summary
     manifest = FINALIZE_ANNOTATION.out.manifest
     failures = FINALIZE_ANNOTATION.out.failures
@@ -606,6 +616,7 @@ workflow {
         fetch_dir = file(params.fetch_dir)
         ANNOTATION_STAGE(
             file(params.events_tsv),
+            file(params.event_ortholog_support_tsv ?: params.events_tsv),
             file(params.segments_tsv),
             file("${fetch_dir}/genes.tsv.gz"),
             file("${fetch_dir}/sequences"),

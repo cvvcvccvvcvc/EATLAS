@@ -61,6 +61,22 @@ TABLE_HEADERS = {
     ],
     "failures.tsv.gz": ["gene_id"],
 }
+EVENT_ORTHOLOG_SUPPORT_HEADER = [
+    "gene_id",
+    "event_type",
+    "target_start0",
+    "target_end0",
+    "genomic_accession",
+    "genomic_start1",
+    "genomic_end1",
+    "ref",
+    "alt",
+    "strategy",
+    "ortholog_gene_id",
+    "tax_id",
+    "taxname",
+    "support_row_count",
+]
 
 
 def write_tsv_gz(path: Path, header: list[str], rows: list[list[str]] | None = None) -> None:
@@ -399,6 +415,15 @@ def test_compact_events_preserve_strategy_specific_support(tmp_path: Path) -> No
         rows = list(csv.DictReader(handle, delimiter="\t"))
     assert [row["strategy"] for row in rows] == ["s1", "s2"]
     assert [row["support_ortholog_count"] for row in rows] == ["1", "1"]
+    with gzip.open(
+        tmp_path / "merged" / "event_ortholog_support.tsv.gz",
+        "rt",
+        newline="",
+    ) as handle:
+        ortholog_rows = list(csv.DictReader(handle, delimiter="\t"))
+    assert [row["strategy"] for row in ortholog_rows] == ["s1", "s2"]
+    assert [row["ortholog_gene_id"] for row in ortholog_rows] == ["101", "101"]
+    assert [row["support_row_count"] for row in ortholog_rows] == ["1", "1"]
 
 
 def test_partition_merge_rejects_duplicate_gene_strategy(tmp_path: Path) -> None:
@@ -525,6 +550,61 @@ def test_final_merge_reports_strategy_specific_eligible_gene_counts(tmp_path: Pa
     manifest = json.loads((outdir / "manifest.json").read_text())
     assert manifest["gene_ids"] == ["1", "2"]
     assert manifest["strategy_eligible_gene_counts"] == {"s1": 1, ensembl: 2}
+
+
+def test_final_merge_preserves_precompacted_ortholog_support(tmp_path: Path) -> None:
+    partition_dirs = []
+    for index, (gene_id, ortholog_gene_id) in enumerate([("1", "101"), ("2", "201")], 1):
+        partition = write_result_dir(
+            tmp_path,
+            f"partition_{index:06d}",
+            {
+                "partition_id": f"partition_{index:06d}",
+                "gene_count": 1,
+                "gene_ids": [gene_id],
+                "strategies": ["s1"],
+                "alignment_event_mode": "compact_support",
+                "alignment_event_count": 1,
+                "raw_alignment_event_count": 1,
+                "event_ortholog_support_count": 1,
+            },
+        )
+        write_tsv_gz(
+            partition / "event_ortholog_support.tsv.gz",
+            EVENT_ORTHOLOG_SUPPORT_HEADER,
+            [
+                [
+                    gene_id,
+                    "snv",
+                    "0",
+                    "1",
+                    "NC_1",
+                    "1",
+                    "1",
+                    "A",
+                    "G",
+                    "s1",
+                    ortholog_gene_id,
+                    "10090",
+                    "Mus musculus",
+                    "1",
+                ]
+            ],
+        )
+        partition_dirs.append(partition)
+    inputs = write_final_inputs(tmp_path, [["1", "ready"], ["2", "ready"]])
+    outdir = tmp_path / "merged"
+    arguments = final_arguments(partition_dirs, outdir, inputs, strategies="s1")
+    arguments.extend(["--compact-events", "--events-already-compacted"])
+
+    completed = run_merge(arguments)
+
+    assert completed.returncode == 0, completed.stderr
+    with gzip.open(outdir / "event_ortholog_support.tsv.gz", "rt", newline="") as handle:
+        rows = list(csv.DictReader(handle, delimiter="\t"))
+    assert [row["ortholog_gene_id"] for row in rows] == ["101", "201"]
+    manifest = json.loads((outdir / "manifest.json").read_text())
+    assert manifest["event_ortholog_support_count"] == 2
 
 
 def test_final_report_input_omits_handoff_tables(tmp_path: Path) -> None:

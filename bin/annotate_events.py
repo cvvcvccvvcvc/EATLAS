@@ -82,6 +82,16 @@ VARIANT_STRATEGY_SUPPORT_FIELDS = [
     "site_aligned_ortholog_count",
 ]
 
+VARIANT_ORTHOLOG_SUPPORT_FIELDS = [
+    "variant_key",
+    "gene_id",
+    "strategy",
+    "ortholog_gene_id",
+    "tax_id",
+    "taxname",
+    "support_row_count",
+]
+
 FAILURE_FIELDS = ["source", "scope", "chrom", "start", "end", "failure_type", "message"]
 GNOMAD_DATASET = "gnomad_r4"
 
@@ -95,6 +105,7 @@ class StrategySupport:
 def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--events-tsv", required=True, type=Path)
+    parser.add_argument("--event-ortholog-support-tsv", type=Path)
     depth_input = parser.add_mutually_exclusive_group(required=True)
     depth_input.add_argument("--segments-tsv", type=Path)
     depth_input.add_argument("--snv-site-depth-tsv", type=Path)
@@ -180,6 +191,96 @@ def add_strategy_support(aggregate: dict, row: dict[str, str]) -> None:
             support.orthologs.add(ortholog_gene_id)
         else:
             support.ortholog_count_hint += ortholog_count_hint
+
+
+def add_ortholog_support(aggregate: dict, row: dict[str, str]) -> None:
+    strategy = str(row.get("strategy") or "")
+    ortholog_gene_id = str(row.get("ortholog_gene_id") or "")
+    if not strategy or not ortholog_gene_id:
+        raise ValueError("Ortholog support row requires strategy and ortholog_gene_id")
+    support_row_count = int_or_default(row.get("support_row_count"), 1)
+    if support_row_count < 1:
+        raise ValueError("Ortholog support_row_count must be positive")
+
+    support_by_ortholog = aggregate["_ortholog_support"]
+    key = (strategy, ortholog_gene_id)
+    support = support_by_ortholog.get(key)
+    if support is None:
+        support_by_ortholog[key] = {
+            "strategy": strategy,
+            "ortholog_gene_id": ortholog_gene_id,
+            "tax_id": str(row.get("tax_id") or ""),
+            "taxname": str(row.get("taxname") or ""),
+            "support_row_count": support_row_count,
+        }
+        return
+
+    for field in ("tax_id", "taxname"):
+        observed = str(row.get(field) or "")
+        current = str(support.get(field) or "")
+        if current and observed and current != observed:
+            raise ValueError(
+                f"Conflicting {field} for strategy={strategy}, "
+                f"ortholog_gene_id={ortholog_gene_id}: {current!r} != {observed!r}"
+            )
+        if not current and observed:
+            support[field] = observed
+    support["support_row_count"] += support_row_count
+
+
+def build_variant_ortholog_support(
+    aggregates: Iterable[dict],
+) -> tuple[list[dict[str, object]], int]:
+    rows: list[dict[str, object]] = []
+    missing_key_count = 0
+    for aggregate in aggregates:
+        variant_key = aggregate.get("variant_key", "")
+        ortholog_support = aggregate["_ortholog_support"]
+        if not variant_key:
+            missing_key_count += len(ortholog_support)
+            continue
+        for support in ortholog_support.values():
+            rows.append(
+                {
+                    "variant_key": variant_key,
+                    "gene_id": aggregate.get("gene_id", ""),
+                    **support,
+                }
+            )
+    rows.sort(
+        key=lambda row: (
+            int_or_default(row.get("gene_id"), 10**18),
+            row["variant_key"],
+            row["strategy"],
+            row["ortholog_gene_id"],
+        )
+    )
+    return rows, missing_key_count
+
+
+def validate_ortholog_support_totals(
+    strategy_rows: Iterable[dict[str, object]],
+    ortholog_rows: Iterable[dict[str, object]],
+) -> None:
+    observed: dict[tuple[str, str, str], tuple[int, int]] = {}
+    for row in ortholog_rows:
+        key = (str(row["variant_key"]), str(row["gene_id"]), str(row["strategy"]))
+        ortholog_count, row_count = observed.get(key, (0, 0))
+        observed[key] = (
+            ortholog_count + 1,
+            row_count + int(row["support_row_count"]),
+        )
+    for row in strategy_rows:
+        key = (str(row["variant_key"]), str(row["gene_id"]), str(row["strategy"]))
+        actual_orthologs, actual_rows = observed.get(key, (0, 0))
+        expected_orthologs = int(row["alt_support_ortholog_count"])
+        expected_rows = int(row["alt_support_row_count"])
+        if (actual_orthologs, actual_rows) != (expected_orthologs, expected_rows):
+            raise ValueError(
+                "Variant ortholog support does not match strategy totals for "
+                f"{key}: orthologs={actual_orthologs}/{expected_orthologs}, "
+                f"rows={actual_rows}/{expected_rows}"
+            )
 
 
 def build_variant_strategy_support(
@@ -471,6 +572,7 @@ def main():
     args.outdir.mkdir(parents=True, exist_ok=True)
     out_tsv = args.outdir / "variant_annotations.tsv.gz"
     support_tsv = args.outdir / "variant_strategy_support.tsv.gz"
+    ortholog_support_tsv = args.outdir / "variant_ortholog_support.tsv.gz"
     ortholog_evidence_tsv = args.outdir / "ortholog_evidence_summary.tsv.gz"
     failures_tsv = args.outdir / "failures.tsv.gz"
     manifest_json = args.outdir / "manifest.json"
@@ -478,6 +580,10 @@ def main():
         raise FileNotFoundError(f"Alignment segments TSV not found: {args.segments_tsv}")
     if args.snv_site_depth_tsv is not None and not args.snv_site_depth_tsv.exists():
         raise FileNotFoundError(f"SNV site-depth TSV not found: {args.snv_site_depth_tsv}")
+    if args.event_ortholog_support_tsv is not None and not args.event_ortholog_support_tsv.exists():
+        raise FileNotFoundError(
+            f"Event ortholog support TSV not found: {args.event_ortholog_support_tsv}"
+        )
     taxonomic_inputs = [
         args.snv_taxonomic_depth_tsv,
         args.snv_alt_taxonomic_support_tsv,
@@ -524,6 +630,11 @@ def main():
             raise ValueError(f"Events table missing required columns: {', '.join(sorted(missing))}")
         if not {"strategy", "strategies"} & set(header or []):
             raise ValueError("Events table must include strategy or strategies")
+        events_have_ortholog_identity = "ortholog_gene_id" in set(header or [])
+        if not events_have_ortholog_identity and args.event_ortholog_support_tsv is None:
+            raise ValueError(
+                "Compact events require --event-ortholog-support-tsv to publish exact supporters"
+            )
         for row in reader:
             input_row_count += 1
             acc = row["genomic_accession"]
@@ -552,14 +663,54 @@ def main():
                     "support_row_count": 0,
                     "_lookup_key": lookup_key,
                     "_support_by_strategy": {},
+                    "_ortholog_support": {},
                 }
                 variant_aggregates[aggregate_key] = aggregate
                 unique_lookup_status_counts[status] += 1
 
             aggregate["support_row_count"] += int_or_default(row.get("support_row_count"), 1)
             add_strategy_support(aggregate, row)
+            if events_have_ortholog_identity and args.event_ortholog_support_tsv is None:
+                add_ortholog_support(aggregate, row)
     logger.info(f"Event key normalization status: {dict(event_key_status_counts)}")
     logger.info(f"Collapsed {input_row_count} event row(s) to {len(variant_aggregates)} variant-context row(s).")
+
+    if args.event_ortholog_support_tsv is not None:
+        with open_text(args.event_ortholog_support_tsv) as handle:
+            reader = csv.DictReader(handle, delimiter="\t")
+            required = {
+                "gene_id",
+                "event_type",
+                "target_start0",
+                "genomic_accession",
+                "genomic_start1",
+                "ref",
+                "alt",
+                "strategy",
+                "ortholog_gene_id",
+                "tax_id",
+                "taxname",
+            }
+            missing = required - set(reader.fieldnames or [])
+            if missing:
+                raise ValueError(
+                    "Event ortholog support table missing required columns: "
+                    + ", ".join(sorted(missing))
+                )
+            for row in reader:
+                lookup_key, status = event_vcf_key(row, contexts)
+                if status == "non_concrete_allele":
+                    continue
+                variant_key = variant_key_text(lookup_key)
+                aggregate_key = variant_aggregate_key(row, variant_key)
+                aggregate = variant_aggregates.get(aggregate_key)
+                if aggregate is None:
+                    raise ValueError(
+                        "Event ortholog support row has no matching aggregate event: "
+                        f"gene_id={row.get('gene_id', '')}, strategy={row.get('strategy', '')}, "
+                        f"variant_key={variant_key}"
+                    )
+                add_ortholog_support(aggregate, row)
 
     if args.snv_site_depth_tsv is not None:
         site_depths = load_snv_site_depth(args.snv_site_depth_tsv)
@@ -696,6 +847,15 @@ def main():
         VARIANT_STRATEGY_SUPPORT_FIELDS,
         strategy_support_rows,
     )
+    ortholog_support_rows, ortholog_support_missing_key_count = build_variant_ortholog_support(
+        variant_aggregates.values()
+    )
+    validate_ortholog_support_totals(strategy_support_rows, ortholog_support_rows)
+    ortholog_support_count = write_tsv_gz(
+        ortholog_support_tsv,
+        VARIANT_ORTHOLOG_SUPPORT_FIELDS,
+        ortholog_support_rows,
+    )
     ortholog_evidence_summary_count = 0
     if args.snv_taxonomic_depth_tsv is not None:
         target_feature_paths = sorted(args.target_features_dir.glob("*.tsv.gz"))
@@ -719,6 +879,8 @@ def main():
         "annotated_variant_context_count": output_row_count,
         "variant_strategy_support_count": strategy_support_count,
         "variant_strategy_support_missing_key_count": strategy_support_missing_key_count,
+        "variant_ortholog_support_count": ortholog_support_count,
+        "variant_ortholog_support_missing_key_count": ortholog_support_missing_key_count,
         "variant_strategy_site_depth_count": len(site_depths),
         "ortholog_evidence_summary_count": ortholog_evidence_summary_count,
         "target_context_count": len(contexts),
@@ -744,6 +906,7 @@ def main():
 
     logger.info(f"Saved variant annotations to {out_tsv}")
     logger.info(f"Saved variant-strategy support to {support_tsv}")
+    logger.info(f"Saved variant-ortholog support to {ortholog_support_tsv}")
     logger.info(f"Saved annotation failures to {failures_tsv}")
     logger.info(f"Saved annotation manifest to {manifest_json}")
 

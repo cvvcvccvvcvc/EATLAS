@@ -3,6 +3,7 @@ process ANNOTATE_EVENTS {
 
     input:
     path events_tsv
+    path event_ortholog_support_tsv, stageAs: 'support/*'
     path segments_tsv
     path genes_tsv
     path sequences_dir
@@ -16,6 +17,7 @@ process ANNOTATE_EVENTS {
     output:
     path "variant_annotations.tsv.gz", emit: variant_annotations
     path "variant_strategy_support.tsv.gz", emit: variant_strategy_support
+    path "variant_ortholog_support.tsv.gz", emit: variant_ortholog_support
     path "manifest.json", emit: manifest
     path "failures.tsv.gz", emit: failures
 
@@ -24,6 +26,7 @@ process ANNOTATE_EVENTS {
     GAPH_GNOMAD_CACHE_DIR="${gnomad_cache_dir}" \\
     python3 "${annotate_script}" \\
         --events-tsv "${events_tsv}" \\
+        --event-ortholog-support-tsv "${event_ortholog_support_tsv}" \\
         --segments-tsv "${segments_tsv}" \\
         --genes-tsv "${genes_tsv}" \\
         --target-sequences-dir "${sequences_dir}/targets" \\
