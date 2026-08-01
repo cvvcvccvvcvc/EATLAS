@@ -212,11 +212,9 @@ def gene_variant_distribution_figure(
     fig = go.Figure()
     for strategy, values in distribution.groupby("Strategy", sort=False, observed=True):
         fig.add_trace(
-            go.Scatter(
+            go.Bar(
                 x=values["Bin"],
                 y=values["Gene_Count"],
-                mode="lines+markers",
-                line={"shape": "hv"},
                 name=str(strategy),
                 customdata=values[["Gene_Fraction", "Genes_With_Result"]],
                 hovertemplate=(
@@ -230,6 +228,8 @@ def gene_variant_distribution_figure(
         title="Candidate variants per gene",
         xaxis_title="Unique candidate variants per gene",
         yaxis_title="Genes",
+        barmode="group",
+        bargap=0.12,
         hovermode="closest",
     )
     compact_figure(fig, height=400, show_x_title=True)
@@ -287,9 +287,14 @@ def top_gene_contribution_figure(
         return None
     fig = go.Figure()
     for strategy, values in top.groupby("Strategy", sort=False, observed=True):
+        values = values.sort_values("Rank", kind="mergesort")
+        rank_labels = [
+            f"#{int(rank)}<br>{gene_id}"
+            for rank, gene_id in zip(values["Rank"], values["gene_id"], strict=True)
+        ]
         fig.add_trace(
             go.Bar(
-                x=[[str(strategy)] * len(values), values["gene_id"].astype(str).tolist()],
+                x=[[str(strategy)] * len(values), rank_labels],
                 y=values["Variant_Fraction"],
                 name=str(strategy),
                 customdata=values[
