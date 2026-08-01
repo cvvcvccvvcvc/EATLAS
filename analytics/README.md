@@ -290,6 +290,10 @@ Its bounded, deterministic samples and annotations are cached under:
 <run-dir>/analytics/negative_control/
 ```
 
+The validated focal-SNV sample is persisted before VEP annotation. A failed or
+interrupted downstream annotation therefore resumes without rescanning the full
+candidate table.
+
 When enabled, the default limit is 25,000 focal SNVs per strategy with 1,000
 target-space-null resamples. For a faster exploratory run, use
 `--target-space-null-sample-size` and `--target-space-null-resamples`; changing

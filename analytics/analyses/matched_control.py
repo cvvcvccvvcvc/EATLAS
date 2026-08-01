@@ -33,13 +33,19 @@ from .clinvar_validation import split_strategies
 from .conservation import annotate_track, parse_tracks
 from .external_evidence import build_external_evidence
 from .target_context import context_at, read_disjoint_contexts
-from genomics.variants import changed_target_position, parse_variant_key
+from genomics.variants import (
+    changed_target_position,
+    normalize_chrom,
+    parse_variant_key,
+    refseq_accession_to_chrom,
+)
 from analytics.annotation.vep import annotate_vep_consequences
 from analytics.annotation.vep_result_cache import DEFAULT_TILE_SIZE_BP
 
 
 DNA_BASES = ("A", "C", "G", "T")
-CONTROL_VERSION = 4
+CONTROL_VERSION = 5
+FOCAL_CACHE_VERSION = 1
 MATCHED_POOL_SIZE = 5
 CANDIDATE_POOL_SIZE = MATCHED_POOL_SIZE * 3
 CANDIDATE_FOCAL_CHUNK_SIZE = 2_000
@@ -62,6 +68,8 @@ class TargetSpaceNullAnalysis:
     external_evidence_path: Path
     external_evidence_manifest_path: Path
     resamples: int
+    focal_path: Path | None = None
+    focal_manifest_path: Path | None = None
 
 
 def build_target_space_null(
@@ -96,6 +104,8 @@ def build_target_space_null(
     outdir = run_dir / "analytics" / "negative_control"
     outdir.mkdir(parents=True, exist_ok=True)
     matched_path = outdir / "target_space_null.snv.tsv.gz"
+    focal_path = outdir / "target_space_null.focal_snvs.tsv.gz"
+    focal_manifest_path = outdir / "target_space_null.focal_snvs.manifest.json"
     conservation_path = outdir / "target_space_null.phyloP100way.tsv.gz"
     vep_cache_path = outdir / "vep_consequences.sqlite"
     manifest_path = outdir / "manifest.json"
@@ -146,29 +156,90 @@ def build_target_space_null(
             performance_profile,
         )
 
+    focal_inputs = {
+        "version": FOCAL_CACHE_VERSION,
+        "variant_annotations": path_metadata(variant_annotations_tsv),
+        "target_features": path_metadata(target_features_tsv),
+        "genes": path_metadata(genes_tsv),
+        "target_sequences": directory_metadata(target_sequences_dir, "*.fa.gz"),
+        "strategies": sorted(strategies),
+        "sample_size_per_strategy": sample_size_per_strategy,
+        "seed": seed,
+    }
     with profile_stage(performance_profile, "Target-null focal sampling") as timing:
         genes = _read_genes(genes_tsv)
         contexts = read_disjoint_contexts(
             target_features_tsv,
             {gene_id: int(gene["length"]) for gene_id, gene in genes.items()},
         )
-        focal = _sample_focal_snvs(
-            variant_annotations_tsv,
-            contexts,
-            genes,
-            strategies,
-            sample_size_per_strategy,
-            seed,
+        focal_cache_hit = _cache_is_valid(
+            focal_manifest_path,
+            focal_inputs,
+            [focal_path],
         )
-        if focal.empty:
-            raise ValueError("No normalized GAPH SNVs were available for the target-space null.")
-        sampled_focal_count = len(focal)
-
-        sequences = _read_target_sequences(target_sequences_dir, set(focal["gene_id"]))
-        focal, reference_mismatch_count = _validate_focal_reference(focal, genes, sequences)
-        reference_valid_focal_count = len(focal)
-        if focal.empty:
-            raise ValueError("No sampled GAPH SNVs matched the target reference sequence.")
+        sequences: dict[str, str] | None = None
+        if focal_cache_hit:
+            focal_manifest = json.loads(focal_manifest_path.read_text())
+            focal = pd.read_csv(
+                focal_path,
+                sep="\t",
+                compression="gzip",
+                dtype=str,
+                keep_default_na=False,
+            )
+            sampled_focal_count = int(focal_manifest["sampled_focal_count"])
+            reference_valid_focal_count = int(
+                focal_manifest["reference_valid_focal_count"]
+            )
+            reference_mismatch_count = int(
+                focal_manifest["reference_mismatch_count"]
+            )
+        else:
+            focal = _sample_focal_snvs(
+                variant_annotations_tsv,
+                contexts,
+                genes,
+                strategies,
+                sample_size_per_strategy,
+                seed,
+            )
+            if focal.empty:
+                raise ValueError(
+                    "No normalized GAPH SNVs were available for the target-space null."
+                )
+            sampled_focal_count = len(focal)
+            sequences = _read_target_sequences(
+                target_sequences_dir,
+                set(focal["gene_id"]),
+            )
+            focal, reference_mismatch_count = _validate_focal_reference(
+                focal,
+                genes,
+                sequences,
+            )
+            reference_valid_focal_count = len(focal)
+            if focal.empty:
+                raise ValueError(
+                    "No sampled GAPH SNVs matched the target reference sequence."
+                )
+            _write_tsv(focal_path, focal)
+            write_json_atomic(
+                focal_manifest_path,
+                {
+                    "inputs": focal_inputs,
+                    "complete": True,
+                    "sampled_focal_count": sampled_focal_count,
+                    "reference_valid_focal_count": reference_valid_focal_count,
+                    "reference_mismatch_count": reference_mismatch_count,
+                    "outputs": {focal_path.name: path_metadata(focal_path)},
+                },
+            )
+        if sequences is None:
+            sequences = _read_target_sequences(
+                target_sequences_dir,
+                set(focal["gene_id"]),
+            )
+        timing["details"] = "cache hit" if focal_cache_hit else "cache miss"
         timing["metrics"] = {
             "sampled_focals": int(sampled_focal_count),
             "reference_valid_focals": int(reference_valid_focal_count),
@@ -369,19 +440,31 @@ def _write_tsv(path: Path, frame: pd.DataFrame) -> None:
 
 def _read_genes(path: Path) -> dict[str, dict[str, object]]:
     frame = pd.read_csv(path, sep="\t", compression="gzip", keep_default_na=False)
-    required = {"gene_id", "chromosome", "begin", "end", "sequence_length"}
+    required = {
+        "gene_id",
+        "genomic_accession",
+        "begin",
+        "end",
+        "sequence_length",
+    }
     missing = required - set(frame.columns)
     if missing:
         raise ValueError(f"Genes table missing columns: {', '.join(sorted(missing))}")
-    return {
-        str(row.gene_id): {
-            "chrom": str(row.chromosome).removeprefix("chr"),
+    genes = {}
+    for row in frame.itertuples(index=False):
+        chrom = refseq_accession_to_chrom(str(row.genomic_accession))
+        if chrom is None:
+            raise ValueError(
+                "Genes table contains an unsupported genomic accession: "
+                f"{row.genomic_accession}"
+            )
+        genes[str(row.gene_id)] = {
+            "chrom": chrom,
             "begin": int(row.begin),
             "end": int(row.end),
             "length": int(row.sequence_length),
         }
-        for row in frame.itertuples(index=False)
-    }
+    return genes
 
 
 def _stable_rank(seed: int, *parts: object) -> int:
@@ -495,10 +578,16 @@ def _validate_focal_reference(
         gene_id = str(row["gene_id"])
         target_pos = int(row["target_pos"])
         sequence = sequences[gene_id]
-        if target_pos < 0 or target_pos >= len(sequence) or sequence[target_pos] != str(row["ref"]):
+        chrom = normalize_chrom(str(row["chrom"]))
+        if (
+            chrom != str(genes[gene_id]["chrom"])
+            or target_pos < 0
+            or target_pos >= len(sequence)
+            or sequence[target_pos] != str(row["ref"])
+        ):
             mismatches += 1
             continue
-        rows.append({**row, "chrom": str(genes[gene_id]["chrom"])})
+        rows.append(row)
     return pd.DataFrame(rows), mismatches
 
 
@@ -690,63 +779,135 @@ def _build_matched_rows(
     candidates: pd.DataFrame,
     observed_controls: set[tuple[str, str]],
 ) -> pd.DataFrame:
-    candidates_by_group = {
-        group_id: group.drop_duplicates("variant_key")
-        for group_id, group in candidates.groupby("control_group", sort=False)
-    }
-    rows = []
-    for focal_row in focal.itertuples(index=False):
-        group_id = f"{focal_row.gene_id}|{focal_row.variant_key}"
-        controls = candidates_by_group.get(group_id)
-        if controls is None:
-            continue
-        controls = controls[
-            [
-                (str(row.variant_key), str(focal_row.strategy)) not in observed_controls
-                for row in controls.itertuples(index=False)
-            ]
-        ].head(MATCHED_POOL_SIZE)
-        if controls.empty:
-            continue
-        common = {
-            "focal_id": focal_row.focal_id,
-            "strategy": focal_row.strategy,
-            "gene_id": str(focal_row.gene_id),
-            "context": focal_row.context,
-            "primary_consequence": focal_row.primary_consequence,
+    output_columns = [
+        "focal_id",
+        "strategy",
+        "gene_id",
+        "context",
+        "primary_consequence",
+        "role",
+        "option",
+        "variant_key",
+        "chrom",
+        "pos",
+        "target_pos",
+        "ref",
+        "alt",
+        "vep_consequence_terms",
+        "vep_transcript_id",
+    ]
+    if focal.empty or candidates.empty:
+        return pd.DataFrame(columns=output_columns)
+
+    focal_work = focal.copy()
+    focal_work["gene_id"] = focal_work["gene_id"].astype(str)
+    focal_work["_focal_order"] = np.arange(len(focal_work))
+    focal_work["control_group"] = (
+        focal_work["gene_id"] + "|" + focal_work["variant_key"].astype(str)
+    )
+    candidate_columns = [
+        "control_group",
+        "variant_key",
+        "chrom",
+        "pos",
+        "target_pos",
+        "ref",
+        "alt",
+        "vep_consequence_terms",
+        "vep_transcript_id",
+    ]
+    candidate_work = candidates[candidate_columns].drop_duplicates(
+        ["control_group", "variant_key"],
+        keep="first",
+    )
+    candidate_work["_candidate_order"] = candidate_work.groupby(
+        "control_group",
+        sort=False,
+    ).cumcount()
+    candidate_work = candidate_work.rename(
+        columns={
+            column: f"control_{column}"
+            for column in candidate_columns
+            if column != "control_group"
         }
-        rows.append(
-            {
-                **common,
-                "role": "observed",
-                "option": 0,
-                "variant_key": focal_row.variant_key,
-                "chrom": focal_row.chrom,
-                "pos": int(focal_row.pos),
-                "target_pos": int(focal_row.target_pos),
-                "ref": focal_row.ref,
-                "alt": focal_row.alt,
-                "vep_consequence_terms": focal_row.vep_consequence_terms,
-                "vep_transcript_id": focal_row.vep_transcript_id,
-            }
+    )
+    common_columns = [
+        "focal_id",
+        "strategy",
+        "gene_id",
+        "context",
+        "primary_consequence",
+        "control_group",
+        "_focal_order",
+    ]
+    controls = focal_work[common_columns].merge(
+        candidate_work,
+        on="control_group",
+        how="inner",
+        sort=False,
+        validate="many_to_many",
+    )
+    if observed_controls and not controls.empty:
+        observed_index = pd.MultiIndex.from_tuples(
+            observed_controls,
+            names=["variant_key", "strategy"],
         )
-        for option, control in enumerate(controls.itertuples(index=False), start=1):
-            rows.append(
-                {
-                    **common,
-                    "role": "control",
-                    "option": option,
-                    "variant_key": control.variant_key,
-                    "chrom": control.chrom,
-                    "pos": int(control.pos),
-                    "target_pos": int(control.target_pos),
-                    "ref": control.ref,
-                    "alt": control.alt,
-                    "vep_consequence_terms": control.vep_consequence_terms,
-                    "vep_transcript_id": control.vep_transcript_id,
-                }
-            )
-    return pd.DataFrame(rows)
+        control_index = pd.MultiIndex.from_arrays(
+            [
+                controls["control_variant_key"].astype(str),
+                controls["strategy"].astype(str),
+            ],
+            names=observed_index.names,
+        )
+        controls = controls[~control_index.isin(observed_index)]
+    if controls.empty:
+        return pd.DataFrame(columns=output_columns)
+
+    controls = controls.sort_values(
+        ["_focal_order", "_candidate_order"],
+        kind="mergesort",
+    )
+    controls["option"] = controls.groupby("focal_id", sort=False).cumcount() + 1
+    controls = controls[controls["option"] <= MATCHED_POOL_SIZE].copy()
+    matched_focal_ids = set(controls["focal_id"].astype(str))
+
+    observed = focal_work[
+        focal_work["focal_id"].astype(str).isin(matched_focal_ids)
+    ].copy()
+    observed["role"] = "observed"
+    observed["option"] = 0
+
+    control_output = controls[common_columns[:5] + ["_focal_order", "option"]].copy()
+    control_output["role"] = "control"
+    for column in [
+        "variant_key",
+        "chrom",
+        "pos",
+        "target_pos",
+        "ref",
+        "alt",
+        "vep_consequence_terms",
+        "vep_transcript_id",
+    ]:
+        control_output[column] = controls[f"control_{column}"]
+
+    matched = pd.concat(
+        [
+            observed[[*output_columns, "_focal_order"]],
+            control_output[[*output_columns, "_focal_order"]],
+        ],
+        ignore_index=True,
+    )
+    matched = matched.sort_values(
+        ["_focal_order", "option"],
+        kind="mergesort",
+    ).drop(columns="_focal_order")
+    matched["pos"] = pd.to_numeric(matched["pos"], errors="raise").astype(int)
+    matched["target_pos"] = pd.to_numeric(
+        matched["target_pos"],
+        errors="raise",
+    ).astype(int)
+    return matched[output_columns].reset_index(drop=True)
 
 
 def _matching_diagnostics(focal: pd.DataFrame, matched: pd.DataFrame) -> pd.DataFrame:
@@ -839,6 +1000,7 @@ def _summarize_analysis(
             output_path=external_evidence_path,
             manifest_path=external_evidence_manifest_path,
             gnomad_cache_dir=gnomad_cache_dir,
+            performance_profile=performance_profile,
         )
         matched = matched.merge(
             evidence,
@@ -852,6 +1014,9 @@ def _summarize_analysis(
                 evidence_manifest.get("gnomad", {}).get("queried_allele_count", 0)
             ),
         }
+        timing["details"] = (
+            "cache hit" if evidence_manifest.get("cache_hit") else "cache miss"
+        )
 
     with profile_stage(performance_profile, "Target-null resampling") as timing:
         matched["gnomad_found_value"] = np.where(
@@ -944,6 +1109,10 @@ def _summarize_analysis(
         external_evidence_path=external_evidence_path,
         external_evidence_manifest_path=external_evidence_manifest_path,
         resamples=resamples,
+        focal_path=manifest_path.parent / "target_space_null.focal_snvs.tsv.gz",
+        focal_manifest_path=(
+            manifest_path.parent / "target_space_null.focal_snvs.manifest.json"
+        ),
     )
 
 

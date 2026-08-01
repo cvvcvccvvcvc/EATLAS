@@ -728,6 +728,17 @@ def build_methods_sections(
             ("Target-space-null external evidence", negative_controls.external_evidence_path),
             ("External-evidence manifest", negative_controls.external_evidence_manifest_path),
         ]
+        if negative_controls.focal_path is not None:
+            control_files.append(
+                ("Target-space-null focal sample", negative_controls.focal_path)
+            )
+        if negative_controls.focal_manifest_path is not None:
+            control_files.append(
+                (
+                    "Target-space-null focal manifest",
+                    negative_controls.focal_manifest_path,
+                )
+            )
         sections.append("<details><summary>Negative-control cache files</summary>")
         sections.append(
             table_html(
