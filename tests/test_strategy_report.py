@@ -27,7 +27,11 @@ from analytics.reporting.ortholog_evidence import (
 from analytics.reporting.overview import overview_strategy_table
 from analytics.reporting.variant_profile import (
     build_variant_sections,
+    gene_variant_distribution_counts,
+    gene_variant_distribution_figure,
     gnomad_stratification_figure,
+    top_gene_contribution_counts,
+    top_gene_contribution_figure,
 )
 
 
@@ -191,17 +195,79 @@ def test_report_inputs_use_matching_completed_vep_artifact(tmp_path: Path) -> No
 def test_single_strategy_candidate_profile_loads_plotly_without_overlap() -> None:
     summary = SimpleNamespace(
         overlap=None,
+        gene_variant_counts=pd.DataFrame(
+            [{"strategy": "s1", "gene_id": "1", "Variant_Count": 10}]
+        ),
         event_counts=pd.DataFrame(
             [{"strategy": "s1", "event_type": "snv", "Variant_Count": 10}]
         ),
         target_context_counts=pd.DataFrame(),
     )
-    stats = pd.DataFrame([{"Strategy": "s1", "Unique Variants": 10}])
+    stats = pd.DataFrame(
+        [{"Strategy": "s1", "Unique Variants": 10, "Genes with result": 2}]
+    )
 
     html = "".join(build_variant_sections(summary, stats))
 
     assert "cdn.plot.ly" not in html
+    assert "Candidate variants per gene" in html
+    assert "Top 5 contributing genes by strategy" in html
     assert "Variant type composition by strategy" in html
+
+
+def test_gene_variant_distribution_includes_zero_candidate_genes() -> None:
+    gene_counts = pd.DataFrame(
+        [
+            {"strategy": "s1", "gene_id": "1", "Variant_Count": 8},
+            {"strategy": "s1", "gene_id": "2", "Variant_Count": 2},
+        ]
+    )
+    stats = pd.DataFrame([{"Strategy": "s1", "Genes with result": 4}])
+
+    distribution = gene_variant_distribution_counts(gene_counts, stats).set_index("Bin")
+
+    assert int(distribution.loc["0", "Gene_Count"]) == 2
+    assert int(distribution.loc["2-3", "Gene_Count"]) == 1
+    assert int(distribution.loc["8-15", "Gene_Count"]) == 1
+    assert distribution["Gene_Fraction"].sum() == 1.0
+
+    figure = gene_variant_distribution_figure(gene_counts, stats)
+    assert figure is not None
+    assert [trace.type for trace in figure.data] == ["bar"]
+
+
+def test_top_gene_contribution_uses_strategy_denominator_and_equal_share() -> None:
+    gene_counts = pd.DataFrame(
+        [
+            {"strategy": "s1", "gene_id": "1", "Variant_Count": 8},
+            {"strategy": "s1", "gene_id": "2", "Variant_Count": 2},
+        ]
+    )
+    stats = pd.DataFrame([{"Strategy": "s1", "Genes with result": 4}])
+
+    top = top_gene_contribution_counts(gene_counts, stats, limit=1).iloc[0]
+
+    assert top["gene_id"] == "1"
+    assert top["Variant_Fraction"] == 0.8
+    assert top["Equal_Share"] == 0.25
+    assert top["Equal_Share_Ratio"] == 3.2
+    assert top["Top_Share"] == 0.8
+
+
+def test_top_gene_contribution_orders_bars_by_rank() -> None:
+    gene_counts = pd.DataFrame(
+        [
+            {"strategy": "s1", "gene_id": "30", "Variant_Count": 2},
+            {"strategy": "s1", "gene_id": "10", "Variant_Count": 8},
+            {"strategy": "s1", "gene_id": "20", "Variant_Count": 5},
+        ]
+    )
+    stats = pd.DataFrame([{"Strategy": "s1", "Genes with result": 3}])
+
+    figure = top_gene_contribution_figure(gene_counts, stats, limit=3)
+
+    assert figure is not None
+    assert list(figure.data[0].x[1]) == ["#1<br>10", "#2<br>20", "#3<br>30"]
 
 
 def test_report_document_loads_plotly_once() -> None:

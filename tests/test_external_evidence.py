@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
 import pandas as pd
 
@@ -14,6 +15,49 @@ def test_clinvar_categories_keep_missing_classification_separate() -> None:
     assert categorize_clinvar_sig("Likely_pathogenic") == "P/LP"
     assert categorize_clinvar_sig("Uncertain_significance") == "VUS"
     assert categorize_clinvar_sig("Conflicting_classifications_of_pathogenicity") == "Other"
+
+
+def test_clinvar_annotation_queries_exact_alleles_with_temporary_bed(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    clinvar_vcf = tmp_path / "clinvar.vcf.gz"
+    clinvar_vcf.write_bytes(b"vcf")
+    Path(f"{clinvar_vcf}.tbi").write_bytes(b"index")
+    variants = pd.DataFrame(
+        [
+            {
+                "variant_key": "1:100:A>G",
+                "chrom": "1",
+                "pos": 100,
+                "ref": "A",
+                "alt": "G",
+            }
+        ]
+    )
+
+    monkeypatch.setattr(external_evidence.shutil, "which", lambda _name: "/usr/bin/tabix")
+
+    def fake_run(command, **_kwargs):
+        regions_path = Path(command[2])
+        assert regions_path.read_text() == "1\t99\t100\n"
+        return SimpleNamespace(
+            returncode=0,
+            stdout="1\t100\t.\tA\tG\t.\t.\tCLNSIG=Benign\n",
+            stderr="",
+        )
+
+    monkeypatch.setattr(external_evidence.subprocess, "run", fake_run)
+    result = external_evidence._annotate_clinvar(variants, clinvar_vcf)
+
+    assert result.to_dict(orient="records") == [
+        {
+            "variant_key": "1:100:A>G",
+            "clinvar_found": True,
+            "clinvar_classified": True,
+            "clinvar_class": "B/LB",
+        }
+    ]
 
 
 def test_gnomad_annotation_distinguishes_absence_from_failed_lookup(
@@ -56,6 +100,53 @@ def test_gnomad_annotation_distinguishes_absence_from_failed_lookup(
     assert summary["failed_region_count"] == 1
     assert summary["shared_cache"]["enabled"] is True
     assert summary["shared_cache"]["tile_write_count"] == 1
+
+
+def test_gnomad_region_results_are_consumed_with_bounded_futures(
+    monkeypatch,
+) -> None:
+    class TrackedRecords(list):
+        alive = 0
+        peak = 0
+
+        def __init__(self):
+            super().__init__()
+            type(self).alive += 1
+            type(self).peak = max(type(self).peak, type(self).alive)
+
+        def __del__(self):
+            type(self).alive -= 1
+
+    class FakeCache:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def fetch_region(self, _chrom, _start, _end):
+            return TrackedRecords()
+
+        def snapshot(self):
+            return {"enabled": True}
+
+    monkeypatch.setattr(external_evidence, "GNOMAD_CLUSTER_GAP_BP", 0)
+    monkeypatch.setattr(external_evidence, "GnomadRegionCache", FakeCache)
+    variants = pd.DataFrame(
+        [
+            {
+                "variant_key": f"1:{position}:A>G",
+                "chrom": "1",
+                "pos": position,
+                "ref": "A",
+                "alt": "G",
+            }
+            for position in range(100, 140)
+        ]
+    )
+
+    evidence, summary = _annotate_gnomad(variants)
+
+    assert len(evidence) == len(variants)
+    assert summary["region_count"] == len(variants)
+    assert TrackedRecords.peak <= external_evidence.GNOMAD_WORKERS * 2
 
 
 def test_incomplete_external_evidence_retries_only_failed_alleles(

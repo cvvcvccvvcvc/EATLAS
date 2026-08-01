@@ -123,6 +123,210 @@ def consequence_strategy_order(counts: pd.DataFrame) -> list[str]:
     return pivot.sort_values(["impact_fraction", "total_count"], ascending=False).index.tolist()
 
 
+def gene_variant_distribution_counts(
+    gene_counts: pd.DataFrame,
+    strategy_stats: pd.DataFrame,
+) -> pd.DataFrame:
+    columns = [
+        "Strategy",
+        "Bin",
+        "Bin_Order",
+        "Gene_Count",
+        "Gene_Fraction",
+        "Genes_With_Result",
+    ]
+    if gene_counts.empty:
+        return pd.DataFrame(columns=columns)
+
+    counts = gene_counts.rename(columns={"strategy": "Strategy"}).copy()
+    counts["Variant_Count"] = pd.to_numeric(counts["Variant_Count"], errors="raise").astype(int)
+
+    eligible = {}
+    if {"Strategy", "Genes with result"}.issubset(strategy_stats.columns):
+        eligible = {
+            str(strategy): int(value)
+            for strategy, value in zip(
+                strategy_stats["Strategy"],
+                strategy_stats["Genes with result"],
+            )
+            if not pd.isna(value)
+        }
+
+    strategy_order = [str(value) for value in strategy_stats.get("Strategy", pd.Series(dtype=str))]
+    strategy_order.extend(
+        strategy for strategy in counts["Strategy"].astype(str).unique() if strategy not in strategy_order
+    )
+
+    def bin_order(value: int) -> int:
+        return 0 if value == 0 else value.bit_length()
+
+    def bin_label(order: int) -> str:
+        if order == 0:
+            return "0"
+        if order == 1:
+            return "1"
+        lower = 1 << (order - 1)
+        return f"{lower}-{(lower << 1) - 1}"
+
+    counts["Bin_Order"] = counts["Variant_Count"].map(bin_order)
+    grouped = (
+        counts.groupby(["Strategy", "Bin_Order"], as_index=False, observed=True)
+        .agg(Gene_Count=("gene_id", "nunique"))
+    )
+    zero_rows = []
+    for strategy in strategy_order:
+        observed = int(counts.loc[counts["Strategy"].astype(str).eq(strategy), "gene_id"].nunique())
+        total = max(eligible.get(strategy, observed), observed)
+        if total > observed:
+            zero_rows.append({"Strategy": strategy, "Bin_Order": 0, "Gene_Count": total - observed})
+    if zero_rows:
+        grouped = pd.concat([grouped, pd.DataFrame(zero_rows)], ignore_index=True)
+
+    max_order = int(grouped["Bin_Order"].max())
+    complete = pd.MultiIndex.from_product(
+        [strategy_order, range(max_order + 1)], names=["Strategy", "Bin_Order"]
+    )
+    grouped = (
+        grouped.groupby(["Strategy", "Bin_Order"], as_index=False, observed=True)["Gene_Count"]
+        .sum()
+        .set_index(["Strategy", "Bin_Order"])
+        .reindex(complete, fill_value=0)
+        .reset_index()
+    )
+    observed_totals = grouped.groupby("Strategy", observed=True)["Gene_Count"].sum().astype(int)
+    grouped["Genes_With_Result"] = grouped["Strategy"].map(
+        lambda strategy: max(eligible.get(str(strategy), 0), int(observed_totals[strategy]))
+    )
+    grouped["Gene_Fraction"] = grouped["Gene_Count"] / grouped["Genes_With_Result"].replace(0, np.nan)
+    grouped["Bin"] = grouped["Bin_Order"].map(bin_label)
+    return grouped[columns]
+
+
+def gene_variant_distribution_figure(
+    gene_counts: pd.DataFrame,
+    strategy_stats: pd.DataFrame,
+):
+    distribution = gene_variant_distribution_counts(gene_counts, strategy_stats)
+    if distribution.empty:
+        return None
+    fig = go.Figure()
+    for strategy, values in distribution.groupby("Strategy", sort=False, observed=True):
+        fig.add_trace(
+            go.Bar(
+                x=values["Bin"],
+                y=values["Gene_Count"],
+                name=str(strategy),
+                customdata=values[["Gene_Fraction", "Genes_With_Result"]],
+                hovertemplate=(
+                    "%{fullData.name}<br>Candidates per gene: %{x}<br>"
+                    "Genes: %{y:,} (%{customdata[0]:.1%})<br>"
+                    "Genes with result: %{customdata[1]:,}<extra></extra>"
+                ),
+            )
+        )
+    fig.update_layout(
+        title="Candidate variants per gene",
+        xaxis_title="Unique candidate variants per gene",
+        yaxis_title="Genes",
+        barmode="group",
+        bargap=0.12,
+        hovermode="closest",
+    )
+    compact_figure(fig, height=400, show_x_title=True)
+    return fig
+
+
+def top_gene_contribution_counts(
+    gene_counts: pd.DataFrame,
+    strategy_stats: pd.DataFrame,
+    limit: int = 5,
+) -> pd.DataFrame:
+    columns = [
+        "Strategy",
+        "gene_id",
+        "Rank",
+        "Variant_Count",
+        "Variant_Fraction",
+        "Equal_Share",
+        "Equal_Share_Ratio",
+        "Top_Share",
+    ]
+    if gene_counts.empty:
+        return pd.DataFrame(columns=columns)
+    counts = gene_counts.rename(columns={"strategy": "Strategy"}).copy()
+    counts["Variant_Count"] = pd.to_numeric(counts["Variant_Count"], errors="raise").astype(int)
+    counts = counts.sort_values(
+        ["Strategy", "Variant_Count", "gene_id"],
+        ascending=[True, False, True],
+        kind="mergesort",
+    )
+    counts["Rank"] = counts.groupby("Strategy", sort=False).cumcount() + 1
+    totals = counts.groupby("Strategy", observed=True)["Variant_Count"].transform("sum")
+    counts["Variant_Fraction"] = counts["Variant_Count"] / totals.replace(0, np.nan)
+
+    eligible = strategy_stats[["Strategy", "Genes with result"]].copy()
+    eligible["Equal_Share"] = 1.0 / pd.to_numeric(
+        eligible["Genes with result"], errors="coerce"
+    ).replace(0, np.nan)
+    counts = counts.merge(eligible[["Strategy", "Equal_Share"]], on="Strategy", how="left")
+    observed_gene_counts = counts.groupby("Strategy", observed=True)["gene_id"].transform("nunique")
+    counts["Equal_Share"] = counts["Equal_Share"].fillna(1.0 / observed_gene_counts.replace(0, np.nan))
+    counts["Equal_Share_Ratio"] = counts["Variant_Fraction"] / counts["Equal_Share"]
+    counts = counts[counts["Rank"] <= limit].copy()
+    counts["Top_Share"] = counts.groupby("Strategy", observed=True)["Variant_Fraction"].transform("sum")
+    return counts[columns]
+
+
+def top_gene_contribution_figure(
+    gene_counts: pd.DataFrame,
+    strategy_stats: pd.DataFrame,
+    limit: int = 5,
+):
+    top = top_gene_contribution_counts(gene_counts, strategy_stats, limit=limit)
+    if top.empty:
+        return None
+    fig = go.Figure()
+    for strategy, values in top.groupby("Strategy", sort=False, observed=True):
+        values = values.sort_values("Rank", kind="mergesort")
+        rank_labels = [
+            f"#{int(rank)}<br>{gene_id}"
+            for rank, gene_id in zip(values["Rank"], values["gene_id"], strict=True)
+        ]
+        fig.add_trace(
+            go.Bar(
+                x=[[str(strategy)] * len(values), rank_labels],
+                y=values["Variant_Fraction"],
+                name=str(strategy),
+                customdata=values[
+                    [
+                        "gene_id",
+                        "Rank",
+                        "Variant_Count",
+                        "Equal_Share",
+                        "Equal_Share_Ratio",
+                        "Top_Share",
+                    ]
+                ],
+                hovertemplate=(
+                    "%{fullData.name}<br>Gene: %{customdata[0]}<br>Rank: %{customdata[1]}<br>"
+                    "Candidates: %{customdata[2]:,}<br>Strategy share: %{y:.2%}<br>"
+                    "Equal-share reference: %{customdata[3]:.2%}<br>"
+                    "Observed / equal share: %{customdata[4]:.1f}x<br>"
+                    f"Top-{limit} cumulative share: %{{customdata[5]:.2%}}<extra></extra>"
+                ),
+            )
+        )
+    fig.update_layout(
+        title=f"Top {limit} contributing genes by strategy",
+        yaxis_title="Share of strategy candidates",
+        bargap=0.16,
+    )
+    fig.update_yaxes(tickformat=".0%")
+    fig.update_xaxes(tickangle=-45)
+    compact_figure(fig, height=430)
+    return fig
+
+
 def compact_list_text(value: str, max_items: int = 2, max_chars: int = 90) -> str:
     items = [item for item in re.split(r"[|,]", str(value or "")) if item and item != "."]
     if not items:
@@ -229,6 +433,21 @@ def build_variant_sections(
     fig_overlap = strategy_overlap_figure(variant_summary.overlap)
     if fig_overlap is not None:
         sections.append(fig_html(fig_overlap))
+
+    gene_distribution = gene_variant_distribution_figure(
+        variant_summary.gene_variant_counts,
+        strategy_stats,
+    )
+    top_genes = top_gene_contribution_figure(
+        variant_summary.gene_variant_counts,
+        strategy_stats,
+    )
+    if gene_distribution is not None or top_genes is not None:
+        sections.append("<h2>Gene Concentration</h2>")
+        if gene_distribution is not None:
+            sections.append(fig_html(gene_distribution))
+        if top_genes is not None:
+            sections.append(fig_html(top_genes))
 
     sections.append("<h2>Variant Composition</h2>")
     counts = variant_summary.event_counts.copy()

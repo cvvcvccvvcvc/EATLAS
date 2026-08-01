@@ -7,12 +7,14 @@ import concurrent.futures
 import json
 import shutil
 import subprocess
+import tempfile
 from collections import defaultdict
 from pathlib import Path
 
 import pandas as pd
 
 from analytics.io.artifacts import path_metadata, write_json_atomic, write_tsv_atomic
+from analytics.io.performance import PerformanceProfile, profile_stage
 from genomics.clinvar import record_category, significance_class
 from genomics.gnomad_cache import GnomadRegionCache
 from genomics.gnomad import (
@@ -47,6 +49,7 @@ def build_external_evidence(
     output_path: Path,
     manifest_path: Path,
     gnomad_cache_dir: Path | None = None,
+    performance_profile: PerformanceProfile | None = None,
 ) -> tuple[pd.DataFrame, dict[str, object]]:
     """Build or load exact-allele ClinVar and gnomAD annotations."""
 
@@ -71,7 +74,7 @@ def build_external_evidence(
         except (OSError, json.JSONDecodeError):
             cached_manifest = {}
         if cached_evidence is not None and cached_manifest.get("complete"):
-            return cached_evidence, cached_manifest
+            return cached_evidence, {**cached_manifest, "cache_hit": True}
 
     variants = (
         matched[["variant_key", "chrom", "pos", "ref", "alt"]]
@@ -85,7 +88,12 @@ def build_external_evidence(
         cached_evidence = None
 
     if cached_evidence is None:
-        clinvar = _annotate_clinvar(variants, clinvar_vcf)
+        with profile_stage(performance_profile, "External evidence ClinVar lookup") as timing:
+            clinvar = _annotate_clinvar(variants, clinvar_vcf)
+            timing["metrics"] = {
+                "requested_alleles": int(len(variants)),
+                "found_alleles": int(clinvar["clinvar_found"].sum()),
+            }
         gnomad = _empty_gnomad_evidence(variants)
     else:
         clinvar = cached_evidence[["variant_key", "clinvar_found", "clinvar_classified", "clinvar_class"]]
@@ -95,10 +103,19 @@ def build_external_evidence(
         gnomad.loc[~gnomad["gnomad_status"].eq("ok"), "variant_key"].astype(str)
     )
     unresolved = variants[variants["variant_key"].astype(str).isin(unresolved_keys)]
-    fetched, gnomad_summary = _annotate_gnomad(
-        unresolved,
-        gnomad_cache_dir=gnomad_cache_dir,
-    )
+    with profile_stage(performance_profile, "External evidence gnomAD lookup") as timing:
+        fetched, gnomad_summary = _annotate_gnomad(
+            unresolved,
+            gnomad_cache_dir=gnomad_cache_dir,
+        )
+        shared_cache = gnomad_summary.get("shared_cache", {})
+        timing["metrics"] = {
+            "requested_alleles": int(len(unresolved)),
+            "regions": int(gnomad_summary.get("region_count", 0)),
+            "raw_variants": int(gnomad_summary.get("raw_variant_count", 0)),
+            "tile_hits": int(shared_cache.get("tile_hit_count", 0)),
+            "tile_misses": int(shared_cache.get("tile_miss_count", 0)),
+        }
     if not fetched.empty:
         fetched = fetched.copy()
         fetched["gnomad_af"] = pd.to_numeric(fetched["gnomad_af"], errors="coerce")
@@ -143,7 +160,7 @@ def build_external_evidence(
         "output": path_metadata(output_path),
     }
     write_json_atomic(manifest_path, manifest)
-    return evidence, manifest
+    return evidence, {**manifest, "cache_hit": False}
 
 
 def _empty_gnomad_evidence(variants: pd.DataFrame) -> pd.DataFrame:
@@ -292,44 +309,70 @@ def _annotate_gnomad(
     found_by_key: dict[str, float | None] = {}
     errors = []
     raw_variant_count = 0
-    with concurrent.futures.ThreadPoolExecutor(max_workers=GNOMAD_WORKERS) as executor:
-        futures = {
-            executor.submit(
-                region_cache.fetch_region,
-                chrom,
-                max(1, start - 100),
-                end + 100,
-            ): (chrom, start, end)
-            for chrom, start, end in tasks
-        }
-        for future in concurrent.futures.as_completed(futures):
-            chrom, start, end = futures[future]
-            region_keys = keys_by_task[(chrom, start, end)]
-            try:
-                records = future.result()
-            except Exception as exc:  # Network failures are recorded, not interpreted as absence.
-                errors.append(
-                    {"chrom": chrom, "start": start, "end": end, "error": f"{type(exc).__name__}: {exc}"}
+    if tasks:
+        task_iterator = iter(tasks)
+        worker_count = min(GNOMAD_WORKERS, len(tasks))
+        with concurrent.futures.ThreadPoolExecutor(max_workers=worker_count) as executor:
+            pending = {}
+            for _ in range(worker_count):
+                chrom, start, end = next(task_iterator)
+                future = executor.submit(
+                    region_cache.fetch_region,
+                    chrom,
+                    max(1, start - 100),
+                    end + 100,
                 )
-                for variant_key in region_keys:
-                    status_by_key[variant_key] = "error"
-                continue
+                pending[future] = (chrom, start, end)
 
-            raw_variant_count += len(records)
-            for variant_key in region_keys:
-                status_by_key[variant_key] = "ok"
-            for record in records:
-                key = (
-                    normalize_chrom(record.get("chrom")) or "",
-                    int(record.get("pos", 0)),
-                    str(record.get("ref", "")).upper(),
-                    str(record.get("alt", "")).upper(),
+            while pending:
+                completed, _remaining = concurrent.futures.wait(
+                    pending,
+                    return_when=concurrent.futures.FIRST_COMPLETED,
                 )
-                variant_key = wanted.get(key)
-                if variant_key is None:
-                    continue
-                af, _source, *_rest = select_af_metrics(record)
-                found_by_key[variant_key] = af
+                for future in completed:
+                    chrom, start, end = pending.pop(future)
+                    region_keys = keys_by_task[(chrom, start, end)]
+                    try:
+                        records = future.result()
+                    except Exception as exc:  # Failures are not interpreted as absence.
+                        errors.append(
+                            {
+                                "chrom": chrom,
+                                "start": start,
+                                "end": end,
+                                "error": f"{type(exc).__name__}: {exc}",
+                            }
+                        )
+                        for variant_key in region_keys:
+                            status_by_key[variant_key] = "error"
+                    else:
+                        raw_variant_count += len(records)
+                        for variant_key in region_keys:
+                            status_by_key[variant_key] = "ok"
+                        for record in records:
+                            key = (
+                                normalize_chrom(record.get("chrom")) or "",
+                                int(record.get("pos", 0)),
+                                str(record.get("ref", "")).upper(),
+                                str(record.get("alt", "")).upper(),
+                            )
+                            variant_key = wanted.get(key)
+                            if variant_key is None:
+                                continue
+                            af, _source, *_rest = select_af_metrics(record)
+                            found_by_key[variant_key] = af
+
+                    try:
+                        next_chrom, next_start, next_end = next(task_iterator)
+                    except StopIteration:
+                        continue
+                    next_future = executor.submit(
+                        region_cache.fetch_region,
+                        next_chrom,
+                        max(1, next_start - 100),
+                        next_end + 100,
+                    )
+                    pending[next_future] = (next_chrom, next_start, next_end)
 
     rows = []
     for variant_key in variants["variant_key"].astype(str):

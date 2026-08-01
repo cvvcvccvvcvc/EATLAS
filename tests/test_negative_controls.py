@@ -34,6 +34,7 @@ def test_build_target_space_null_end_to_end_with_mocked_annotations(
         [
             {
                 "gene_id": "1",
+                "genomic_accession": "NC_000001.11",
                 "chromosome": "1",
                 "begin": 100,
                 "end": 119,
@@ -137,6 +138,11 @@ def test_build_target_space_null_end_to_end_with_mocked_annotations(
         call["vep_result_cache_dir"] == tmp_path / "vep_result_cache"
         for call in vep_calls
     )
+    assert analysis.focal_path is not None and analysis.focal_path.exists()
+    assert (
+        analysis.focal_manifest_path is not None
+        and analysis.focal_manifest_path.exists()
+    )
     stage_names = {
         stage["name"]
         for stage in json.loads(performance_path.read_text())["stages"]
@@ -151,6 +157,58 @@ def test_build_target_space_null_end_to_end_with_mocked_annotations(
         "Target-null external evidence",
         "Target-null resampling",
     }.issubset(stage_names)
+
+    analysis.manifest_path.unlink()
+    analysis.matched_path.unlink()
+    analysis.conservation_path.unlink()
+    monkeypatch.setattr(
+        controls,
+        "_sample_focal_snvs",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("focal sample was not cached")
+        ),
+    )
+    controls.build_target_space_null(
+        run_dir=run_dir,
+        variant_annotations_tsv=annotations_path,
+        target_features_tsv=features_path,
+        genes_tsv=genes_path,
+        target_sequences_dir=target_dir,
+        clinvar_vcf=tmp_path / "clinvar.vcf.gz",
+        strategies=["s1"],
+        sample_size_per_strategy=10,
+        resamples=100,
+        seed=3,
+        gnomad_cache_dir=tmp_path / "gnomad_cache",
+        vep_result_cache_dir=tmp_path / "vep_result_cache",
+        performance_profile=performance,
+    )
+    focal_stages = [
+        stage
+        for stage in json.loads(performance_path.read_text())["stages"]
+        if stage["name"] == "Target-null focal sampling"
+    ]
+    assert focal_stages[-1]["details"] == "cache hit"
+
+
+def test_target_space_genes_use_accession_chromosome_for_par_loci(
+    tmp_path: Path,
+) -> None:
+    genes_path = tmp_path / "genes.tsv.gz"
+    pd.DataFrame(
+        [
+            {
+                "gene_id": "64109",
+                "genomic_accession": "NC_000023.11",
+                "chromosome": "X,Y",
+                "begin": 1_190_490,
+                "end": 1_212_649,
+                "sequence_length": 22_160,
+            }
+        ]
+    ).to_csv(genes_path, sep="\t", index=False, compression="gzip")
+
+    assert controls._read_genes(genes_path)["64109"]["chrom"] == "X"
 
 
 def test_contexts_keep_noncoding_exon_separate_from_other_sequence(tmp_path: Path) -> None:
@@ -264,6 +322,76 @@ def test_matched_rows_require_consequence_match_and_exclude_observed_control() -
 
     assert result["variant_key"].tolist() == ["1:101:A>G", "1:103:A>G"]
     assert result["role"].tolist() == ["observed", "control"]
+
+
+def test_matched_rows_apply_exclusions_per_strategy_and_preserve_control_order() -> None:
+    focal = pd.DataFrame(
+        [
+            {
+                "focal_id": f"f{index}",
+                "strategy": strategy,
+                "gene_id": "1",
+                "variant_key": "1:101:A>G",
+                "context": "cds",
+                "primary_consequence": "missense_variant",
+                "chrom": "1",
+                "pos": 101,
+                "target_pos": 1,
+                "ref": "A",
+                "alt": "G",
+                "vep_consequence_terms": "missense_variant",
+                "vep_transcript_id": "NM_1",
+            }
+            for index, strategy in enumerate(["s1", "s2"])
+        ]
+    )
+    candidates = pd.DataFrame(
+        [
+            {
+                "control_group": "1|1:101:A>G",
+                "variant_key": f"1:{position}:A>G",
+                "chrom": "1",
+                "pos": position,
+                "target_pos": position - 100,
+                "ref": "A",
+                "alt": "G",
+                "vep_consequence_terms": "missense_variant",
+                "vep_transcript_id": "NM_1",
+            }
+            for position in range(102, 109)
+        ]
+    )
+
+    result = _build_matched_rows(
+        focal,
+        candidates,
+        {("1:102:A>G", "s1")},
+    )
+    by_focal = {
+        focal_id: group["variant_key"].tolist()
+        for focal_id, group in result.groupby("focal_id", sort=False)
+    }
+
+    assert by_focal["f0"] == [
+        "1:101:A>G",
+        "1:103:A>G",
+        "1:104:A>G",
+        "1:105:A>G",
+        "1:106:A>G",
+        "1:107:A>G",
+    ]
+    assert by_focal["f1"] == [
+        "1:101:A>G",
+        "1:102:A>G",
+        "1:103:A>G",
+        "1:104:A>G",
+        "1:105:A>G",
+        "1:106:A>G",
+    ]
+    assert result.groupby("focal_id")["option"].apply(list).to_dict() == {
+        "f0": [0, 1, 2, 3, 4, 5],
+        "f1": [0, 1, 2, 3, 4, 5],
+    }
 
 
 def test_matched_summary_uses_paired_control_options_deterministically() -> None:
