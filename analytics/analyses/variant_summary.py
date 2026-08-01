@@ -53,7 +53,7 @@ VARIANT_USECOLS = [
 ]
 VEP_USECOLS = ["vep_status", "vep_primary_consequence"]
 VARIANT_REQUIRED = {"variant_key", "gene_id", "event_type", "strategies"}
-SUMMARY_CACHE_VERSION = 11
+SUMMARY_CACHE_VERSION = 12
 SUMMARY_CACHE_NAME = "variant_summary.json.gz"
 SPECIAL_FLOAT_KEY = "__gaph_float__"
 ORTHOLOG_EVIDENCE_COLUMNS = [
@@ -104,6 +104,7 @@ class VariantSummary:
     strategies: list[str]
     strategy_stats: pd.DataFrame
     unique_contribution: pd.DataFrame
+    gene_variant_counts: pd.DataFrame
     event_counts: pd.DataFrame
     target_context_counts: pd.DataFrame
     gnomad_event_counts: pd.DataFrame
@@ -195,6 +196,7 @@ def _summary_payload(
     frame_names = [
         "strategy_stats",
         "unique_contribution",
+        "gene_variant_counts",
         "event_counts",
         "target_context_counts",
         "gnomad_event_counts",
@@ -281,6 +283,7 @@ def _summary_from_payload(payload: dict[str, object]) -> VariantSummary:
         strategies=[str(value) for value in summary["strategies"]],
         strategy_stats=_frame_from_payload(frames["strategy_stats"]),
         unique_contribution=_frame_from_payload(frames["unique_contribution"]),
+        gene_variant_counts=_frame_from_payload(frames["gene_variant_counts"]),
         event_counts=_frame_from_payload(frames["event_counts"]),
         target_context_counts=_frame_from_payload(frames["target_context_counts"]),
         gnomad_event_counts=_frame_from_payload(frames["gnomad_event_counts"]),
@@ -1370,6 +1373,17 @@ def _compute_variant_summary(
         target_context_counts = _grouped_counts(connection, "target_context", strategy_label).rename(
             columns={"value": "target_context"}
         )
+        gene_variant_counts = pd.read_sql_query(
+            """
+            SELECT strategy, gene_id, COUNT(*) AS Variant_Count
+            FROM memberships
+            GROUP BY strategy, gene_id
+            ORDER BY strategy, Variant_Count DESC, gene_id
+            """,
+            connection,
+        )
+        if not gene_variant_counts.empty:
+            gene_variant_counts["strategy"] = gene_variant_counts["strategy"].map(strategy_label)
         gnomad_event_counts = pd.read_sql_query(
             """
             SELECT strategy, gnomad_status,
@@ -1467,6 +1481,7 @@ def _compute_variant_summary(
         strategies=strategies,
         strategy_stats=strategy_stats,
         unique_contribution=unique_contribution,
+        gene_variant_counts=gene_variant_counts,
         event_counts=event_counts,
         target_context_counts=target_context_counts,
         gnomad_event_counts=gnomad_event_counts,
