@@ -19,6 +19,7 @@ from annotate_events import (  # noqa: E402
     build_variant_strategy_support,
     event_vcf_key,
     iter_variant_strategy_snv_sites,
+    reconcile_strategy_support_from_orthologs,
     validate_ortholog_support_totals,
     variant_aggregate_key,
 )
@@ -217,6 +218,42 @@ def test_variant_ortholog_support_collapses_repeated_observations() -> None:
         ],
         rows,
     )
+
+
+def test_detailed_support_reconciles_normalized_indel_collisions() -> None:
+    aggregate = {
+        "variant_key": "1:100:AA>A",
+        "gene_id": "1",
+        "_support_by_strategy": {},
+        "_ortholog_support": {},
+    }
+    for _raw_event in range(2):
+        add_strategy_support(
+            aggregate,
+            {
+                "strategy": "s1",
+                "support_row_count": "1",
+                "support_ortholog_count": "1",
+            },
+        )
+        add_ortholog_support(
+            aggregate,
+            {
+                "strategy": "s1",
+                "ortholog_gene_id": "101",
+                "tax_id": "10090",
+                "taxname": "Mus musculus",
+                "support_row_count": "1",
+            },
+        )
+
+    reconcile_strategy_support_from_orthologs(aggregate)
+    strategy_rows, _ = build_variant_strategy_support([aggregate])
+    ortholog_rows, _ = build_variant_ortholog_support([aggregate])
+
+    assert strategy_rows[0]["alt_support_ortholog_count"] == 1
+    assert strategy_rows[0]["alt_support_row_count"] == 2
+    validate_ortholog_support_totals(strategy_rows, ortholog_rows)
 
 
 def test_variant_ortholog_support_rejects_conflicting_taxonomy() -> None:

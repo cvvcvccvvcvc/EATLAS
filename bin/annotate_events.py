@@ -228,6 +228,24 @@ def add_ortholog_support(aggregate: dict, row: dict[str, str]) -> None:
     support["support_row_count"] += support_row_count
 
 
+def reconcile_strategy_support_from_orthologs(aggregate: dict) -> None:
+    exact_by_strategy: dict[str, StrategySupport] = {}
+    for (strategy, ortholog_gene_id), row in aggregate["_ortholog_support"].items():
+        support = exact_by_strategy.setdefault(strategy, StrategySupport())
+        support.orthologs.add(ortholog_gene_id)
+        support.row_count += int(row["support_row_count"])
+
+    support_by_strategy = aggregate["_support_by_strategy"]
+    unknown = exact_by_strategy.keys() - support_by_strategy.keys()
+    if unknown:
+        raise ValueError(
+            "Ortholog support identifies strategies absent from compact events: "
+            + ", ".join(sorted(unknown))
+        )
+    for strategy, support in exact_by_strategy.items():
+        support_by_strategy[strategy] = support
+
+
 def build_variant_ortholog_support(
     aggregates: Iterable[dict],
 ) -> tuple[list[dict[str, object]], int]:
@@ -711,6 +729,9 @@ def main():
                         f"variant_key={variant_key}"
                     )
                 add_ortholog_support(aggregate, row)
+
+        for aggregate in variant_aggregates.values():
+            reconcile_strategy_support_from_orthologs(aggregate)
 
     if args.snv_site_depth_tsv is not None:
         site_depths = load_snv_site_depth(args.snv_site_depth_tsv)
