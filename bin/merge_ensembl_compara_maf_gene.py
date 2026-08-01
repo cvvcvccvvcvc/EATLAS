@@ -8,6 +8,7 @@ import csv
 import gzip
 import json
 import re
+import sys
 from collections import defaultdict
 from pathlib import Path
 
@@ -21,6 +22,9 @@ from run_ensembl_compara_maf_alignment import (
     interval_union_length,
     write_tsv_gz,
 )
+
+
+csv.field_size_limit(sys.maxsize)
 
 
 def parse_args() -> argparse.Namespace:
