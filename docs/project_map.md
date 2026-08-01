@@ -102,16 +102,18 @@ Runtime environments:
   - intersects target features with alignment segments for coverage/depth summaries
   - writes a canonical small per-strategy summary for downstream reports
   - can write compact event support rows when `--compact_alignment_events true`
+  - retains a compact positive per-ortholog handoff alongside compact events
   - copies optional native outputs only when enabled
 
 - `bin/annotate_events.py`
   - normalizes alignment events to VCF-style keys using target context
   - annotates events with ClinVar when a VCF is configured
   - preserves distinct per-strategy ortholog support in a compact table
+  - publishes exact positive ortholog supporters for each normalized variant
   - streams event rows and fetches gnomAD regions within one bounded partition
 
 - `bin/finalize_annotation_partitions.py`
-  - streams partition annotations and strategy-support rows into canonical Stage 3 outputs
+  - streams partition annotations and support rows into canonical Stage 3 outputs
   - aggregates partition manifests without loading variant rows into memory
 
 ## Shared Domain Library

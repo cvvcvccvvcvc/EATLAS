@@ -23,13 +23,15 @@ Large runs can enable:
 
 In compact mode, `alignment_events.tsv.gz` contains one row per unique target
 event and strategy plus support counts. This reduces handoff size and makes
-annotation cheaper, but it drops per-ortholog/native-record traceability. Raw
-per-task event files remain recoverable through Nextflow `work/` while the
-cache is retained.
+annotation cheaper. A separate `event_ortholog_support.tsv.gz` retains one
+positive row per event, strategy, and supporting ortholog for later variant-key
+normalization; native-record traceability is still dropped. Raw per-task event
+files remain recoverable through Nextflow `work/` while the cache is retained.
 
 End-to-end `--stage all` does not publish a global event table. Partition events
 remain in `work/` until annotation consumes them, and Stage 3 preserves compact
-per-strategy ALT-support counts in `variant_strategy_support.tsv.gz`.
+per-strategy ALT-support counts in `variant_strategy_support.tsv.gz` plus exact
+positive supporters in `variant_ortholog_support.tsv.gz`.
 
 ## Partitioned Alignment Outputs
 

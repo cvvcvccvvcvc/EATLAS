@@ -227,6 +227,9 @@ Annotation expected properties:
 - `annotation/variant_annotations.tsv.gz` exists for end-to-end runs.
 - `annotation/variant_strategy_support.tsv.gz` contains per-strategy ALT-support
   counts and site-aligned ortholog depth for SNVs.
+- `annotation/variant_ortholog_support.tsv.gz` contains one row per normalized
+  variant, strategy, and supporting ortholog. Its distinct ortholog and summed
+  row counts agree with `variant_strategy_support.tsv.gz`.
 - `annotation/ortholog_evidence_summary.tsv.gz` contains bounded SNV evidence
   histograms by strategy, target context, taxonomic scope, and evidence unit.
 - `annotation/manifest.json` records event and unique variant-context row counts, source metadata, and annotation counters.

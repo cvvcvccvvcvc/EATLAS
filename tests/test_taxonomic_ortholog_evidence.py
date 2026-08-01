@@ -133,6 +133,7 @@ def test_scope_and_unit_counts_use_any_member_semantics(tmp_path: Path) -> None:
 def test_compact_events_write_taxonomic_alt_counts_in_sqlite(tmp_path: Path) -> None:
     events = tmp_path / "alignment_events.tsv.gz"
     compact = tmp_path / "compact.tsv.gz"
+    ortholog_support = tmp_path / "event_ortholog_support.tsv.gz"
     support = tmp_path / "support.tsv.gz"
     fields = [
         "gene_id",
@@ -175,14 +176,15 @@ def test_compact_events_write_taxonomic_alt_counts_in_sqlite(tmp_path: Path) -> 
         ],
     )
 
-    compact_count, raw_count, support_count = write_compact_events(
+    compact_count, raw_count, support_count, ortholog_support_count = write_compact_events(
         [events],
         compact,
+        ortholog_support,
         taxonomy_fixture(tmp_path),
         support,
     )
 
-    assert (compact_count, raw_count, support_count) == (1, 2, 1)
+    assert (compact_count, raw_count, support_count, ortholog_support_count) == (1, 2, 1, 2)
     with gzip.open(support, "rt", newline="") as handle:
         row = next(csv.DictReader(handle, delimiter="\t"))
     assert row["all__ortholog"] == "2"

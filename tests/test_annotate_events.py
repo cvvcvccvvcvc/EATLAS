@@ -11,11 +11,15 @@ sys.path.insert(0, str(BIN_DIR))
 
 from annotate_events import (  # noqa: E402
     VARIANT_ANNOTATION_FIELDS,
+    VARIANT_ORTHOLOG_SUPPORT_FIELDS,
     VARIANT_STRATEGY_SUPPORT_FIELDS,
+    add_ortholog_support,
     add_strategy_support,
+    build_variant_ortholog_support,
     build_variant_strategy_support,
     event_vcf_key,
     iter_variant_strategy_snv_sites,
+    validate_ortholog_support_totals,
     variant_aggregate_key,
 )
 from finalize_annotation_partitions import (  # noqa: E402
@@ -58,6 +62,19 @@ def test_partitioned_manifest_keeps_non_concrete_exclusion_count() -> None:
 def test_variant_strategy_support_schema_includes_site_depth() -> None:
     assert VARIANT_STRATEGY_SUPPORT_FIELDS[-1] == "site_aligned_ortholog_count"
     assert "variant_strategy_site_depth_count" in COUNT_FIELDS
+
+
+def test_variant_ortholog_support_schema_is_database_ready() -> None:
+    assert VARIANT_ORTHOLOG_SUPPORT_FIELDS == [
+        "variant_key",
+        "gene_id",
+        "strategy",
+        "ortholog_gene_id",
+        "tax_id",
+        "taxname",
+        "support_row_count",
+    ]
+    assert "variant_ortholog_support_count" in COUNT_FIELDS
 
 
 def test_partitioned_manifest_aggregates_shared_gnomad_cache_metrics(tmp_path: Path) -> None:
@@ -146,6 +163,84 @@ def test_variant_strategy_support_counts_distinct_orthologs() -> None:
             "site_aligned_ortholog_count": "",
         },
     ]
+
+
+def test_variant_ortholog_support_collapses_repeated_observations() -> None:
+    aggregate = {
+        "variant_key": "1:100:A>G",
+        "gene_id": "1",
+        "_ortholog_support": {},
+    }
+    add_ortholog_support(
+        aggregate,
+        {
+            "strategy": "s1",
+            "ortholog_gene_id": "101",
+            "tax_id": "10090",
+            "taxname": "Mus musculus",
+            "support_row_count": "2",
+        },
+    )
+    add_ortholog_support(
+        aggregate,
+        {
+            "strategy": "s1",
+            "ortholog_gene_id": "101",
+            "tax_id": "10090",
+            "taxname": "Mus musculus",
+        },
+    )
+
+    rows, missing_key_count = build_variant_ortholog_support([aggregate])
+
+    assert missing_key_count == 0
+    assert rows == [
+        {
+            "variant_key": "1:100:A>G",
+            "gene_id": "1",
+            "strategy": "s1",
+            "ortholog_gene_id": "101",
+            "tax_id": "10090",
+            "taxname": "Mus musculus",
+            "support_row_count": 3,
+        }
+    ]
+    validate_ortholog_support_totals(
+        [
+            {
+                "variant_key": "1:100:A>G",
+                "gene_id": "1",
+                "strategy": "s1",
+                "alt_support_ortholog_count": 1,
+                "alt_support_row_count": 3,
+            }
+        ],
+        rows,
+    )
+
+
+def test_variant_ortholog_support_rejects_conflicting_taxonomy() -> None:
+    aggregate = {"_ortholog_support": {}}
+    add_ortholog_support(
+        aggregate,
+        {
+            "strategy": "s1",
+            "ortholog_gene_id": "101",
+            "tax_id": "10090",
+            "taxname": "Mus musculus",
+        },
+    )
+
+    with pytest.raises(ValueError, match="Conflicting taxname"):
+        add_ortholog_support(
+            aggregate,
+            {
+                "strategy": "s1",
+                "ortholog_gene_id": "101",
+                "tax_id": "10090",
+                "taxname": "Rattus norvegicus",
+            },
+        )
 
 
 def test_snv_support_uses_site_aligned_depth() -> None:

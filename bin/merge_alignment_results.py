@@ -64,6 +64,22 @@ COMPACT_EVENT_FIELDS = [
     "taxname_count",
     "qc_flags",
 ]
+EVENT_ORTHOLOG_SUPPORT_FIELDS = [
+    "gene_id",
+    "event_type",
+    "target_start0",
+    "target_end0",
+    "genomic_accession",
+    "genomic_start1",
+    "genomic_end1",
+    "ref",
+    "alt",
+    "strategy",
+    "ortholog_gene_id",
+    "tax_id",
+    "taxname",
+    "support_row_count",
+]
 SNV_ALT_TAXONOMIC_SUPPORT_FIELDS = [
     "gene_id",
     "strategy",
@@ -508,9 +524,10 @@ def taxonomy_count_expressions() -> list[str]:
 def write_compact_events(
     paths: list[Path],
     output: Path,
+    ortholog_support_output: Path,
     taxonomy_presets: Path | None = None,
     taxonomic_support_output: Path | None = None,
-) -> tuple[int, int, int]:
+) -> tuple[int, int, int, int]:
     if (taxonomy_presets is None) != (taxonomic_support_output is None):
         raise ValueError("Taxonomic event support requires both taxonomy presets and an output path")
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -651,7 +668,55 @@ def write_compact_events(
         finally:
             if support_handle is not None:
                 support_handle.close()
-        return compact_count, raw_count, taxonomic_support_count
+        ortholog_support_query = """
+            SELECT
+                e.gene_id,
+                e.event_type,
+                e.target_start0,
+                e.target_end0,
+                e.genomic_accession,
+                e.genomic_start1,
+                e.genomic_end1,
+                e.ref,
+                e.alt,
+                e.strategy,
+                e.ortholog_gene_id,
+                e.tax_id,
+                e.taxname,
+                COUNT(*) AS support_row_count
+            FROM events AS e
+            WHERE e.ortholog_gene_id != ''
+            GROUP BY
+                e.gene_id,
+                e.event_type,
+                e.target_start0,
+                e.target_end0,
+                e.genomic_accession,
+                e.genomic_start1,
+                e.genomic_end1,
+                e.ref,
+                e.alt,
+                e.strategy,
+                e.ortholog_gene_id,
+                e.tax_id,
+                e.taxname
+            ORDER BY
+                e.gene_id,
+                e.strategy,
+                CAST(e.target_start0 AS INTEGER),
+                e.event_type,
+                e.ref,
+                e.alt,
+                e.ortholog_gene_id
+        """
+        ortholog_support_count = 0
+        with gzip.open(ortholog_support_output, "wt", newline="") as handle:
+            writer = csv.writer(handle, delimiter="\t", lineterminator="\n")
+            writer.writerow(EVENT_ORTHOLOG_SUPPORT_FIELDS)
+            for row in conn.execute(ortholog_support_query):
+                writer.writerow(row)
+                ortholog_support_count += 1
+        return compact_count, raw_count, taxonomic_support_count, ortholog_support_count
     finally:
         conn.close()
         if db_path.exists():
@@ -1112,13 +1177,23 @@ def main() -> None:
             manifests,
             "snv_alt_taxonomic_support_count",
         )
+        event_ortholog_support_count = sum_manifest_count(
+            manifests,
+            "event_ortholog_support_count",
+        )
         alignment_event_mode = merged_event_mode(manifests)
     else:
         event_inputs = [path / "alignment_events.tsv.gz" for path in result_dirs]
         if args.compact_events and not args.events_already_compacted:
-            event_count, raw_event_count, taxonomic_alt_support_count = write_compact_events(
+            (
+                event_count,
+                raw_event_count,
+                taxonomic_alt_support_count,
+                event_ortholog_support_count,
+            ) = write_compact_events(
                 event_inputs,
                 args.outdir / "alignment_events.tsv.gz",
+                args.outdir / "event_ortholog_support.tsv.gz",
                 args.taxonomy_presets if args.partition_id and args.taxonomy_presets else None,
                 args.outdir / "snv_alt_taxonomic_support.tsv.gz"
                 if args.partition_id and args.taxonomy_presets
@@ -1131,10 +1206,15 @@ def main() -> None:
             )
             raw_event_count = event_count
             taxonomic_alt_support_count = 0
+            event_ortholog_support_count = 0
             if args.events_already_compacted:
                 raw_event_count = sum(
                     int(manifest.get("raw_alignment_event_count") or manifest.get("alignment_event_count") or 0)
                     for manifest in manifests
+                )
+                event_ortholog_support_count = merge_tsv_gz(
+                    [path / "event_ortholog_support.tsv.gz" for path in result_dirs],
+                    args.outdir / "event_ortholog_support.tsv.gz",
                 )
         alignment_event_mode = "compact_support" if args.compact_events else "raw"
 
@@ -1204,6 +1284,7 @@ def main() -> None:
         "alignment_event_mode": alignment_event_mode,
         "raw_alignment_event_count": raw_event_count,
         "alignment_event_count": event_count,
+        "event_ortholog_support_count": event_ortholog_support_count,
         "snv_site_depth_count": snv_site_depth_count,
         "snv_taxonomic_depth_count": snv_taxonomic_depth_count,
         "snv_alt_taxonomic_support_count": taxonomic_alt_support_count,

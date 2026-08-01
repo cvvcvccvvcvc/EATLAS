@@ -193,6 +193,7 @@ Standalone `--stage align` publishes the full handoff contract:
 | `snv_site_depth.tsv.gz` | Distinct aligned-ortholog depth for each observed concrete SNV position and strategy. |
 | `feature_coverage.tsv.gz` | Per-gene, per-strategy coverage and depth over target structural intervals. |
 | `alignment_events.tsv.gz` | Raw mismatch/indel events normalized to target coordinates by default; unique event support rows when `--compact_alignment_events true`. |
+| `event_ortholog_support.tsv.gz` | Positive per-event/per-strategy ortholog identities retained when `--compact_alignment_events true`; pass this file to a later standalone annotation run. |
 | `failures.tsv.gz` | Alignment-stage failures. |
 | `native/` | Optional raw PAF/SAM files when enabled. |
 
@@ -200,14 +201,16 @@ Native outputs are disabled by default.
 
 In an end-to-end `--stage all` run, Stage 3 consumes partitioned events directly
 from Nextflow `work/`. Before the raw partition segments are discarded, the
-partition merge derives SNV-only site depth and taxonomic-unit counts for the
-observed concrete variant positions. Stage 3 combines those temporary tables
-with gnomAD status into the bounded histogram
+partition merge derives SNV-only site depth, positive per-ortholog support, and
+taxonomic-unit counts for the observed concrete variant positions. Stage 3
+normalizes the positive support to canonical variant keys and combines the
+taxonomic tables with gnomAD status into the bounded histogram
 `annotation/ortholog_evidence_summary.tsv.gz`. The durable `alignment/`
 directory therefore contains only `manifest.json`, `strategy_summary.tsv.gz`,
 `feature_coverage.tsv.gz`, `taxonomy_summary.tsv.gz`, and `failures.tsv.gz`.
-Raw events, segments, per-ortholog summaries, and partition-level taxonomic
-tables remain disposable work data.
+Raw events, the pre-normalization ortholog-support handoff, segments,
+per-ortholog summaries, and partition-level taxonomic tables remain disposable
+work data.
 
 For Minimap2 rows, `native_record_id` is derived from the PAF record content
 rather than its output line number. `event_id` combines the strategy, that
