@@ -148,11 +148,12 @@ workflow FETCH_STAGE {
     fetch_script = file("${projectDir}/bin/fetch_parse_chunk.py")
     build_fetch_dataset_script = file("${projectDir}/bin/build_fetch_dataset.py")
     target_annotation_gff3 = file(params.target_annotation_gff3)
+    request_throttle_dir = "${workflow.workDir}/.gaph/ncbi_fetch_throttle"
 
     VALIDATE_IDS(ids, normalize_script)
 
     chunk_files = VALIDATE_IDS.out.chunk_files.flatten().map { file -> tuple([id: file.baseName], file) }
-    FETCH_PARSE_CHUNK(chunk_files, fetch_script)
+    FETCH_PARSE_CHUNK(chunk_files, fetch_script, request_throttle_dir)
 
     BUILD_FETCH_DATASET(
         VALIDATE_IDS.out.ids_tsv,
