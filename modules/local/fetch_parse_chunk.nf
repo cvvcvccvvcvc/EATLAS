@@ -5,6 +5,7 @@ process FETCH_PARSE_CHUNK {
     input:
     tuple val(meta), path(chunk_file)
     path fetch_script
+    val request_throttle_dir
 
     output:
     tuple val(meta), path("fetch_*"), emit: chunk_dirs
@@ -26,7 +27,7 @@ process FETCH_PARSE_CHUNK {
         --target-assembly-name "${params.target_assembly_name}" \\
         --target-tax-id "${params.target_tax_id}" \\
         --request-stagger-seconds "${params.fetch_request_stagger_seconds}" \\
-        --request-throttle-dir "${workflow.workDir}/.gaph/ncbi_fetch_throttle" \\
+        --request-throttle-dir "${request_throttle_dir}" \\
         --download-retries "${params.fetch_download_retries}" \\
         --download-retry-base-seconds "${params.fetch_download_retry_base_seconds}"
     """
