@@ -148,7 +148,8 @@ def test_variant_summary_prefers_compact_ortholog_evidence_and_tracks_its_cache(
         if stage["name"] == "Variant summary aggregation"
     )
     assert aggregation["parent_id"] == profile.stages[0]["id"]
-    assert aggregation["metrics"]["temporary_sqlite_bytes"] > 0
+    assert aggregation["metrics"]["duckdb_source_scan_seconds"] >= 0
+    assert "temporary_sqlite_bytes" not in aggregation["metrics"]
     assert set(summary.ortholog_evidence_cells["taxonomic_scope"]) == {"mammalia"}
     assert int(
         summary.ortholog_evidence_cells[
@@ -252,6 +253,10 @@ def test_variant_summary_accepts_compact_annotation_schema(tmp_path: Path) -> No
     assert summary.all_strategy_variant_count == 1
     assert summary.strategy_record_count == 4
     assert summary.strategies == ["s1", "s2"]
+    assert summary.gene_variant_counts.to_dict(orient="records") == [
+        {"strategy": "s1", "gene_id": "1", "Variant_Count": 2},
+        {"strategy": "s2", "gene_id": "1", "Variant_Count": 2},
+    ]
     by_strategy = summary.strategy_stats.set_index("Strategy")
     assert by_strategy.loc["s1", "Ti/Tv"] == 1.0
     assert by_strategy.loc["s2", "Ti/Tv"] == float("inf")
@@ -266,6 +271,7 @@ def test_variant_summary_accepts_compact_annotation_schema(tmp_path: Path) -> No
     )
     assert cached.cache_hit
     assert cached.all_strategy_variant_count == 1
+    assert cached.gene_variant_counts.equals(summary.gene_variant_counts)
     assert cached.strategy_stats.set_index("Strategy").loc["s2", "Ti/Tv"] == float("inf")
     assert (tmp_path / "analytics" / "variant_summary.json.gz").stat().st_mode & 0o777 == 0o644
 

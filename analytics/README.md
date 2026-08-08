@@ -184,12 +184,14 @@ Independent continuous-association models run in parallel through
 count outside Slurm, capped at eight workers. `GAPH_FIRTH_WORKERS` overrides
 that default.
 
-The report reads `annotation/variant_annotations.tsv.gz` in chunks. It uses a
-temporary SQLite file under `<run-dir>/analytics/` to deduplicate
-variant-strategy records without loading the full annotation table into memory;
-the file is removed when aggregation finishes or fails. The compact final
+The report aggregates completed bulk-VEP partitions directly with DuckDB. For
+legacy runs it reads the single `variant_annotations.tsv.gz` file through the
+same engine. Strategy sets are represented internally as bit masks, so the
+report does not materialize variant-by-strategy rows or a persistent database.
+Global statistics use unique genomic alleles; gene, target-context, and
+consequence statistics retain each allele-gene association. The compact final
 aggregation is cached as `<run-dir>/analytics/variant_summary.json.gz` and is
-reused while the annotation input and summary schema remain unchanged.
+reused while the input manifests and summary schema remain unchanged.
 Current runs load ortholog-evidence heatmaps from the compact
 `annotation/ortholog_evidence_summary.tsv.gz`; the report reconstructs those
 aggregates from `variant_strategy_support.tsv.gz` only for legacy runs that do
