@@ -14,6 +14,8 @@ import hashlib
 import heapq
 import json
 import math
+import tempfile
+import time
 import warnings
 from collections import defaultdict
 from dataclasses import dataclass
@@ -29,10 +31,12 @@ from analytics.io.artifacts import (
     write_tsv_atomic,
 )
 from analytics.io.performance import PerformanceProfile, profile_stage
+from analytics.io.variant_source import sql_string
 from .conservation import annotate_track, parse_tracks
 from .external_evidence import build_external_evidence
 from .observed_variant_store import (
     ObservedVariantStore,
+    available_cpu_count,
     build_or_load_observed_variant_store,
 )
 from .target_context import context_at, read_disjoint_contexts
@@ -52,6 +56,15 @@ MATCHED_POOL_SIZE = 5
 CANDIDATE_POOL_SIZE = MATCHED_POOL_SIZE * 3
 CANDIDATE_FOCAL_CHUNK_SIZE = 2_000
 RESAMPLE_BLOCK_SIZE = 16
+VEP_COLUMN_RENAMES = {
+    "status": "vep_status",
+    "consequence_terms": "vep_consequence_terms",
+    "transcript_id": "vep_transcript_id",
+    "mane_select": "vep_mane_select",
+    "canonical": "vep_canonical",
+    "impact": "vep_impact",
+    "variant_class": "vep_variant_class",
+}
 
 
 @dataclass(frozen=True)
@@ -293,6 +306,7 @@ def build_target_space_null(
             vep_cache_path,
             str(focal_vep["release"]),
             seed,
+            observed_store=observed_store,
             vep_backend=vep_backend,
             vep_executable=vep_executable,
             vep_cache_dir=vep_cache_dir,
@@ -304,11 +318,28 @@ def build_target_space_null(
             raise ValueError(
                 "No consequence-matched target-space control candidates were available."
             )
+        control_pipeline = dict(candidate_vep.get("control_pipeline", {}))
         timing["metrics"] = {
             "generated_candidates": int(generated_candidate_count),
+            "preexcluded_candidates": int(control_pipeline.get("preexcluded_candidates", 0)),
+            "eligible_candidates": int(
+                control_pipeline.get("eligible_candidates", generated_candidate_count)
+            ),
             "consequence_matched_candidates": int(len(candidates)),
             "vep_requested": int(candidate_vep.get("requested", 0)),
             "vep_queried": int(candidate_vep.get("queried", 0)),
+            "deduplicated_vep_requests": int(
+                control_pipeline.get("deduplicated_vep_requests", 0)
+            ),
+            "generation_seconds": float(control_pipeline.get("generation_seconds", 0.0)),
+            "preparation_seconds": float(
+                control_pipeline.get("preparation_seconds", 0.0)
+            ),
+            "vep_seconds": float(control_pipeline.get("vep_seconds", 0.0)),
+            "result_join_seconds": float(
+                control_pipeline.get("result_join_seconds", 0.0)
+            ),
+            "workspace_bytes": int(control_pipeline.get("workspace_bytes", 0)),
         }
 
     with profile_stage(
@@ -587,17 +618,7 @@ def _validate_focal_reference(
 
 
 def _merge_vep(frame: pd.DataFrame, annotations: pd.DataFrame) -> pd.DataFrame:
-    renamed = annotations.rename(
-        columns={
-            "status": "vep_status",
-            "consequence_terms": "vep_consequence_terms",
-            "transcript_id": "vep_transcript_id",
-            "mane_select": "vep_mane_select",
-            "canonical": "vep_canonical",
-            "impact": "vep_impact",
-            "variant_class": "vep_variant_class",
-        }
-    )
+    renamed = annotations.rename(columns=VEP_COLUMN_RENAMES)
     return frame.merge(renamed, on=["variant_key", "gene_id"], how="left", validate="many_to_one")
 
 
@@ -672,6 +693,7 @@ def _annotate_candidate_controls(
     vep_release: str,
     seed: int,
     *,
+    observed_store: ObservedVariantStore,
     vep_backend: str,
     vep_executable: str | Path,
     vep_cache_dir: Path | None,
@@ -680,69 +702,276 @@ def _annotate_candidate_controls(
     vep_result_cache_tile_size_bp: int,
 ) -> tuple[pd.DataFrame, int, dict[str, object]]:
     unique_focal = focal.drop_duplicates(["variant_key", "gene_id"]).reset_index(drop=True)
-    matched_parts = []
     generated_count = 0
-    summaries = []
+    pipeline: dict[str, int | float] = {
+        "generated_candidates": 0,
+        "preexcluded_candidates": 0,
+        "eligible_candidates": 0,
+        "unique_vep_requests": 0,
+        "deduplicated_vep_requests": 0,
+        "generation_seconds": 0.0,
+        "preparation_seconds": 0.0,
+        "vep_seconds": 0.0,
+        "result_join_seconds": 0.0,
+        "workspace_bytes": 0,
+    }
+    vep_cache_path.parent.mkdir(parents=True, exist_ok=True)
+    duckdb = _import_duckdb()
+    with tempfile.TemporaryDirectory(
+        prefix=".control_candidates.",
+        dir=vep_cache_path.parent,
+    ) as temporary:
+        workspace_dir = Path(temporary)
+        workspace_path = workspace_dir / "candidates.duckdb"
+        generation_started = time.perf_counter()
+        with duckdb.connect(str(workspace_path)) as connection:
+            connection.execute(f"SET threads={available_cpu_count()}")
+            connection.execute("SET preserve_insertion_order=false")
+            connection.execute("SET enable_progress_bar=false")
+            connection.execute(
+                f"SET temp_directory={sql_string(workspace_dir / 'duckdb_tmp')}"
+            )
+            generated_count = _write_candidate_pool(
+                connection,
+                unique_focal,
+                contexts,
+                genes,
+                sequences,
+                seed,
+            )
+            pipeline["generation_seconds"] = round(
+                time.perf_counter() - generation_started,
+                6,
+            )
+            pipeline["generated_candidates"] = generated_count
+            if generated_count == 0:
+                summary = _empty_vep_summary(vep_release, vep_cache_path)
+                summary["control_pipeline"] = pipeline
+                return pd.DataFrame(), generated_count, summary
+
+            preparation_started = time.perf_counter()
+            requests, eligible_count = _prepare_candidate_requests(
+                connection,
+                focal,
+                observed_store,
+            )
+            pipeline.update(
+                {
+                    "preexcluded_candidates": generated_count - eligible_count,
+                    "eligible_candidates": eligible_count,
+                    "unique_vep_requests": len(requests),
+                    "deduplicated_vep_requests": eligible_count - len(requests),
+                    "preparation_seconds": round(
+                        time.perf_counter() - preparation_started,
+                        6,
+                    ),
+                }
+            )
+            if requests.empty:
+                summary = _empty_vep_summary(vep_release, vep_cache_path)
+                pipeline["workspace_bytes"] = _directory_size(workspace_dir)
+                summary["control_pipeline"] = pipeline
+                return pd.DataFrame(), generated_count, summary
+
+            vep_started = time.perf_counter()
+            annotations, summary = annotate_vep_consequences(
+                requests,
+                vep_cache_path,
+                release=vep_release,
+                backend=vep_backend,
+                vep_executable=vep_executable,
+                vep_cache_dir=vep_cache_dir,
+                vep_forks=vep_forks,
+                vep_result_cache_dir=vep_result_cache_dir,
+                vep_result_cache_tile_size_bp=vep_result_cache_tile_size_bp,
+            )
+            pipeline["vep_seconds"] = round(
+                time.perf_counter() - vep_started,
+                6,
+            )
+
+            join_started = time.perf_counter()
+            matched = _join_candidate_annotations(connection, annotations)
+            pipeline["result_join_seconds"] = round(
+                time.perf_counter() - join_started,
+                6,
+            )
+            pipeline["workspace_bytes"] = _directory_size(workspace_dir)
+            summary["control_pipeline"] = pipeline
+            return matched, generated_count, summary
+
+
+def _write_candidate_pool(
+    connection,
+    unique_focal: pd.DataFrame,
+    contexts: dict[str, list[tuple[int, int, str]]],
+    genes: dict[str, dict[str, object]],
+    sequences: dict[str, str],
+    seed: int,
+) -> int:
+    generated_count = 0
     for start in range(0, len(unique_focal), CANDIDATE_FOCAL_CHUNK_SIZE):
         focal_chunk = unique_focal.iloc[start : start + CANDIDATE_FOCAL_CHUNK_SIZE]
-        candidates = _generate_candidate_controls(focal_chunk, contexts, genes, sequences, seed)
+        candidates = _generate_candidate_controls(
+            focal_chunk,
+            contexts,
+            genes,
+            sequences,
+            seed,
+        )
         if candidates.empty:
             continue
+        candidates["_candidate_order"] = candidates.groupby(
+            "control_group",
+            sort=False,
+        ).cumcount()
+        connection.register("candidate_chunk", candidates)
+        try:
+            if generated_count:
+                connection.execute(
+                    "INSERT INTO candidate_pool SELECT * FROM candidate_chunk"
+                )
+            else:
+                connection.execute(
+                    "CREATE TABLE candidate_pool AS SELECT * FROM candidate_chunk"
+                )
+        finally:
+            connection.unregister("candidate_chunk")
         generated_count += len(candidates)
-        annotations, summary = annotate_vep_consequences(
-            candidates[["variant_key", "gene_id", "chrom", "pos", "ref", "alt"]],
-            vep_cache_path,
-            release=vep_release,
-            backend=vep_backend,
-            vep_executable=vep_executable,
-            vep_cache_dir=vep_cache_dir,
-            vep_forks=vep_forks,
-            vep_result_cache_dir=vep_result_cache_dir,
-            vep_result_cache_tile_size_bp=vep_result_cache_tile_size_bp,
+    return generated_count
+
+
+def _prepare_candidate_requests(
+    connection,
+    focal: pd.DataFrame,
+    observed_store: ObservedVariantStore,
+) -> tuple[pd.DataFrame, int]:
+    focal_groups = _focal_control_groups(focal, observed_store)
+    connection.register("focal_groups_input", focal_groups)
+    try:
+        connection.execute(
+            "CREATE TABLE focal_groups AS SELECT * FROM focal_groups_input"
         )
-        summaries.append(summary)
-        candidates = _merge_vep(candidates, annotations)
-        candidates = candidates[
-            candidates["vep_status"].eq("ok")
-            & candidates["primary_consequence"].eq(candidates["focal_consequence"])
-        ]
-        if not candidates.empty:
-            matched_parts.append(candidates)
+    finally:
+        connection.unregister("focal_groups_input")
 
-    summary = _merge_vep_summaries(summaries, vep_release, vep_cache_path)
-    if not matched_parts:
-        return pd.DataFrame(), generated_count, summary
-    return pd.concat(matched_parts, ignore_index=True), generated_count, summary
+    # Keep a candidate when at least one strategy using its focal group has not
+    # observed it. Per-strategy exclusion still happens during final matching.
+    connection.execute(
+        "CREATE TABLE eligible_candidates AS "
+        "SELECT c.* FROM candidate_pool c "
+        "JOIN focal_groups f USING (control_group) "
+        f"LEFT JOIN read_parquet({sql_string(observed_store.allele_path)}) o "
+        "USING (variant_key) "
+        "WHERE o.variant_key IS NULL "
+        "OR (o.strategy_mask & f.strategy_mask) != f.strategy_mask"
+    )
+    eligible_count = int(
+        connection.execute("SELECT count(*) FROM eligible_candidates").fetchone()[0]
+    )
+    requests = connection.execute(
+        "SELECT DISTINCT variant_key, gene_id, chrom, pos, ref, alt "
+        "FROM eligible_candidates "
+        "ORDER BY chrom, pos, variant_key, gene_id"
+    ).df()
+    return requests, eligible_count
 
 
-def _merge_vep_summaries(
-    summaries: list[dict[str, object]],
+def _join_candidate_annotations(connection, annotations: pd.DataFrame) -> pd.DataFrame:
+    renamed_annotations = annotations.rename(columns=VEP_COLUMN_RENAMES)
+    connection.register("candidate_annotations", renamed_annotations)
+    try:
+        return connection.execute(
+            "SELECT c.*, "
+            "a.vep_status, a.primary_consequence, "
+            "a.vep_consequence_terms, a.vep_transcript_id, "
+            "a.vep_mane_select, a.vep_canonical, "
+            "a.vep_impact, a.vep_variant_class "
+            "FROM eligible_candidates c "
+            "JOIN candidate_annotations a USING (variant_key, gene_id) "
+            "JOIN focal_groups f USING (control_group) "
+            "WHERE a.vep_status = 'ok' "
+            "AND a.primary_consequence = c.focal_consequence "
+            "ORDER BY f.control_group_order, c._candidate_order"
+        ).df()
+    finally:
+        connection.unregister("candidate_annotations")
+
+
+def _focal_control_groups(
+    focal: pd.DataFrame,
+    observed_store: ObservedVariantStore,
+) -> pd.DataFrame:
+    focal_groups = focal[["gene_id", "variant_key"]].drop_duplicates().copy()
+    focal_groups["gene_id"] = focal_groups["gene_id"].astype(str)
+    focal_groups["variant_key"] = focal_groups["variant_key"].astype(str)
+    focal_groups["control_group"] = (
+        focal_groups["gene_id"] + "|" + focal_groups["variant_key"]
+    )
+    focal_groups["control_group_order"] = np.arange(len(focal_groups), dtype=np.int64)
+
+    memberships = focal[["gene_id", "variant_key", "strategy"]].drop_duplicates().copy()
+    memberships["gene_id"] = memberships["gene_id"].astype(str)
+    memberships["variant_key"] = memberships["variant_key"].astype(str)
+    memberships["strategy"] = memberships["strategy"].astype(str)
+    memberships["control_group"] = (
+        memberships["gene_id"] + "|" + memberships["variant_key"]
+    )
+    observed_store.strategy_mask(tuple(memberships["strategy"].unique()))
+    strategy_bits = {
+        strategy: 1 << observed_store.strategies.index(strategy)
+        for strategy in memberships["strategy"].unique()
+    }
+    memberships["strategy_mask"] = memberships["strategy"].map(strategy_bits)
+    group_masks = (
+        memberships.groupby("control_group", sort=False, as_index=False)["strategy_mask"]
+        .sum()
+        .astype({"strategy_mask": "uint64"})
+    )
+    return focal_groups[["control_group", "control_group_order"]].merge(
+        group_masks,
+        on="control_group",
+        how="left",
+        validate="one_to_one",
+    )
+
+
+def _directory_size(path: Path) -> int:
+    total = 0
+    for item in path.rglob("*"):
+        try:
+            if item.is_file():
+                total += item.stat().st_size
+        except FileNotFoundError:
+            continue
+    return total
+
+
+def _import_duckdb():
+    try:
+        import duckdb
+    except ImportError as exc:  # pragma: no cover - analytics environment contract
+        raise RuntimeError(
+            "Target-space control preparation requires the python-duckdb package"
+        ) from exc
+    return duckdb
+
+
+def _empty_vep_summary(
     release: str,
     cache_path: Path,
 ) -> dict[str, object]:
-    status_counts: dict[str, int] = defaultdict(int)
-    for summary in summaries:
-        for status, count in dict(summary.get("status_counts", {})).items():
-            status_counts[str(status)] += int(count)
-    first = summaries[0] if summaries else {}
     return {
         "status": "complete",
-        "backend": first.get("backend", ""),
-        "base_url": first.get("base_url", ""),
-        "assembly": first.get("assembly", ""),
         "release": release,
-        "options": first.get("options", {}),
-        "requested": sum(int(item.get("requested", 0)) for item in summaries),
-        "cached": sum(int(item.get("cached", 0)) for item in summaries),
-        "shared_cached": sum(int(item.get("shared_cached", 0)) for item in summaries),
-        "local_cached": sum(int(item.get("local_cached", 0)) for item in summaries),
-        "queried": sum(int(item.get("queried", 0)) for item in summaries),
-        "batch_count": sum(int(item.get("batch_count", 0)) for item in summaries),
-        "status_counts": dict(sorted(status_counts.items())),
+        "requested": 0,
+        "cached": 0,
+        "shared_cached": 0,
+        "local_cached": 0,
+        "queried": 0,
+        "batch_count": 0,
+        "status_counts": {},
         "cache_path": str(cache_path),
-        "vep_cache_dir": first.get("vep_cache_dir", ""),
-        "vep_executable": first.get("vep_executable", ""),
-        "vep_forks": first.get("vep_forks", ""),
     }
 
 
@@ -796,14 +1025,24 @@ def _build_matched_rows(
         "vep_consequence_terms",
         "vep_transcript_id",
     ]
-    candidate_work = candidates[candidate_columns].drop_duplicates(
+    stored_candidate_order = "_candidate_order" in candidates.columns
+    candidate_source_columns = candidate_columns + (
+        ["_candidate_order"] if stored_candidate_order else []
+    )
+    candidate_work = candidates[candidate_source_columns].drop_duplicates(
         ["control_group", "variant_key"],
         keep="first",
     )
-    candidate_work["_candidate_order"] = candidate_work.groupby(
-        "control_group",
-        sort=False,
-    ).cumcount()
+    if stored_candidate_order:
+        candidate_work["_candidate_order"] = pd.to_numeric(
+            candidate_work["_candidate_order"],
+            errors="raise",
+        ).astype(int)
+    else:
+        candidate_work["_candidate_order"] = candidate_work.groupby(
+            "control_group",
+            sort=False,
+        ).cumcount()
     candidate_work = candidate_work.rename(
         columns={
             column: f"control_{column}"
