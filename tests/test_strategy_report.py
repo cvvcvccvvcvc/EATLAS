@@ -28,8 +28,10 @@ from analytics.reporting.overview import overview_strategy_table
 from analytics.reporting.variant_profile import (
     build_variant_sections,
     gene_variant_distribution_counts,
+    gene_variant_distribution_figure,
     gnomad_stratification_figure,
     top_gene_contribution_counts,
+    top_gene_contribution_figure,
 )
 
 
@@ -229,6 +231,10 @@ def test_gene_variant_distribution_includes_zero_candidate_genes() -> None:
     assert int(distribution.loc["8-15", "Gene_Count"]) == 1
     assert distribution["Gene_Fraction"].sum() == 1.0
 
+    figure = gene_variant_distribution_figure(gene_counts, stats)
+    assert figure is not None
+    assert [trace.type for trace in figure.data] == ["scatter"]
+
 
 def test_top_gene_contribution_uses_strategy_denominator_and_equal_share() -> None:
     gene_counts = pd.DataFrame(
@@ -246,6 +252,22 @@ def test_top_gene_contribution_uses_strategy_denominator_and_equal_share() -> No
     assert top["Equal_Share"] == 0.25
     assert top["Equal_Share_Ratio"] == 3.2
     assert top["Top_Share"] == 0.8
+
+
+def test_top_gene_contribution_orders_bars_by_contribution() -> None:
+    gene_counts = pd.DataFrame(
+        [
+            {"strategy": "s1", "gene_id": "30", "Variant_Count": 2},
+            {"strategy": "s1", "gene_id": "10", "Variant_Count": 8},
+            {"strategy": "s1", "gene_id": "20", "Variant_Count": 5},
+        ]
+    )
+    stats = pd.DataFrame([{"Strategy": "s1", "Genes with result": 3}])
+
+    figure = top_gene_contribution_figure(gene_counts, stats, limit=3)
+
+    assert figure is not None
+    assert list(figure.data[0].x[1]) == ["10", "20", "30"]
 
 
 def test_report_document_loads_plotly_once() -> None:
