@@ -37,6 +37,10 @@ from genomics.variants import (
 )
 from ortholog_evidence_summary import write_ortholog_evidence_summary
 
+
+csv.field_size_limit(sys.maxsize)
+
+
 logger = logging.getLogger(__name__)
 
 CLINVAR_COLUMNS = [

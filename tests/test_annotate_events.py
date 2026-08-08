@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import csv
+import gzip
+import subprocess
 import sys
 from pathlib import Path
 
@@ -54,6 +57,45 @@ def test_variant_annotation_schema_is_analysis_ready() -> None:
         "gnomad_af_source",
         "gnomad_csq",
     ]
+
+
+@pytest.mark.parametrize(
+    "entrypoint",
+    ["annotate_events.py", "finalize_annotation_partitions.py"],
+)
+def test_annotation_entrypoints_accept_large_tsv_fields(
+    tmp_path: Path,
+    entrypoint: str,
+) -> None:
+    source = tmp_path / "large_field.tsv.gz"
+    large_field = "A" * 165_969
+    with gzip.open(source, "wt", newline="") as handle:
+        csv.writer(handle, delimiter="\t").writerow([large_field])
+
+    probe = (
+        "import csv,gzip,runpy,sys;"
+        "sys.path.insert(0,sys.argv[3]);"
+        "runpy.run_path(sys.argv[1],run_name='csv_limit_probe');"
+        "handle=gzip.open(sys.argv[2],'rt',newline='');"
+        "print(len(next(csv.reader(handle,delimiter=chr(9)))[0]))"
+    )
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            probe,
+            str(BIN_DIR / entrypoint),
+            str(source),
+            str(BIN_DIR),
+        ],
+        cwd=BIN_DIR.parent,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert completed.stdout.strip() == str(len(large_field))
 
 
 def test_partitioned_manifest_keeps_non_concrete_exclusion_count() -> None:

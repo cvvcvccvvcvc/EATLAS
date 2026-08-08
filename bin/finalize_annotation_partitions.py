@@ -7,9 +7,13 @@ import argparse
 import csv
 import gzip
 import json
+import sys
 from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
+
+
+csv.field_size_limit(sys.maxsize)
 
 
 COUNT_FIELDS = [

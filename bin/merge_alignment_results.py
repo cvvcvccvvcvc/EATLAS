@@ -9,6 +9,7 @@ import gzip
 import json
 import shutil
 import sqlite3
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -19,6 +20,9 @@ from feature_coverage import (
     write_snv_taxonomic_depth,
 )
 from taxonomic_evidence import COUNT_KEYS, SCOPE_ORDER, UNIT_ORDER, load_taxonomy_profiles
+
+
+csv.field_size_limit(sys.maxsize)
 
 
 def parse_args() -> argparse.Namespace:

@@ -426,6 +426,63 @@ def test_compact_events_preserve_strategy_specific_support(tmp_path: Path) -> No
     assert [row["support_row_count"] for row in ortholog_rows] == ["1", "1"]
 
 
+def test_compact_events_accept_large_allele_fields(tmp_path: Path) -> None:
+    strategy = "precomputed_ensembl_92_mammals_epo_extended"
+    result_dir = write_result_dir(
+        tmp_path,
+        "partition_000041",
+        {
+            "partition_id": "partition_000041",
+            "gene_count": 1,
+            "gene_ids": ["3492"],
+            "strategies": [strategy],
+        },
+    )
+    large_alt = "A" * 165_969
+    write_tsv_gz(
+        result_dir / "alignment_events.tsv.gz",
+        TABLE_HEADERS["alignment_events.tsv.gz"],
+        [
+            [
+                "3492",
+                "ins",
+                "431282",
+                "431282",
+                "NC_000014.9",
+                "106017719",
+                "106017719",
+                "",
+                large_alt,
+                "pongo_abelii",
+                strategy,
+                "ensembl_compara",
+                "",
+                "9601",
+                "Pongo abelii",
+                "",
+            ]
+        ],
+    )
+
+    completed = run_merge(
+        [
+            *final_arguments(
+                [result_dir],
+                tmp_path / "merged",
+                write_final_inputs(tmp_path, [["3492", "ready"]]),
+                strategies=strategy,
+            ),
+            "--compact-events",
+        ]
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    with gzip.open(tmp_path / "merged" / "alignment_events.tsv.gz", "rt") as handle:
+        header = handle.readline().rstrip("\n").split("\t")
+        row = handle.readline().rstrip("\n").split("\t")
+    assert len(row[header.index("alt")]) == len(large_alt)
+
+
 def test_partition_merge_rejects_duplicate_gene_strategy(tmp_path: Path) -> None:
     result_dirs = [
         write_result_dir(
