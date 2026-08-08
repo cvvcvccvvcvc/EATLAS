@@ -29,9 +29,12 @@ from analytics.io.artifacts import (
     write_tsv_atomic,
 )
 from analytics.io.performance import PerformanceProfile, profile_stage
-from .clinvar_validation import split_strategies
 from .conservation import annotate_track, parse_tracks
 from .external_evidence import build_external_evidence
+from .observed_variant_store import (
+    ObservedVariantStore,
+    build_or_load_observed_variant_store,
+)
 from .target_context import context_at, read_disjoint_contexts
 from genomics.variants import (
     changed_target_position,
@@ -43,7 +46,6 @@ from analytics.annotation.vep import annotate_vep_consequences
 from analytics.annotation.vep_result_cache import DEFAULT_TILE_SIZE_BP
 
 
-DNA_BASES = ("A", "C", "G", "T")
 CONTROL_VERSION = 5
 FOCAL_CACHE_VERSION = 1
 MATCHED_POOL_SIZE = 5
@@ -156,6 +158,21 @@ def build_target_space_null(
             performance_profile,
         )
 
+    with profile_stage(performance_profile, "Target-null observed store") as timing:
+        observed_store = build_or_load_observed_variant_store(
+            variant_annotations_tsv=variant_annotations_tsv,
+            analytics_dir=run_dir / "analytics",
+            strategies=strategies,
+        )
+        timing["details"] = "cache hit" if observed_store.cache_hit else "cache miss"
+        timing["metrics"] = {
+            "source_rows": int(observed_store.manifest["source_row_count"]),
+            "allele_gene_rows": int(observed_store.manifest["allele_gene_count"]),
+            "alleles": int(observed_store.manifest["allele_count"]),
+            "store_bytes": int(observed_store.allele_gene_path.stat().st_size)
+            + int(observed_store.allele_path.stat().st_size),
+        }
+
     focal_inputs = {
         "version": FOCAL_CACHE_VERSION,
         "variant_annotations": path_metadata(variant_annotations_tsv),
@@ -196,7 +213,7 @@ def build_target_space_null(
             )
         else:
             focal = _sample_focal_snvs(
-                variant_annotations_tsv,
+                observed_store,
                 contexts,
                 genes,
                 strategies,
@@ -299,8 +316,9 @@ def build_target_space_null(
         "Target-null observed-control exclusion",
     ) as timing:
         observed_controls = _collect_observed_control_keys(
-            variant_annotations_tsv,
+            observed_store,
             candidates,
+            strategies,
         )
         timing["metrics"] = {"observed_memberships": int(len(observed_controls))}
 
@@ -473,47 +491,23 @@ def _stable_rank(seed: int, *parts: object) -> int:
 
 
 def _sample_focal_snvs(
-    path: Path,
+    observed_store: ObservedVariantStore,
     contexts: dict[str, list[tuple[int, int, str]]],
     genes: dict[str, dict[str, object]],
     strategies: list[str],
     limit: int,
     seed: int,
 ) -> pd.DataFrame:
-    header = pd.read_csv(path, sep="\t", compression="gzip", nrows=0).columns.tolist()
-    columns = [
-        "variant_key",
-        "gene_id",
-        "event_type",
-        "ref",
-        "alt",
-        "strategies",
+    strategy_bits = [
+        (strategy, 1 << observed_store.strategies.index(strategy))
+        for strategy in strategies
     ]
-    if "lookup_status" in header:
-        columns.append("lookup_status")
-    strategy_set = set(strategies)
     heaps: dict[str, list[tuple[int, str, dict[str, object]]]] = defaultdict(list)
 
-    for chunk in pd.read_csv(
-        path,
-        sep="\t",
-        compression="gzip",
-        usecols=columns,
-        keep_default_na=False,
-        chunksize=200_000,
-    ):
-        chunk = chunk[chunk["event_type"].astype(str).eq("snv")]
-        chunk = chunk[
-            chunk["ref"].astype(str).str.len().eq(1)
-            & chunk["alt"].astype(str).str.len().eq(1)
-            & chunk["ref"].astype(str).str.upper().isin(DNA_BASES)
-            & chunk["alt"].astype(str).str.upper().isin(DNA_BASES)
-        ]
-        if "lookup_status" in chunk.columns:
-            chunk = chunk[chunk["lookup_status"].astype(str).eq("ok")]
-        for row in chunk.itertuples(index=False):
-            gene_id = str(row.gene_id)
-            parsed = parse_variant_key(row.variant_key)
+    for chunk in observed_store.iter_focal_rows(strategies):
+        for variant_key, raw_gene_id, _source_ref, _source_alt, raw_mask in chunk:
+            gene_id = str(raw_gene_id)
+            parsed = parse_variant_key(variant_key)
             gene = genes.get(gene_id)
             if parsed is None or gene is None:
                 continue
@@ -521,7 +515,7 @@ def _sample_focal_snvs(
             target_pos = changed_target_position(parsed, int(gene["begin"]))
             record_base = {
                 "gene_id": gene_id,
-                "variant_key": str(row.variant_key),
+                "variant_key": str(variant_key),
                 "target_pos": target_pos,
                 "chrom": chrom,
                 "pos": pos,
@@ -529,8 +523,9 @@ def _sample_focal_snvs(
                 "alt": alt,
                 "context": context_at(contexts.get(gene_id, []), target_pos),
             }
-            for strategy in split_strategies(str(row.strategies)):
-                if strategy_set and strategy not in strategy_set:
+            strategy_mask = int(raw_mask)
+            for strategy, bit in strategy_bits:
+                if not strategy_mask & bit:
                     continue
                 record = {**record_base, "strategy": strategy}
                 token = f"{gene_id}:{record['variant_key']}"
@@ -752,26 +747,11 @@ def _merge_vep_summaries(
 
 
 def _collect_observed_control_keys(
-    annotations_path: Path,
+    observed_store: ObservedVariantStore,
     candidates: pd.DataFrame,
+    strategies: list[str],
 ) -> set[tuple[str, str]]:
-    wanted_keys = set(candidates["variant_key"].astype(str))
-    if not wanted_keys:
-        return set()
-    found: set[tuple[str, str]] = set()
-    for chunk in pd.read_csv(
-        annotations_path,
-        sep="\t",
-        compression="gzip",
-        usecols=["variant_key", "strategies"],
-        keep_default_na=False,
-        chunksize=250_000,
-    ):
-        subset = chunk[chunk["variant_key"].astype(str).isin(wanted_keys)]
-        for row in subset.itertuples(index=False):
-            for strategy in split_strategies(str(row.strategies)):
-                found.add((str(row.variant_key), strategy))
-    return found
+    return observed_store.observed_control_keys(candidates["variant_key"], strategies)
 
 
 def _build_matched_rows(

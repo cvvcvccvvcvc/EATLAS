@@ -149,6 +149,7 @@ def test_build_target_space_null_end_to_end_with_mocked_annotations(
     }
     assert {
         "Target-null focal sampling",
+        "Target-null observed store",
         "Target-null focal VEP",
         "Target-null control VEP",
         "Target-null observed-control exclusion",

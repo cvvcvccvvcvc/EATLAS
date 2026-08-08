@@ -250,6 +250,19 @@ consequence. GAPH callability and conservation are not matching variables.
 VEP annotations use a release-specific SQLite cache, so interrupted REST or
 local runs resume without repeating completed variant/gene pairs.
 
+Focal sampling and observed-control exclusion share a compact membership store:
+
+```text
+<run-dir>/analytics/observed_variants/allele_gene_memberships.parquet
+<run-dir>/analytics/observed_variants/allele_memberships.parquet
+<run-dir>/analytics/observed_variants/manifest.json
+```
+
+The store contains only variants observed by GAPH. It is built from validated
+pre-VEP partitions when available, records strategy memberships as bit masks,
+and prevents the target-space null from rescanning the enriched annotation TSV
+for each membership operation.
+
 The same matched focal-control sets are also compared descriptively for exact
 allele overlap with gnomAD and ClinVar, gnomAD AF among exact hits, and ClinVar
 class composition among records with non-empty CLNSIG. These annotations are
