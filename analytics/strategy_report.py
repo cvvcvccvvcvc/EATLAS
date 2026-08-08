@@ -14,6 +14,7 @@ from analytics.analyses.conservation_analysis import (
     alignment_gene_ids_by_strategy,
     build_conservation_analysis,
 )
+from analytics.analyses.conservation_validation import validate_firth_runtime
 from analytics.analyses.matched_control import build_target_space_null
 from analytics.analyses.variant_summary import build_variant_summary
 from analytics.io.run_inputs import (
@@ -220,6 +221,9 @@ def main() -> None:
         report_path=out_html,
         tracked_directory=analytics_dir,
     )
+
+    with performance.stage("Firth runtime preflight") as timing:
+        timing["metrics"] = validate_firth_runtime()
 
     if args.vep_result_cache_dir is None:
         print("Shared VEP result cache: disabled")

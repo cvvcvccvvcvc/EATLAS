@@ -441,6 +441,36 @@ def test_firth_runner_bounds_workers_and_disables_nested_blas_threads(
     assert versions == {"R": "test", "logistf": "test"}
 
 
+def test_firth_runtime_preflight_reports_versions_and_fails_on_missing_package(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        validation_module.subprocess,
+        "run",
+        lambda command, **_kwargs: SimpleNamespace(
+            returncode=0,
+            stdout="4.5.1\t1.26.1\n",
+            stderr="",
+        ),
+    )
+    assert validation_module.validate_firth_runtime("/fake/Rscript") == {
+        "R": "4.5.1",
+        "logistf": "1.26.1",
+    }
+
+    monkeypatch.setattr(
+        validation_module.subprocess,
+        "run",
+        lambda command, **_kwargs: SimpleNamespace(
+            returncode=1,
+            stdout="",
+            stderr="there is no package called 'logistf'",
+        ),
+    )
+    with pytest.raises(RuntimeError, match="no package called 'logistf'"):
+        validation_module.validate_firth_runtime("/fake/Rscript")
+
+
 def test_firth_model_returns_profile_likelihood_result_when_r_is_available(tmp_path: Path) -> None:
     rscript = shutil.which("Rscript")
     if rscript is None:

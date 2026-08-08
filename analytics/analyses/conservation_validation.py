@@ -837,3 +837,34 @@ def run_firth_models(
         versions_frame = pd.read_csv(versions_path, sep="\t", keep_default_na=False)
         versions = dict(zip(versions_frame["component"], versions_frame["version"]))
     return fitted, versions
+
+
+def validate_firth_runtime(rscript: str | None = None) -> dict[str, str]:
+    """Fail before expensive conservation work when the required R package is absent."""
+
+    executable = rscript or shutil.which("Rscript")
+    if not executable:
+        raise FileNotFoundError(
+            "Rscript was not found. Run the report in envs/analytics.yml; "
+            "ordinary logistic regression is not used as a fallback."
+        )
+    expression = (
+        "suppressPackageStartupMessages(library(logistf)); "
+        "cat(as.character(getRversion()), '\\t', "
+        "as.character(packageVersion('logistf')), '\\n', sep='')"
+    )
+    proc = subprocess.run(
+        [str(executable), "--vanilla", "-e", expression],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if proc.returncode != 0:
+        message = proc.stderr.strip() or proc.stdout.strip() or "unknown R error"
+        raise RuntimeError(f"Firth runtime preflight failed: {message}")
+    fields = proc.stdout.strip().split("\t")
+    if len(fields) != 2 or not all(fields):
+        raise RuntimeError(
+            "Firth runtime preflight returned an invalid R/logistf version response"
+        )
+    return {"R": fields[0], "logistf": fields[1]}

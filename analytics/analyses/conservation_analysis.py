@@ -52,6 +52,8 @@ def build_conservation_analysis(
             annotation_failures_tsv=inputs.annotation_failures_tsv,
             additional_rows=universe_rows(validation.universe),
             track_names=DEFAULT_TRACK_NAMES,
+            strategies=strategies,
+            performance_profile=performance_profile,
         )
     with profile_stage(performance_profile, "ClinVar phyloP annotations"):
         conservation = build_conservation_annotations(
