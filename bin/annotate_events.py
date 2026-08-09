@@ -109,6 +109,12 @@ VARIANT_ORTHOLOG_SUPPORT_FIELDS = [
     "support_row_count",
 ]
 
+PARTITION_TSV_SHARD_FORMAT = "headerless_gzip_member_v1"
+PARTITION_TSV_SHARD_FIELDS = {
+    "variant_annotations.tsv.gz": VARIANT_ANNOTATION_FIELDS,
+    "variant_strategy_support.tsv.gz": VARIANT_STRATEGY_SUPPORT_FIELDS,
+}
+
 FAILURE_FIELDS = ["source", "scope", "chrom", "start", "end", "failure_type", "message"]
 GNOMAD_DATASET = "gnomad_r4"
 
@@ -161,10 +167,17 @@ def open_text(path: Path):
     return gzip.open(path, "rt") if str(path).endswith(".gz") else path.open()
 
 
-def write_tsv_gz(path: Path, fields: list[str], rows: list[dict]) -> int:
+def write_tsv_gz(
+    path: Path,
+    fields: list[str],
+    rows: list[dict],
+    *,
+    include_header: bool = True,
+) -> int:
     with gzip.open(path, "wt", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=fields, delimiter="\t", lineterminator="\n")
-        writer.writeheader()
+        if include_header:
+            writer.writeheader()
         for row in rows:
             writer.writerow({field: row.get(field, "") for field in fields})
     return len(rows)
@@ -1427,7 +1440,12 @@ def main():
             row.get("event_type", ""),
         )
     )
-    output_row_count = write_tsv_gz(out_tsv, VARIANT_ANNOTATION_FIELDS, variant_rows)
+    output_row_count = write_tsv_gz(
+        out_tsv,
+        VARIANT_ANNOTATION_FIELDS,
+        variant_rows,
+        include_header=not bool(args.partition_id),
+    )
     finish_phase(timings_seconds, "write_variant_annotations", phase_started)
 
     phase_started = start_phase("write_support_tables")
@@ -1439,6 +1457,7 @@ def main():
         support_tsv,
         VARIANT_STRATEGY_SUPPORT_FIELDS,
         strategy_support_rows,
+        include_header=not bool(args.partition_id),
     )
     if not grouped_exact_support:
         ortholog_support_rows, ortholog_support_missing_key_count = build_variant_ortholog_support(
@@ -1505,6 +1524,9 @@ def main():
         "clinvar_key_status_counts": dict(clinvar_key_status_counts),
         "timings_seconds": timings_seconds,
     }
+    if args.partition_id:
+        manifest["partition_tsv_shard_format"] = PARTITION_TSV_SHARD_FORMAT
+        manifest["partition_tsv_shard_fields"] = PARTITION_TSV_SHARD_FIELDS
     manifest_json.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
 
     logger.info(f"Saved variant annotations to {out_tsv}")

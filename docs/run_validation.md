@@ -243,8 +243,10 @@ Annotation expected properties:
   summed task-runtime totals. These totals are not wall-clock elapsed time because
   partitions can run concurrently.
 - End-to-end annotation records `partition_count`; compact TSV outputs are
-  streamed together, while exact-support Parquet parts are copied into one
-  dataset without decompression/recompression.
+  assembled as concatenated gzip members, while exact-support Parquet parts are
+  copied into one dataset. Neither path decompresses and recompresses partition
+  rows. The manifest records
+  `large_tsv_format=concatenated_gzip_members_v1`.
 - `annotation/failures.tsv.gz` records non-fatal external lookup failures.
 - `clinvar_*` columns are present and populated when matching ClinVar records exist;
   `clinvar_review_stars` is derived from the raw `clinvar_revstat` value.

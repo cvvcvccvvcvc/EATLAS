@@ -114,8 +114,8 @@ Runtime environments:
   - streams event rows and fetches gnomAD regions within one bounded partition
 
 - `bin/finalize_annotation_partitions.py`
-  - streams compact partition annotations and assembles exact-support Parquet
-    parts without rewriting their rows
+  - concatenates compressed partition annotation members and assembles
+    exact-support Parquet parts without rewriting their rows
   - aggregates partition manifests without loading variant rows into memory
 
 ## Shared Domain Library

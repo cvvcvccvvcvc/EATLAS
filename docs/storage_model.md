@@ -69,13 +69,18 @@ and temporary taxonomy-aware counts containing only observed concrete SNV
 positions before annotation. Annotation normalizes and locally aggregates the
 positive support into `variant_ortholog_support/*.parquet`; finalization keeps
 the partition files instead of rewriting a global gzip TSV. It also reduces the
-taxonomy-aware counts to a bounded histogram. The large artifacts
-are removed after a successful `low_storage` run:
+taxonomy-aware counts to a bounded histogram. The large handoff artifacts are
+removed after a successful `low_storage` run:
 
 - selected ortholog FASTA files
 - raw alignment events
 - alignment segments
 - per-ortholog alignment summaries
+
+The durable `variant_annotations.tsv.gz` and
+`variant_strategy_support.tsv.gz` files retain their public TSV/gzip contract,
+but their internal partition gzip members are copied into the final files
+without row parsing or recompression.
 
 Standalone `--stage fetch` and `--stage align` runs still publish their full
 handoff datasets because a later invocation needs those files.

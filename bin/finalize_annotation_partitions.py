@@ -85,6 +85,8 @@ VARIANT_ORTHOLOG_SUPPORT_FIELDS = [
     "taxname",
     "support_row_count",
 ]
+PARTITION_TSV_SHARD_FORMAT = "headerless_gzip_member_v1"
+FINAL_TSV_FORMAT = "concatenated_gzip_members_v1"
 
 
 def parse_args() -> argparse.Namespace:
@@ -143,6 +145,90 @@ def merge_tsv_gz(partitions: list[tuple[Path, dict]], filename: str, output: Pat
                     writer.writerow(row)
                     count += 1
     return count
+
+
+def concatenate_tsv_gz_members(
+    partitions: list[tuple[Path, dict]],
+    filename: str,
+    count_field: str,
+    output: Path,
+) -> int:
+    """Assemble headerless partition gzip members without recompressing rows."""
+
+    expected_fields: list[str] | None = None
+    source_paths: list[Path] = []
+    row_count = 0
+    for partition, manifest in partitions:
+        if manifest.get("partition_tsv_shard_format") != PARTITION_TSV_SHARD_FORMAT:
+            raise ValueError(
+                f"Annotation partition does not declare {PARTITION_TSV_SHARD_FORMAT}: "
+                f"{partition}"
+            )
+        fields_by_file = manifest.get("partition_tsv_shard_fields")
+        if not isinstance(fields_by_file, dict):
+            raise ValueError(
+                f"Annotation partition is missing partition_tsv_shard_fields: {partition}"
+            )
+        fields = fields_by_file.get(filename)
+        if (
+            not isinstance(fields, list)
+            or not fields
+            or not all(isinstance(field, str) and field for field in fields)
+            or len(set(fields)) != len(fields)
+        ):
+            raise ValueError(
+                f"Annotation partition has invalid fields for {filename}: {partition}"
+            )
+        if expected_fields is None:
+            expected_fields = fields
+        elif fields != expected_fields:
+            raise ValueError(
+                f"Annotation partition fields differ for {filename}: "
+                f"expected {expected_fields}, observed {fields} in {partition}"
+            )
+
+        path = partition / filename
+        if not path.exists():
+            raise FileNotFoundError(f"Annotation partition missing {filename}: {partition}")
+        try:
+            with gzip.open(path, "rt", newline="") as handle:
+                first_row = next(csv.reader(handle, delimiter="\t"), None)
+        except (EOFError, OSError, UnicodeError) as exc:
+            raise ValueError(f"Invalid gzip TSV shard: {path}") from exc
+        if first_row == fields:
+            raise ValueError(f"Partition TSV shard unexpectedly contains a header: {path}")
+        if first_row is not None and len(first_row) != len(fields):
+            raise ValueError(
+                f"Partition TSV shard has {len(first_row)} columns, expected "
+                f"{len(fields)}: {path}"
+            )
+        source_paths.append(path)
+        try:
+            partition_count = int(manifest[count_field])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ValueError(
+                f"Annotation partition has invalid {count_field}: {partition}"
+            ) from exc
+        if partition_count < 0:
+            raise ValueError(
+                f"Annotation partition has negative {count_field}: {partition_count}"
+            )
+        if (partition_count == 0) != (first_row is None):
+            raise ValueError(
+                f"Annotation partition {count_field} does not match whether {path} is empty"
+            )
+        row_count += partition_count
+
+    if expected_fields is None:
+        raise ValueError(f"No annotation partition fields found for {filename}")
+    output.parent.mkdir(parents=True, exist_ok=True)
+    with gzip.open(output, "wt", newline="") as handle:
+        csv.writer(handle, delimiter="\t", lineterminator="\n").writerow(expected_fields)
+    with output.open("ab") as output_handle:
+        for source in source_paths:
+            with source.open("rb") as source_handle:
+                shutil.copyfileobj(source_handle, output_handle, length=16 * 1024 * 1024)
+    return row_count
 
 
 def sql_string(value: Path | str) -> str:
@@ -331,14 +417,16 @@ def main() -> None:
     args = parse_args()
     args.outdir.mkdir(parents=True, exist_ok=True)
     partitions = load_partitions(args.partition_root)
-    annotation_count = merge_tsv_gz(
+    annotation_count = concatenate_tsv_gz_members(
         partitions,
         "variant_annotations.tsv.gz",
+        "annotated_variant_context_count",
         args.outdir / "variant_annotations.tsv.gz",
     )
-    support_count = merge_tsv_gz(
+    support_count = concatenate_tsv_gz_members(
         partitions,
         "variant_strategy_support.tsv.gz",
+        "variant_strategy_support_count",
         args.outdir / "variant_strategy_support.tsv.gz",
     )
     ortholog_support_count, ortholog_support_file_count = merge_ortholog_support_dataset(
@@ -401,6 +489,7 @@ def main() -> None:
         "variant_ortholog_support_format": "parquet_dataset",
         "variant_ortholog_support_path": "variant_ortholog_support",
         "variant_ortholog_support_file_count": ortholog_support_file_count,
+        "large_tsv_format": FINAL_TSV_FORMAT,
         "ortholog_evidence_summary_count": ortholog_evidence_count,
         "failure_count": failure_count,
         "clinvar_vcf": first_manifest.get("clinvar_vcf", {}),

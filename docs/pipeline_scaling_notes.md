@@ -36,6 +36,10 @@ per-strategy ALT-support counts in `variant_strategy_support.tsv.gz` plus exact
 positive supporters in the `variant_ortholog_support/` Parquet dataset. Exact
 support is aggregated inside each annotation partition using local integer IDs;
 finalization copies the Parquet parts without expanding and recompressing them.
+The two large TSV outputs are also not recompressed: annotation partitions write
+headerless gzip members, and finalization prepends one schema header before
+concatenating those members in partition order. The durable files remain
+standard `variant_annotations.tsv.gz` and `variant_strategy_support.tsv.gz`.
 
 ## Partitioned Alignment Outputs
 

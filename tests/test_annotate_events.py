@@ -13,6 +13,7 @@ BIN_DIR = Path(__file__).resolve().parents[1] / "bin"
 sys.path.insert(0, str(BIN_DIR))
 
 from annotate_events import (  # noqa: E402
+    PARTITION_TSV_SHARD_FORMAT,
     VARIANT_ANNOTATION_FIELDS,
     VARIANT_ORTHOLOG_SUPPORT_FIELDS,
     VARIANT_STRATEGY_SUPPORT_FIELDS,
@@ -25,9 +26,11 @@ from annotate_events import (  # noqa: E402
     reconcile_strategy_support_from_orthologs,
     validate_ortholog_support_totals,
     variant_aggregate_key,
+    write_tsv_gz,
 )
 from finalize_annotation_partitions import (  # noqa: E402
     COUNT_FIELDS,
+    concatenate_tsv_gz_members,
     merge_gnomad_shared_cache,
     merge_partition_timings,
 )
@@ -128,6 +131,86 @@ def test_partition_timings_are_preserved_and_summed(tmp_path: Path) -> None:
         "partition_000002": {"collapse_events": 2.75},
     }
     assert totals == {"collapse_events": 4.0, "gnomad_lookup": 0.5}
+
+
+def test_partition_tsv_members_are_concatenated_without_recompression(
+    tmp_path: Path,
+) -> None:
+    filename = "large_table.tsv.gz"
+    fields = ["variant_key", "support_count"]
+    partition_rows = [
+        [{"variant_key": "1:1:A>G", "support_count": 2}],
+        [],
+        [{"variant_key": "2:2:C>T", "support_count": 3}],
+    ]
+    partitions = []
+    source_bytes = []
+    for index, rows in enumerate(partition_rows, start=1):
+        partition = tmp_path / f"partition_{index:06d}"
+        partition.mkdir()
+        source = partition / filename
+        write_tsv_gz(source, fields, rows, include_header=False)
+        source_bytes.append(source.read_bytes())
+        partitions.append(
+            (
+                partition,
+                {
+                    "partition_tsv_shard_format": PARTITION_TSV_SHARD_FORMAT,
+                    "partition_tsv_shard_fields": {filename: fields},
+                    "row_count": len(rows),
+                },
+            )
+        )
+    output = tmp_path / "merged.tsv.gz"
+
+    row_count = concatenate_tsv_gz_members(
+        partitions,
+        filename,
+        "row_count",
+        output,
+    )
+
+    with gzip.open(output, "rt", newline="") as handle:
+        assert list(csv.reader(handle, delimiter="\t")) == [
+            fields,
+            ["1:1:A>G", "2"],
+            ["2:2:C>T", "3"],
+        ]
+    output_bytes = output.read_bytes()
+    member_positions = [output_bytes.find(member) for member in source_bytes]
+    assert row_count == 2
+    assert all(position >= 0 for position in member_positions)
+    assert member_positions == sorted(member_positions)
+    assert output_bytes.endswith(source_bytes[-1])
+
+
+def test_partition_tsv_member_rejects_embedded_header(tmp_path: Path) -> None:
+    filename = "large_table.tsv.gz"
+    fields = ["variant_key", "support_count"]
+    partition = tmp_path / "partition_000001"
+    partition.mkdir()
+    write_tsv_gz(
+        partition / filename,
+        fields,
+        [{"variant_key": "1:1:A>G", "support_count": 2}],
+    )
+
+    with pytest.raises(ValueError, match="unexpectedly contains a header"):
+        concatenate_tsv_gz_members(
+            [
+                (
+                    partition,
+                    {
+                        "partition_tsv_shard_format": PARTITION_TSV_SHARD_FORMAT,
+                        "partition_tsv_shard_fields": {filename: fields},
+                        "row_count": 1,
+                    },
+                )
+            ],
+            filename,
+            "row_count",
+            tmp_path / "merged.tsv.gz",
+        )
 
 
 def test_variant_strategy_support_schema_includes_site_depth() -> None:
