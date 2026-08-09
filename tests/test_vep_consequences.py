@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sqlite3
 import subprocess
 from pathlib import Path
 
@@ -121,9 +122,24 @@ def test_shared_cache_reuses_annotations_across_run_caches(
         release="116",
         vep_result_cache_dir=shared,
     )
+
+    def fail_on_full_hit(*_args, **_kwargs):
+        raise AssertionError("full shared hit performed unnecessary cache work")
+
+    monkeypatch.setattr(
+        vep,
+        "_load_cached",
+        fail_on_full_hit,
+    )
+    monkeypatch.setattr(
+        vep.VepResultCache,
+        "publish",
+        fail_on_full_hit,
+    )
+    second_cache = tmp_path / "run_two.sqlite"
     second, second_summary = vep.annotate_vep_consequences(
         rows,
-        tmp_path / "run_two.sqlite",
+        second_cache,
         release="116",
         vep_result_cache_dir=shared,
     )
@@ -134,7 +150,103 @@ def test_shared_cache_reuses_annotations_across_run_caches(
     assert second_summary["shared_cached"] == 1
     assert second_summary["local_cached"] == 0
     assert second_summary["queried"] == 0
+    assert second_summary["shared_cache"]["publish"] is None
+    assert not second_cache.exists()
     pd.testing.assert_frame_equal(first, second)
+
+
+def test_shared_cache_misses_only_use_local_cache_and_publish_missing_results(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    rows = pd.DataFrame(
+        [
+            {
+                "variant_key": "1:30:G>A",
+                "gene_id": "3",
+                "chrom": "1",
+                "pos": 30,
+                "ref": "G",
+                "alt": "A",
+            },
+            {
+                "variant_key": "1:10:A>G",
+                "gene_id": "1",
+                "chrom": "1",
+                "pos": 10,
+                "ref": "A",
+                "alt": "G",
+            },
+            {
+                "variant_key": "1:20:C>T",
+                "gene_id": "2",
+                "chrom": "1",
+                "pos": 20,
+                "ref": "C",
+                "alt": "T",
+            },
+        ]
+    )
+
+    def annotation(row: dict[str, object]) -> dict[str, object]:
+        return {
+            "variant_key": row["variant_key"],
+            "gene_id": row["gene_id"],
+            "status": "ok",
+            "primary_consequence": "missense_variant",
+            "consequence_terms": "missense_variant",
+            "transcript_id": f"NM_{row['gene_id']}",
+            "mane_select": f"NM_{row['gene_id']}",
+            "canonical": True,
+            "impact": "MODERATE",
+            "variant_class": "SNV",
+        }
+
+    calls: list[list[dict[str, object]]] = []
+
+    def fake_request(batch, *_args):
+        calls.append(batch)
+        return [annotation(item) for item in batch]
+
+    monkeypatch.setattr(vep, "_request_batch", fake_request)
+    shared_dir = tmp_path / "shared"
+    shared_cache = vep.VepResultCache(
+        shared_dir,
+        config=vep.vep_result_cache_config(backend="rest", release="116"),
+    )
+    shared_cache.publish(
+        pd.DataFrame.from_records([annotation(rows.iloc[1].to_dict())])
+    )
+
+    run_cache = tmp_path / "run.sqlite"
+    vep.annotate_vep_consequences(rows.iloc[[2]], run_cache, release="116")
+    calls.clear()
+
+    result, summary = vep.annotate_vep_consequences(
+        rows,
+        run_cache,
+        release="116",
+        vep_result_cache_dir=shared_dir,
+    )
+
+    assert [[item["variant_key"] for item in batch] for batch in calls] == [
+        ["1:30:G>A"]
+    ]
+    assert result["variant_key"].tolist() == [
+        "1:10:A>G",
+        "1:20:C>T",
+        "1:30:G>A",
+    ]
+    assert summary["requested"] == 3
+    assert summary["shared_cached"] == 1
+    assert summary["local_cached"] == 1
+    assert summary["queried"] == 1
+    assert summary["shared_cache"]["publish"]["accepted_count"] == 2
+    assert summary["shared_cache"]["publish"]["published_count"] == 2
+    with sqlite3.connect(run_cache) as connection:
+        assert connection.execute("SELECT count(*) FROM consequences").fetchone()[0] == 2
+    _, lookup = shared_cache.lookup(rows)
+    assert lookup["hit_count"] == 3
 
 
 def test_local_vep_uses_offline_refseq_cache_and_reuses_sqlite(

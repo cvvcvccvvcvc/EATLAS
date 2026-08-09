@@ -113,94 +113,97 @@ def annotate_vep_consequences(
         shared_frame, shared_lookup = result_cache.lookup(unique)
         shared_cached = _annotation_map(shared_frame)
 
-    cache_path.parent.mkdir(parents=True, exist_ok=True)
-    with sqlite3.connect(cache_path) as connection:
-        _initialize_cache(connection)
-        wanted = list(unique[["variant_key", "gene_id"]].itertuples(index=False, name=None))
-        local_cached = _load_cached(connection, config_hash, wanted)
-        for key, shared in shared_cached.items():
-            local = local_cached.get(key)
-            if (
-                local is not None
-                and local["status"] != "no_response"
-                and not _annotations_equal(local, shared)
-            ):
-                raise ValueError(
-                    "Conflicting VEP result between the shared and per-run caches "
-                    f"for {key[0]} / gene {key[1]}"
-                )
-        if shared_cached:
-            _store_annotations(
-                connection,
-                config_hash,
-                str(release),
-                list(shared_cached.values()),
-            )
+    wanted = list(unique[["variant_key", "gene_id"]].itertuples(index=False, name=None))
+    shared_cached_count = len(shared_cached)
+    cached = shared_cached
+    local_cached_count = 0
+    missing_rows: list[dict[str, object]] = []
+    shared_missing_keys: list[tuple[str, str]] = []
+    batch_count = 0
 
-        cached = {
-            key: item
-            for key, item in local_cached.items()
-            if key not in shared_cached
-        }
-        local_cached_count = len(cached)
-        cached.update(shared_cached)
-        missing_rows = [
+    # Shared cache entries are immutable and authoritative. Only consult the
+    # per-run cache for shared misses; a complete shared hit therefore requires
+    # no SQLite reads or writes.
+    if shared_cached_count < len(wanted):
+        shared_missing_rows = [
             row
             for row in unique.to_dict(orient="records")
-            if (str(row["variant_key"]), str(row["gene_id"])) not in cached
+            if (str(row["variant_key"]), str(row["gene_id"])) not in shared_cached
         ]
-
-        batch_count = 0
-        if missing_rows and backend == "local":
-            annotations = _run_local_vep(
-                missing_rows,
-                executable=vep_executable,
-                cache_dir=vep_cache_dir,
-                release=str(release),
-                forks=vep_forks,
-                temporary_root=cache_path.parent,
+        shared_missing_keys = [
+            (str(row["variant_key"]), str(row["gene_id"]))
+            for row in shared_missing_rows
+        ]
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        with sqlite3.connect(cache_path) as connection:
+            _initialize_cache(connection)
+            local_cached = _load_cached(
+                connection,
+                config_hash,
+                shared_missing_keys,
             )
-            _store_annotations(connection, config_hash, str(release), annotations)
-            cached.update(
-                {
-                    (str(item["variant_key"]), str(item["gene_id"])): item
-                    for item in annotations
-                }
-            )
-            batch_count = 1
-        elif missing_rows:
-            batches = [
-                missing_rows[index : index + VEP_BATCH_SIZE]
-                for index in range(0, len(missing_rows), VEP_BATCH_SIZE)
+            local_cached_count = len(local_cached)
+            cached.update(local_cached)
+            missing_rows = [
+                row
+                for row in shared_missing_rows
+                if (str(row["variant_key"]), str(row["gene_id"])) not in local_cached
             ]
-            batch_count = len(batches)
-            worker_count = min(max_workers, len(batches))
-            with concurrent.futures.ThreadPoolExecutor(max_workers=worker_count) as executor:
-                futures = [
-                    executor.submit(
-                        _request_batch,
-                        batch,
-                        base_url,
-                        retries,
-                        timeout_seconds,
-                    )
-                    for batch in batches
+
+            if missing_rows and backend == "local":
+                annotations = _run_local_vep(
+                    missing_rows,
+                    executable=vep_executable,
+                    cache_dir=vep_cache_dir,
+                    release=str(release),
+                    forks=vep_forks,
+                    temporary_root=cache_path.parent,
+                )
+                _store_annotations(connection, config_hash, str(release), annotations)
+                cached.update(
+                    {
+                        (str(item["variant_key"]), str(item["gene_id"])): item
+                        for item in annotations
+                    }
+                )
+                batch_count = 1
+            elif missing_rows:
+                batches = [
+                    missing_rows[index : index + VEP_BATCH_SIZE]
+                    for index in range(0, len(missing_rows), VEP_BATCH_SIZE)
                 ]
-                for future in concurrent.futures.as_completed(futures):
-                    annotations = future.result()
-                    _store_annotations(connection, config_hash, str(release), annotations)
-                    cached.update(
-                        {
-                            (str(item["variant_key"]), str(item["gene_id"])): item
-                            for item in annotations
-                        }
-                    )
+                batch_count = len(batches)
+                worker_count = min(max_workers, len(batches))
+                with concurrent.futures.ThreadPoolExecutor(max_workers=worker_count) as executor:
+                    futures = [
+                        executor.submit(
+                            _request_batch,
+                            batch,
+                            base_url,
+                            retries,
+                            timeout_seconds,
+                        )
+                        for batch in batches
+                    ]
+                    for future in concurrent.futures.as_completed(futures):
+                        annotations = future.result()
+                        _store_annotations(connection, config_hash, str(release), annotations)
+                        cached.update(
+                            {
+                                (str(item["variant_key"]), str(item["gene_id"])): item
+                                for item in annotations
+                            }
+                        )
 
     ordered = [cached[(variant_key, gene_id)] for variant_key, gene_id in wanted]
     result = pd.DataFrame(ordered, columns=_annotation_columns())
     shared_publish: dict[str, object] | None = None
-    if result_cache is not None and publish_vep_result_cache:
-        shared_publish = result_cache.publish(result)
+    if result_cache is not None and publish_vep_result_cache and shared_missing_keys:
+        publish_rows = pd.DataFrame(
+            [cached[key] for key in shared_missing_keys],
+            columns=_annotation_columns(),
+        )
+        shared_publish = result_cache.publish(publish_rows)
     status_counts = result["status"].value_counts().sort_index().to_dict()
     summary = {
         "status": "complete",
@@ -209,7 +212,7 @@ def annotate_vep_consequences(
         "options": VEP_OPTIONS,
         "requested": len(wanted),
         "cached": len(wanted) - len(missing_rows),
-        "shared_cached": len(shared_cached),
+        "shared_cached": shared_cached_count,
         "local_cached": local_cached_count,
         "queried": len(missing_rows),
         "batch_count": batch_count,
@@ -289,13 +292,6 @@ def _annotation_map(
         (str(item["variant_key"]), str(item["gene_id"])): item
         for item in frame[_annotation_columns()].to_dict(orient="records")
     }
-
-
-def _annotations_equal(
-    left: dict[str, object],
-    right: dict[str, object],
-) -> bool:
-    return all(left[column] == right[column] for column in _annotation_columns())
 
 
 def _fetch_release(base_url: str, retries: int, timeout_seconds: float) -> str:
