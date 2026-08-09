@@ -128,6 +128,9 @@ Runtime environments:
   - gnomAD API requests and response normalization
 - `genomics/gnomad_cache.py`
   - reusable regional gnomAD response cache
+- `genomics/gnomad_index.py`
+  - derived immutable Parquet fragments for exact-allele analytics lookups
+  - preserves complete-tile coverage so absence remains distinct from failure
 
 ## Analytics Package
 

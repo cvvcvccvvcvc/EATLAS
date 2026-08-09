@@ -130,19 +130,7 @@ class GnomadRegionCache:
             return self._call_fetcher(normalized_chrom, start, end, self.max_attempts)
 
         tiles = tiles_for_region(normalized_chrom, start, end, self.tile_size_bp)
-        records_by_tile: dict[Tile, list[dict]] = {}
-        missing_tiles: list[Tile] = []
-        for tile in tiles:
-            records = self._read_tile(tile)
-            if records is None:
-                self._increment("tile_miss_count")
-                missing_tiles.append(tile)
-            else:
-                self._increment("tile_hit_count")
-                records_by_tile[tile] = records
-
-        for group in _consecutive_groups(missing_tiles):
-            records_by_tile.update(self._fetch_and_store(group))
+        records_by_tile = self.fetch_tiles(tiles)
 
         records = [record for tile in tiles for record in records_by_tile[tile]]
         records = [
@@ -153,6 +141,49 @@ class GnomadRegionCache:
         ]
         records.sort(key=_record_sort_key)
         return records
+
+    def fetch_tiles(self, tiles: list[Tile]) -> dict[Tile, list[dict]]:
+        """Return complete fixed-size tiles, fetching only missing groups."""
+
+        if not tiles:
+            return {}
+        if not self.enabled:
+            raise RuntimeError("Fixed-tile access requires an enabled gnomAD cache")
+        for tile in tiles:
+            if tile.end - tile.start + 1 != self.tile_size_bp:
+                raise ValueError(f"Unexpected gnomAD tile size: {tile}")
+
+        records_by_tile: dict[Tile, list[dict]] = {}
+        missing_tiles: list[Tile] = []
+        for tile in tiles:
+            records = self.read_cached_tile(tile)
+            if records is None:
+                missing_tiles.append(tile)
+            else:
+                records_by_tile[tile] = records
+
+        for group in _consecutive_groups(missing_tiles):
+            records_by_tile.update(self._fetch_and_store(group))
+        return records_by_tile
+
+    def read_cached_tile(self, tile: Tile) -> list[dict] | None:
+        """Read and validate one tile without using the network."""
+
+        if not self.enabled:
+            return None
+        records = self._read_tile(tile)
+        if records is None:
+            self._increment("tile_miss_count")
+        else:
+            self._increment("tile_hit_count")
+        return records
+
+    def tile_path(self, tile: Tile) -> Path:
+        """Return the durable JSON path for a fixed tile."""
+
+        if not self.enabled:
+            raise RuntimeError("Tile paths require an enabled gnomAD cache")
+        return self._tile_path(tile)
 
     def snapshot(self) -> dict[str, object]:
         with self._stats_lock:

@@ -17,6 +17,7 @@ from analytics.io.artifacts import path_metadata, write_json_atomic, write_tsv_a
 from analytics.io.performance import PerformanceProfile, profile_stage
 from genomics.clinvar import record_category, significance_class
 from genomics.gnomad_cache import GnomadRegionCache
+from genomics.gnomad_index import GnomadAlleleIndex
 from genomics.gnomad import (
     GNOMAD_API_URL,
     fetch_region_variants_recursive,
@@ -109,12 +110,20 @@ def build_external_evidence(
             gnomad_cache_dir=gnomad_cache_dir,
         )
         shared_cache = gnomad_summary.get("shared_cache", {})
+        allele_index = gnomad_summary.get("allele_index", {})
+        planned_regions = int(gnomad_summary.get("planned_region_count", 0))
         timing["metrics"] = {
             "requested_alleles": int(len(unresolved)),
-            "regions": int(gnomad_summary.get("region_count", 0)),
+            "regions": planned_regions,
+            "planned_regions": planned_regions,
+            "fallback_regions": int(gnomad_summary.get("region_count", 0)),
             "raw_variants": int(gnomad_summary.get("raw_variant_count", 0)),
             "tile_hits": int(shared_cache.get("tile_hit_count", 0)),
             "tile_misses": int(shared_cache.get("tile_miss_count", 0)),
+            "index_resolved_alleles": int(allele_index.get("resolved_count", 0)),
+            "index_tile_hits": int(allele_index.get("tile_hit_count", 0)),
+            "index_tile_builds": int(allele_index.get("tile_build_count", 0))
+            + int(allele_index.get("post_fetch_tile_build_count", 0)),
         }
     if not fetched.empty:
         fetched = fetched.copy()
@@ -279,6 +288,70 @@ def _annotate_gnomad(
         gnomad_cache_dir,
         fetcher=fetch_region_variants_recursive,
     )
+    if gnomad_cache_dir is None or variants.empty:
+        evidence, summary = _annotate_gnomad_regional(variants, region_cache)
+        summary["planned_region_count"] = _gnomad_region_count(variants)
+        return evidence, summary
+
+    allele_index = GnomadAlleleIndex(
+        gnomad_cache_dir,
+        region_cache=region_cache,
+    )
+    indexed, unresolved, index_summary = allele_index.lookup(variants)
+    regional, regional_summary = _annotate_gnomad_regional(unresolved, region_cache)
+    recovered, still_unresolved, post_fetch = (
+        allele_index.lookup(unresolved)
+        if not unresolved.empty
+        else (
+            indexed.iloc[0:0].copy(),
+            unresolved.copy(),
+            {
+                "requested_tile_count": 0,
+                "resolved_count": 0,
+                "tile_build_count": 0,
+                "raw_tile_missing_count": 0,
+                "indexed_variant_count": 0,
+                "fragment_build_count": 0,
+            },
+        )
+    )
+    if not recovered.empty:
+        regional = regional.loc[
+            ~regional["variant_key"].isin(recovered["variant_key"])
+        ].copy()
+
+    combined = pd.concat([indexed, recovered, regional], ignore_index=True)
+    if combined["variant_key"].duplicated().any():
+        raise ValueError(
+            "Duplicate gnomAD evidence returned by index and regional lookup"
+        )
+    evidence = variants[["variant_key"]].merge(
+        combined,
+        on="variant_key",
+        how="left",
+        validate="one_to_one",
+    )
+    if evidence["gnomad_status"].isna().any():
+        raise ValueError("gnomAD lookup did not resolve every requested allele")
+
+    regional_summary["planned_region_count"] = _gnomad_region_count(variants)
+    regional_summary["allele_index"] = {
+        **index_summary,
+        "post_fetch_tile_build_count": int(post_fetch["tile_build_count"]),
+        "post_fetch_fragment_build_count": int(post_fetch["fragment_build_count"]),
+        "post_fetch_indexed_variant_count": int(post_fetch["indexed_variant_count"]),
+        "post_fetch_raw_tile_missing_count": int(post_fetch["raw_tile_missing_count"]),
+        "post_fetch_recovered_count": int(post_fetch["resolved_count"]),
+        "post_fetch_unresolved_count": int(len(still_unresolved)),
+    }
+    regional_summary["shared_cache"] = region_cache.snapshot()
+    return evidence, regional_summary
+
+
+def _annotate_gnomad_regional(
+    variants: pd.DataFrame,
+    region_cache: GnomadRegionCache,
+) -> tuple[pd.DataFrame, dict[str, object]]:
     wanted = {
         (normalize_chrom(row.chrom) or "", int(row.pos), str(row.ref), str(row.alt)): str(row.variant_key)
         for row in variants.itertuples(index=False)
@@ -394,4 +467,17 @@ def _annotate_gnomad(
         "errors": errors,
         "shared_cache": region_cache.snapshot(),
     }
-    return pd.DataFrame(rows), summary
+    return pd.DataFrame.from_records(
+        rows,
+        columns=["variant_key", "gnomad_status", "gnomad_found", "gnomad_af"],
+    ), summary
+
+
+def _gnomad_region_count(variants: pd.DataFrame) -> int:
+    positions_by_chrom: dict[str, list[int]] = defaultdict(list)
+    for row in variants[["chrom", "pos"]].itertuples(index=False):
+        positions_by_chrom[normalize_chrom(row.chrom) or ""].append(int(row.pos))
+    return sum(
+        len(_cluster_positions(positions))
+        for positions in positions_by_chrom.values()
+    )
