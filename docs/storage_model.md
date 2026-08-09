@@ -43,7 +43,8 @@ For a default end-to-end `--stage all` run, `fetch/` contains:
 
 - the compressed unique variant-context annotation table
 - compact per-strategy ALT-support counts for every normalized variant
-- concrete supporting ortholog identities and taxonomy for every normalized variant
+- a partitioned Parquet dataset of concrete supporting ortholog identities and
+  taxonomy for every normalized variant
 - compact taxonomic ortholog-evidence histograms for report heatmaps
 - annotation manifest and diagnostic failure table
 
@@ -63,10 +64,12 @@ runs may reuse it, and a run remains valid when the cache is absent.
 
 Large handoff artifacts remain inside Nextflow `work/` during `--stage all`.
 Alignment partitions reduce raw segments to a compact `snv_site_depth.tsv.gz`
-table, positive per-ortholog event support, and temporary taxonomy-aware counts
-containing only observed concrete SNV positions before annotation. Annotation
-normalizes the positive support into `variant_ortholog_support.tsv.gz` and
-reduces the taxonomy-aware counts to a bounded histogram. The large artifacts
+table, positive per-ortholog event support keyed by a narrow `event_group_id`,
+and temporary taxonomy-aware counts containing only observed concrete SNV
+positions before annotation. Annotation normalizes and locally aggregates the
+positive support into `variant_ortholog_support/*.parquet`; finalization keeps
+the partition files instead of rewriting a global gzip TSV. It also reduces the
+taxonomy-aware counts to a bounded histogram. The large artifacts
 are removed after a successful `low_storage` run:
 
 - selected ortholog FASTA files

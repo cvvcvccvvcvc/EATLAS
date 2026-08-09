@@ -15,9 +15,12 @@ process ANNOTATE_EVENTS_PARTITION {
 
     script:
     def resultDir = "annotation_${meta.partition_id}"
+    def duckdbMemoryGb = Math.max(2, (task.memory.toGiga() * 0.25) as int)
     """
     echo "INFO: Annotation resources partition=${meta.partition_id} support_rows=${meta.annotation_event_ortholog_support_count} attempt=${task.attempt} memory=${task.memory}" >&2
     GAPH_GNOMAD_CACHE_DIR="${gnomad_cache_dir}" \\
+    GAPH_ANNOTATION_DUCKDB_MEMORY_LIMIT="${duckdbMemoryGb}GB" \\
+    GAPH_ANNOTATION_DUCKDB_THREADS="${task.cpus}" \\
     python3 "${annotate_script}" \\
         --events-tsv "${alignment_partition}/alignment_events.tsv.gz" \\
         --event-ortholog-support-tsv "${alignment_partition}/event_ortholog_support.tsv.gz" \\

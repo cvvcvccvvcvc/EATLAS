@@ -104,8 +104,9 @@ nextflow run . \
 
 When `alignment_events.tsv.gz` was produced with
 `--compact_alignment_events true`, also pass the sibling
-`--event_ortholog_support_tsv event_ortholog_support.tsv.gz`. Raw event tables
-already contain the required ortholog identity.
+`--event_ortholog_support_tsv event_ortholog_support.tsv.gz`. The two files are
+joined by `event_group_id`; raw event tables already contain the required
+ortholog identity.
 
 By default, alignment runs every strategy registered in the workflow. Use a
 comma-separated list to run a subset:
@@ -157,8 +158,9 @@ Annotation outputs:
   gnomAD AF/consequence fields.
 - `annotation/variant_strategy_support.tsv.gz` - compact per-strategy ALT-support
   counts and, for SNVs, the distinct orthologs aligned at the variant site.
-- `annotation/variant_ortholog_support.tsv.gz` - one row per normalized variant,
-  strategy, and supporting ortholog, with tax ID, taxname, and observation count.
+- `annotation/variant_ortholog_support/*.parquet` - one row per normalized
+  variant, strategy, and supporting ortholog, with tax ID, taxname, and
+  observation count.
 - `annotation/manifest.json` - annotation input, source, row-count, cache, and diagnostic counters.
 - `annotation/failures.tsv.gz` - non-fatal external annotation lookup failures, such as gnomAD region fetch errors.
 

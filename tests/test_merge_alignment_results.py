@@ -62,6 +62,14 @@ TABLE_HEADERS = {
     "failures.tsv.gz": ["gene_id"],
 }
 EVENT_ORTHOLOG_SUPPORT_HEADER = [
+    "event_group_id",
+    "ortholog_gene_id",
+    "tax_id",
+    "taxname",
+    "support_row_count",
+]
+COMPACT_EVENT_HEADER = [
+    "event_group_id",
     "gene_id",
     "event_type",
     "target_start0",
@@ -72,10 +80,13 @@ EVENT_ORTHOLOG_SUPPORT_HEADER = [
     "ref",
     "alt",
     "strategy",
-    "ortholog_gene_id",
-    "tax_id",
-    "taxname",
     "support_row_count",
+    "support_ortholog_count",
+    "tools",
+    "presets",
+    "tax_id_count",
+    "taxname_count",
+    "qc_flags",
 ]
 
 
@@ -422,15 +433,15 @@ def test_compact_events_preserve_strategy_specific_support(tmp_path: Path) -> No
         newline="",
     ) as handle:
         ortholog_rows = list(csv.DictReader(handle, delimiter="\t"))
-    assert [row["strategy"] for row in ortholog_rows] == ["s1", "s2"]
+    assert [row["event_group_id"] for row in rows] == ["1", "2"]
+    assert [row["event_group_id"] for row in ortholog_rows] == ["1", "2"]
     assert [row["ortholog_gene_id"] for row in ortholog_rows] == ["101", "101"]
     assert [row["support_row_count"] for row in ortholog_rows] == ["1", "1"]
     manifest = json.loads((tmp_path / "merged" / "manifest.json").read_text())
     assert set(manifest["timings_seconds"]) >= {
         "load_events_sqlite",
         "build_event_index",
-        "compact_event_aggregation",
-        "write_event_ortholog_support",
+        "stream_event_groups",
         "snv_site_depth",
     }
 
@@ -636,10 +647,11 @@ def test_final_merge_preserves_precompacted_ortholog_support(tmp_path: Path) -> 
             },
         )
         write_tsv_gz(
-            partition / "event_ortholog_support.tsv.gz",
-            EVENT_ORTHOLOG_SUPPORT_HEADER,
+            partition / "alignment_events.tsv.gz",
+            COMPACT_EVENT_HEADER,
             [
                 [
+                    "1",
                     gene_id,
                     "snv",
                     "0",
@@ -650,6 +662,22 @@ def test_final_merge_preserves_precompacted_ortholog_support(tmp_path: Path) -> 
                     "A",
                     "G",
                     "s1",
+                    "1",
+                    "1",
+                    "tool",
+                    "",
+                    "1",
+                    "1",
+                    "",
+                ]
+            ],
+        )
+        write_tsv_gz(
+            partition / "event_ortholog_support.tsv.gz",
+            EVENT_ORTHOLOG_SUPPORT_HEADER,
+            [
+                [
+                    "1",
                     ortholog_gene_id,
                     "10090",
                     "Mus musculus",
@@ -668,6 +696,7 @@ def test_final_merge_preserves_precompacted_ortholog_support(tmp_path: Path) -> 
     assert completed.returncode == 0, completed.stderr
     with gzip.open(outdir / "event_ortholog_support.tsv.gz", "rt", newline="") as handle:
         rows = list(csv.DictReader(handle, delimiter="\t"))
+    assert [row["event_group_id"] for row in rows] == ["1", "2"]
     assert [row["ortholog_gene_id"] for row in rows] == ["101", "201"]
     manifest = json.loads((outdir / "manifest.json").read_text())
     assert manifest["event_ortholog_support_count"] == 2

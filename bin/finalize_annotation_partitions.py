@@ -7,6 +7,8 @@ import argparse
 import csv
 import gzip
 import json
+import re
+import shutil
 import sys
 from collections import Counter
 from datetime import datetime, timezone
@@ -74,6 +76,15 @@ ORTHOLOG_EVIDENCE_FIELDS = [
     *ORTHOLOG_EVIDENCE_KEY_FIELDS,
     *ORTHOLOG_EVIDENCE_COUNT_FIELDS,
 ]
+VARIANT_ORTHOLOG_SUPPORT_FIELDS = [
+    "variant_key",
+    "gene_id",
+    "strategy",
+    "ortholog_gene_id",
+    "tax_id",
+    "taxname",
+    "support_row_count",
+]
 
 
 def parse_args() -> argparse.Namespace:
@@ -132,6 +143,88 @@ def merge_tsv_gz(partitions: list[tuple[Path, dict]], filename: str, output: Pat
                     writer.writerow(row)
                     count += 1
     return count
+
+
+def sql_string(value: Path | str) -> str:
+    return "'" + str(value).replace("'", "''") + "'"
+
+
+def safe_partition_name(value: str) -> str:
+    normalized = re.sub(r"[^A-Za-z0-9._-]+", "_", value).strip("._")
+    return normalized or "partition"
+
+
+def merge_ortholog_support_dataset(
+    partitions: list[tuple[Path, dict]],
+    output: Path,
+) -> tuple[int, int]:
+    try:
+        import duckdb
+    except ImportError as exc:
+        raise RuntimeError(
+            "DuckDB is required to validate exact ortholog support Parquet"
+        ) from exc
+
+    output.mkdir(parents=True, exist_ok=True)
+    if any(output.iterdir()):
+        raise ValueError(f"Variant ortholog support output is not empty: {output}")
+    connection = duckdb.connect()
+    expected_schema = None
+    row_count = 0
+    file_count = 0
+    try:
+        for partition_index, (partition, manifest) in enumerate(partitions, start=1):
+            if manifest.get("variant_ortholog_support_format") != "parquet_dataset":
+                raise ValueError(
+                    f"Annotation partition does not declare Parquet exact support: {partition}"
+                )
+            source_dir = partition / "variant_ortholog_support"
+            source_files = sorted(source_dir.glob("*.parquet"))
+            expected_file_count = int(
+                manifest.get("variant_ortholog_support_file_count") or 0
+            )
+            if len(source_files) != expected_file_count:
+                raise ValueError(
+                    "Variant ortholog support file count does not match partition manifest: "
+                    f"partition={partition}, files={len(source_files)}, "
+                    f"manifest={expected_file_count}"
+                )
+            if not source_files:
+                raise ValueError(f"Annotation partition has no exact-support Parquet: {partition}")
+            partition_id = safe_partition_name(
+                str(manifest.get("partition_id") or partition.name)
+            )
+            for source_index, source in enumerate(source_files, start=1):
+                schema = connection.execute(
+                    f"DESCRIBE SELECT * FROM read_parquet({sql_string(source)})"
+                ).fetchall()
+                field_names = [str(row[0]) for row in schema]
+                if field_names != VARIANT_ORTHOLOG_SUPPORT_FIELDS:
+                    raise ValueError(
+                        f"Unexpected exact-support Parquet fields in {source}: {field_names}"
+                    )
+                normalized_schema = [(str(row[0]), str(row[1])) for row in schema]
+                if expected_schema is None:
+                    expected_schema = normalized_schema
+                elif normalized_schema != expected_schema:
+                    raise ValueError(
+                        f"Exact-support Parquet schema differs in {source}: "
+                        f"expected {expected_schema}, observed {normalized_schema}"
+                    )
+                source_count = int(
+                    connection.execute(
+                        f"SELECT COUNT(*) FROM read_parquet({sql_string(source)})"
+                    ).fetchone()[0]
+                )
+                target = output / (
+                    f"part-{partition_index:06d}-{partition_id}-{source_index:02d}.parquet"
+                )
+                shutil.copy2(source, target)
+                row_count += source_count
+                file_count += 1
+    finally:
+        connection.close()
+    return row_count, file_count
 
 
 def merge_gnomad_shared_cache(partitions: list[tuple[Path, dict]]) -> dict[str, object] | None:
@@ -248,10 +341,9 @@ def main() -> None:
         "variant_strategy_support.tsv.gz",
         args.outdir / "variant_strategy_support.tsv.gz",
     )
-    ortholog_support_count = merge_tsv_gz(
+    ortholog_support_count, ortholog_support_file_count = merge_ortholog_support_dataset(
         partitions,
-        "variant_ortholog_support.tsv.gz",
-        args.outdir / "variant_ortholog_support.tsv.gz",
+        args.outdir / "variant_ortholog_support",
     )
     ortholog_evidence_count = merge_ortholog_evidence(
         partitions,
@@ -306,6 +398,9 @@ def main() -> None:
         "annotated_variant_context_count": annotation_count,
         "variant_strategy_support_count": support_count,
         "variant_ortholog_support_count": ortholog_support_count,
+        "variant_ortholog_support_format": "parquet_dataset",
+        "variant_ortholog_support_path": "variant_ortholog_support",
+        "variant_ortholog_support_file_count": ortholog_support_file_count,
         "ortholog_evidence_summary_count": ortholog_evidence_count,
         "failure_count": failure_count,
         "clinvar_vcf": first_manifest.get("clinvar_vcf", {}),

@@ -71,7 +71,9 @@ strategies. Remote Ensembl MAF chunk tasks default to
 stability.
 
 Large runs can enable `--compact_alignment_events true` to publish one support
-row per unique event and strategy instead of raw per-ortholog event rows. Raw
+row per unique event and strategy instead of raw per-ortholog event rows. Each
+compact row receives a partition-local `event_group_id`; the exact positive
+support handoff refers to that ID instead of repeating event coordinates. Raw
 remains the default because it preserves maximum traceability.
 
 ## Taxonomy Presets
@@ -193,7 +195,7 @@ Standalone `--stage align` publishes the full handoff contract:
 | `snv_site_depth.tsv.gz` | Distinct aligned-ortholog depth for each observed concrete SNV position and strategy. |
 | `feature_coverage.tsv.gz` | Per-gene, per-strategy coverage and depth over target structural intervals. |
 | `alignment_events.tsv.gz` | Raw mismatch/indel events normalized to target coordinates by default; unique event support rows when `--compact_alignment_events true`. |
-| `event_ortholog_support.tsv.gz` | Positive per-event/per-strategy ortholog identities retained when `--compact_alignment_events true`; pass this file to a later standalone annotation run. |
+| `event_ortholog_support.tsv.gz` | Positive ortholog identities keyed by `event_group_id` and retained when `--compact_alignment_events true`; pass this file with the compact event table to a later standalone annotation run. |
 | `failures.tsv.gz` | Alignment-stage failures. |
 | `native/` | Optional raw PAF/SAM files when enabled. |
 
@@ -202,8 +204,12 @@ Native outputs are disabled by default.
 In an end-to-end `--stage all` run, Stage 3 consumes partitioned events directly
 from Nextflow `work/`. Before the raw partition segments are discarded, the
 partition merge derives SNV-only site depth, positive per-ortholog support, and
-taxonomic-unit counts for the observed concrete variant positions. Stage 3
-normalizes the positive support to canonical variant keys and combines the
+taxonomic-unit counts for the observed concrete variant positions. The compact
+event row and exact supporters are emitted together in one index-ordered pass;
+there is no second global exact-support grouping or coordinate sort. Stage 3
+normalizes the positive support to canonical variant keys, aggregates local
+integer IDs with DuckDB, writes the durable exact support as a partitioned
+Parquet dataset, and combines the
 taxonomic tables with gnomAD status into the bounded histogram
 `annotation/ortholog_evidence_summary.tsv.gz`. The durable `alignment/`
 directory therefore contains only `manifest.json`, `strategy_summary.tsv.gz`,
@@ -211,7 +217,7 @@ directory therefore contains only `manifest.json`, `strategy_summary.tsv.gz`,
 Raw events, the pre-normalization ortholog-support handoff, segments,
 per-ortholog summaries, and partition-level taxonomic tables remain disposable
 work data. The durable alignment manifest retains per-partition phase timings
-for event loading, indexing, compaction, exact-support writing, and SNV depth
+for event loading, indexing, the combined compact/exact-support stream, and SNV depth
 aggregation, plus summed task-runtime totals. The totals are not wall-clock time
 because partitions can run concurrently.
 
@@ -306,10 +312,11 @@ not change gene-level alignment behavior.
 
 Alignment results are merged in two bounded levels. Each partition merges at
 most `--alignment_partition_size` genes and, when compact events are requested,
-performs support aggregation only inside that partition. The final merge then
-streams those disjoint partitions through one staged directory. This avoids one
-global event database and avoids placing every gene/strategy result path on a
-single command line while preserving the existing Stage 2 output tables.
+streams one raw event group at a time from its SQLite key index. The final merge
+then streams those disjoint partitions through one staged directory and rebases
+their local group IDs when a standalone global handoff is requested. This avoids
+one global event database and avoids placing every gene/strategy result path on
+a single command line while preserving the Stage 2 logical evidence.
 
 Both merge levels fail closed. A partition must contain exactly one result for
 every eligible gene/strategy pair, required TSV inputs must exist with valid

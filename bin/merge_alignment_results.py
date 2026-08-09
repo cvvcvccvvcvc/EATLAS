@@ -13,6 +13,7 @@ import sqlite3
 import sys
 import time
 from datetime import datetime, timezone
+from itertools import groupby
 from pathlib import Path
 
 from feature_coverage import (
@@ -21,7 +22,7 @@ from feature_coverage import (
     write_snv_site_depth,
     write_snv_taxonomic_depth,
 )
-from taxonomic_evidence import COUNT_KEYS, SCOPE_ORDER, UNIT_ORDER, load_taxonomy_profiles
+from taxonomic_evidence import COUNT_KEYS, count_member_groups, load_taxonomy_profiles
 
 
 csv.field_size_limit(sys.maxsize)
@@ -55,6 +56,7 @@ def parse_args() -> argparse.Namespace:
 
 
 COMPACT_EVENT_FIELDS = [
+    "event_group_id",
     "gene_id",
     "event_type",
     "target_start0",
@@ -74,6 +76,13 @@ COMPACT_EVENT_FIELDS = [
     "qc_flags",
 ]
 EVENT_ORTHOLOG_SUPPORT_FIELDS = [
+    "event_group_id",
+    "ortholog_gene_id",
+    "tax_id",
+    "taxname",
+    "support_row_count",
+]
+EVENT_KEY_FIELDS = [
     "gene_id",
     "event_type",
     "target_start0",
@@ -84,10 +93,15 @@ EVENT_ORTHOLOG_SUPPORT_FIELDS = [
     "ref",
     "alt",
     "strategy",
+]
+EVENT_STREAM_FIELDS = [
+    *EVENT_KEY_FIELDS,
     "ortholog_gene_id",
+    "tool",
+    "preset",
     "tax_id",
     "taxname",
-    "support_row_count",
+    "qc_flags",
 ]
 SNV_ALT_TAXONOMIC_SUPPORT_FIELDS = [
     "gene_id",
@@ -309,6 +323,91 @@ def merge_tsv_gz(paths: list[Path], output: Path) -> int:
     return count
 
 
+def merge_compact_event_handoffs(
+    result_dirs: list[Path],
+    events_output: Path,
+    support_output: Path,
+) -> tuple[int, int]:
+    """Concatenate compact partitions while rebasing partition-local group IDs."""
+
+    event_count = 0
+    support_count = 0
+    with (
+        gzip.open(events_output, "wt", newline="") as event_handle,
+        gzip.open(support_output, "wt", newline="") as support_handle,
+    ):
+        event_writer = csv.DictWriter(
+            event_handle,
+            fieldnames=COMPACT_EVENT_FIELDS,
+            delimiter="\t",
+            lineterminator="\n",
+        )
+        support_writer = csv.DictWriter(
+            support_handle,
+            fieldnames=EVENT_ORTHOLOG_SUPPORT_FIELDS,
+            delimiter="\t",
+            lineterminator="\n",
+        )
+        event_writer.writeheader()
+        support_writer.writeheader()
+        for result_dir in result_dirs:
+            events_path = result_dir / "alignment_events.tsv.gz"
+            support_path = result_dir / "event_ortholog_support.tsv.gz"
+            with (
+                gzip.open(events_path, "rt", newline="") as partition_event_handle,
+                gzip.open(support_path, "rt", newline="") as partition_support_handle,
+            ):
+                event_reader = csv.DictReader(partition_event_handle, delimiter="\t")
+                support_reader = csv.DictReader(partition_support_handle, delimiter="\t")
+                event_missing = set(COMPACT_EVENT_FIELDS) - set(event_reader.fieldnames or [])
+                support_missing = set(EVENT_ORTHOLOG_SUPPORT_FIELDS) - set(
+                    support_reader.fieldnames or []
+                )
+                if event_missing:
+                    raise ValueError(
+                        f"Compact events {events_path} missing columns: "
+                        + ", ".join(sorted(event_missing))
+                    )
+                if support_missing:
+                    raise ValueError(
+                        f"Event ortholog support {support_path} missing columns: "
+                        + ", ".join(sorted(support_missing))
+                    )
+                current_support = next(support_reader, None)
+                local_event_count = 0
+                for event_row in event_reader:
+                    local_event_count += 1
+                    local_group_id = int(event_row["event_group_id"])
+                    if local_group_id != local_event_count:
+                        raise ValueError(
+                            f"Compact event_group_id values in {events_path} must be "
+                            f"consecutive from 1; expected {local_event_count}, "
+                            f"observed {local_group_id}"
+                        )
+                    event_count += 1
+                    event_row["event_group_id"] = str(event_count)
+                    event_writer.writerow(event_row)
+                    while current_support is not None:
+                        support_group_id = int(current_support["event_group_id"])
+                        if support_group_id < local_group_id:
+                            raise ValueError(
+                                f"Unmatched event ortholog support group {support_group_id} "
+                                f"in {support_path}"
+                            )
+                        if support_group_id > local_group_id:
+                            break
+                        current_support["event_group_id"] = str(event_count)
+                        support_writer.writerow(current_support)
+                        support_count += 1
+                        current_support = next(support_reader, None)
+                if current_support is not None:
+                    raise ValueError(
+                        f"Unmatched event ortholog support group "
+                        f"{current_support['event_group_id']} in {support_path}"
+                    )
+    return event_count, support_count
+
+
 def write_strategy_summary(
     summary_paths: list[Path],
     output: Path,
@@ -493,52 +592,92 @@ def compact_event_flags(raw_flags: str) -> str:
     return ",".join(flags)
 
 
-def create_taxonomy_table(conn: sqlite3.Connection, taxonomy_presets: Path) -> None:
-    profiles = load_taxonomy_profiles(taxonomy_presets)
-    scope_columns = [scope for scope in SCOPE_ORDER if scope != "all"]
-    conn.execute(
-        "CREATE TABLE taxonomy_profiles ("
-        "tax_id TEXT PRIMARY KEY, species_id TEXT, genus_id TEXT, family_id TEXT, order_id TEXT, "
-        + ", ".join(f"{scope} INTEGER NOT NULL" for scope in scope_columns)
-        + ") WITHOUT ROWID"
+def merge_ortholog_metadata(
+    orthologs: dict[str, dict[str, object]],
+    row: dict[str, str],
+) -> None:
+    ortholog_gene_id = row["ortholog_gene_id"]
+    if not ortholog_gene_id:
+        return
+    support = orthologs.get(ortholog_gene_id)
+    if support is None:
+        orthologs[ortholog_gene_id] = {
+            "ortholog_gene_id": ortholog_gene_id,
+            "tax_id": row["tax_id"],
+            "taxname": row["taxname"],
+            "support_row_count": 1,
+        }
+        return
+
+    for field in ("tax_id", "taxname"):
+        current = str(support[field] or "")
+        observed = row[field]
+        if current and observed and current != observed:
+            raise ValueError(
+                f"Conflicting {field} for ortholog_gene_id={ortholog_gene_id}: "
+                f"{current!r} != {observed!r}"
+            )
+        if not current and observed:
+            support[field] = observed
+    support["support_row_count"] = int(support["support_row_count"]) + 1
+
+
+def compact_stream_group(
+    event_group_id: int,
+    key: tuple[str, ...],
+    rows: object,
+    taxonomy_profiles: dict | None,
+) -> tuple[dict[str, object], list[dict[str, object]]]:
+    record: dict[str, object] = {
+        "event_group_id": event_group_id,
+        **dict(zip(EVENT_KEY_FIELDS, key)),
+    }
+    orthologs: dict[str, dict[str, object]] = {}
+    tools: set[str] = set()
+    presets: set[str] = set()
+    tax_ids: set[str] = set()
+    taxnames: set[str] = set()
+    qc_flags: list[str] = []
+    support_row_count = 0
+    for values in rows:
+        row = dict(zip(EVENT_STREAM_FIELDS, values))
+        support_row_count += 1
+        merge_ortholog_metadata(orthologs, row)
+        if row["tool"]:
+            tools.add(row["tool"])
+        if row["preset"]:
+            presets.add(row["preset"])
+        if row["tax_id"]:
+            tax_ids.add(row["tax_id"])
+        if row["taxname"]:
+            taxnames.add(row["taxname"])
+        if row["qc_flags"]:
+            qc_flags.append(row["qc_flags"])
+
+    record.update(
+        {
+            "support_row_count": support_row_count,
+            "support_ortholog_count": len(orthologs),
+            "tools": ",".join(sorted(tools)),
+            "presets": ",".join(sorted(presets)),
+            "tax_id_count": len(tax_ids),
+            "taxname_count": len(taxnames),
+            "qc_flags": compact_event_flags(",".join(qc_flags)),
+        }
     )
-    fields = ["tax_id", "species_id", "genus_id", "family_id", "order_id", *scope_columns]
-    placeholders = ", ".join("?" for _field in fields)
-    rows = []
-    for profile in profiles.values():
-        scopes = set(profile.scopes())
-        rows.append(
-            (
-                profile.tax_id,
-                profile.species_id,
-                profile.genus_id,
-                profile.family_id,
-                profile.order_id,
-                *(int(scope in scopes) for scope in scope_columns),
+    if taxonomy_profiles is not None:
+        record.update(
+            count_member_groups(
+                (
+                    (ortholog_gene_id, str(support["tax_id"]))
+                    for ortholog_gene_id, support in orthologs.items()
+                    if support["tax_id"]
+                ),
+                taxonomy_profiles,
             )
         )
-    conn.executemany(
-        f"INSERT INTO taxonomy_profiles ({', '.join(fields)}) VALUES ({placeholders})",
-        rows,
-    )
-
-
-def taxonomy_count_expressions() -> list[str]:
-    expressions = []
-    for scope in SCOPE_ORDER:
-        scope_condition = "e.tax_id != ''" if scope == "all" else f"p.{scope} = 1"
-        for unit in UNIT_ORDER:
-            group_value = (
-                "e.ortholog_gene_id"
-                if unit == "ortholog"
-                else f"COALESCE(NULLIF(p.{unit}_id, ''), 'taxon:' || e.tax_id)"
-            )
-            expressions.append(
-                "COUNT(DISTINCT CASE WHEN "
-                f"{scope_condition} AND e.ortholog_gene_id != '' THEN {group_value} END) "
-                f'AS "{scope}__{unit}"'
-            )
-    return expressions
+    support_rows = [orthologs[key] for key in sorted(orthologs)]
+    return record, support_rows
 
 
 def write_compact_events(
@@ -566,8 +705,6 @@ def write_compact_events(
         raw_count = 0
         for path in paths:
             raw_count += insert_event_rows(conn, path)
-        if taxonomy_presets is not None:
-            create_taxonomy_table(conn, taxonomy_presets)
         conn.commit()
         finish_phase(phase_timings, "load_events_sqlite", phase_started)
 
@@ -590,57 +727,46 @@ def write_compact_events(
         )
         finish_phase(phase_timings, "build_event_index", phase_started)
 
-        taxonomic_select = ""
-        taxonomic_join = ""
-        if taxonomy_presets is not None:
-            taxonomic_select = ",\n                " + ",\n                ".join(
-                taxonomy_count_expressions()
-            )
-            taxonomic_join = "LEFT JOIN taxonomy_profiles AS p ON p.tax_id = e.tax_id"
-        query = f"""
+        query = """
             SELECT
-                e.gene_id,
-                e.event_type,
-                e.target_start0,
-                e.target_end0,
-                e.genomic_accession,
-                e.genomic_start1,
-                e.genomic_end1,
-                e.ref,
-                e.alt,
-                e.strategy,
-                COUNT(*) AS support_row_count,
-                COUNT(DISTINCT e.ortholog_gene_id) AS support_ortholog_count,
-                GROUP_CONCAT(DISTINCT e.tool) AS tools,
-                GROUP_CONCAT(DISTINCT e.preset) AS presets,
-                COUNT(DISTINCT e.tax_id) AS tax_id_count,
-                COUNT(DISTINCT e.taxname) AS taxname_count,
-                GROUP_CONCAT(DISTINCT e.qc_flags) AS qc_flags
-                {taxonomic_select}
-            FROM events AS e
-            {taxonomic_join}
-            GROUP BY
-                e.gene_id,
-                e.event_type,
-                e.target_start0,
-                e.target_end0,
-                e.genomic_accession,
-                e.genomic_start1,
-                e.genomic_end1,
-                e.ref,
-                e.alt,
-                e.strategy
+                gene_id,
+                event_type,
+                target_start0,
+                target_end0,
+                genomic_accession,
+                genomic_start1,
+                genomic_end1,
+                ref,
+                alt,
+                strategy,
+                ortholog_gene_id,
+                tool,
+                preset,
+                tax_id,
+                taxname,
+                qc_flags
+            FROM events INDEXED BY events_key_idx
             ORDER BY
-                e.gene_id,
-                e.strategy,
-                CAST(e.target_start0 AS INTEGER),
-                e.event_type,
-                e.ref,
-                e.alt
+                gene_id,
+                event_type,
+                target_start0,
+                target_end0,
+                genomic_accession,
+                genomic_start1,
+                genomic_end1,
+                ref,
+                alt,
+                strategy
         """
+        taxonomy_profiles = (
+            load_taxonomy_profiles(taxonomy_presets)
+            if taxonomy_presets is not None
+            else None
+        )
         compact_count = 0
         taxonomic_support_count = 0
-        phase_started = start_phase("compact_event_aggregation")
+        ortholog_support_count = 0
+        phase_started = start_phase("stream_event_groups")
         support_handle = (
             gzip.open(taxonomic_support_output, "wt", newline="")
             if taxonomic_support_output is not None
@@ -656,22 +782,44 @@ def write_compact_events(
                     lineterminator="\n",
                 )
                 support_writer.writeheader()
-            with gzip.open(output, "wt", newline="") as handle:
-                writer = csv.DictWriter(handle, fieldnames=COMPACT_EVENT_FIELDS, delimiter="\t", extrasaction="ignore")
+            with (
+                gzip.open(output, "wt", newline="") as handle,
+                gzip.open(ortholog_support_output, "wt", newline="") as ortholog_handle,
+            ):
+                writer = csv.DictWriter(
+                    handle,
+                    fieldnames=COMPACT_EVENT_FIELDS,
+                    delimiter="\t",
+                    extrasaction="ignore",
+                    lineterminator="\n",
+                )
+                ortholog_writer = csv.DictWriter(
+                    ortholog_handle,
+                    fieldnames=EVENT_ORTHOLOG_SUPPORT_FIELDS,
+                    delimiter="\t",
+                    extrasaction="ignore",
+                    lineterminator="\n",
+                )
                 writer.writeheader()
-                for row in conn.execute(query):
-                    record = dict(
-                        zip(
-                            [
-                                *COMPACT_EVENT_FIELDS,
-                                *(COUNT_KEYS if taxonomy_presets is not None else ()),
-                            ],
-                            row,
-                        )
-                    )
-                    record["qc_flags"] = compact_event_flags(record.get("qc_flags") or "")
-                    writer.writerow(record)
+                ortholog_writer.writeheader()
+                event_rows = conn.execute(query)
+                for key, rows in groupby(
+                    event_rows,
+                    key=lambda values: values[: len(EVENT_KEY_FIELDS)],
+                ):
                     compact_count += 1
+                    record, ortholog_rows = compact_stream_group(
+                        compact_count,
+                        key,
+                        rows,
+                        taxonomy_profiles,
+                    )
+                    writer.writerow(record)
+                    for ortholog_row in ortholog_rows:
+                        ortholog_writer.writerow(
+                            {"event_group_id": compact_count, **ortholog_row}
+                        )
+                        ortholog_support_count += 1
                     if (
                         support_writer is None
                         or record.get("event_type") != "snv"
@@ -696,57 +844,7 @@ def write_compact_events(
         finally:
             if support_handle is not None:
                 support_handle.close()
-        finish_phase(phase_timings, "compact_event_aggregation", phase_started)
-        ortholog_support_query = """
-            SELECT
-                e.gene_id,
-                e.event_type,
-                e.target_start0,
-                e.target_end0,
-                e.genomic_accession,
-                e.genomic_start1,
-                e.genomic_end1,
-                e.ref,
-                e.alt,
-                e.strategy,
-                e.ortholog_gene_id,
-                e.tax_id,
-                e.taxname,
-                COUNT(*) AS support_row_count
-            FROM events AS e
-            WHERE e.ortholog_gene_id != ''
-            GROUP BY
-                e.gene_id,
-                e.event_type,
-                e.target_start0,
-                e.target_end0,
-                e.genomic_accession,
-                e.genomic_start1,
-                e.genomic_end1,
-                e.ref,
-                e.alt,
-                e.strategy,
-                e.ortholog_gene_id,
-                e.tax_id,
-                e.taxname
-            ORDER BY
-                e.gene_id,
-                e.strategy,
-                CAST(e.target_start0 AS INTEGER),
-                e.event_type,
-                e.ref,
-                e.alt,
-                e.ortholog_gene_id
-        """
-        ortholog_support_count = 0
-        phase_started = start_phase("write_event_ortholog_support")
-        with gzip.open(ortholog_support_output, "wt", newline="") as handle:
-            writer = csv.writer(handle, delimiter="\t", lineterminator="\n")
-            writer.writerow(EVENT_ORTHOLOG_SUPPORT_FIELDS)
-            for row in conn.execute(ortholog_support_query):
-                writer.writerow(row)
-                ortholog_support_count += 1
-        finish_phase(phase_timings, "write_event_ortholog_support", phase_started)
+        finish_phase(phase_timings, "stream_event_groups", phase_started)
         return compact_count, raw_count, taxonomic_support_count, ortholog_support_count
     finally:
         conn.close()
@@ -1246,6 +1344,21 @@ def main() -> None:
                 else None,
                 timings=timings_seconds,
             )
+        elif args.events_already_compacted:
+            raw_event_count = sum(
+                int(
+                    manifest.get("raw_alignment_event_count")
+                    or manifest.get("alignment_event_count")
+                    or 0
+                )
+                for manifest in manifests
+            )
+            event_count, event_ortholog_support_count = merge_compact_event_handoffs(
+                result_dirs,
+                args.outdir / "alignment_events.tsv.gz",
+                args.outdir / "event_ortholog_support.tsv.gz",
+            )
+            taxonomic_alt_support_count = 0
         else:
             event_count = merge_tsv_gz(
                 event_inputs,
@@ -1254,15 +1367,6 @@ def main() -> None:
             raw_event_count = event_count
             taxonomic_alt_support_count = 0
             event_ortholog_support_count = 0
-            if args.events_already_compacted:
-                raw_event_count = sum(
-                    int(manifest.get("raw_alignment_event_count") or manifest.get("alignment_event_count") or 0)
-                    for manifest in manifests
-                )
-                event_ortholog_support_count = merge_tsv_gz(
-                    [path / "event_ortholog_support.tsv.gz" for path in result_dirs],
-                    args.outdir / "event_ortholog_support.tsv.gz",
-                )
         alignment_event_mode = "compact_support" if args.compact_events else "raw"
 
     if args.partition_id:
@@ -1333,6 +1437,9 @@ def main() -> None:
         "feature_coverage_missing_result_count": len(missing_feature_coverage),
         "feature_coverage_count": feature_coverage_count,
         "alignment_event_mode": alignment_event_mode,
+        "event_ortholog_support_format": (
+            "event_group_id_v1" if alignment_event_mode == "compact_support" else ""
+        ),
         "raw_alignment_event_count": raw_event_count,
         "alignment_event_count": event_count,
         "event_ortholog_support_count": event_ortholog_support_count,

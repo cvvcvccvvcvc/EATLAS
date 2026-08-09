@@ -190,6 +190,16 @@ def test_compact_events_write_taxonomic_alt_counts_in_sqlite(tmp_path: Path) -> 
     assert row["all__ortholog"] == "2"
     assert row["mammalia__species"] == "2"
     assert row["primates__species"] == "1"
+    with gzip.open(compact, "rt", newline="") as handle:
+        compact_row = next(csv.DictReader(handle, delimiter="\t"))
+    with gzip.open(ortholog_support, "rt", newline="") as handle:
+        ortholog_rows = list(csv.DictReader(handle, delimiter="\t"))
+    assert compact_row["event_group_id"] == "1"
+    assert {row["event_group_id"] for row in ortholog_rows} == {"1"}
+    assert {row["ortholog_gene_id"] for row in ortholog_rows} == {
+        "chimp_gene",
+        "mouse_gene",
+    }
 
 
 def test_compact_evidence_summary_preserves_scope_unit_and_gnomad_status(tmp_path: Path) -> None:

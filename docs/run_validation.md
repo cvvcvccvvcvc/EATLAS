@@ -232,17 +232,19 @@ Annotation expected properties:
 - `annotation/variant_annotations.tsv.gz` exists for end-to-end runs.
 - `annotation/variant_strategy_support.tsv.gz` contains per-strategy ALT-support
   counts and site-aligned ortholog depth for SNVs.
-- `annotation/variant_ortholog_support.tsv.gz` contains one row per normalized
+- `annotation/variant_ortholog_support/*.parquet` contains one row per normalized
   variant, strategy, and supporting ortholog. Its distinct ortholog and summed
-  row counts agree with `variant_strategy_support.tsv.gz`.
+  row counts agree with `variant_strategy_support.tsv.gz`; the annotation
+  manifest declares `variant_ortholog_support_format=parquet_dataset`.
 - `annotation/ortholog_evidence_summary.tsv.gz` contains bounded SNV evidence
   histograms by strategy, target context, taxonomic scope, and evidence unit.
 - `annotation/manifest.json` records event and unique variant-context row counts,
   source metadata, annotation counters, and per-partition phase timings with
   summed task-runtime totals. These totals are not wall-clock elapsed time because
   partitions can run concurrently.
-- End-to-end annotation records `partition_count`; partition outputs are merged
-  by streaming and are not published as duplicate durable tables.
+- End-to-end annotation records `partition_count`; compact TSV outputs are
+  streamed together, while exact-support Parquet parts are copied into one
+  dataset without decompression/recompression.
 - `annotation/failures.tsv.gz` records non-fatal external lookup failures.
 - `clinvar_*` columns are present and populated when matching ClinVar records exist;
   `clinvar_review_stars` is derived from the raw `clinvar_revstat` value.
