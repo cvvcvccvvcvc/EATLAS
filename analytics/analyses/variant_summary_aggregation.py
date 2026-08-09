@@ -6,6 +6,7 @@ import csv
 import gzip
 import json
 import os
+import re
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -20,6 +21,20 @@ from genomics.variants import read_failed_regions
 
 REQUIRED_COLUMNS = {"variant_key", "gene_id", "event_type", "strategies"}
 MAX_STRATEGIES = 63
+DUCKDB_MEMORY_LIMIT_ENV = "GAPH_DUCKDB_MEMORY_LIMIT"
+DUCKDB_MEMORY_FRACTION = 0.5
+
+_MEMORY_SETTING = re.compile(r"^([0-9]+(?:\.[0-9]+)?)\s*([KMGT]i?B)$", re.IGNORECASE)
+_MEMORY_UNITS = {
+    "KB": 1000,
+    "MB": 1000**2,
+    "GB": 1000**3,
+    "TB": 1000**4,
+    "KIB": 1024,
+    "MIB": 1024**2,
+    "GIB": 1024**3,
+    "TIB": 1024**4,
+}
 
 
 @dataclass(frozen=True)
@@ -95,6 +110,7 @@ class VariantGroupedAggregation:
     ortholog_evidence_grouped: pd.DataFrame
     ortholog_distribution_source: pd.DataFrame
     timings: dict[str, float]
+    diagnostics: dict[str, object]
 
 
 def available_cpu_count() -> int:
@@ -104,6 +120,67 @@ def available_cpu_count() -> int:
     if allocated and allocated.isdigit() and int(allocated) > 0:
         return int(allocated)
     return os.cpu_count() or 1
+
+
+def _configure_duckdb_memory(connection, thread_count: int) -> dict[str, object]:
+    override = os.environ.get(DUCKDB_MEMORY_LIMIT_ENV, "").strip()
+    if override:
+        requested = override
+        source = DUCKDB_MEMORY_LIMIT_ENV
+    else:
+        slurm_bytes, source = _slurm_memory_bytes(thread_count)
+        if slurm_bytes is not None:
+            requested = _memory_limit_setting(slurm_bytes * DUCKDB_MEMORY_FRACTION)
+        else:
+            current = str(
+                connection.execute("SELECT current_setting('memory_limit')").fetchone()[0]
+            )
+            requested = _memory_limit_setting(
+                _parse_memory_setting(current) * DUCKDB_MEMORY_FRACTION
+            )
+            source = "duckdb_default_fraction"
+
+    connection.execute(f"SET memory_limit={_sql_string(requested)}")
+    return {
+        "memory_limit": str(
+            connection.execute("SELECT current_setting('memory_limit')").fetchone()[0]
+        ),
+        "memory_limit_source": source,
+    }
+
+
+def _slurm_memory_bytes(thread_count: int) -> tuple[int | None, str]:
+    per_node_mb = _positive_int_environment("SLURM_MEM_PER_NODE")
+    if per_node_mb is not None:
+        return per_node_mb * 1024**2, "SLURM_MEM_PER_NODE"
+
+    per_cpu_mb = _positive_int_environment("SLURM_MEM_PER_CPU")
+    if per_cpu_mb is None:
+        return None, "duckdb_default_fraction"
+    allocated_cpus = (
+        _positive_int_environment("SLURM_CPUS_PER_TASK") or thread_count
+    )
+    return per_cpu_mb * allocated_cpus * 1024**2, "SLURM_MEM_PER_CPU"
+
+
+def _positive_int_environment(name: str) -> int | None:
+    value = os.environ.get(name, "").strip()
+    if not value.isdigit() or int(value) < 1:
+        return None
+    return int(value)
+
+
+def _parse_memory_setting(value: str) -> int:
+    match = _MEMORY_SETTING.fullmatch(value.strip())
+    if match is None:
+        raise ValueError(f"Could not parse DuckDB memory limit: {value!r}")
+    amount, unit = match.groups()
+    return int(float(amount) * _MEMORY_UNITS[unit.upper()])
+
+
+def _memory_limit_setting(value: float) -> str:
+    mebibytes = max(128, int(value) // (1024**2))
+    return f"{mebibytes}MiB"
 
 
 def resolve_variant_aggregation_source(path: Path) -> VariantAggregationSource:
@@ -285,6 +362,7 @@ def aggregate_variant_groups(
     if thread_count < 1:
         raise ValueError("DuckDB thread count must be >= 1")
     timings: dict[str, float] = {}
+    diagnostics: dict[str, object] = {}
     connection = duckdb.connect()
     try:
         connection.execute(f"SET threads={int(thread_count)}")
@@ -292,6 +370,12 @@ def aggregate_variant_groups(
         if temp_dir is not None:
             temp_dir.mkdir(parents=True, exist_ok=True)
             connection.execute(f"SET temp_directory={_sql_string(temp_dir)}")
+        diagnostics.update(_configure_duckdb_memory(connection, thread_count))
+        diagnostics["max_temp_directory_size"] = str(
+            connection.execute(
+                "SELECT current_setting('max_temp_directory_size')"
+            ).fetchone()[0]
+        )
         connection.execute(f"CREATE VIEW source_rows AS SELECT * FROM {_source_sql(source)}")
 
         started = time.perf_counter()
@@ -320,6 +404,19 @@ def aggregate_variant_groups(
         started = time.perf_counter()
         _create_normalized_views(connection, source, strategies, genes_path is not None)
         timings["normalization_setup"] = time.perf_counter() - started
+
+        started = time.perf_counter()
+        allele_gene_row_count, global_allele_row_count = _materialize_compacted_relations(
+            connection
+        )
+        timings["compacted_relations"] = time.perf_counter() - started
+        diagnostics.update(
+            {
+                "allele_gene_row_count": allele_gene_row_count,
+                "global_allele_row_count": global_allele_row_count,
+                "temp_storage_bytes_after_materialization": _directory_size(temp_dir),
+            }
+        )
 
         started = time.perf_counter()
         allele_gene_mask_rows = connection.execute(
@@ -362,6 +459,7 @@ def aggregate_variant_groups(
             strategies,
         )
         timings["ortholog_evidence"] = time.perf_counter() - started
+        diagnostics["temp_storage_bytes_final"] = _directory_size(temp_dir)
 
         masks = StrategyMaskAggregation(
             input_row_count=int(input_row_count),
@@ -385,6 +483,7 @@ def aggregate_variant_groups(
             ortholog_evidence_grouped=ortholog_grouped,
             ortholog_distribution_source=ortholog_distributions,
             timings=timings,
+            diagnostics=diagnostics,
         )
     finally:
         connection.close()
@@ -577,23 +676,41 @@ def _create_normalized_views(
         "ELSE coalesce(c.target_context, 'other') END AS target_context "
         f"FROM positioned_rows p {context_join}"
     )
+
+
+def _materialize_compacted_relations(connection) -> tuple[int, int]:
     connection.execute(
-        "CREATE VIEW allele_gene_rows AS SELECT variant_id, gene_id, "
+        "CREATE TEMP TABLE allele_gene_rows AS SELECT variant_id, gene_id, "
         "bit_or(strategy_mask) AS strategy_mask, first(event_type) AS event_type, "
         "first(target_context) AS target_context, first(gnomad_status) AS gnomad_status, "
-        "first(consequence) AS consequence, first(clinvar_category) AS clinvar_category "
+        "first(consequence) AS consequence, first(clinvar_category) AS clinvar_category, "
+        "bool_or(clinvar_found) AS global_clinvar_found, "
+        "bool_or(clinvar_classified) AS global_clinvar_classified, "
+        "max(gnomad_af_value) AS global_gnomad_af, "
+        "bool_or(gnomad_status = 'found') AS global_gnomad_found, "
+        "bool_or(gnomad_status = 'lookup_failed') AS global_gnomad_failed, "
+        "first(titv_kind) AS global_titv_kind, "
+        "first(review_stars) AS global_review_stars "
         "FROM normalized_rows GROUP BY variant_id, gene_id"
     )
     connection.execute(
-        "CREATE VIEW global_alleles AS SELECT variant_id, bit_or(strategy_mask) AS strategy_mask, "
-        "first(event_type) AS event_type, bool_or(clinvar_found) AS clinvar_found, "
-        "bool_or(clinvar_classified) AS clinvar_classified, first(clinvar_category) AS clinvar_category, "
-        "max(gnomad_af_value) AS gnomad_af, "
-        "CASE WHEN bool_or(gnomad_status = 'found') THEN 'found' "
-        "WHEN bool_or(gnomad_status = 'lookup_failed') THEN 'lookup_failed' ELSE 'not_found' END "
-        "AS gnomad_status, first(titv_kind) AS titv_kind, first(review_stars) AS review_stars "
-        "FROM normalized_rows GROUP BY variant_id"
+        "CREATE TEMP TABLE global_alleles AS SELECT variant_id, "
+        "bit_or(strategy_mask) AS strategy_mask, first(event_type) AS event_type, "
+        "bool_or(global_clinvar_found) AS clinvar_found, "
+        "bool_or(global_clinvar_classified) AS clinvar_classified, "
+        "first(clinvar_category) AS clinvar_category, "
+        "max(global_gnomad_af) AS gnomad_af, "
+        "CASE WHEN bool_or(global_gnomad_found) THEN 'found' "
+        "WHEN bool_or(global_gnomad_failed) THEN 'lookup_failed' ELSE 'not_found' END "
+        "AS gnomad_status, first(global_titv_kind) AS titv_kind, "
+        "first(global_review_stars) AS review_stars "
+        "FROM allele_gene_rows GROUP BY variant_id"
     )
+    allele_gene_count, global_allele_count = connection.execute(
+        "SELECT (SELECT count(*) FROM allele_gene_rows), "
+        "(SELECT count(*) FROM global_alleles)"
+    ).fetchone()
+    return int(allele_gene_count), int(global_allele_count)
 
 
 def _query_gnomad_af_summary(connection, strategies: tuple[str, ...]) -> pd.DataFrame:
@@ -841,6 +958,19 @@ def _read_json(path: Path) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise ValueError(f"Expected a JSON object: {path}")
     return value
+
+
+def _directory_size(path: Path | None) -> int:
+    if path is None or not path.exists():
+        return 0
+    total = 0
+    for item in path.rglob("*"):
+        try:
+            if item.is_file():
+                total += item.stat().st_size
+        except FileNotFoundError:
+            continue
+    return total
 
 
 def _sql_string(value: object) -> str:

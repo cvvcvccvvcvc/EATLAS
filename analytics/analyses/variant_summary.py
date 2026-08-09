@@ -6,6 +6,7 @@ import gzip
 import json
 import math
 import tempfile
+import time
 from collections import defaultdict
 from contextlib import nullcontext
 from dataclasses import dataclass
@@ -989,7 +990,9 @@ def _compute_variant_summary(
     performance_profile: PerformanceProfile | None,
 ) -> VariantSummary:
     del chunk_size
+    started = time.perf_counter()
     source = resolve_variant_aggregation_source(path)
+    source_resolution_seconds = time.perf_counter() - started
     with tempfile.TemporaryDirectory(
         prefix=".variant_summary_duckdb.",
         dir=work_dir,
@@ -1005,11 +1008,24 @@ def _compute_variant_summary(
             temp_dir=Path(temporary_dir),
         )
     if performance_profile is not None:
+        performance_profile.add_metric(
+            "source_resolution_seconds",
+            source_resolution_seconds,
+        )
         for name, seconds in grouped.timings.items():
             performance_profile.add_metric(f"duckdb_{name}_seconds", seconds)
-    return _summary_from_grouped_aggregation(
+        for name, value in grouped.diagnostics.items():
+            performance_profile.add_metric(f"duckdb_{name}", value)
+    started = time.perf_counter()
+    summary = _summary_from_grouped_aggregation(
         grouped,
         strategy_label,
         variant_strategy_support_path,
         ortholog_evidence_summary_path,
     )
+    if performance_profile is not None:
+        performance_profile.add_metric(
+            "summary_assembly_seconds",
+            time.perf_counter() - started,
+        )
+    return summary

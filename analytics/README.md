@@ -188,10 +188,16 @@ The report aggregates completed bulk-VEP partitions directly with DuckDB. For
 legacy runs it reads the single `variant_annotations.tsv.gz` file through the
 same engine. Strategy sets are represented internally as bit masks, so the
 report does not materialize variant-by-strategy rows or a persistent database.
-Global statistics use unique genomic alleles; gene, target-context, and
-consequence statistics retain each allele-gene association. The compact final
-aggregation is cached as `<run-dir>/analytics/variant_summary.json.gz` and is
-reused while the input manifests and summary schema remain unchanged.
+It materializes only temporary allele-gene and global-allele relations so
+downstream summaries do not repeatedly scan and normalize the compressed
+source. DuckDB receives 50% of the Slurm task memory allocation and spills to
+the isolated Variant Summary temporary directory when needed. Outside Slurm it
+uses 50% of DuckDB's initial memory limit. `GAPH_DUCKDB_MEMORY_LIMIT` overrides
+that budget with a DuckDB memory value such as `4GB`. Global statistics use
+unique genomic alleles; gene, target-context, and consequence statistics retain
+each allele-gene association. The compact final aggregation is cached as
+`<run-dir>/analytics/variant_summary.json.gz` and is reused while the input
+manifests and summary schema remain unchanged.
 Current runs load ortholog-evidence heatmaps from the compact
 `annotation/ortholog_evidence_summary.tsv.gz`; the report reconstructs those
 aggregates from `variant_strategy_support.tsv.gz` only for legacy runs that do

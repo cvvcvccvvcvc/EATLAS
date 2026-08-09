@@ -12,6 +12,10 @@ from analytics.analyses.variant_summary import (
     build_variant_summary,
 )
 from analytics.analyses.variant_summary_aggregation import (
+    DUCKDB_MEMORY_LIMIT_ENV,
+    _configure_duckdb_memory,
+    _parse_memory_setting,
+    _slurm_memory_bytes,
     aggregate_strategy_masks,
     aggregate_variant_groups,
     available_cpu_count,
@@ -26,6 +30,35 @@ COLUMNS = ["variant_key", "gene_id", "event_type", "ref", "alt", "strategies"]
 def test_available_cpu_count_prefers_slurm_allocation(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("SLURM_CPUS_PER_TASK", "12")
     assert available_cpu_count() == 12
+
+
+def test_slurm_memory_budget_uses_node_or_per_cpu_allocation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SLURM_MEM_PER_NODE", "16000")
+    assert _slurm_memory_bytes(4) == (16000 * 1024**2, "SLURM_MEM_PER_NODE")
+
+    monkeypatch.delenv("SLURM_MEM_PER_NODE")
+    monkeypatch.setenv("SLURM_MEM_PER_CPU", "2000")
+    monkeypatch.setenv("SLURM_CPUS_PER_TASK", "6")
+    assert _slurm_memory_bytes(4) == (12000 * 1024**2, "SLURM_MEM_PER_CPU")
+
+
+def test_duckdb_memory_uses_half_the_slurm_allocation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    duckdb = pytest.importorskip("duckdb")
+    monkeypatch.delenv(DUCKDB_MEMORY_LIMIT_ENV, raising=False)
+    monkeypatch.setenv("SLURM_MEM_PER_NODE", "2048")
+    connection = duckdb.connect()
+    try:
+        diagnostics = _configure_duckdb_memory(connection, thread_count=4)
+    finally:
+        connection.close()
+
+    assert diagnostics["memory_limit_source"] == "SLURM_MEM_PER_NODE"
+    observed = _parse_memory_setting(str(diagnostics["memory_limit"]))
+    assert 1000 * 1024**2 <= observed <= 1050 * 1024**2
 
 
 def test_strategy_masks_preserve_gene_context_and_union_global_alleles(tmp_path: Path) -> None:
@@ -152,7 +185,7 @@ def test_variant_groups_keep_gene_specific_context_and_consequence(tmp_path: Pat
     pd.DataFrame(
         [
             ["1:100:A>G", "gene_a", "snv", "A", "G", "s1,s2", "ok", "VCV1", "Benign", "2", "3", "0.01", "", "ok", "missense_variant"],
-            ["1:100:A>G", "gene_b", "snv", "A", "G", "s1,s3", "ok", "VCV1", "Benign", "2", "3", "0.01", "", "ok", "intron_variant"],
+            ["1:100:A>G", "gene_b", "snv", "A", "G", "s1,s3", "failed", "VCV1", "Benign", "2", "3", "", "", "ok", "intron_variant"],
             ["1:200:C>T", "gene_a", "snv", "C", "T", "s2", "ok", "", "", "", "", "0", "", "ok", "synonymous_variant"],
         ],
         columns=columns,
@@ -181,6 +214,10 @@ def test_variant_groups_keep_gene_specific_context_and_consequence(tmp_path: Pat
     assert result.masks.unique_variant_count == 2
     assert int(result.global_groups["variant_count"].sum()) == 2
     assert int(result.allele_gene_groups["variant_count"].sum()) == 3
+    assert result.diagnostics["allele_gene_row_count"] == 3
+    assert result.diagnostics["global_allele_row_count"] == 2
+    assert _parse_memory_setting(str(result.diagnostics["memory_limit"])) > 0
+    assert result.timings["compacted_relations"] >= 0
     observed = set(
         result.allele_gene_groups[
             ["gene_id", "target_context", "consequence"]
@@ -188,6 +225,18 @@ def test_variant_groups_keep_gene_specific_context_and_consequence(tmp_path: Pat
     )
     assert ("gene_a", "cds", "missense_variant") in observed
     assert ("gene_b", "intron", "intron_variant") in observed
+    assert int(
+        result.global_groups.loc[
+            result.global_groups["gnomad_status"].eq("lookup_failed"),
+            "variant_count",
+        ].sum()
+    ) == 0
+    assert int(
+        result.allele_gene_groups.loc[
+            result.allele_gene_groups["gnomad_status"].eq("lookup_failed"),
+            "variant_count",
+        ].sum()
+    ) == 1
     assert result.gnomad_af_summary.iloc[0]["Median gnomAD AF"] == 0.01
     s2_af = result.gnomad_af_summary.set_index("strategy").loc["s2"]
     assert s2_af["Count"] == 1
@@ -222,3 +271,26 @@ def test_variant_groups_keep_gene_specific_context_and_consequence(tmp_path: Pat
             list(getattr(built_summary, name).columns)
         ).reset_index(drop=True)
         pd.testing.assert_frame_equal(left, right, check_dtype=False)
+
+
+def test_duckdb_memory_override_takes_precedence(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path = tmp_path / "variant_annotations.tsv.gz"
+    pd.DataFrame(
+        [["1:100:A>G", "gene_a", "snv", "A", "G", "s1"]],
+        columns=COLUMNS,
+    ).to_csv(path, sep="\t", index=False, compression="gzip")
+    monkeypatch.setenv(DUCKDB_MEMORY_LIMIT_ENV, "512MB")
+    monkeypatch.setenv("SLURM_MEM_PER_NODE", "16000")
+
+    result = aggregate_variant_groups(
+        resolve_variant_aggregation_source(path),
+        threads=1,
+        temp_dir=tmp_path / "spill",
+    )
+
+    assert result.diagnostics["memory_limit_source"] == DUCKDB_MEMORY_LIMIT_ENV
+    observed = _parse_memory_setting(str(result.diagnostics["memory_limit"]))
+    assert 450 * 1024**2 <= observed <= 550 * 1024**2

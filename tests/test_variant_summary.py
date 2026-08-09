@@ -149,6 +149,11 @@ def test_variant_summary_prefers_compact_ortholog_evidence_and_tracks_its_cache(
     )
     assert aggregation["parent_id"] == profile.stages[0]["id"]
     assert aggregation["metrics"]["duckdb_source_scan_seconds"] >= 0
+    assert aggregation["metrics"]["duckdb_compacted_relations_seconds"] >= 0
+    assert aggregation["metrics"]["duckdb_allele_gene_row_count"] == 1
+    assert aggregation["metrics"]["duckdb_global_allele_row_count"] == 1
+    assert aggregation["metrics"]["duckdb_memory_limit"]
+    assert aggregation["metrics"]["summary_assembly_seconds"] >= 0
     assert "temporary_sqlite_bytes" not in aggregation["metrics"]
     assert set(summary.ortholog_evidence_cells["taxonomic_scope"]) == {"mammalia"}
     assert int(
