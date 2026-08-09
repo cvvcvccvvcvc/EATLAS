@@ -53,11 +53,6 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--run-dir", required=True, type=Path, help="Completed GAPH run directory.")
     parser.add_argument(
-        "--annotation-dir",
-        type=Path,
-        help="Annotation directory override. Default: <run-dir>/annotation.",
-    )
-    parser.add_argument(
         "--clinvar-vcf",
         type=Path,
         default=project_root() / "assets" / "reference" / "clinvar" / "clinvar.vcf.gz",
@@ -220,7 +215,7 @@ def main() -> None:
         raise ValueError("--vep-cache-dir is required with --vep-backend local")
     if args.target_space_null and args.vep_backend == "local" and not args.vep_release:
         raise ValueError("--vep-release is required with --vep-backend local")
-    inputs = resolve_run_inputs(args.run_dir, args.annotation_dir)
+    inputs = resolve_run_inputs(args.run_dir)
     validate_report_inputs(inputs)
     annotation_columns = set(
         pd.read_csv(inputs.variant_annotations_tsv, sep="\t", compression="gzip", nrows=0).columns

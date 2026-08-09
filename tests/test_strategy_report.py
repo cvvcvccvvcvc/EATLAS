@@ -111,62 +111,6 @@ def test_report_preflight_accepts_compact_production_contract(tmp_path: Path) ->
     validate_report_inputs(inputs)
 
 
-def test_report_inputs_accept_annotation_directory_override(tmp_path: Path) -> None:
-    run_dir = tmp_path / "run"
-    annotation_dir = tmp_path / "completed_annotation"
-    (run_dir / "fetch" / "sequences" / "targets").mkdir(parents=True)
-    base_annotation_dir = run_dir / "annotation"
-    base_annotation_dir.mkdir()
-    annotation_dir.mkdir()
-    pd.DataFrame(columns=["gene_id"]).to_csv(
-        run_dir / "fetch" / "genes.tsv.gz",
-        sep="\t",
-        index=False,
-        compression="gzip",
-    )
-    pd.DataFrame(columns=["variant_key"]).to_csv(
-        annotation_dir / "variant_annotations.tsv.gz",
-        sep="\t",
-        index=False,
-        compression="gzip",
-    )
-    pd.DataFrame(columns=["gene_id"]).to_csv(
-        run_dir / "fetch" / "target_features.tsv.gz",
-        sep="\t",
-        index=False,
-        compression="gzip",
-    )
-    for filename in ["variant_strategy_support.tsv.gz", "ortholog_evidence_summary.tsv.gz"]:
-        pd.DataFrame(columns=["gene_id"]).to_csv(
-            base_annotation_dir / filename,
-            sep="\t",
-            index=False,
-            compression="gzip",
-        )
-    (annotation_dir / "manifest.json").write_text(
-        json.dumps(
-            {
-                "gnomad_completion": {
-                    "source_annotation_dir": "/cluster/old/location/annotation",
-                    "source_annotation_relative_to_run": "annotation",
-                }
-            }
-        )
-        + "\n"
-    )
-
-    inputs = resolve_run_inputs(run_dir, annotation_dir)
-
-    assert inputs.variant_annotations_tsv == annotation_dir / "variant_annotations.tsv.gz"
-    assert inputs.annotation_failures_tsv == annotation_dir / "failures.tsv.gz"
-    assert inputs.variant_strategy_support_tsv == (
-        base_annotation_dir / "variant_strategy_support.tsv.gz"
-    )
-    assert inputs.ortholog_evidence_summary_tsv == (
-        base_annotation_dir / "ortholog_evidence_summary.tsv.gz"
-    )
-
-
 def test_report_inputs_use_matching_completed_vep_artifact(tmp_path: Path) -> None:
     run_dir = tmp_path / "run"
     annotation_dir = run_dir / "annotation"
