@@ -33,6 +33,26 @@ from analytics.reporting.variant_profile import (
     top_gene_contribution_counts,
     top_gene_contribution_figure,
 )
+from analytics.strategy_report import _default_phylop_bigwig
+
+
+def test_local_phylop_default_prefers_environment_or_existing_gaph_root(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    explicit = tmp_path / "explicit.bw"
+    monkeypatch.setenv("GAPH_PHYLOP_BIGWIG", str(explicit))
+    assert _default_phylop_bigwig() == explicit
+
+    monkeypatch.delenv("GAPH_PHYLOP_BIGWIG")
+    monkeypatch.setenv("GAPH_ROOT", str(tmp_path))
+    partial = tmp_path / "reference" / "ucsc" / "hg38.phyloP100way.bw.partial"
+    partial.parent.mkdir(parents=True)
+    partial.write_bytes(b"incomplete bigwig")
+    assert _default_phylop_bigwig() is None
+    discovered = tmp_path / "reference" / "ucsc" / "hg38.phyloP100way.bw"
+    discovered.write_bytes(b"bigwig")
+    assert _default_phylop_bigwig() == discovered
 
 
 def test_report_preflight_accepts_compact_production_contract(tmp_path: Path) -> None:

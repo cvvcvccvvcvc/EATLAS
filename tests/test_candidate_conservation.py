@@ -80,7 +80,9 @@ def test_candidate_conservation_deduplicates_memberships_and_reuses_cache(
         writer.writerow({"source": "gnomad", "scope": "region", "chrom": "1", "start": 2, "end": 2})
 
     captured = {}
-    track = parse_tracks("phyloP100way")[0]
+    local_bigwig = tmp_path / "hg38.phyloP100way.bw"
+    local_bigwig.write_bytes(b"test bigwig identity")
+    track = parse_tracks("phyloP100way", phylop_bigwig=local_bigwig)[0]
 
     def fake_read_position_scores(**kwargs):
         captured["positions"] = kwargs["positions_by_chrom"]
@@ -104,6 +106,7 @@ def test_candidate_conservation_deduplicates_memberships_and_reuses_cache(
         annotation_failures_tsv=failures,
         additional_rows=[{"chrom": "1", "pos": "4", "ref": "T", "alt": "C"}],
         chunk_size=1,
+        phylop_bigwig=local_bigwig,
     )
 
     assert captured["positions"] == {"chr1": {0, 2, 3}}
@@ -140,11 +143,15 @@ def test_candidate_conservation_deduplicates_memberships_and_reuses_cache(
         variant_annotations_tsv=annotations,
         analytics_dir=tmp_path / "analytics",
         annotation_failures_tsv=failures,
+        phylop_bigwig=local_bigwig,
     )
     assert cached.position_scores is None
     assert len(cached.distributions) == len(result.distributions)
     assert len(cached.histograms) == len(result.histograms)
     assert result.manifest["aggregation"]["engine"] == "duckdb"
+    assert result.manifest["inputs"]["track"]["file"]["path"] == str(
+        local_bigwig.resolve()
+    )
     assert not list((tmp_path / "analytics").glob("*.sqlite3"))
 
 

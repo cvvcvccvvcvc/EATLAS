@@ -12,7 +12,15 @@ import pytest
 from analytics.analyses import conservation as conservation_module
 from analytics.analyses import conservation_validation as validation_module
 from analytics.analyses.clinvar_validation import parse_molecular_consequences
-from analytics.analyses.conservation import DEFAULT_TRACK_NAMES, PositionScores, Track, annotate_track, score_positions
+from analytics.analyses.conservation import (
+    DEFAULT_TRACK_NAMES,
+    PositionScores,
+    Track,
+    annotate_track,
+    parse_tracks,
+    score_positions,
+    track_identity,
+)
 from analytics.analyses.statistics import benjamini_hochberg
 from analytics.analyses.conservation_validation import (
     SCORE_COLUMN,
@@ -33,6 +41,93 @@ from analytics.annotation.consequences import (
 
 def test_phyloP_is_the_only_default_conservation_track() -> None:
     assert DEFAULT_TRACK_NAMES == "phyloP100way"
+
+
+def test_local_phylop_source_is_validated_and_fingerprinted(tmp_path: Path) -> None:
+    local_bigwig = tmp_path / "hg38.phyloP100way.bw"
+    local_bigwig.write_bytes(b"first")
+
+    track = parse_tracks("phyloP100way", phylop_bigwig=local_bigwig)[0]
+    first_identity = track_identity(track)
+
+    assert track.url == str(local_bigwig.resolve())
+    assert first_identity["file"]["path"] == str(local_bigwig.resolve())
+    local_bigwig.write_bytes(b"changed-size")
+    assert track_identity(track) != first_identity
+
+    with pytest.raises(FileNotFoundError, match="does not exist"):
+        parse_tracks(
+            "phyloP100way",
+            phylop_bigwig=tmp_path / "missing.bw",
+        )
+
+
+def test_position_scores_read_local_bigwig_without_remote_retries(
+    tmp_path: Path,
+) -> None:
+    if conservation_module.pyBigWig is None:
+        pytest.skip("pyBigWig is not installed")
+    local_bigwig = tmp_path / "local.bw"
+    writer = conservation_module.pyBigWig.open(str(local_bigwig), "w")
+    writer.addHeader([("chr1", 10)])
+    writer.addEntries(
+        ["chr1", "chr1"],
+        [1, 4],
+        ends=[2, 5],
+        values=[1.5, -2.0],
+    )
+    writer.close()
+
+    track = Track("test", str(local_bigwig), "ucsc")
+    scores = conservation_module.read_position_scores(
+        positions_by_chrom={"chr1": {1, 4}},
+        track=track,
+        max_block_bp=10,
+        max_gap_bp=10,
+        remote_retries=3,
+        retry_sleep_seconds=60,
+        precision=6,
+    )
+
+    assert scores.values == {("chr1", 1): 1.5, ("chr1", 4): -2.0}
+    assert scores.summary["open_attempts"] == 1
+    assert scores.summary["url"] == str(local_bigwig)
+
+
+def test_invalid_local_bigwig_fails_once_without_retry_sleep(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    if conservation_module.pyBigWig is None:
+        pytest.skip("pyBigWig is not installed")
+    local_bigwig = tmp_path / "invalid.bw"
+    local_bigwig.write_bytes(b"not a bigwig")
+    open_calls = 0
+
+    def fail_open(_source: str):
+        nonlocal open_calls
+        open_calls += 1
+        raise RuntimeError("invalid format")
+
+    monkeypatch.setattr(conservation_module.pyBigWig, "open", fail_open)
+    monkeypatch.setattr(
+        conservation_module.time,
+        "sleep",
+        lambda _seconds: pytest.fail("local BigWig reads must not retry"),
+    )
+
+    with pytest.raises(RuntimeError, match="failed to open local bigWig"):
+        conservation_module.read_position_scores(
+            positions_by_chrom={"chr1": {1}},
+            track=Track("test", str(local_bigwig), "ucsc"),
+            max_block_bp=10,
+            max_gap_bp=10,
+            remote_retries=3,
+            retry_sleep_seconds=60,
+            precision=6,
+        )
+
+    assert open_calls == 1
 
 
 def test_allele_score_positions_exclude_indel_padding() -> None:

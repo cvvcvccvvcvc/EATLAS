@@ -106,6 +106,15 @@ def parse_args() -> argparse.Namespace:
         help="Optional shared directory for resumable gnomAD regional responses.",
     )
     parser.add_argument(
+        "--phylop-bigwig",
+        type=Path,
+        default=_default_phylop_bigwig(),
+        help=(
+            "Optional local hg38 phyloP100way BigWig. Defaults to "
+            "$GAPH_PHYLOP_BIGWIG or an existing file under $GAPH_ROOT/reference/ucsc."
+        ),
+    )
+    parser.add_argument(
         "--vep-backend",
         choices=("rest", "local"),
         default=os.environ.get("GAPH_VEP_BACKEND", "rest"),
@@ -169,6 +178,17 @@ def _default_vep_result_cache_dir() -> Path | None:
     return Path(gaph_root) / "cache" / "vep_results" if gaph_root else None
 
 
+def _default_phylop_bigwig() -> Path | None:
+    configured = os.environ.get("GAPH_PHYLOP_BIGWIG")
+    if configured:
+        return Path(configured)
+    gaph_root = os.environ.get("GAPH_ROOT")
+    if not gaph_root:
+        return None
+    candidate = Path(gaph_root) / "reference" / "ucsc" / "hg38.phyloP100way.bw"
+    return candidate if candidate.is_file() else None
+
+
 def _default_firth_workers() -> int:
     configured = os.environ.get("GAPH_FIRTH_WORKERS")
     if configured:
@@ -180,6 +200,12 @@ def _default_firth_workers() -> int:
 
 def main() -> None:
     args = parse_args()
+    if args.phylop_bigwig is not None:
+        args.phylop_bigwig = args.phylop_bigwig.expanduser().resolve()
+        if not args.phylop_bigwig.is_file():
+            raise FileNotFoundError(
+                f"Local phyloP BigWig does not exist: {args.phylop_bigwig}"
+            )
     if args.target_space_null and args.target_space_null_sample_size < 1:
         raise ValueError("--target-space-null-sample-size must be >= 1")
     if args.target_space_null and args.target_space_null_resamples < 100:
@@ -335,6 +361,7 @@ def main() -> None:
             eligible_gene_ids_by_strategy=alignment_gene_ids_by_strategy(cov),
             firth_workers=args.firth_workers,
             performance_profile=performance,
+            phylop_bigwig=args.phylop_bigwig,
         )
 
     negative_controls = None
@@ -354,6 +381,7 @@ def main() -> None:
                 resamples=args.target_space_null_resamples,
                 seed=args.target_space_null_seed,
                 gnomad_cache_dir=args.gnomad_cache_dir,
+                phylop_bigwig=args.phylop_bigwig,
                 vep_backend=args.vep_backend,
                 vep_release=args.vep_release,
                 vep_executable=args.vep_executable,

@@ -249,7 +249,7 @@ package caches in `/mnt/tank/scratch`:
 
 ```bash
 export GAPH_ROOT="/mnt/tank/scratch/$USER/gaph_v2"
-mkdir -p "$GAPH_ROOT"/{bin,cache/gnomad,cache/vep_results,conda,envs,micromamba,nextflow,results,work}
+mkdir -p "$GAPH_ROOT"/{bin,cache/gnomad,cache/vep_results,conda,envs,micromamba,nextflow,reference/ucsc,results,work}
 
 curl -Ls https://micro.mamba.pm/api/micromamba/linux-64/latest \
   | tar -xvj -C "$GAPH_ROOT" bin/micromamba
@@ -279,6 +279,7 @@ export GAPH_CODE="/nfs/home/$USER/gaph_v2"
 export GAPH_ROOT="/mnt/tank/scratch/$USER/gaph_v2"
 export GAPH_WORK_DIR="$GAPH_ROOT/work"
 export GAPH_GNOMAD_CACHE_DIR="$GAPH_ROOT/cache/gnomad"
+export GAPH_PHYLOP_BIGWIG="$GAPH_ROOT/reference/ucsc/hg38.phyloP100way.bw"
 export GAPH_VEP_BACKEND="local"
 export GAPH_VEP_RELEASE="116"
 export GAPH_VEP_EXECUTABLE="$GAPH_ROOT/bin/gaph-vep116"
@@ -300,6 +301,40 @@ configured in the ignored `$GAPH_CODE/.env`; the file was verified with mode
 
 If NCBI credentials are used, place them in the ignored `$GAPH_CODE/.env`, set
 permissions to `600`, and never commit the file.
+
+## Local phyloP For Analytics
+
+Keep one shared copy of the official UCSC hg38 phyloP100way BigWig under
+`$GAPH_ROOT/reference/ucsc`. The file is about 9.2 GB. Downloading is explicit;
+report generation never downloads reference files implicitly:
+
+```bash
+mkdir -p "$GAPH_ROOT/reference/ucsc"
+PHYLOP_PARTIAL="$GAPH_ROOT/reference/ucsc/hg38.phyloP100way.bw.partial"
+rsync --partial --append-verify --info=progress2 \
+  rsync://hgdownload.cse.ucsc.edu/goldenPath/hg38/phyloP100way/hg38.phyloP100way.bw \
+  "$PHYLOP_PARTIAL"
+
+if printf '%s  %s\n' \
+  43858006bdf98145b6fd239490bd0478 \
+  "$PHYLOP_PARTIAL" \
+  | md5sum --check -; then
+  mv "$PHYLOP_PARTIAL" "$GAPH_ROOT/reference/ucsc/hg38.phyloP100way.bw"
+fi
+```
+
+Set `GAPH_PHYLOP_BIGWIG` in `$HOME/.gaph_v2_cluster_env.sh`. The report also
+discovers this exact path automatically when `GAPH_ROOT` is set. Candidate,
+ClinVar, and target-null caches record the local file path, size, and
+modification time; replacing the BigWig invalidates the affected caches.
+
+Verified on 2026-08-09 against the saved remote target-null annotations from
+the 590-gene run: all 172,183 allele rows matched exactly, including 458
+positions without a score. For the same 172,043 unique positions and 638 read
+blocks, BigWig read time fell from 707.361 seconds over UCSC HTTPS to 6.554
+seconds from the shared local file (about 108x); the complete local annotation
+pass took 10.184 seconds with about 269 MiB peak RSS. This comparison covers
+the phyloP annotation pass, not the rest of report generation.
 
 ## Local VEP For Analytics
 

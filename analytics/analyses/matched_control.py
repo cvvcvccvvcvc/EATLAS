@@ -30,7 +30,7 @@ from analytics.io.artifacts import (
 )
 from analytics.io.performance import PerformanceProfile, profile_stage
 from analytics.io.variant_source import sql_string
-from .conservation import annotate_track, parse_tracks
+from .conservation import Track, annotate_track, parse_tracks, track_identity
 from .external_evidence import build_external_evidence
 from .observed_variant_store import (
     FOCAL_RANK_METHOD,
@@ -100,6 +100,7 @@ def build_target_space_null(
     resamples: int = 1_000,
     seed: int = 20_260_721,
     gnomad_cache_dir: Path | None = None,
+    phylop_bigwig: Path | None = None,
     vep_backend: str = "rest",
     vep_release: str | None = None,
     vep_executable: str | Path = "vep",
@@ -126,6 +127,10 @@ def build_target_space_null(
     manifest_path = outdir / "manifest.json"
     external_evidence_path = outdir / "target_space_null.external_evidence.tsv.gz"
     external_evidence_manifest_path = outdir / "target_space_null.external_evidence.manifest.json"
+    conservation_track = parse_tracks(
+        "phyloP100way",
+        phylop_bigwig=phylop_bigwig,
+    )[0]
 
     expected_inputs = {
         "version": CONTROL_VERSION,
@@ -146,7 +151,7 @@ def build_target_space_null(
             "refseq": True,
             "pick_allele_gene": True,
         },
-        "conservation_track": "phyloP100way",
+        "conservation_track": track_identity(conservation_track),
     }
     with profile_stage(performance_profile, "Target-null cache lookup") as timing:
         cache_hit = _cache_is_valid(
@@ -378,6 +383,7 @@ def build_target_space_null(
         conservation_rows, conservation_manifest = _annotate_conservation(
             matched,
             conservation_path,
+            conservation_track,
         )
         matched = matched.merge(
             conservation_rows,
@@ -1145,6 +1151,7 @@ def _matching_diagnostics(focal: pd.DataFrame, matched: pd.DataFrame) -> pd.Data
 def _annotate_conservation(
     matched: pd.DataFrame,
     output_path: Path,
+    track: Track,
 ) -> tuple[pd.DataFrame, dict]:
     unique = (
         matched[["variant_key", "chrom", "pos", "ref", "alt"]]
@@ -1161,7 +1168,6 @@ def _annotate_conservation(
         }
         for row in unique.itertuples(index=False)
     ]
-    track = parse_tracks("phyloP100way")[0]
     try:
         summary = annotate_track(
             rows=rows,

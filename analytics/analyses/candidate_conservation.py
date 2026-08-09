@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import tempfile
-from dataclasses import asdict, dataclass, replace
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 import numpy as np
@@ -23,6 +23,7 @@ from .conservation import (
     parse_tracks,
     read_position_scores,
     score_positions,
+    track_identity,
 )
 
 
@@ -66,9 +67,10 @@ def build_candidate_conservation(
     chunk_size: int = 100_000,
     strategies: list[str] | None = None,
     performance_profile: PerformanceProfile | None = None,
+    phylop_bigwig: Path | None = None,
 ) -> CandidateConservation:
     """Compute compact exact percentile curves with temporary allele-level scores."""
-    tracks = parse_tracks(track_names)
+    tracks = parse_tracks(track_names, phylop_bigwig=phylop_bigwig)
     if len(tracks) != 1:
         raise ValueError("Candidate-wide conservation currently requires exactly one track.")
     track = tracks[0]
@@ -84,7 +86,7 @@ def build_candidate_conservation(
         "annotation_failures": (
             path_metadata(annotation_failures_tsv) if annotation_failures_tsv is not None else None
         ),
-        "track": asdict(track),
+        "track": track_identity(track),
         "max_block_bp": max_block_bp,
         "max_gap_bp": max_gap_bp,
         "remote_retries": remote_retries,

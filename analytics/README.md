@@ -85,6 +85,13 @@ still keeps its per-run SQLite database as its resume checkpoint.
 When `GAPH_VEP_RESULT_CACHE_DIR` is unset but `GAPH_ROOT` is available, reports
 default to `$GAPH_ROOT/cache/vep_results`.
 
+Set `GAPH_PHYLOP_BIGWIG` or pass `--phylop-bigwig` to read phyloP100way from a
+local copy of the official hg38 UCSC BigWig. When neither is set, reports use
+`$GAPH_ROOT/reference/ucsc/hg38.phyloP100way.bw` if that file exists and
+otherwise retain the UCSC HTTPS source. Local files are fingerprinted by path,
+size, and modification time in candidate, ClinVar, and target-null cache
+contracts.
+
 Full candidate annotation is a separate resumable precompute, not an implicit
 part of HTML generation. Prepare deterministic input partitions once:
 
@@ -247,7 +254,7 @@ relative-frequency histograms per strategy and gnomAD-hit stratum, not millions
 of allele-level score rows. Histogram widths use the Freedman-Diaconis rule on
 the combined hit/non-hit scores for a strategy, capped at 80 display bins. On a
 cold run it reads the union of candidate and ClinVar-required positions from
-the remote bigWig once and reuses that positional map for both candidate
+the configured bigWig once and reuses that positional map for both candidate
 stratification and ClinVar conservation validation.
 
 `Target-Space Null` compares GAPH SNVs with unobserved possible SNVs matched by

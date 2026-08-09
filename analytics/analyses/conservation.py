@@ -8,7 +8,7 @@ import json
 import math
 import sys
 import time
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 
 import pandas as pd
@@ -91,8 +91,9 @@ def build_conservation_annotations(
     retry_sleep_seconds: float = 5.0,
     precision: int = 6,
     position_scores: PositionScores | None = None,
+    phylop_bigwig: Path | None = None,
 ) -> ConservationAnnotations:
-    tracks = parse_tracks(track_names)
+    tracks = parse_tracks(track_names, phylop_bigwig=phylop_bigwig)
     analytics_dir.mkdir(parents=True, exist_ok=True)
     annotations_path = analytics_dir / "clinvar_universe.snv_indel.conservation.tsv.gz"
     manifest_path = analytics_dir / "clinvar_universe.snv_indel.conservation.manifest.json"
@@ -100,7 +101,7 @@ def build_conservation_annotations(
     expected_inputs = {
         "cache_version": CACHE_VERSION,
         "universe": path_metadata(universe_path),
-        "tracks": [asdict(track) for track in tracks],
+        "tracks": [track_identity(track) for track in tracks],
         "max_block_bp": max_block_bp,
         "max_gap_bp": max_gap_bp,
         "remote_retries": remote_retries,
@@ -172,7 +173,11 @@ def build_conservation_annotations(
     return ConservationAnnotations(annotations_path, manifest_path, annotations, manifest, score_columns)
 
 
-def parse_tracks(raw_names: str) -> list[Track]:
+def parse_tracks(
+    raw_names: str,
+    *,
+    phylop_bigwig: Path | None = None,
+) -> list[Track]:
     tracks = []
     for raw_name in raw_names.split(","):
         name = raw_name.strip()
@@ -180,10 +185,26 @@ def parse_tracks(raw_names: str) -> list[Track]:
             continue
         if name not in DEFAULT_TRACKS:
             raise ValueError(f"Unknown conservation track {name!r}; available: {', '.join(DEFAULT_TRACKS)}")
-        tracks.append(DEFAULT_TRACKS[name])
+        track = DEFAULT_TRACKS[name]
+        if name == "phyloP100way" and phylop_bigwig is not None:
+            source = phylop_bigwig.expanduser().resolve()
+            if not source.is_file():
+                raise FileNotFoundError(f"Local phyloP BigWig does not exist: {source}")
+            track = replace(track, url=str(source))
+        tracks.append(track)
     if not tracks:
         raise ValueError("At least one conservation track is required.")
     return tracks
+
+
+def track_identity(track: Track) -> dict[str, object]:
+    """Return a cache identity that fingerprints local track files."""
+
+    identity: dict[str, object] = asdict(track)
+    local_path = _local_track_path(track)
+    if local_path is not None:
+        identity["file"] = path_metadata(local_path)
+    return identity
 
 
 def universe_rows(universe: pd.DataFrame) -> list[dict[str, str]]:
@@ -390,7 +411,7 @@ def read_position_scores(
     retry_sleep_seconds: float,
     precision: int,
 ) -> PositionScores:
-    """Read selected genomic positions from one remote bigWig in contiguous blocks."""
+    """Read selected genomic positions from one bigWig in contiguous blocks."""
     if pyBigWig is None:
         raise RuntimeError("pyBigWig is required for conservation annotation.")
 
@@ -535,6 +556,18 @@ def value_to_text(value: float | None, precision: int) -> str:
 
 def open_bigwig_with_retries(track: Track, remote_retries: int, retry_sleep_seconds: float) -> tuple[object, int, float]:
     start_time = time.perf_counter()
+    local_path = _local_track_path(track)
+    if local_path is not None:
+        try:
+            bw = pyBigWig.open(str(local_path))
+            if bw is None:
+                raise RuntimeError("pyBigWig.open returned None")
+            return bw, 1, time.perf_counter() - start_time
+        except (RuntimeError, OSError) as exc:
+            raise RuntimeError(
+                f"{track.name}: failed to open local bigWig {local_path}: {exc}"
+            ) from exc
+
     last_error: Exception | None = None
     for attempt in range(1, remote_retries + 1):
         try:
@@ -548,6 +581,15 @@ def open_bigwig_with_retries(track: Track, remote_retries: int, retry_sleep_seco
                 break
             sleep_before_retry(retry_sleep_seconds, attempt)
     raise RuntimeError(f"{track.name}: failed to open remote bigWig after {remote_retries} attempts: {last_error}")
+
+
+def _local_track_path(track: Track) -> Path | None:
+    if "://" in track.url:
+        return None
+    path = Path(track.url).expanduser().resolve()
+    if not path.is_file():
+        raise FileNotFoundError(f"Local conservation bigWig does not exist: {path}")
+    return path
 
 
 def read_values_with_retries(

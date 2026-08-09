@@ -125,7 +125,7 @@ def test_build_target_space_null_end_to_end_with_mocked_annotations(
         result["variant_class"] = "SNV"
         return result, {"status": "complete", "release": "116", "requested": len(result)}
 
-    def fake_conservation(frame, output_path):
+    def fake_conservation(frame, output_path, _track):
         unique = frame[["variant_key"]].drop_duplicates().copy()
         unique["phyloP100way"] = np.arange(len(unique), dtype=float)
         unique.to_csv(output_path, sep="\t", index=False, compression="gzip")
@@ -154,6 +154,8 @@ def test_build_target_space_null_end_to_end_with_mocked_annotations(
         run_dir=run_dir,
         report_path=run_dir / "report.html",
     )
+    phylop_bigwig = tmp_path / "hg38.phyloP100way.bw"
+    phylop_bigwig.write_bytes(b"test bigwig identity")
 
     analysis = controls.build_target_space_null(
         run_dir=run_dir,
@@ -168,6 +170,7 @@ def test_build_target_space_null_end_to_end_with_mocked_annotations(
         resamples=100,
         seed=3,
         gnomad_cache_dir=tmp_path / "gnomad_cache",
+        phylop_bigwig=phylop_bigwig,
         vep_result_cache_dir=tmp_path / "vep_result_cache",
         performance_profile=performance,
     )
@@ -179,6 +182,9 @@ def test_build_target_space_null_end_to_end_with_mocked_annotations(
     assert set(matched["alt"]) == {"G"}
     assert analysis.manifest["matched_focal_count"] == 1
     assert analysis.manifest["inputs"]["version"] == controls.CONTROL_VERSION
+    assert analysis.manifest["inputs"]["conservation_track"]["file"]["path"] == str(
+        phylop_bigwig.resolve()
+    )
     assert (
         analysis.manifest["inputs"]["focal_rank_method"]
         == controls.FOCAL_RANK_METHOD
@@ -239,6 +245,7 @@ def test_build_target_space_null_end_to_end_with_mocked_annotations(
         resamples=100,
         seed=3,
         gnomad_cache_dir=tmp_path / "gnomad_cache",
+        phylop_bigwig=phylop_bigwig,
         vep_result_cache_dir=tmp_path / "vep_result_cache",
         performance_profile=performance,
     )
