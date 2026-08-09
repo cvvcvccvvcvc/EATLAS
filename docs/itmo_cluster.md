@@ -462,10 +462,11 @@ merge fix. Both genes now reach `MERGE_ALIGNMENT_PARTITION` and
 
 Annotation of the two-gene, seven-strategy AFDN/BRCA1 dataset collapsed
 4,379,013 support rows to 470,359 variant contexts in 2m54s and used 3.3 GB
-peak RSS. Annotation tasks therefore request 8 GB and partitioned annotation
-retries OOM-like failures with a larger allocation. Representative scaling
-runs should keep partitions small until memory scaling has been measured on a
-larger panel.
+peak RSS. That historical run predated the current support-row-aware resource
+model. Annotation partitions now request 32, 48, 64, or 96 GB initially, as
+described in the Resource Model above, and add 32 GB per retry. Tune those
+bounds from representative trace `peak_rss` measurements rather than restoring
+the former fixed 8 GB request.
 
 ## Monitoring And Analytics
 

@@ -202,6 +202,78 @@ def test_compact_events_write_taxonomic_alt_counts_in_sqlite(tmp_path: Path) -> 
     }
 
 
+def test_compact_taxonomic_alt_counts_use_numeric_site_order(tmp_path: Path) -> None:
+    events = tmp_path / "alignment_events.tsv.gz"
+    compact = tmp_path / "compact.tsv.gz"
+    ortholog_support = tmp_path / "event_ortholog_support.tsv.gz"
+    support = tmp_path / "support.tsv.gz"
+    fields = [
+        "gene_id",
+        "event_type",
+        "target_start0",
+        "target_end0",
+        "genomic_accession",
+        "genomic_start1",
+        "genomic_end1",
+        "ref",
+        "alt",
+        "ortholog_gene_id",
+        "strategy",
+        "tool",
+        "preset",
+        "tax_id",
+        "taxname",
+        "qc_flags",
+    ]
+    event_sites = [
+        ("s1", 10_080, "chimp_10080"),
+        ("s2", 10, "chimp_s2"),
+        ("s1", 1_016, "chimp_1016"),
+    ]
+    write_tsv_gz(
+        events,
+        fields,
+        [
+            {
+                "gene_id": "1",
+                "event_type": "snv",
+                "target_start0": position,
+                "target_end0": position + 1,
+                "genomic_accession": "NC_000001.11",
+                "genomic_start1": position + 1,
+                "genomic_end1": position + 1,
+                "ref": "A",
+                "alt": "G",
+                "ortholog_gene_id": ortholog_gene_id,
+                "strategy": strategy,
+                "tool": "tool",
+                "tax_id": "9598",
+            }
+            for strategy, position, ortholog_gene_id in event_sites
+        ],
+    )
+
+    compact_count, raw_count, support_count, ortholog_support_count = write_compact_events(
+        [events],
+        compact,
+        ortholog_support,
+        taxonomy_fixture(tmp_path),
+        support,
+    )
+
+    assert (compact_count, raw_count, support_count, ortholog_support_count) == (3, 3, 3, 3)
+    with gzip.open(support, "rt", newline="") as handle:
+        support_rows = list(csv.DictReader(handle, delimiter="\t"))
+    assert [
+        (row["gene_id"], row["strategy"], int(row["target_start0"]))
+        for row in support_rows
+    ] == [
+        ("1", "s1", 1_016),
+        ("1", "s1", 10_080),
+        ("1", "s2", 10),
+    ]
+
+
 def test_compact_evidence_summary_preserves_scope_unit_and_gnomad_status(tmp_path: Path) -> None:
     profiles = load_taxonomy_profiles(taxonomy_fixture(tmp_path))
     depth_counts = count_member_groups(

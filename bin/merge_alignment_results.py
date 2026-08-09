@@ -84,15 +84,15 @@ EVENT_ORTHOLOG_SUPPORT_FIELDS = [
 ]
 EVENT_KEY_FIELDS = [
     "gene_id",
-    "event_type",
+    "strategy",
     "target_start0",
+    "event_type",
     "target_end0",
     "genomic_accession",
     "genomic_start1",
     "genomic_end1",
     "ref",
     "alt",
-    "strategy",
 ]
 EVENT_STREAM_FIELDS = [
     *EVENT_KEY_FIELDS,
@@ -713,15 +713,16 @@ def write_compact_events(
             """
             CREATE INDEX events_key_idx ON events (
                 gene_id,
-                event_type,
+                strategy,
+                CAST(target_start0 AS INTEGER),
                 target_start0,
+                event_type,
                 target_end0,
                 genomic_accession,
                 genomic_start1,
                 genomic_end1,
                 ref,
-                alt,
-                strategy
+                alt
             )
             """
         )
@@ -730,15 +731,15 @@ def write_compact_events(
         query = """
             SELECT
                 gene_id,
-                event_type,
+                strategy,
                 target_start0,
+                event_type,
                 target_end0,
                 genomic_accession,
                 genomic_start1,
                 genomic_end1,
                 ref,
                 alt,
-                strategy,
                 ortholog_gene_id,
                 tool,
                 preset,
@@ -748,15 +749,16 @@ def write_compact_events(
             FROM events INDEXED BY events_key_idx
             ORDER BY
                 gene_id,
-                event_type,
+                strategy,
+                CAST(target_start0 AS INTEGER),
                 target_start0,
+                event_type,
                 target_end0,
                 genomic_accession,
                 genomic_start1,
                 genomic_end1,
                 ref,
-                alt,
-                strategy
+                alt
         """
         taxonomy_profiles = (
             load_taxonomy_profiles(taxonomy_presets)
