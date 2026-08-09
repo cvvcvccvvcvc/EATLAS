@@ -58,6 +58,12 @@ def test_candidate_conservation_deduplicates_memberships_and_reuses_cache(
             "strategies": "s1",
             "gnomad_af": "0.2",
         },
+        {
+            "variant_key": "1:5:A>G:extra",
+            "lookup_status": "ok",
+            "strategies": "s1",
+            "gnomad_af": "0.3",
+        },
     ]
     with gzip.open(annotations, "wt", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=fields, delimiter="\t", lineterminator="\n")
@@ -97,11 +103,18 @@ def test_candidate_conservation_deduplicates_memberships_and_reuses_cache(
         analytics_dir=tmp_path / "analytics",
         annotation_failures_tsv=failures,
         additional_rows=[{"chrom": "1", "pos": "4", "ref": "T", "alt": "C"}],
+        chunk_size=1,
     )
 
     assert captured["positions"] == {"chr1": {0, 2, 3}}
+    assert result.manifest["candidate_scan"]["unsupported_allele_context_count"] == 2
     assert result.manifest["memberships"]["unique_usable_allele_count"] == 2
     assert result.manifest["memberships"]["strategy_variant_membership_count"] == 3
+    assert result.manifest["score_materialization"] == {
+        "attempted_allele_count": 2,
+        "scored_allele_count": 2,
+        "missing_score_allele_count": 0,
+    }
     medians = result.distributions[result.distributions["quantile"] == 0.5].set_index(
         ["strategy", "gnomad_status"]
     )["phyloP100way"]
@@ -195,6 +208,65 @@ def test_candidate_conservation_scores_indels_and_excludes_complex_alleles(
     assert group["variant_count"] == 2
     assert group["scored_count"] == 2
     assert group["median"] == 3.0
+
+
+def test_candidate_score_materialization_reuses_scores_and_tracks_missing_values(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    annotations = tmp_path / "variant_annotations.tsv.gz"
+    fields = sorted(candidate.REQUIRED_COLUMNS)
+    with gzip.open(annotations, "wt", newline="") as handle:
+        writer = csv.DictWriter(
+            handle,
+            fieldnames=fields,
+            delimiter="\t",
+            lineterminator="\n",
+        )
+        writer.writeheader()
+        writer.writerows(
+            [
+                {
+                    "variant_key": "1:1:A>G",
+                    "lookup_status": "ok",
+                    "strategies": "s1,s2",
+                    "gnomad_af": "0.1",
+                },
+                {
+                    "variant_key": "1:2:C>T",
+                    "lookup_status": "ok",
+                    "strategies": "s1",
+                    "gnomad_af": "",
+                },
+            ]
+        )
+
+    track = parse_tracks("phyloP100way")[0]
+    monkeypatch.setattr(
+        candidate,
+        "read_position_scores",
+        lambda **_kwargs: PositionScores(
+            track,
+            {("chr1", 0): 1.25},
+            {"track": track.name, "status": "complete", "failed_block_count": 0},
+        ),
+    )
+
+    result = candidate.build_candidate_conservation(
+        variant_annotations_tsv=annotations,
+        analytics_dir=tmp_path / "analytics",
+        chunk_size=1,
+    )
+
+    assert result.manifest["score_materialization"] == {
+        "attempted_allele_count": 2,
+        "scored_allele_count": 1,
+        "missing_score_allele_count": 1,
+    }
+    groups = {(row["strategy"], row["gnomad_status"]): row for row in result.manifest["groups"]}
+    assert groups[("s1", "found")]["scored_count"] == 1
+    assert groups[("s2", "found")]["scored_count"] == 1
+    assert groups[("s1", "not_found")]["scored_count"] == 0
 
 
 def test_candidate_source_prefers_validated_vep_input_partitions(tmp_path: Path) -> None:

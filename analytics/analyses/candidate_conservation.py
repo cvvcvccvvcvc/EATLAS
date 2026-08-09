@@ -24,7 +24,6 @@ from .conservation import (
     read_position_scores,
     score_positions,
 )
-from genomics.variants import parse_variant_key
 
 
 CACHE_VERSION = 5
@@ -68,7 +67,7 @@ def build_candidate_conservation(
     strategies: list[str] | None = None,
     performance_profile: PerformanceProfile | None = None,
 ) -> CandidateConservation:
-    """Compute compact exact percentile curves without persisting allele-level scores."""
+    """Compute compact exact percentile curves with temporary allele-level scores."""
     tracks = parse_tracks(track_names)
     if len(tracks) != 1:
         raise ValueError("Candidate-wide conservation currently requires exactly one track.")
@@ -138,11 +137,19 @@ def build_candidate_conservation(
                     precision=precision,
                 )
                 timing["metrics"] = dict(position_scores.summary)
-            with profile_stage(performance_profile, "Candidate distribution summaries") as timing:
-                distributions, histograms, groups, membership_summary = _aggregate_distributions(
+            with profile_stage(
+                performance_profile,
+                "Candidate allele score materialization",
+            ) as timing:
+                score_summary = _materialize_candidate_scores(
                     store,
                     position_scores,
                     chunk_size,
+                )
+                timing["metrics"] = dict(score_summary)
+            with profile_stage(performance_profile, "Candidate distribution summaries") as timing:
+                distributions, histograms, groups, membership_summary = _aggregate_distributions(
+                    store,
                 )
                 timing["metrics"] = dict(membership_summary)
         finally:
@@ -155,6 +162,7 @@ def build_candidate_conservation(
         "candidate_scan": scan_summary,
         "position_read": position_scores.summary,
         "memberships": membership_summary,
+        "score_materialization": score_summary,
         "aggregation": {
             "engine": "duckdb",
             "source_mode": store.source.mode,
@@ -225,26 +233,24 @@ def _candidate_positions(
     store: CandidateAlleleStore,
     chrom_style: str,
     chunk_size: int,
-) -> tuple[dict[str, set[int]], dict[str, int], list[str]]:
+) -> tuple[dict[str, set[int]], dict[str, int], list[int]]:
     positions_by_chrom: dict[str, set[int]] = {}
     usable_allele_count = 0
     unsupported_allele_count = 0
-    unsupported_keys: list[str] = []
+    unsupported_allele_ids: list[int] = []
     summary = store.context_summary()
     unsupported_allele_count += summary["position_failed_context_count"]
     for rows in store.iter_position_rows(chunk_size):
-        for variant_key, context_count in rows:
-            parsed = parse_variant_key(variant_key)
-            if parsed is None:
+        for allele_id, key_valid, chrom, pos, ref, alt, context_count in rows:
+            if not key_valid:
                 unsupported_allele_count += int(context_count)
-                unsupported_keys.append(str(variant_key))
+                unsupported_allele_ids.append(int(allele_id))
                 continue
-            chrom, pos, ref, alt = parsed
             positions, _basis = score_positions(int(pos), str(ref), str(alt))
             positions = [position for position in positions if position >= 0]
             if not positions:
                 unsupported_allele_count += int(context_count)
-                unsupported_keys.append(str(variant_key))
+                unsupported_allele_ids.append(int(allele_id))
                 continue
             usable_allele_count += int(context_count)
             if int(context_count) == 0:
@@ -256,7 +262,7 @@ def _candidate_positions(
         "usable_allele_context_count": usable_allele_count,
         "unsupported_allele_context_count": unsupported_allele_count,
         "candidate_unique_position_count": sum(len(values) for values in positions_by_chrom.values()),
-    }, unsupported_keys
+    }, unsupported_allele_ids
 
 
 def _add_positions(
@@ -272,8 +278,6 @@ def _add_positions(
 
 def _aggregate_distributions(
     store: CandidateAlleleStore,
-    position_scores: PositionScores,
-    chunk_size: int,
 ) -> tuple[pd.DataFrame, pd.DataFrame, list[dict[str, object]], dict[str, int]]:
     groups_frame = store.group_counts()
     groups_frame["scored_count"] = 0
@@ -285,15 +289,9 @@ def _aggregate_distributions(
         values_by_status = {}
         for group in strategy_groups.itertuples(index=False):
             status = str(group.gnomad_status)
-            values = np.fromiter(
-                _iter_group_scores(
-                    store=store,
-                    strategy=strategy,
-                    gnomad_status=status,
-                    position_scores=position_scores,
-                    chunk_size=chunk_size,
-                ),
-                dtype=float,
+            values = store.group_scores(
+                strategy=strategy,
+                gnomad_status=status,
             )
             groups_frame.loc[
                 groups_frame["strategy"].eq(strategy)
@@ -357,24 +355,17 @@ def _aggregate_distributions(
     }
 
 
-def _iter_group_scores(
-    *,
+def _materialize_candidate_scores(
     store: CandidateAlleleStore,
-    strategy: str,
-    gnomad_status: str,
     position_scores: PositionScores,
     chunk_size: int,
-):
-    for variant_keys in store.iter_group_variant_keys(
-        strategy=strategy,
-        gnomad_status=gnomad_status,
-        chunk_size=chunk_size,
-    ):
-        for variant_key in variant_keys:
-            parsed = parse_variant_key(variant_key)
-            if parsed is None:
-                continue
-            chrom, pos, ref, alt = parsed
+) -> dict[str, int]:
+    attempted_count = 0
+    scored_count = 0
+    for rows in store.iter_scoring_rows(chunk_size):
+        scores = []
+        for allele_id, chrom, pos, ref, alt in rows:
+            attempted_count += 1
             required = _required_positions(
                 chrom,
                 pos,
@@ -384,7 +375,14 @@ def _iter_group_scores(
             )
             values = [position_scores.values.get(position) for position in required]
             if values and all(value is not None for value in values):
-                yield float(np.mean(values))
+                scores.append((int(allele_id), float(np.mean(values))))
+        store.append_scores(scores)
+        scored_count += len(scores)
+    return {
+        "attempted_allele_count": attempted_count,
+        "scored_allele_count": scored_count,
+        "missing_score_allele_count": attempted_count - scored_count,
+    }
 
 
 def _histogram_edges(values: np.ndarray) -> np.ndarray:

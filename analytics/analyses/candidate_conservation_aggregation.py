@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 from typing import Iterator
 
+import numpy as np
 import pandas as pd
 
 from analytics.io.variant_source import (
@@ -58,7 +59,11 @@ class CandidateAlleleStore:
                     f"observed {observed_rows}, expected {source.row_count}"
                 )
             self.connection.execute(
-                "CREATE TEMP TABLE unsupported_variants (variant_key VARCHAR PRIMARY KEY)"
+                "CREATE TEMP TABLE unsupported_alleles (allele_id BIGINT PRIMARY KEY)"
+            )
+            self.connection.execute(
+                "CREATE TEMP TABLE candidate_scores "
+                "(allele_id BIGINT PRIMARY KEY, score DOUBLE NOT NULL)"
             )
         except BaseException:
             self.connection.close()
@@ -69,24 +74,75 @@ class CandidateAlleleStore:
 
     def iter_position_rows(self, chunk_size: int) -> Iterator[list[tuple[object, ...]]]:
         cursor = self.connection.execute(
-            "SELECT variant_key, eligible_position_context_count "
+            "SELECT allele_id, key_valid, key_chrom, key_pos, key_ref, key_alt, "
+            "eligible_position_context_count "
             "FROM candidate_alleles WHERE nonfailed_context_count > 0"
         )
         while rows := cursor.fetchmany(chunk_size):
             yield rows
 
-    def register_unsupported(self, variant_keys: list[str]) -> None:
-        if not variant_keys:
+    def register_unsupported(self, allele_ids: list[int]) -> None:
+        if not allele_ids:
             return
-        frame = pd.DataFrame({"variant_key": sorted(set(variant_keys))})
-        self.connection.register("unsupported_variants_input", frame)
+        frame = pd.DataFrame(
+            {"allele_id": sorted(set(allele_ids))},
+            dtype="int64",
+        )
+        self.connection.register("unsupported_alleles_input", frame)
         try:
             self.connection.execute(
-                "INSERT OR IGNORE INTO unsupported_variants "
-                "SELECT cast(variant_key AS VARCHAR) FROM unsupported_variants_input"
+                "INSERT OR IGNORE INTO unsupported_alleles "
+                "SELECT cast(allele_id AS BIGINT) FROM unsupported_alleles_input"
             )
         finally:
-            self.connection.unregister("unsupported_variants_input")
+            self.connection.unregister("unsupported_alleles_input")
+
+    def iter_scoring_rows(self, chunk_size: int) -> Iterator[list[tuple[object, ...]]]:
+        last_allele_id = 0
+        while True:
+            rows = self.connection.execute(
+                "SELECT a.allele_id, a.key_chrom, a.key_pos, a.key_ref, a.key_alt "
+                "FROM candidate_alleles a "
+                "WHERE a.found_strategy_mask | a.not_found_strategy_mask != 0 "
+                "AND a.allele_id > ? "
+                "AND NOT EXISTS (SELECT 1 FROM unsupported_alleles u "
+                "                WHERE u.allele_id = a.allele_id) "
+                "ORDER BY a.allele_id LIMIT ?",
+                [last_allele_id, chunk_size],
+            ).fetchall()
+            if not rows:
+                return
+            yield rows
+            last_allele_id = int(rows[-1][0])
+
+    def append_scores(self, scores: list[tuple[int, float]]) -> None:
+        if not scores:
+            return
+        frame = pd.DataFrame(scores, columns=["allele_id", "score"])
+        frame = frame.astype({"allele_id": "int64", "score": "float64"})
+        self.connection.register("candidate_scores_input", frame)
+        try:
+            self.connection.execute(
+                "INSERT INTO candidate_scores "
+                "SELECT allele_id, score FROM candidate_scores_input"
+            )
+        finally:
+            self.connection.unregister("candidate_scores_input")
+
+    def group_scores(self, *, strategy: str, gnomad_status: str) -> np.ndarray:
+        try:
+            bit = 1 << self.strategies.index(strategy)
+        except ValueError as exc:
+            raise ValueError(f"Unknown candidate strategy {strategy!r}") from exc
+        values = self.connection.execute(
+            "SELECT s.score FROM candidate_alleles a "
+            "JOIN candidate_scores s USING (allele_id) "
+            "WHERE CASE WHEN ? = 'found' THEN a.found_strategy_mask "
+            "           WHEN ? = 'not_found' THEN a.not_found_strategy_mask "
+            "           ELSE 0 END & ? != 0",
+            [gnomad_status, gnomad_status, bit],
+        ).fetchnumpy()["score"]
+        return np.asarray(values, dtype=float)
 
     def group_counts(self) -> pd.DataFrame:
         rows = []
@@ -100,8 +156,8 @@ class CandidateAlleleStore:
                 "  ('not_found', a.not_found_strategy_mask)"
                 ") status(gnomad_status, strategy_mask) "
                 "WHERE status.strategy_mask & ? != 0 "
-                "AND NOT EXISTS (SELECT 1 FROM unsupported_variants u "
-                "                WHERE u.variant_key = a.variant_key) "
+                "AND NOT EXISTS (SELECT 1 FROM unsupported_alleles u "
+                "                WHERE u.allele_id = a.allele_id) "
                 "GROUP BY status.gnomad_status ORDER BY status.gnomad_status",
                 [bit],
             ).fetchdf()
@@ -113,29 +169,6 @@ class CandidateAlleleStore:
             return pd.DataFrame(columns=["strategy", "gnomad_status", "variant_count"])
         return pd.concat(rows, ignore_index=True)
 
-    def iter_group_variant_keys(
-        self,
-        *,
-        strategy: str,
-        gnomad_status: str,
-        chunk_size: int,
-    ) -> Iterator[list[str]]:
-        try:
-            bit = 1 << self.strategies.index(strategy)
-        except ValueError as exc:
-            raise ValueError(f"Unknown candidate strategy {strategy!r}") from exc
-        cursor = self.connection.execute(
-            "SELECT a.variant_key FROM candidate_alleles a "
-            "WHERE CASE WHEN ? = 'found' THEN a.found_strategy_mask "
-            "           WHEN ? = 'not_found' THEN a.not_found_strategy_mask "
-            "           ELSE 0 END & ? != 0 "
-            "AND NOT EXISTS (SELECT 1 FROM unsupported_variants u "
-            "                WHERE u.variant_key = a.variant_key)",
-            [gnomad_status, gnomad_status, bit],
-        )
-        while rows := cursor.fetchmany(chunk_size):
-            yield [str(row[0]) for row in rows]
-
     def summary(self) -> dict[str, int]:
         row = self.connection.execute(
             "SELECT "
@@ -144,12 +177,12 @@ class CandidateAlleleStore:
             "sum(lookup_failed_context_count), "
             "sum(bit_count(found_strategy_mask & raw_not_found_strategy_mask)), "
             "count(*) FILTER (WHERE found_strategy_mask | not_found_strategy_mask != 0 "
-            "  AND NOT EXISTS (SELECT 1 FROM unsupported_variants u "
-            "                  WHERE u.variant_key = candidate_alleles.variant_key)), "
+            "  AND NOT EXISTS (SELECT 1 FROM unsupported_alleles u "
+            "                  WHERE u.allele_id = candidate_alleles.allele_id)), "
             "sum(bit_count(found_strategy_mask | not_found_strategy_mask)) "
             "  FILTER (WHERE found_strategy_mask | not_found_strategy_mask != 0 "
-            "  AND NOT EXISTS (SELECT 1 FROM unsupported_variants u "
-            "                  WHERE u.variant_key = candidate_alleles.variant_key)) "
+            "  AND NOT EXISTS (SELECT 1 FROM unsupported_alleles u "
+            "                  WHERE u.allele_id = candidate_alleles.allele_id)) "
             "FROM candidate_alleles"
         ).fetchone()
         return {
@@ -199,6 +232,14 @@ class CandidateAlleleStore:
             f"WHEN starts_with({raw_chrom}, 'chr') THEN substr({raw_chrom}, 4) "
             f"ELSE {raw_chrom} END"
         )
+        key_valid = (
+            "coalesce(key_pos IS NOT NULL AND key_pos > 0 AND key_chrom <> '' "
+            "AND length(variant_key) - length(replace(variant_key, ':', '')) = 2 "
+            "AND length(variant_key) - length(replace(variant_key, '>', '')) = 1 "
+            "AND regexp_full_match(key_pos_text, '[0-9]+') "
+            "AND regexp_full_match(key_ref, '[ACGT]+') "
+            "AND regexp_full_match(key_alt, '[ACGT]+'), false)"
+        )
         source_sql = variant_source_sql(self.source)
         self.connection.execute(
             "CREATE TEMP TABLE candidate_alleles AS WITH parsed AS ("
@@ -212,6 +253,7 @@ class CandidateAlleleStore:
             f"FROM {source_sql}"
             "), normalized AS ("
             "SELECT *, "
+            f"({key_valid}) AS key_valid, "
             f"({mask_sql})::UBIGINT AS strategy_mask, "
             "CASE WHEN gnomad_af_value IS NOT NULL AND NOT isnan(gnomad_af_value) "
             "THEN 'found' "
@@ -226,6 +268,9 @@ class CandidateAlleleStore:
             "THEN 'lookup_failed' ELSE 'not_found' END AS row_gnomad_status "
             "FROM parsed"
             "), collapsed AS (SELECT variant_key, "
+            "first(key_valid) AS key_valid, "
+            "first(key_chrom) AS key_chrom, first(key_pos) AS key_pos, "
+            "first(key_ref) AS key_ref, first(key_alt) AS key_alt, "
             "bit_or(CASE WHEN row_gnomad_status = 'found' THEN strategy_mask ELSE 0 END) "
             "  AS found_strategy_mask, "
             "bit_or(CASE WHEN row_gnomad_status = 'not_found' THEN strategy_mask ELSE 0 END) "
@@ -238,7 +283,8 @@ class CandidateAlleleStore:
             "  AS position_failed_context_count, "
             "count_if(row_gnomad_status = 'lookup_failed') AS lookup_failed_context_count "
             "FROM normalized GROUP BY variant_key"
-            ") SELECT *, raw_not_found_strategy_mask & ~found_strategy_mask "
+            ") SELECT (row_number() OVER ())::BIGINT AS allele_id, *, "
+            "raw_not_found_strategy_mask & ~found_strategy_mask "
             "  AS not_found_strategy_mask FROM collapsed"
         )
 
