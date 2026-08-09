@@ -484,6 +484,10 @@ the former fixed 8 GB request.
 
 ## Monitoring And Analytics
 
+For an ordinary pipeline launch, use `docs/pipeline_launch.md`. For an ordinary
+analytics report submission, use `docs/report_generation.md`. The commands
+below are infrastructure-level reference material.
+
 Monitor orchestration from `sphinx` without running analysis there:
 
 ```bash

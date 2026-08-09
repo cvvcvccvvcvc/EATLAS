@@ -118,11 +118,17 @@ Agent workflow rules:
 
 Read these only when relevant:
 
+- `docs/report_generation.md` - read only this operational runbook for an
+  ordinary completed-run analytics report launch.
+- `docs/pipeline_launch.md` - read only this operational runbook for an ordinary
+  ITMO Nextflow launch or resume.
 - `docs/project_map.md` - repository structure and ownership.
 - `docs/stage1_fetch_contract.md` - stage-1 data model, selection rules, and outputs.
 - `docs/stage2_alignment_contract.md` - stage-2 alignment model, outputs, and rationale.
-- `docs/run_validation.md` - commands for local/slurm runs and verification.
+- `docs/run_validation.md` - smoke tests, validation, and pipeline failure
+  investigation; not required for an ordinary launch.
 - `docs/storage_model.md` - Nextflow cache, result layout, and disk-space policy.
-- `docs/itmo_cluster.md` - verified ITMO Slurm setup, paths, transfer, and smoke tests.
+- `docs/itmo_cluster.md` - first-time ITMO setup, verified infrastructure facts,
+  transfer, and smoke tests; not required for an ordinary launch.
 - `docs/article_narrative.md` - mandatory scientific narrative for validation
   analyses and analytics report development.

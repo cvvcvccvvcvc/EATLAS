@@ -3,6 +3,10 @@
 Use this when running or validating the current end-to-end fetch + alignment + annotation
 workflow.
 
+For an ordinary ITMO launch or resume, start with the shorter
+`docs/pipeline_launch.md`. Use this document for smoke tests, contract checks,
+and failure investigation.
+
 ## Local Run
 
 ```bash
