@@ -1,0 +1,16 @@
+Downloaded: 2026-08-09
+
+Assembly annotation: NCBI RefSeq GCF_000001405.40-RS_2025_08 (GRCh38.p14)
+URL: https://api.ncbi.nlm.nih.gov/datasets/v2/genome/accession/GCF_000001405.40/download?include_annotation_type=GENOME_GFF
+SHA-256: 3d30d9846861afb34b0b234fe6ec0126b051b70d2a03c7bc1e8eccca211395de
+
+Current human gene metadata: NCBI Homo_sapiens.gene_info.gz
+URL: https://ftp.ncbi.nlm.nih.gov/gene/DATA/GENE_INFO/Mammalia/Homo_sapiens.gene_info.gz
+SHA-256: a6be7a500c7159213b3ca689c772e3ce9ab53e036b367ffa048c289cbbedc5d1
+
+Ortholog relationships: NCBI gene_orthologs.gz
+URL: https://ftp.ncbi.nlm.nih.gov/gene/DATA/gene_orthologs.gz
+SHA-256: 48996870e5ca2c502dd13311b500633348074c987c7b7799110429d8a653d0c5
+
+all_genes.tsv contains current Entrez Gene IDs present in the GRCh38.p14 GFF.
+batch_*.txt contains genes with type protein-coding and at least one non-human NCBI ortholog.
