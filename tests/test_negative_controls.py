@@ -93,6 +93,18 @@ def test_build_target_space_null_end_to_end_with_mocked_annotations(
             }
         ]
     ).to_csv(annotations_path, sep="\t", index=False, compression="gzip")
+    observed_store = controls.build_or_load_observed_variant_store(
+        variant_annotations_tsv=annotations_path,
+        analytics_dir=run_dir / "analytics",
+        strategies=["s1"],
+    )
+    monkeypatch.setattr(
+        controls,
+        "build_or_load_observed_variant_store",
+        lambda **_kwargs: (_ for _ in ()).throw(
+            AssertionError("shared observed store was rebuilt")
+        ),
+    )
     import gzip
 
     with gzip.open(target_dir / "1.fa.gz", "wt") as handle:
@@ -151,6 +163,7 @@ def test_build_target_space_null_end_to_end_with_mocked_annotations(
         target_sequences_dir=target_dir,
         clinvar_vcf=tmp_path / "clinvar.vcf.gz",
         strategies=["s1"],
+        observed_store=observed_store,
         sample_size_per_strategy=10,
         resamples=100,
         seed=3,
@@ -183,10 +196,8 @@ def test_build_target_space_null_end_to_end_with_mocked_annotations(
     focal_manifest = json.loads(analysis.focal_manifest_path.read_text())
     assert focal_manifest["inputs"]["version"] == controls.FOCAL_CACHE_VERSION
     assert focal_manifest["inputs"]["rank_method"] == controls.FOCAL_RANK_METHOD
-    stage_names = {
-        stage["name"]
-        for stage in json.loads(performance_path.read_text())["stages"]
-    }
+    performance_stages = json.loads(performance_path.read_text())["stages"]
+    stage_names = {stage["name"] for stage in performance_stages}
     assert {
         "Target-null focal sampling",
         "Target-null observed store",
@@ -198,6 +209,12 @@ def test_build_target_space_null_end_to_end_with_mocked_annotations(
         "Target-null external evidence",
         "Target-null resampling",
     }.issubset(stage_names)
+    observed_stage = next(
+        stage
+        for stage in performance_stages
+        if stage["name"] == "Target-null observed store"
+    )
+    assert observed_stage["details"] == "shared run-level store"
 
     analysis.manifest_path.unlink()
     analysis.matched_path.unlink()
@@ -217,6 +234,7 @@ def test_build_target_space_null_end_to_end_with_mocked_annotations(
         target_sequences_dir=target_dir,
         clinvar_vcf=tmp_path / "clinvar.vcf.gz",
         strategies=["s1"],
+        observed_store=observed_store,
         sample_size_per_strategy=10,
         resamples=100,
         seed=3,

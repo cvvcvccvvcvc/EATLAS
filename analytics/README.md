@@ -216,9 +216,9 @@ The strategy report writes its ClinVar validation universe under:
 ```
 
 The observed-membership cache stores only unique
-`strategy x variant_type x variant_key` rows. A matching annotation table,
-ClinVar universe, and strategy set reuse it without rescanning the full
-candidate annotation file.
+`strategy x variant_type x variant_key` rows. It is derived by joining the
+ClinVar universe to the shared observed-variant Parquet store, so ClinVar does
+not rescan the full candidate annotation file.
 
 Validation statistics are computed separately for SNV and INDEL rows. The
 conservation-adjusted blocks also write:
@@ -256,7 +256,8 @@ consequence. GAPH callability and conservation are not matching variables.
 VEP annotations use a release-specific SQLite cache, so interrupted REST or
 local runs resume without repeating completed variant/gene pairs.
 
-Focal sampling and observed-control exclusion share a compact membership store:
+ClinVar membership, focal sampling, and observed-control exclusion share a
+compact membership store:
 
 ```text
 <run-dir>/analytics/observed_variants/allele_gene_memberships.parquet
@@ -264,10 +265,9 @@ Focal sampling and observed-control exclusion share a compact membership store:
 <run-dir>/analytics/observed_variants/manifest.json
 ```
 
-The store contains only variants observed by GAPH. It is built from validated
-pre-VEP partitions when available, records strategy memberships as bit masks,
-and prevents the target-space null from rescanning the enriched annotation TSV
-for each membership operation.
+The store contains only variants observed by GAPH. It is built once before
+ClinVar enrichment from validated pre-VEP partitions when available, records
+strategy memberships as bit masks, and is reused by the target-space null.
 
 The same matched focal-control sets are also compared descriptively for exact
 allele overlap with gnomAD and ClinVar, gnomAD AF among exact hits, and ClinVar

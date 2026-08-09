@@ -16,6 +16,9 @@ from analytics.analyses.conservation_analysis import (
 )
 from analytics.analyses.conservation_validation import validate_firth_runtime
 from analytics.analyses.matched_control import build_target_space_null
+from analytics.analyses.observed_variant_store import (
+    build_or_load_observed_variant_store,
+)
 from analytics.analyses.variant_summary import build_variant_summary
 from analytics.io.run_inputs import (
     bulk_vep_release,
@@ -287,15 +290,31 @@ def main() -> None:
         ]
         strategies = variant_summary.strategies
 
+    print("Building observed variant store...")
+    with performance.stage("Observed variant store") as timing:
+        observed_store = build_or_load_observed_variant_store(
+            variant_annotations_tsv=inputs.variant_annotations_tsv,
+            analytics_dir=analytics_dir,
+            strategies=strategies,
+        )
+        timing["details"] = "cache hit" if observed_store.cache_hit else "cache miss"
+        timing["metrics"] = {
+            "source_rows": int(observed_store.manifest["source_row_count"]),
+            "allele_gene_rows": int(observed_store.manifest["allele_gene_count"]),
+            "alleles": int(observed_store.manifest["allele_count"]),
+            "store_bytes": int(observed_store.allele_gene_path.stat().st_size)
+            + int(observed_store.allele_path.stat().st_size),
+        }
+
     print("Computing ClinVar enrichment...")
     with performance.stage("ClinVar enrichment"):
         validation = build_validation(
             run_dir=inputs.run_dir,
-            variant_annotations_tsv=inputs.variant_annotations_tsv,
             genes_tsv=inputs.genes_tsv,
             target_sequences_dir=inputs.target_sequences_dir,
             clinvar_vcf=args.clinvar_vcf.expanduser().resolve(),
             strategies=strategies,
+            observed_store=observed_store,
             use_vep_consequences=use_vep_consequences,
             vep_backend=args.vep_backend,
             vep_release=args.vep_release,
@@ -330,6 +349,7 @@ def main() -> None:
                 target_sequences_dir=inputs.target_sequences_dir,
                 clinvar_vcf=args.clinvar_vcf.expanduser().resolve(),
                 strategies=strategies,
+                observed_store=observed_store,
                 sample_size_per_strategy=args.target_space_null_sample_size,
                 resamples=args.target_space_null_resamples,
                 seed=args.target_space_null_seed,

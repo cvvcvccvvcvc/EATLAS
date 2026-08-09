@@ -1,4 +1,4 @@
-"""Compact observed-variant memberships shared by target-null operations."""
+"""Compact observed-variant memberships shared by report analyses."""
 
 from __future__ import annotations
 
@@ -124,12 +124,12 @@ class ObservedVariantStore:
                     while rows := cursor.fetchmany(chunk_size):
                         yield rows
 
-    def observed_control_keys(
+    def observed_strategy_keys(
         self,
         variant_keys: pd.Series,
         selected_strategies: list[str] | tuple[str, ...],
     ) -> set[tuple[str, str]]:
-        """Return observed variant/strategy pairs for the requested control keys."""
+        """Return observed variant/strategy pairs for the requested alleles."""
 
         selected = tuple(dict.fromkeys(str(value) for value in selected_strategies))
         selected_mask = self.strategy_mask(selected)
@@ -140,11 +140,11 @@ class ObservedVariantStore:
             return set()
         duckdb = _import_duckdb()
         with duckdb.connect() as connection:
-            connection.register("requested_controls", keys)
+            connection.register("requested_variants", keys)
             rows = connection.execute(
                 "SELECT a.variant_key, a.strategy_mask "
                 f"FROM read_parquet({sql_string(self.allele_path)}) a "
-                "JOIN requested_controls r USING (variant_key) "
+                "JOIN requested_variants r USING (variant_key) "
                 f"WHERE a.strategy_mask & {selected_mask} != 0"
             ).fetchall()
         strategy_bits = [

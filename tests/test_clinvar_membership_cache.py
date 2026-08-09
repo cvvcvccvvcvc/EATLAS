@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import csv
-import gzip
 import stat
 import sys
 from pathlib import Path
@@ -10,6 +8,9 @@ import pandas as pd
 import pytest
 
 from analytics.analyses import clinvar_validation
+from analytics.analyses.observed_variant_store import (
+    build_or_load_observed_variant_store,
+)
 
 
 def test_clinvar_universe_writer_preserves_schema_and_shared_permissions(
@@ -74,27 +75,34 @@ def test_observed_clinvar_memberships_are_cached_and_reused(
         ]
     )
     universe.to_csv(universe_path, sep="\t", index=False, compression="gzip")
-    with gzip.open(annotations_path, "wt", newline="") as handle:
-        writer = csv.DictWriter(
-            handle,
-            fieldnames=["variant_key", "strategies"],
-            delimiter="\t",
-            lineterminator="\n",
-        )
-        writer.writeheader()
-        writer.writerows(
-            [
-                {"variant_key": "1:10:A>G", "strategies": "s1,s2"},
-                {"variant_key": "1:20:A>AT", "strategies": "s2"},
-                {"variant_key": "1:30:C>T", "strategies": "s1"},
-            ]
-        )
+    pd.DataFrame(
+        [
+            ["1:10:A>G", "gene_a", "snv", "A", "G", "ok", "s1"],
+            ["1:10:A>G", "gene_b", "snv", "A", "G", "ok", "s2"],
+            ["1:20:A>AT", "gene_a", "ins", "A", "AT", "ok", "s2"],
+            ["1:30:C>T", "gene_a", "snv", "C", "T", "ok", "s1"],
+        ],
+        columns=[
+            "variant_key",
+            "gene_id",
+            "event_type",
+            "ref",
+            "alt",
+            "lookup_status",
+            "strategies",
+        ],
+    ).to_csv(annotations_path, sep="\t", index=False, compression="gzip")
+    observed_store = build_or_load_observed_variant_store(
+        variant_annotations_tsv=annotations_path,
+        analytics_dir=tmp_path / "analytics",
+        strategies=["s1", "s2"],
+    )
 
     observed, manifest, output_path, manifest_path = (
         clinvar_validation.build_or_load_observed_keys_by_strategy_type(
             universe=universe,
             universe_path=universe_path,
-            variant_annotations_tsv=annotations_path,
+            observed_store=observed_store,
             strategies=["s1", "s2"],
             analytics_dir=tmp_path / "analytics",
         )
@@ -104,7 +112,9 @@ def test_observed_clinvar_memberships_are_cached_and_reused(
     assert manifest["membership_count"] == 3
     assert observed[("s1", "snv")] == {"1:10:A>G"}
     assert observed[("s1", "indel")] == set()
+    assert observed[("s2", "snv")] == {"1:10:A>G"}
     assert observed[("s2", "indel")] == {"1:20:A>AT"}
+    assert "observed_store" in manifest["inputs"]
     assert output_path.exists()
     assert manifest_path.exists()
 
@@ -119,7 +129,7 @@ def test_observed_clinvar_memberships_are_cached_and_reused(
         clinvar_validation.build_or_load_observed_keys_by_strategy_type(
             universe=universe,
             universe_path=universe_path,
-            variant_annotations_tsv=annotations_path,
+            observed_store=observed_store,
             strategies=["s1", "s2"],
             analytics_dir=tmp_path / "analytics",
         )

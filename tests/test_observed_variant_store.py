@@ -9,7 +9,6 @@ import pandas as pd
 import pytest
 
 from analytics.analyses import matched_control as controls
-from analytics.analyses.clinvar_validation import split_strategies
 from analytics.analyses.observed_variant_store import (
     ALLELE_COLUMNS,
     ALLELE_GENE_COLUMNS,
@@ -81,7 +80,9 @@ def _expected_md5_sample(
             "alt": alt,
             "context": context_at(contexts.get(gene_id, []), target_pos),
         }
-        for strategy in split_strategies(str(row.strategies)):
+        for strategy in (
+            item.strip() for item in str(row.strategies).split(",") if item.strip()
+        ):
             if strategy_set and strategy not in strategy_set:
                 continue
             record = {**record_base, "strategy": strategy}
@@ -164,7 +165,7 @@ def test_observed_store_reuses_cache_and_queries_strategy_memberships(
     assert store.manifest["source_row_count"] == 4
     assert store.manifest["allele_gene_count"] == 4
     assert store.manifest["allele_count"] == 2
-    assert store.observed_control_keys(
+    assert store.observed_strategy_keys(
         pd.Series(["1:100:A>G", "1:999:G>A"]),
         ["s1", "s2", "s3"],
     ) == {

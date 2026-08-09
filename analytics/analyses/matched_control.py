@@ -95,6 +95,7 @@ def build_target_space_null(
     target_sequences_dir: Path,
     clinvar_vcf: Path,
     strategies: list[str],
+    observed_store: ObservedVariantStore | None = None,
     sample_size_per_strategy: int = 25_000,
     resamples: int = 1_000,
     seed: int = 20_260_721,
@@ -172,12 +173,18 @@ def build_target_space_null(
         )
 
     with profile_stage(performance_profile, "Target-null observed store") as timing:
-        observed_store = build_or_load_observed_variant_store(
-            variant_annotations_tsv=variant_annotations_tsv,
-            analytics_dir=run_dir / "analytics",
-            strategies=strategies,
-        )
-        timing["details"] = "cache hit" if observed_store.cache_hit else "cache miss"
+        if observed_store is None:
+            observed_store = build_or_load_observed_variant_store(
+                variant_annotations_tsv=variant_annotations_tsv,
+                analytics_dir=run_dir / "analytics",
+                strategies=strategies,
+            )
+            timing["details"] = (
+                "cache hit" if observed_store.cache_hit else "cache miss"
+            )
+        else:
+            observed_store.strategy_mask(strategies)
+            timing["details"] = "shared run-level store"
         timing["metrics"] = {
             "source_rows": int(observed_store.manifest["source_row_count"]),
             "allele_gene_rows": int(observed_store.manifest["allele_gene_count"]),
@@ -967,7 +974,7 @@ def _collect_observed_control_keys(
     candidates: pd.DataFrame,
     strategies: list[str],
 ) -> set[tuple[str, str]]:
-    return observed_store.observed_control_keys(candidates["variant_key"], strategies)
+    return observed_store.observed_strategy_keys(candidates["variant_key"], strategies)
 
 
 def _build_matched_rows(

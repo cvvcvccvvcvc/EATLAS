@@ -40,6 +40,7 @@ from genomics.variants import (
 from analytics.annotation.consequences import VEP_CONSEQUENCE_ORDER
 from analytics.annotation.vep import annotate_vep_consequences
 from analytics.annotation.vep_result_cache import DEFAULT_TILE_SIZE_BP
+from analytics.analyses.observed_variant_store import ObservedVariantStore
 
 
 UNIVERSE_FIELDS = [
@@ -78,11 +79,11 @@ class ClinvarValidation:
 def build_validation(
     *,
     run_dir: Path,
-    variant_annotations_tsv: Path,
     genes_tsv: Path,
     target_sequences_dir: Path,
     clinvar_vcf: Path,
     strategies: list[str],
+    observed_store: ObservedVariantStore,
     use_vep_consequences: bool = False,
     vep_backend: str = "rest",
     vep_release: str | None = None,
@@ -152,7 +153,7 @@ def build_validation(
         ) = build_or_load_observed_keys_by_strategy_type(
             universe=universe,
             universe_path=membership_universe_path,
-            variant_annotations_tsv=variant_annotations_tsv,
+            observed_store=observed_store,
             strategies=strategies,
             analytics_dir=analytics_dir,
         )
@@ -710,7 +711,7 @@ def build_or_load_observed_keys_by_strategy_type(
     *,
     universe: pd.DataFrame,
     universe_path: Path,
-    variant_annotations_tsv: Path,
+    observed_store: ObservedVariantStore,
     strategies: list[str],
     analytics_dir: Path,
 ) -> tuple[dict[tuple[str, str], set[str]], dict[str, object], Path, Path]:
@@ -718,7 +719,10 @@ def build_or_load_observed_keys_by_strategy_type(
     manifest_path = analytics_dir / "clinvar_observed_memberships.manifest.json"
     expected_inputs = {
         "cache_version": OBSERVED_MEMBERSHIP_CACHE_VERSION,
-        "variant_annotations": path_metadata(variant_annotations_tsv),
+        "observed_store": {
+            "manifest": path_metadata(observed_store.manifest_path),
+            "alleles": path_metadata(observed_store.allele_path),
+        },
         "clinvar_universe": path_metadata(universe_path),
         "strategies": sorted(strategies),
     }
@@ -748,7 +752,7 @@ def build_or_load_observed_keys_by_strategy_type(
 
     observed = collect_observed_keys_by_strategy_type(
         universe=universe,
-        variant_annotations_tsv=variant_annotations_tsv,
+        observed_store=observed_store,
         strategies=strategies,
     )
     rows = [
@@ -799,39 +803,34 @@ def _observed_membership_sets(
 def collect_observed_keys_by_strategy_type(
     *,
     universe: pd.DataFrame,
-    variant_annotations_tsv: Path,
+    observed_store: ObservedVariantStore,
     strategies: list[str],
-    chunksize: int = 250_000,
 ) -> dict[tuple[str, str], set[str]]:
     if universe.empty:
-        return {(strategy, variant_kind): set() for strategy in strategies for variant_kind in VALIDATION_TYPES}
+        return {
+            (strategy, variant_kind): set()
+            for strategy in strategies
+            for variant_kind in VALIDATION_TYPES
+        }
 
-    types_by_key = dict(zip(universe["variant_key"].astype(str), universe["variant_type"].astype(str)))
-    universe_keys = set(types_by_key)
+    types_by_key = dict(
+        zip(
+            universe["variant_key"].astype(str),
+            universe["variant_type"].astype(str),
+        )
+    )
     observed_by_strategy_type: dict[tuple[str, str], set[str]] = {
-        (strategy, variant_kind): set() for strategy in strategies for variant_kind in VALIDATION_TYPES
+        (strategy, variant_kind): set()
+        for strategy in strategies
+        for variant_kind in VALIDATION_TYPES
     }
 
-    for chunk in pd.read_csv(
-        variant_annotations_tsv,
-        sep="\t",
-        compression="gzip",
-        usecols=["variant_key", "strategies"],
-        keep_default_na=False,
-        chunksize=chunksize,
+    for variant_key, strategy in observed_store.observed_strategy_keys(
+        universe["variant_key"],
+        strategies,
     ):
-        matched = chunk[chunk["variant_key"].astype(str).isin(universe_keys)]
-        if matched.empty:
-            continue
-        for variant_key, strategy_text in zip(matched["variant_key"].astype(str), matched["strategies"].astype(str)):
-            variant_kind = types_by_key.get(variant_key)
-            if variant_kind not in VALIDATION_TYPES:
-                continue
-            for strategy in split_strategies(strategy_text):
-                observed_by_strategy_type.setdefault((strategy, variant_kind), set()).add(variant_key)
+        variant_kind = types_by_key.get(variant_key)
+        if variant_kind in VALIDATION_TYPES:
+            observed_by_strategy_type[(strategy, variant_kind)].add(variant_key)
 
     return observed_by_strategy_type
-
-
-def split_strategies(value: str) -> list[str]:
-    return [item.strip() for item in str(value or "").split(",") if item.strip()]
