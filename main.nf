@@ -584,6 +584,14 @@ workflow {
         file("${projectDir}/nextflow_schema.json")
     )
 
+    if (params.stage in ['all', 'annotate']) {
+        if (params.gnomad_cache_dir) {
+            log.info "Using shared gnomAD cache: ${params.gnomad_cache_dir}"
+        } else {
+            log.warn "Shared gnomAD cache is disabled; set --gnomad_cache_dir or GAPH_GNOMAD_CACHE_DIR to reuse regional responses"
+        }
+    }
+
     runtime_check_script = file("${projectDir}/bin/check_runtime.py")
     CHECK_RUNTIME(runtime_check_script, params.stage, SELECTED_ALIGNMENT_STRATEGIES.join(','))
 

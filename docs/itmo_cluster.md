@@ -106,6 +106,38 @@ Current memory requests are conservative initial bounds. Tune them from
 Nextflow trace `peak_rss` after representative cluster runs. Requesting the
 account maximum for every task wastes capacity and can increase queue time.
 
+## Shared gnomAD Cache
+
+Large annotation runs must reuse the shared regional cache rather than fetch
+the same gnomAD regions again after retries or in later runs. As verified on
+2026-08-09, the existing ITMO cache is located at:
+
+```text
+/mnt/tank/scratch/$USER/gaph_v2/cache/gnomad
+```
+
+For `ilunegov` it contained 3,306 tile files and occupied about 710 MB at the
+time of verification. The cache is incremental and safe to keep between runs.
+Configure it in every controller shell and pass it explicitly in production
+commands:
+
+```bash
+export GAPH_GNOMAD_CACHE_DIR="$GAPH_ROOT/cache/gnomad"
+mkdir -p "$GAPH_GNOMAD_CACHE_DIR"
+test -w "$GAPH_GNOMAD_CACHE_DIR"
+
+nextflow run . \
+  -profile slurm,low_storage \
+  --ids_file /path/to/gene_ids.txt \
+  --gnomad_cache_dir "$GAPH_GNOMAD_CACHE_DIR" \
+  --outdir "$RUN"
+```
+
+When `GAPH_GNOMAD_CACHE_DIR` is absent but `GAPH_ROOT` is set, the pipeline
+defaults to `$GAPH_ROOT/cache/gnomad`. Explicitly passing the parameter remains
+recommended because the resolved cache path is then visible in the launch
+command and run manifest.
+
 ## Storage Policy
 
 Keep only source code and small reference data in home:
@@ -358,6 +390,7 @@ micromamba run -p "$GAPH_ROOT/envs/controller" nextflow run . \
   --stage all \
   --ids_file "$GAPH_ROOT/inputs/smoke_1_gene.ids" \
   --outdir "$RUN" \
+  --gnomad_cache_dir "$GAPH_GNOMAD_CACHE_DIR" \
   --alignment_strategies minimap2_asm20 \
   --fetch_max_forks 1 \
   --alignment_max_forks 1 \

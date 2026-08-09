@@ -18,7 +18,8 @@ local runs so tasks use `envs/*.yml` instead of the active shell environment.
 Annotation fetches gnomAD data from the live API for clustered event regions and
 uses an in-memory lookup bounded to each genomic partition. Set
 `GAPH_GNOMAD_CACHE_DIR` or `--gnomad_cache_dir` to reuse complete 25-kb regional
-responses across runs and analytics reports. End-to-end runs may process up to
+responses across runs and analytics reports. When `GAPH_ROOT` is set, the cache
+defaults to `$GAPH_ROOT/cache/gnomad`. End-to-end runs may process up to
 `--annotation_max_forks` partitions concurrently (default: 2).
 
 If command-line tools are not on `PATH`, pass them explicitly:
@@ -89,6 +90,7 @@ directory rather than the home quota:
 ```bash
 export GAPH_ROOT="/mnt/tank/scratch/$USER/gaph_v2"
 export GAPH_WORK_DIR="$GAPH_ROOT/work"
+export GAPH_GNOMAD_CACHE_DIR="$GAPH_ROOT/cache/gnomad"
 export NXF_CONDA_CACHEDIR="$GAPH_ROOT/conda/envs"
 export MAMBA_ROOT_PREFIX="$GAPH_ROOT/micromamba"
 export NXF_HOME="$GAPH_ROOT/nextflow"
@@ -97,6 +99,7 @@ RUN="$GAPH_ROOT/results/run_001"
 nextflow run . \
   -profile slurm,low_storage \
   --ids_file /path/to/gene_ids.txt \
+  --gnomad_cache_dir "$GAPH_GNOMAD_CACHE_DIR" \
   --outdir "$RUN"
 ```
 

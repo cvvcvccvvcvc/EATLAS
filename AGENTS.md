@@ -110,6 +110,9 @@ Agent workflow rules:
    report content, read `docs/article_narrative.md`. Keep the main argument,
    supporting analyses, and unresolved design decisions consistent with it;
    update the document when the research design changes materially.
+20. Large annotation runs must reuse the shared gnomAD regional cache. On the
+   ITMO cluster use `$GAPH_ROOT/cache/gnomad`; pass it explicitly with
+   `--gnomad_cache_dir` or export `GAPH_GNOMAD_CACHE_DIR` before launch.
 
 ## Progressive Disclosure
 

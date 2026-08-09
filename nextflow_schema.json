@@ -68,7 +68,7 @@
                 },
                 "gnomad_cache_dir": {
                     "type": "string",
-                    "description": "Optional shared gnomAD regional cache directory. Defaults to GAPH_GNOMAD_CACHE_DIR when set."
+                    "description": "Optional shared gnomAD regional cache directory. Defaults to GAPH_GNOMAD_CACHE_DIR, then $GAPH_ROOT/cache/gnomad when GAPH_ROOT is set."
                 }
             }
         },
