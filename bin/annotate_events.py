@@ -8,6 +8,7 @@ import gzip
 import logging
 import os
 import sys
+import time
 import concurrent.futures
 from collections.abc import Iterable
 from collections import Counter, defaultdict
@@ -42,6 +43,17 @@ csv.field_size_limit(sys.maxsize)
 
 
 logger = logging.getLogger(__name__)
+
+
+def start_phase(name: str) -> float:
+    logger.info("Starting phase %s", name)
+    return time.perf_counter()
+
+
+def finish_phase(timings: dict[str, float], name: str, started_at: float) -> None:
+    elapsed = round(time.perf_counter() - started_at, 3)
+    timings[name] = elapsed
+    logger.info("Timing %s: %.3f seconds", name, elapsed)
 
 CLINVAR_COLUMNS = [
     "clinvar_sig",
@@ -591,6 +603,7 @@ def build_clinvar_cache(
 def main():
     logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
     args = parse_args()
+    timings_seconds: dict[str, float] = {}
     args.outdir.mkdir(parents=True, exist_ok=True)
     out_tsv = args.outdir / "variant_annotations.tsv.gz"
     support_tsv = args.outdir / "variant_strategy_support.tsv.gz"
@@ -627,6 +640,7 @@ def main():
         raise FileNotFoundError(f"ClinVar VCF index not found: {clinvar_tbi}")
 
     failures: list[dict] = []
+    phase_started = start_phase("load_target_context")
     if bool(args.genes_tsv) != bool(args.target_sequences_dir):
         raise ValueError("--genes-tsv and --target-sequences-dir must be provided together.")
     if args.genes_tsv and args.target_sequences_dir:
@@ -636,8 +650,10 @@ def main():
         contexts = {}
         logger.warning("No target context provided; ClinVar/gnomAD lookup will use raw event keys.")
     context_index = build_context_index(contexts)
+    finish_phase(timings_seconds, "load_target_context", phase_started)
 
     # 1. Read events once, collect lookup regions, and collapse repeated support rows.
+    phase_started = start_phase("collapse_events")
     accession_positions = defaultdict(set)
     event_key_status_counts = Counter()
     unique_lookup_status_counts = Counter()
@@ -696,7 +712,9 @@ def main():
                 add_ortholog_support(aggregate, row)
     logger.info(f"Event key normalization status: {dict(event_key_status_counts)}")
     logger.info(f"Collapsed {input_row_count} event row(s) to {len(variant_aggregates)} variant-context row(s).")
+    finish_phase(timings_seconds, "collapse_events", phase_started)
 
+    phase_started = start_phase("load_ortholog_support")
     if args.event_ortholog_support_tsv is not None:
         with open_text(args.event_ortholog_support_tsv) as handle:
             reader = csv.DictReader(handle, delimiter="\t")
@@ -736,7 +754,9 @@ def main():
 
         for aggregate in variant_aggregates.values():
             reconcile_strategy_support_from_orthologs(aggregate)
+    finish_phase(timings_seconds, "load_ortholog_support", phase_started)
 
+    phase_started = start_phase("load_site_depth")
     if args.snv_site_depth_tsv is not None:
         site_depths = load_snv_site_depth(args.snv_site_depth_tsv)
     else:
@@ -746,8 +766,10 @@ def main():
             args.outdir,
         )
     logger.info(f"Calculated site-aligned ortholog depth for {len(site_depths)} variant-strategy SNV(s).")
+    finish_phase(timings_seconds, "load_site_depth", phase_started)
 
     # 2. Determine gnomAD clusters
+    phase_started = start_phase("gnomad_lookup")
     gnomad_tasks = []
     for acc, positions in accession_positions.items():
         chrom = refseq_accession_to_chrom(acc)
@@ -811,8 +833,10 @@ def main():
     logger.info(f"Cached {len(gnomad_cache)} gnomAD variants.")
     if gnomad_key_status_counts:
         logger.info(f"gnomAD key normalization status: {dict(gnomad_key_status_counts)}")
+    finish_phase(timings_seconds, "gnomad_lookup", phase_started)
 
     # 4. Open ClinVar
+    phase_started = start_phase("clinvar_lookup")
     clinvar = pysam.VariantFile(str(args.clinvar_vcf))
     clinvar_cache, clinvar_key_status_counts = build_clinvar_cache(
         clinvar,
@@ -822,8 +846,10 @@ def main():
         failures,
     )
     logger.info(f"Cached {len(clinvar_cache)} ClinVar variants.")
+    finish_phase(timings_seconds, "clinvar_lookup", phase_started)
 
     # 5. Annotate unique variant-context rows.
+    phase_started = start_phase("write_variant_annotations")
     annotation_value_counts = Counter()
     variant_rows: list[dict] = []
     for aggregate in variant_aggregates.values():
@@ -863,6 +889,9 @@ def main():
         )
     )
     output_row_count = write_tsv_gz(out_tsv, VARIANT_ANNOTATION_FIELDS, variant_rows)
+    finish_phase(timings_seconds, "write_variant_annotations", phase_started)
+
+    phase_started = start_phase("write_support_tables")
     strategy_support_rows, strategy_support_missing_key_count = build_variant_strategy_support(
         variant_aggregates.values(),
         site_depths,
@@ -881,6 +910,9 @@ def main():
         VARIANT_ORTHOLOG_SUPPORT_FIELDS,
         ortholog_support_rows,
     )
+    finish_phase(timings_seconds, "write_support_tables", phase_started)
+
+    phase_started = start_phase("write_ortholog_evidence")
     ortholog_evidence_summary_count = 0
     if args.snv_taxonomic_depth_tsv is not None:
         target_feature_paths = sorted(args.target_features_dir.glob("*.tsv.gz"))
@@ -893,8 +925,11 @@ def main():
             build_gnomad_statuses(variant_aggregates.values(), gnomad_cache, failures),
             ortholog_evidence_tsv,
         )
+    finish_phase(timings_seconds, "write_ortholog_evidence", phase_started)
 
+    phase_started = start_phase("write_failures")
     failure_count = write_tsv_gz(failures_tsv, FAILURE_FIELDS, failures)
+    finish_phase(timings_seconds, "write_failures", phase_started)
     manifest = {
         "output_mode": "unique_variant_context",
         "partition_id": args.partition_id,
@@ -926,6 +961,7 @@ def main():
         "unique_lookup_status_counts": dict(unique_lookup_status_counts),
         "gnomad_key_status_counts": dict(gnomad_key_status_counts),
         "clinvar_key_status_counts": dict(clinvar_key_status_counts),
+        "timings_seconds": timings_seconds,
     }
     manifest_json.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
 

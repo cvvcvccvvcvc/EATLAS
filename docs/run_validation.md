@@ -237,7 +237,10 @@ Annotation expected properties:
   row counts agree with `variant_strategy_support.tsv.gz`.
 - `annotation/ortholog_evidence_summary.tsv.gz` contains bounded SNV evidence
   histograms by strategy, target context, taxonomic scope, and evidence unit.
-- `annotation/manifest.json` records event and unique variant-context row counts, source metadata, and annotation counters.
+- `annotation/manifest.json` records event and unique variant-context row counts,
+  source metadata, annotation counters, and per-partition phase timings with
+  summed task-runtime totals. These totals are not wall-clock elapsed time because
+  partitions can run concurrently.
 - End-to-end annotation records `partition_count`; partition outputs are merged
   by streaming and are not published as duplicate durable tables.
 - `annotation/failures.tsv.gz` records non-fatal external lookup failures.

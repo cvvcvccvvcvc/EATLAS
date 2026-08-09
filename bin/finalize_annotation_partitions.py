@@ -156,6 +156,27 @@ def merge_gnomad_shared_cache(partitions: list[tuple[Path, dict]]) -> dict[str, 
     }
 
 
+def merge_partition_timings(
+    partitions: list[tuple[Path, dict]],
+) -> tuple[dict[str, dict[str, float]], dict[str, float]]:
+    by_partition = {}
+    totals: Counter = Counter()
+    for path, manifest in partitions:
+        timings = manifest.get("timings_seconds")
+        if not isinstance(timings, dict):
+            continue
+        partition_id = str(manifest.get("partition_id") or path.name)
+        normalized = {str(name): float(value) for name, value in timings.items()}
+        if any(value < 0 for value in normalized.values()):
+            raise ValueError(f"Negative phase timing in annotation partition {partition_id}")
+        by_partition[partition_id] = normalized
+        totals.update(normalized)
+    return (
+        dict(sorted(by_partition.items())),
+        {name: round(value, 3) for name, value in sorted(totals.items())},
+    )
+
+
 def merge_ortholog_evidence(
     partitions: list[tuple[Path, dict]],
     output: Path,
@@ -274,6 +295,7 @@ def main() -> None:
 
     first_manifest = partitions[0][1]
     gnomad_shared_cache = merge_gnomad_shared_cache(partitions)
+    partition_timings, timing_totals = merge_partition_timings(partitions)
     manifest = {
         "created_at": utc_now(),
         "output_mode": "unique_variant_context_partitioned",
@@ -294,6 +316,9 @@ def main() -> None:
     }
     if gnomad_shared_cache is not None:
         manifest["gnomad_shared_cache"] = gnomad_shared_cache
+    if partition_timings:
+        manifest["partition_timings_seconds"] = partition_timings
+        manifest["partition_timing_totals_seconds"] = timing_totals
     (args.outdir / "manifest.json").write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
 
 

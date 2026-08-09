@@ -29,6 +29,7 @@ from annotate_events import (  # noqa: E402
 from finalize_annotation_partitions import (  # noqa: E402
     COUNT_FIELDS,
     merge_gnomad_shared_cache,
+    merge_partition_timings,
 )
 
 
@@ -100,6 +101,33 @@ def test_annotation_entrypoints_accept_large_tsv_fields(
 
 def test_partitioned_manifest_keeps_non_concrete_exclusion_count() -> None:
     assert "excluded_non_concrete_event_count" in COUNT_FIELDS
+
+
+def test_partition_timings_are_preserved_and_summed(tmp_path: Path) -> None:
+    partitions = [
+        (
+            tmp_path / "partition_000001",
+            {
+                "partition_id": "partition_000001",
+                "timings_seconds": {"collapse_events": 1.25, "gnomad_lookup": 0.5},
+            },
+        ),
+        (
+            tmp_path / "partition_000002",
+            {
+                "partition_id": "partition_000002",
+                "timings_seconds": {"collapse_events": 2.75},
+            },
+        ),
+    ]
+
+    by_partition, totals = merge_partition_timings(partitions)
+
+    assert by_partition == {
+        "partition_000001": {"collapse_events": 1.25, "gnomad_lookup": 0.5},
+        "partition_000002": {"collapse_events": 2.75},
+    }
+    assert totals == {"collapse_events": 4.0, "gnomad_lookup": 0.5}
 
 
 def test_variant_strategy_support_schema_includes_site_depth() -> None:

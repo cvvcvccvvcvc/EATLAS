@@ -7,9 +7,11 @@ import argparse
 import csv
 import gzip
 import json
+import logging
 import shutil
 import sqlite3
 import sys
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -23,6 +25,9 @@ from taxonomic_evidence import COUNT_KEYS, SCOPE_ORDER, UNIT_ORDER, load_taxonom
 
 
 csv.field_size_limit(sys.maxsize)
+
+
+logger = logging.getLogger(__name__)
 
 
 def parse_args() -> argparse.Namespace:
@@ -115,6 +120,17 @@ BWA_OPTIONAL_PARAMETERS = ("task_cpus", "bwa_threads")
 
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def start_phase(name: str) -> float:
+    logger.info("Starting phase %s", name)
+    return time.perf_counter()
+
+
+def finish_phase(timings: dict[str, float], name: str, started_at: float) -> None:
+    elapsed = round(time.perf_counter() - started_at, 3)
+    timings[name] = elapsed
+    logger.info("Timing %s: %.3f seconds", name, elapsed)
 
 
 def copy_or_keep(src: Path, dst: Path) -> None:
@@ -531,6 +547,7 @@ def write_compact_events(
     ortholog_support_output: Path,
     taxonomy_presets: Path | None = None,
     taxonomic_support_output: Path | None = None,
+    timings: dict[str, float] | None = None,
 ) -> tuple[int, int, int, int]:
     if (taxonomy_presets is None) != (taxonomic_support_output is None):
         raise ValueError("Taxonomic event support requires both taxonomy presets and an output path")
@@ -539,7 +556,9 @@ def write_compact_events(
     if db_path.exists():
         db_path.unlink()
     conn = sqlite3.connect(db_path)
+    phase_timings = timings if timings is not None else {}
     try:
+        phase_started = start_phase("load_events_sqlite")
         conn.execute("PRAGMA journal_mode = OFF")
         conn.execute("PRAGMA synchronous = OFF")
         conn.execute("PRAGMA temp_store = MEMORY")
@@ -550,6 +569,9 @@ def write_compact_events(
         if taxonomy_presets is not None:
             create_taxonomy_table(conn, taxonomy_presets)
         conn.commit()
+        finish_phase(phase_timings, "load_events_sqlite", phase_started)
+
+        phase_started = start_phase("build_event_index")
         conn.execute(
             """
             CREATE INDEX events_key_idx ON events (
@@ -566,6 +588,7 @@ def write_compact_events(
             )
             """
         )
+        finish_phase(phase_timings, "build_event_index", phase_started)
 
         taxonomic_select = ""
         taxonomic_join = ""
@@ -617,6 +640,7 @@ def write_compact_events(
         """
         compact_count = 0
         taxonomic_support_count = 0
+        phase_started = start_phase("compact_event_aggregation")
         support_handle = (
             gzip.open(taxonomic_support_output, "wt", newline="")
             if taxonomic_support_output is not None
@@ -672,6 +696,7 @@ def write_compact_events(
         finally:
             if support_handle is not None:
                 support_handle.close()
+        finish_phase(phase_timings, "compact_event_aggregation", phase_started)
         ortholog_support_query = """
             SELECT
                 e.gene_id,
@@ -714,12 +739,14 @@ def write_compact_events(
                 e.ortholog_gene_id
         """
         ortholog_support_count = 0
+        phase_started = start_phase("write_event_ortholog_support")
         with gzip.open(ortholog_support_output, "wt", newline="") as handle:
             writer = csv.writer(handle, delimiter="\t", lineterminator="\n")
             writer.writerow(EVENT_ORTHOLOG_SUPPORT_FIELDS)
             for row in conn.execute(ortholog_support_query):
                 writer.writerow(row)
                 ortholog_support_count += 1
+        finish_phase(phase_timings, "write_event_ortholog_support", phase_started)
         return compact_count, raw_count, taxonomic_support_count, ortholog_support_count
     finally:
         conn.close()
@@ -1033,8 +1060,23 @@ def merged_event_mode(manifests: list[dict]) -> str:
     return next(iter(modes)) if len(modes) == 1 else "mixed"
 
 
+def collect_partition_timings(manifests: list[dict]) -> dict[str, dict[str, float]]:
+    collected = {}
+    for manifest in manifests:
+        partition_id = str(manifest.get("partition_id") or "")
+        timings = manifest.get("timings_seconds")
+        if partition_id and isinstance(timings, dict):
+            collected[partition_id] = {
+                str(name): float(value)
+                for name, value in timings.items()
+            }
+    return dict(sorted(collected.items()))
+
+
 def main() -> None:
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
     args = parse_args()
+    timings_seconds: dict[str, float] = {}
     if args.events_already_compacted and not args.compact_events:
         raise ValueError("--events-already-compacted requires --compact-events")
     if args.partition_id and args.output_profile == "report-input":
@@ -1202,6 +1244,7 @@ def main() -> None:
                 args.outdir / "snv_alt_taxonomic_support.tsv.gz"
                 if args.partition_id and args.taxonomy_presets
                 else None,
+                timings=timings_seconds,
             )
         else:
             event_count = merge_tsv_gz(
@@ -1223,13 +1266,16 @@ def main() -> None:
         alignment_event_mode = "compact_support" if args.compact_events else "raw"
 
     if args.partition_id:
+        phase_started = start_phase("snv_site_depth")
         snv_site_depth_count = write_snv_site_depth(
             [path / "alignment_segments.tsv.gz" for path in result_dirs],
             iter_snv_event_sites([args.outdir / "alignment_events.tsv.gz"]),
             args.outdir / "snv_site_depth.tsv.gz",
             args.outdir,
         )
+        finish_phase(timings_seconds, "snv_site_depth", phase_started)
         if args.taxonomy_presets is not None:
+            phase_started = start_phase("snv_taxonomic_depth")
             snv_taxonomic_depth_count = write_snv_taxonomic_depth(
                 [path / "alignment_segments.tsv.gz" for path in result_dirs],
                 iter_snv_event_sites([args.outdir / "alignment_events.tsv.gz"]),
@@ -1237,6 +1283,7 @@ def main() -> None:
                 args.outdir / "snv_taxonomic_depth.tsv.gz",
                 args.outdir,
             )
+            finish_phase(timings_seconds, "snv_taxonomic_depth", phase_started)
         else:
             snv_taxonomic_depth_count = 0
     elif args.output_profile == "full":
@@ -1295,6 +1342,18 @@ def main() -> None:
         "failure_count": failure_count,
         "native_file_count": native_file_count,
     }
+    if timings_seconds:
+        manifest["timings_seconds"] = timings_seconds
+    partition_timings = collect_partition_timings(manifests)
+    if partition_timings:
+        manifest["partition_timings_seconds"] = partition_timings
+        timing_totals: dict[str, float] = {}
+        for timings in partition_timings.values():
+            for name, value in timings.items():
+                timing_totals[name] = timing_totals.get(name, 0.0) + value
+        manifest["partition_timing_totals_seconds"] = {
+            name: round(value, 3) for name, value in sorted(timing_totals.items())
+        }
     (args.outdir / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
 
 

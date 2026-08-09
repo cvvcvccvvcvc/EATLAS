@@ -367,6 +367,7 @@ def test_partition_annotation_input_keeps_compact_annotation_tables(tmp_path: Pa
     assert manifest["output_profile"] == "annotation-input"
     assert manifest["alignment_segment_count"] == 2
     assert manifest["snv_site_depth_count"] == 1
+    assert manifest["timings_seconds"]["snv_site_depth"] >= 0
     with gzip.open(outdir / "snv_site_depth.tsv.gz", "rt", newline="") as handle:
         assert list(csv.DictReader(handle, delimiter="\t")) == [
             {
@@ -424,6 +425,14 @@ def test_compact_events_preserve_strategy_specific_support(tmp_path: Path) -> No
     assert [row["strategy"] for row in ortholog_rows] == ["s1", "s2"]
     assert [row["ortholog_gene_id"] for row in ortholog_rows] == ["101", "101"]
     assert [row["support_row_count"] for row in ortholog_rows] == ["1", "1"]
+    manifest = json.loads((tmp_path / "merged" / "manifest.json").read_text())
+    assert set(manifest["timings_seconds"]) >= {
+        "load_events_sqlite",
+        "build_event_index",
+        "compact_event_aggregation",
+        "write_event_ortholog_support",
+        "snv_site_depth",
+    }
 
 
 def test_compact_events_accept_large_allele_fields(tmp_path: Path) -> None:

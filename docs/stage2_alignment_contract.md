@@ -210,7 +210,10 @@ directory therefore contains only `manifest.json`, `strategy_summary.tsv.gz`,
 `feature_coverage.tsv.gz`, `taxonomy_summary.tsv.gz`, and `failures.tsv.gz`.
 Raw events, the pre-normalization ortholog-support handoff, segments,
 per-ortholog summaries, and partition-level taxonomic tables remain disposable
-work data.
+work data. The durable alignment manifest retains per-partition phase timings
+for event loading, indexing, compaction, exact-support writing, and SNV depth
+aggregation, plus summed task-runtime totals. The totals are not wall-clock time
+because partitions can run concurrently.
 
 For Minimap2 rows, `native_record_id` is derived from the PAF record content
 rather than its output line number. `event_id` combines the strategy, that
