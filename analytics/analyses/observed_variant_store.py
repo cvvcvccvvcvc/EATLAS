@@ -22,6 +22,7 @@ from analytics.io.variant_source import (
 
 STORE_SCHEMA_VERSION = 1
 MAX_STRATEGIES = 63
+FOCAL_RANK_METHOD = "duckdb_md5_topk_v1"
 REQUIRED_COLUMNS = {
     "variant_key",
     "gene_id",
@@ -52,32 +53,76 @@ class ObservedVariantStore:
     strategies: tuple[str, ...]
     cache_hit: bool = False
 
-    def iter_focal_rows(
+    def iter_sampled_focal_rows(
         self,
         selected_strategies: list[str] | tuple[str, ...],
+        eligible_gene_ids: set[str],
         *,
+        limit: int,
+        seed: int,
         chunk_size: int = 200_000,
     ) -> Iterator[list[tuple[object, ...]]]:
-        """Yield normalized SNV candidates without loading the store into memory."""
+        """Yield deterministic per-strategy top-K focal SNV memberships."""
 
+        if limit < 1:
+            raise ValueError("Observed-variant focal sample limit must be >= 1")
         if chunk_size < 1:
             raise ValueError("Observed-variant focal chunk size must be >= 1")
-        selected_mask = self.strategy_mask(selected_strategies)
-        if selected_mask == 0:
+        selected = tuple(dict.fromkeys(str(value) for value in selected_strategies))
+        self.strategy_mask(selected)
+        genes = pd.DataFrame(
+            {"gene_id": sorted({str(value) for value in eligible_gene_ids})}
+        )
+        if not selected or genes.empty:
             return
         duckdb = _import_duckdb()
-        with duckdb.connect() as connection:
-            cursor = connection.execute(
-                "SELECT variant_key, gene_id, ref, alt, strategy_mask "
-                f"FROM read_parquet({sql_string(self.allele_gene_path)}) "
-                "WHERE event_type = 'snv' AND lookup_status = 'ok' "
-                "AND length(ref) = 1 AND length(alt) = 1 "
-                "AND upper(ref) IN ('A','C','G','T') "
-                "AND upper(alt) IN ('A','C','G','T') "
-                f"AND strategy_mask & {selected_mask} != 0"
-            )
-            while rows := cursor.fetchmany(chunk_size):
-                yield rows
+        with tempfile.TemporaryDirectory(
+            prefix=".focal_sampling.",
+            dir=self.allele_gene_path.parent,
+        ) as temporary:
+            with duckdb.connect() as connection:
+                connection.execute(f"SET threads={available_cpu_count()}")
+                connection.execute("SET preserve_insertion_order=false")
+                connection.execute("SET enable_progress_bar=false")
+                connection.execute(f"SET temp_directory={sql_string(Path(temporary))}")
+                connection.register("eligible_focal_genes", genes)
+                connection.execute(
+                    "CREATE TEMP TABLE eligible_focal_rows AS WITH parsed AS ("
+                    "SELECT a.variant_key, a.gene_id, a.strategy_mask, "
+                    "trim(split_part(a.variant_key, ':', 1)) AS key_chrom, "
+                    "split_part(a.variant_key, ':', 2) AS key_pos_text, "
+                    "try_cast(split_part(a.variant_key, ':', 2) AS BIGINT) AS key_pos, "
+                    "upper(split_part(split_part(a.variant_key, ':', 3), '>', 1)) "
+                    "  AS key_ref, "
+                    "upper(split_part(split_part(a.variant_key, ':', 3), '>', 2)) "
+                    "  AS key_alt "
+                    f"FROM read_parquet({sql_string(self.allele_gene_path)}) a "
+                    "JOIN eligible_focal_genes g USING (gene_id) "
+                    "WHERE a.event_type = 'snv' AND a.lookup_status = 'ok' "
+                    "AND length(a.ref) = 1 AND length(a.alt) = 1 "
+                    "AND upper(a.ref) IN ('A','C','G','T') "
+                    "AND upper(a.alt) IN ('A','C','G','T')"
+                    ") SELECT variant_key, gene_id, strategy_mask FROM parsed "
+                    "WHERE CASE WHEN starts_with(key_chrom, 'chr') "
+                    "           THEN substr(key_chrom, 4) ELSE key_chrom END <> '' "
+                    "AND key_pos > 0 "
+                    "AND length(variant_key) - length(replace(variant_key, ':', '')) = 2 "
+                    "AND length(variant_key) - length(replace(variant_key, '>', '')) = 1 "
+                    "AND regexp_full_match(key_pos_text, '[0-9]+') "
+                    "AND regexp_full_match(key_ref, '[ACGT]+') "
+                    "AND regexp_full_match(key_alt, '[ACGT]+')"
+                )
+                for strategy in selected:
+                    bit = 1 << self.strategies.index(strategy)
+                    cursor = connection.execute(
+                        "SELECT variant_key, gene_id, ? AS strategy "
+                        "FROM eligible_focal_rows WHERE strategy_mask & ? != 0 "
+                        "ORDER BY md5(? || '|' || ? || '|' || gene_id || ':' || variant_key), "
+                        "gene_id || ':' || variant_key LIMIT ?",
+                        [strategy, bit, str(seed), strategy, limit],
+                    )
+                    while rows := cursor.fetchmany(chunk_size):
+                        yield rows
 
     def observed_control_keys(
         self,

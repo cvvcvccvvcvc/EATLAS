@@ -11,13 +11,11 @@ from __future__ import annotations
 import bisect
 import gzip
 import hashlib
-import heapq
 import json
 import math
 import tempfile
 import time
 import warnings
-from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -35,6 +33,7 @@ from analytics.io.variant_source import sql_string
 from .conservation import annotate_track, parse_tracks
 from .external_evidence import build_external_evidence
 from .observed_variant_store import (
+    FOCAL_RANK_METHOD,
     ObservedVariantStore,
     available_cpu_count,
     build_or_load_observed_variant_store,
@@ -50,8 +49,8 @@ from analytics.annotation.vep import annotate_vep_consequences
 from analytics.annotation.vep_result_cache import DEFAULT_TILE_SIZE_BP
 
 
-CONTROL_VERSION = 5
-FOCAL_CACHE_VERSION = 1
+CONTROL_VERSION = 6
+FOCAL_CACHE_VERSION = 2
 MATCHED_POOL_SIZE = 5
 CANDIDATE_POOL_SIZE = MATCHED_POOL_SIZE * 3
 CANDIDATE_FOCAL_CHUNK_SIZE = 2_000
@@ -139,6 +138,7 @@ def build_target_space_null(
         "candidate_pool_size": CANDIDATE_POOL_SIZE,
         "candidate_focal_chunk_size": CANDIDATE_FOCAL_CHUNK_SIZE,
         "seed": seed,
+        "focal_rank_method": FOCAL_RANK_METHOD,
         "matching": ["gene_id", "target_context", "ref", "alt", "vep_primary_consequence"],
         "vep": {
             "release": str(vep_release) if vep_release is not None else "current",
@@ -195,6 +195,7 @@ def build_target_space_null(
         "strategies": sorted(strategies),
         "sample_size_per_strategy": sample_size_per_strategy,
         "seed": seed,
+        "rank_method": FOCAL_RANK_METHOD,
     }
     with profile_stage(performance_profile, "Target-null focal sampling") as timing:
         genes = _read_genes(genes_tsv)
@@ -273,6 +274,7 @@ def build_target_space_null(
         timing["metrics"] = {
             "sampled_focals": int(sampled_focal_count),
             "reference_valid_focals": int(reference_valid_focal_count),
+            "rank_method": FOCAL_RANK_METHOD,
         }
 
     with profile_stage(performance_profile, "Target-null focal VEP") as timing:
@@ -529,14 +531,14 @@ def _sample_focal_snvs(
     limit: int,
     seed: int,
 ) -> pd.DataFrame:
-    strategy_bits = [
-        (strategy, 1 << observed_store.strategies.index(strategy))
-        for strategy in strategies
-    ]
-    heaps: dict[str, list[tuple[int, str, dict[str, object]]]] = defaultdict(list)
-
-    for chunk in observed_store.iter_focal_rows(strategies):
-        for variant_key, raw_gene_id, _source_ref, _source_alt, raw_mask in chunk:
+    rows = []
+    for chunk in observed_store.iter_sampled_focal_rows(
+        strategies,
+        set(genes),
+        limit=limit,
+        seed=seed,
+    ):
+        for variant_key, raw_gene_id, strategy in chunk:
             gene_id = str(raw_gene_id)
             parsed = parse_variant_key(variant_key)
             gene = genes.get(gene_id)
@@ -544,34 +546,19 @@ def _sample_focal_snvs(
                 continue
             chrom, pos, ref, alt = parsed
             target_pos = changed_target_position(parsed, int(gene["begin"]))
-            record_base = {
-                "gene_id": gene_id,
-                "variant_key": str(variant_key),
-                "target_pos": target_pos,
-                "chrom": chrom,
-                "pos": pos,
-                "ref": ref,
-                "alt": alt,
-                "context": context_at(contexts.get(gene_id, []), target_pos),
-            }
-            strategy_mask = int(raw_mask)
-            for strategy, bit in strategy_bits:
-                if not strategy_mask & bit:
-                    continue
-                record = {**record_base, "strategy": strategy}
-                token = f"{gene_id}:{record['variant_key']}"
-                rank = _stable_rank(seed, strategy, token)
-                heap = heaps[strategy]
-                item = (-rank, token, record)
-                if len(heap) < limit:
-                    heapq.heappush(heap, item)
-                elif rank < -heap[0][0]:
-                    heapq.heapreplace(heap, item)
-
-    rows = []
-    for strategy, heap in heaps.items():
-        for _negative_rank, _token, record in sorted(heap, key=lambda item: (-item[0], item[1])):
-            rows.append(record)
+            rows.append(
+                {
+                    "gene_id": gene_id,
+                    "variant_key": str(variant_key),
+                    "target_pos": target_pos,
+                    "chrom": chrom,
+                    "pos": pos,
+                    "ref": ref,
+                    "alt": alt,
+                    "context": context_at(contexts.get(gene_id, []), target_pos),
+                    "strategy": str(strategy),
+                }
+            )
     frame = pd.DataFrame(rows)
     if frame.empty:
         return frame

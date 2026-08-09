@@ -2,8 +2,7 @@ from __future__ import annotations
 
 import csv
 import gzip
-import heapq
-from collections import defaultdict
+import hashlib
 from pathlib import Path
 
 import pandas as pd
@@ -43,7 +42,7 @@ def _write_annotations(path: Path, rows: list[dict[str, str]]) -> None:
         writer.writerows(rows)
 
 
-def _legacy_sample(
+def _expected_md5_sample(
     path: Path,
     contexts: dict[str, list[tuple[int, int, str]]],
     genes: dict[str, dict[str, object]],
@@ -52,7 +51,9 @@ def _legacy_sample(
     seed: int,
 ) -> pd.DataFrame:
     strategy_set = set(strategies)
-    heaps: dict[str, list[tuple[int, str, dict[str, object]]]] = defaultdict(list)
+    ranked: dict[str, list[tuple[str, str, dict[str, object]]]] = {
+        strategy: [] for strategy in strategies
+    }
     frame = pd.read_csv(path, sep="\t", compression="gzip", keep_default_na=False)
     frame = frame[
         frame["event_type"].eq("snv")
@@ -85,21 +86,17 @@ def _legacy_sample(
                 continue
             record = {**record_base, "strategy": strategy}
             token = f"{gene_id}:{record['variant_key']}"
-            rank = controls._stable_rank(seed, strategy, token)
-            heap = heaps[strategy]
-            item = (-rank, token, record)
-            if len(heap) < limit:
-                heapq.heappush(heap, item)
-            elif rank < -heap[0][0]:
-                heapq.heapreplace(heap, item)
+            payload = f"{seed}|{strategy}|{token}".encode()
+            rank = hashlib.md5(payload, usedforsecurity=False).hexdigest()
+            ranked[strategy].append((rank, token, record))
 
     rows = [
         record
-        for heap in heaps.values()
-        for _negative_rank, _token, record in sorted(
-            heap,
-            key=lambda item: (-item[0], item[1]),
-        )
+        for strategy in strategies
+        for _rank, _token, record in sorted(
+            ranked[strategy],
+            key=lambda item: (item[0], item[1]),
+        )[:limit]
     ]
     result = pd.DataFrame(rows)
     if result.empty:
@@ -190,7 +187,7 @@ def test_observed_store_reuses_cache_and_queries_strategy_memberships(
     assert cached.cache_hit is True
 
 
-def test_observed_store_focal_sampling_matches_legacy_tsv_scan(tmp_path: Path) -> None:
+def test_observed_store_focal_sampling_matches_stable_md5_topk(tmp_path: Path) -> None:
     annotations = tmp_path / "variant_annotations.tsv.gz"
     rows = []
     for offset, strategies in enumerate(
@@ -228,6 +225,33 @@ def test_observed_store_focal_sampling_matches_legacy_tsv_scan(tmp_path: Path) -
                 "lookup_status": "ref_mismatch",
                 "strategies": "s1",
             },
+            {
+                "variant_key": "1:122:A>G:extra",
+                "gene_id": "1",
+                "event_type": "snv",
+                "ref": "A",
+                "alt": "G",
+                "lookup_status": "ok",
+                "strategies": "s1",
+            },
+            {
+                "variant_key": "1:123:A>G",
+                "gene_id": "missing_gene",
+                "event_type": "snv",
+                "ref": "A",
+                "alt": "G",
+                "lookup_status": "ok",
+                "strategies": "s2",
+            },
+            {
+                "variant_key": "chr:124:A>G",
+                "gene_id": "1",
+                "event_type": "snv",
+                "ref": "A",
+                "alt": "G",
+                "lookup_status": "ok",
+                "strategies": "s1",
+            },
         ]
     )
     _write_annotations(annotations, rows)
@@ -240,7 +264,14 @@ def test_observed_store_focal_sampling_matches_legacy_tsv_scan(tmp_path: Path) -
         analytics_dir=tmp_path / "analytics",
         strategies=strategies,
     )
-    expected = _legacy_sample(annotations, contexts, genes, strategies, limit=3, seed=17)
+    expected = _expected_md5_sample(
+        annotations,
+        contexts,
+        genes,
+        strategies,
+        limit=3,
+        seed=17,
+    )
     observed = controls._sample_focal_snvs(
         store,
         contexts,
@@ -251,6 +282,63 @@ def test_observed_store_focal_sampling_matches_legacy_tsv_scan(tmp_path: Path) -
     )
 
     pd.testing.assert_frame_equal(observed, expected)
+    all_sampled_keys = {
+        str(row[0])
+        for chunk in store.iter_sampled_focal_rows(
+            strategies,
+            set(genes),
+            limit=100,
+            seed=17,
+        )
+        for row in chunk
+    }
+    assert "1:120:A>AT" not in all_sampled_keys
+    assert "1:121:A>G" not in all_sampled_keys
+    assert "1:122:A>G:extra" not in all_sampled_keys
+    assert "1:123:A>G" not in all_sampled_keys
+    assert "chr:124:A>G" not in all_sampled_keys
+    pd.testing.assert_frame_equal(
+        controls._sample_focal_snvs(
+            store,
+            contexts,
+            genes,
+            strategies,
+            limit=3,
+            seed=17,
+        ),
+        observed,
+    )
+    assert observed.groupby("strategy").size().to_dict() == {"s1": 3, "s2": 3}
+    assert not observed.duplicated(["strategy", "gene_id", "variant_key"]).any()
+
+    reordered_annotations = tmp_path / "variant_annotations.reordered.tsv.gz"
+    _write_annotations(reordered_annotations, list(reversed(rows)))
+    reordered_store = build_or_load_observed_variant_store(
+        variant_annotations_tsv=reordered_annotations,
+        analytics_dir=tmp_path / "reordered_analytics",
+        strategies=strategies,
+    )
+    reordered = controls._sample_focal_snvs(
+        reordered_store,
+        contexts,
+        genes,
+        strategies,
+        limit=3,
+        seed=17,
+    )
+    pd.testing.assert_frame_equal(reordered, observed)
+
+    changed_seed = controls._sample_focal_snvs(
+        store,
+        contexts,
+        genes,
+        strategies,
+        limit=3,
+        seed=18,
+    )
+    assert set(zip(changed_seed["strategy"], changed_seed["variant_key"])) != set(
+        zip(observed["strategy"], observed["variant_key"])
+    )
 
 
 def test_observed_store_invalidates_when_source_changes(tmp_path: Path) -> None:

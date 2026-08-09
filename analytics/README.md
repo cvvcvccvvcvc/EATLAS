@@ -316,12 +316,15 @@ only the number of resamples reuses the prepared control tables.
 
 The sample size is an engineering cap, not a fixed scientific cohort size. A
 run uses every eligible focal SNV when fewer than the cap are available. The
-report shows full focal-weighted phyloP ECDFs and descriptive target-space
-intervals for all target-space-null outcomes. Each bootstrap replicate resamples
-whole matched sets with replacement, chooses one available control from every
-selected set, and uses the same draws for the GAPH, control, and paired-difference
-statistics. These are descriptive 95% paired matched-set bootstrap intervals;
-the report does not assign an inferential p-value to these comparators.
+sample is selected independently per strategy by a seed-dependent stable MD5
+rank inside DuckDB, so it is reproducible without scanning every strategy
+membership in Python. The report shows full focal-weighted phyloP ECDFs and
+descriptive target-space intervals for all target-space-null outcomes. Each
+bootstrap replicate resamples whole matched sets with replacement, chooses one
+available control from every selected set, and uses the same draws for the GAPH,
+control, and paired-difference statistics. These are descriptive 95% paired
+matched-set bootstrap intervals; the report does not assign an inferential
+p-value to these comparators.
 
 Raw p-values remain visible for the formal validation analyses. For each
 analysis mode, SNV/INDEL selection, target-context selection, and ClinVar MC

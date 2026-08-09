@@ -165,6 +165,11 @@ def test_build_target_space_null_end_to_end_with_mocked_annotations(
     assert set(matched["primary_consequence"]) == {"missense_variant"}
     assert set(matched["alt"]) == {"G"}
     assert analysis.manifest["matched_focal_count"] == 1
+    assert analysis.manifest["inputs"]["version"] == controls.CONTROL_VERSION
+    assert (
+        analysis.manifest["inputs"]["focal_rank_method"]
+        == controls.FOCAL_RANK_METHOD
+    )
     assert len(vep_calls) == 2
     assert all(
         call["vep_result_cache_dir"] == tmp_path / "vep_result_cache"
@@ -175,6 +180,9 @@ def test_build_target_space_null_end_to_end_with_mocked_annotations(
         analysis.focal_manifest_path is not None
         and analysis.focal_manifest_path.exists()
     )
+    focal_manifest = json.loads(analysis.focal_manifest_path.read_text())
+    assert focal_manifest["inputs"]["version"] == controls.FOCAL_CACHE_VERSION
+    assert focal_manifest["inputs"]["rank_method"] == controls.FOCAL_RANK_METHOD
     stage_names = {
         stage["name"]
         for stage in json.loads(performance_path.read_text())["stages"]
