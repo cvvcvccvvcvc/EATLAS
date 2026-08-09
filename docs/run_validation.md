@@ -20,7 +20,9 @@ uses an in-memory lookup bounded to each genomic partition. Set
 `GAPH_GNOMAD_CACHE_DIR` or `--gnomad_cache_dir` to reuse complete 25-kb regional
 responses across runs and analytics reports. When `GAPH_ROOT` is set, the cache
 defaults to `$GAPH_ROOT/cache/gnomad`. End-to-end runs may process up to
-`--annotation_max_forks` partitions concurrently (default: 2).
+`--annotation_max_forks` partitions concurrently (default: 4). Initial memory
+is selected from the partition's exact ortholog-support row count; retries add
+32 GB per attempt.
 
 If command-line tools are not on `PATH`, pass them explicitly:
 
@@ -128,7 +130,7 @@ reference transfer, preflight checks, and staged smoke-test procedure.
 Conservative starting parameters:
 
 ```bash
---chunk_size 10 --fetch_max_forks 2 --fetch_request_stagger_seconds 5 --alignment_max_forks 4
+--chunk_size 10 --fetch_max_forks 2 --fetch_request_stagger_seconds 5 --alignment_max_forks 4 --annotation_max_forks 4
 ```
 
 `fetch_max_forks` controls local fetch concurrency. `fetch_request_stagger_seconds`

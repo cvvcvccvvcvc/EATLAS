@@ -95,12 +95,13 @@ therefore the default on the verified cluster setup; this setting does not
 change the separate Ensembl MAF or annotation concurrency limits.
 
 In the same run, annotation partitions containing two genes used 0.38-5.6 GB
-RSS for 66,921-815,531 unique variant contexts. Memory tracked context count
-closely, while gene counts alone did not predict it. The default partition size
-is therefore 10 genes, and partitioned annotation requests 24 GB on its first
-attempt, retrying at 48 and 72 GB after memory-related failures. With the
-default two annotation forks, the maximum retry reservation remains below the
-verified 512 GB per-user Slurm memory limit.
+RSS for 66,921-815,531 unique variant contexts. A later 590-gene run showed that
+memory is predicted more directly by exact ortholog-support rows than by gene
+count. Partitioned annotation therefore requests 32, 48, 64, or 96 GB initially
+for partitions with at most 15, 30, 40, or more than 40 million support rows,
+respectively. Each retry adds 32 GB. With four annotation forks, even four
+largest first attempts reserve 384 GB, below the verified 512 GB per-user
+Slurm memory limit; larger retries may queue rather than run simultaneously.
 
 Current memory requests are conservative initial bounds. Tune them from
 Nextflow trace `peak_rss` after representative cluster runs. Requesting the

@@ -1,5 +1,6 @@
 nextflow.enable.dsl = 2
 
+import groovy.json.JsonSlurper
 import RunManifest
 
 include { validateParameters; paramsHelp } from 'plugin/nf-validation'
@@ -35,6 +36,26 @@ def parseAlignmentStrategies(rawValue) {
         throw new IllegalArgumentException("--alignment_strategies must select at least one strategy")
     }
     return selected
+}
+
+
+def annotationBaseMemoryGbForSupportRows(rawSupportRowCount) {
+    def supportRowCount = rawSupportRowCount as Long
+    if (supportRowCount < 0) {
+        throw new IllegalArgumentException(
+            "event_ortholog_support_count must be non-negative: ${supportRowCount}"
+        )
+    }
+    if (supportRowCount <= 15_000_000L) {
+        return 32
+    }
+    if (supportRowCount <= 30_000_000L) {
+        return 48
+    }
+    if (supportRowCount <= 40_000_000L) {
+        return 64
+    }
+    return 96
 }
 
 
@@ -549,7 +570,20 @@ workflow PARTITIONED_ANNOTATION_STAGE {
         .join(partition_target_fastas)
         .join(partition_target_features)
         .map { partition_id, meta, alignment_partition, genes_tsv, target_fastas, target_features ->
-            tuple(meta, alignment_partition, genes_tsv, target_fastas, target_features)
+            def manifestPath = alignment_partition.resolve('manifest.json')
+            if (!manifestPath.exists()) {
+                error "Alignment partition ${partition_id} is missing manifest.json: ${alignment_partition}"
+            }
+            def partitionManifest = new JsonSlurper().parse(manifestPath.toFile())
+            if (partitionManifest.event_ortholog_support_count == null) {
+                error "Alignment partition ${partition_id} manifest is missing event_ortholog_support_count"
+            }
+            def supportRowCount = partitionManifest.event_ortholog_support_count as Long
+            def annotationMeta = meta + [
+                annotation_event_ortholog_support_count: supportRowCount,
+                annotation_memory_gb: annotationBaseMemoryGbForSupportRows(supportRowCount),
+            ]
+            tuple(annotationMeta, alignment_partition, genes_tsv, target_fastas, target_features)
         }
     ANNOTATE_EVENTS_PARTITION(
         annotation_inputs,

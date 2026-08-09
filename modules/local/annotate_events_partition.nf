@@ -1,5 +1,5 @@
 process ANNOTATE_EVENTS_PARTITION {
-    tag { meta.partition_id }
+    tag { "${meta.partition_id} support_rows=${meta.annotation_event_ortholog_support_count} base_memory=${meta.annotation_memory_gb}GB" }
 
     input:
     tuple val(meta), path(alignment_partition), path(genes_tsv), path(target_fastas, stageAs: 'targets/*'), path(target_features, stageAs: 'target_features/*')
@@ -16,6 +16,7 @@ process ANNOTATE_EVENTS_PARTITION {
     script:
     def resultDir = "annotation_${meta.partition_id}"
     """
+    echo "INFO: Annotation resources partition=${meta.partition_id} support_rows=${meta.annotation_event_ortholog_support_count} attempt=${task.attempt} memory=${task.memory}" >&2
     GAPH_GNOMAD_CACHE_DIR="${gnomad_cache_dir}" \\
     python3 "${annotate_script}" \\
         --events-tsv "${alignment_partition}/alignment_events.tsv.gz" \\
