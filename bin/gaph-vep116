@@ -1,0 +1,44 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+GAPH_ROOT="${GAPH_ROOT:-/mnt/tank/scratch/${USER:?USER is required}/gaph_v2}"
+IMAGE="${GAPH_VEP_IMAGE:-$GAPH_ROOT/containers/ensembl-vep_release_116.0.sif}"
+
+runtime=""
+if [[ -n "${GAPH_CONTAINER_RUNTIME:-}" ]]; then
+  runtime="$(command -v "$GAPH_CONTAINER_RUNTIME" 2>/dev/null || true)"
+  if [[ -z "$runtime" ]]; then
+    printf 'Configured container runtime was not found: %s\n' \
+      "$GAPH_CONTAINER_RUNTIME" >&2
+    exit 127
+  fi
+else
+  for candidate in singularity apptainer; do
+    runtime="$(command -v "$candidate" 2>/dev/null || true)"
+    if [[ -n "$runtime" ]]; then
+      break
+    fi
+  done
+fi
+
+if [[ -z "$runtime" ]]; then
+  printf 'Neither singularity nor apptainer was found in PATH.\n' >&2
+  exit 127
+fi
+if [[ ! -s "$IMAGE" ]]; then
+  printf 'VEP container image does not exist or is empty: %s\n' "$IMAGE" >&2
+  exit 1
+fi
+
+cache_dir="${SINGULARITY_CACHEDIR:-$GAPH_ROOT/singularity/cache}"
+tmp_dir="${SINGULARITY_TMPDIR:-$GAPH_ROOT/singularity/tmp}"
+mkdir -p "$cache_dir" "$tmp_dir"
+export SINGULARITY_CACHEDIR="$cache_dir"
+export SINGULARITY_TMPDIR="$tmp_dir"
+export APPTAINER_CACHEDIR="${APPTAINER_CACHEDIR:-$cache_dir}"
+export APPTAINER_TMPDIR="${APPTAINER_TMPDIR:-$tmp_dir}"
+
+exec "$runtime" exec \
+  --bind "$GAPH_ROOT:$GAPH_ROOT" \
+  "$IMAGE" \
+  vep "$@"

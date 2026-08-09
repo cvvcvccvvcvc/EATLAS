@@ -346,7 +346,21 @@ Verified on 2026-07-29:
   (`25 GB` as reported by `du`)
 - retained download archive: `$GAPH_ROOT/downloads/vep/homo_sapiens_refseq_vep_116_GRCh38.tar.gz`
   (`26,409,563,680` bytes)
-- wrapper: `$GAPH_ROOT/bin/gaph-vep116`
+- wrapper: `$GAPH_ROOT/bin/gaph-vep116`, installed from
+  `$GAPH_CODE/bin/gaph-vep116`
+
+Install or refresh the wrapper without embedding a node-specific runtime path:
+
+```bash
+install -m 755 "$GAPH_CODE/bin/gaph-vep116" "$GAPH_ROOT/bin/gaph-vep116"
+```
+
+The wrapper discovers `singularity` and then `apptainer` from `PATH`, so the
+same `GAPH_VEP_EXECUTABLE` works across compute nodes with different install
+locations. `GAPH_CONTAINER_RUNTIME` remains an optional explicit override; it
+is not required for the verified cluster setup. Automatic discovery was
+verified on 2026-08-09 on `kraken`, where Singularity is installed as
+`/usr/bin/singularity`.
 
 The cache archive is the official Ensembl release-116 RefSeq-only GRCh38
 archive. Installation validated the complete archive, extracted it outside the
