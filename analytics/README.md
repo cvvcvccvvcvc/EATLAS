@@ -33,6 +33,9 @@ micromamba run -n gaph-v2-analytics python -m pytest -q
 
 Primary report:
 
+For the standard ITMO Slurm submission path and a complete CLI argument
+reference, see `docs/report_generation.md`.
+
 ```bash
 RUN="results/run_all_strategies_20260703_135905"
 
