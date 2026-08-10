@@ -10,6 +10,8 @@ from pathlib import Path
 
 import pandas as pd
 
+from analytics.io.artifacts import file_identity, path_metadata
+
 
 @dataclass(frozen=True)
 class RunInputs:
@@ -100,19 +102,10 @@ def resolve_vep_variant_annotations(run_dir: Path, source: Path) -> Path:
         raise ValueError(f"Incomplete bulk VEP artifact under {artifact_dir}")
 
     manifest = read_json(manifest_path)
-    source_stat = source.stat()
-    source_identity = {
-        "path": str(source.resolve()),
-        "size_bytes": source_stat.st_size,
-        "mtime": int(source_stat.st_mtime),
-    }
+    source_identity = path_metadata(source)
     if manifest.get("status") != "complete" or manifest.get("source") != source_identity:
         raise ValueError(f"Bulk VEP artifact does not match {source}")
-    output_stat = output_path.stat()
-    output_identity = {
-        "size_bytes": output_stat.st_size,
-        "mtime_ns": output_stat.st_mtime_ns,
-    }
+    output_identity = file_identity(output_path)
     if manifest.get("output") != output_identity:
         raise ValueError(f"Bulk VEP output metadata changed: {output_path}")
     return output_path

@@ -145,7 +145,7 @@ def test_report_inputs_use_matching_completed_vep_artifact(tmp_path: Path) -> No
                 "source": {
                     "path": str(source.resolve()),
                     "size_bytes": source_stat.st_size,
-                    "mtime": int(source_stat.st_mtime),
+                    "mtime_ns": source_stat.st_mtime_ns,
                 },
                 "output": {
                     "size_bytes": output_stat.st_size,
