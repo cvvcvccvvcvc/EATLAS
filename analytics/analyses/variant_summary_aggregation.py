@@ -15,6 +15,7 @@ from typing import Any
 import pandas as pd
 
 from analytics.analyses.target_context import read_disjoint_contexts
+from analytics.annotation.consequences import UNANNOTATED_CONSEQUENCE
 from analytics.io.artifacts import file_identity, path_metadata
 from genomics.variants import read_failed_regions
 
@@ -643,7 +644,12 @@ def _create_normalized_views(
         else "false"
     )
     sig = "lower(coalesce(p.clinvar_sig, ''))"
-    consequence = "CASE WHEN p.vep_status = 'ok' THEN p.vep_primary_consequence ELSE '' END"
+    consequence = (
+        "CASE WHEN p.vep_status = 'ok' "
+        "AND coalesce(p.vep_primary_consequence, '') <> '' "
+        "THEN p.vep_primary_consequence ELSE "
+        f"{_sql_string(UNANNOTATED_CONSEQUENCE)} END"
+    )
     failed = (
         "EXISTS (SELECT 1 FROM gnomad_failures f WHERE f.chrom = p.key_chrom "
         "AND p.key_pos BETWEEN f.start1 AND f.end1)"

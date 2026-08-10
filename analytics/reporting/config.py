@@ -58,6 +58,7 @@ CONSEQUENCE_GROUP_COLORS = {
     "Synonymous": "#74add1",
     "Noncoding/UTR/intron": "#abd9e9",
     "Other": "#9e9e9e",
+    "Not annotated": "#d9d9d9",
 }
 
 CONSEQUENCE_GROUP_TERMS = DISPLAY_CONSEQUENCE_GROUP_TERMS

@@ -27,13 +27,19 @@ from .conservation import hidden_clinvar_association_views
 from .matched_control import build_target_space_null_qc_sections
 from .variant_profile import pathogenic_variant_table
 
+
 def consequence_grouping_table(source: str) -> pd.DataFrame:
+    def definition(group: str) -> str:
+        if group == "Not annotated":
+            return f"VEP status is not ok or the selected {source} consequence is empty."
+        if group == "Other":
+            return f"Any non-empty {source} consequence not listed above."
+        return ", ".join(CONSEQUENCE_GROUP_TERMS.get(group, []))
+
     rows = [
         {
             "Group": group,
-            f"{source} consequence values": ", ".join(CONSEQUENCE_GROUP_TERMS.get(group, []))
-            if group != "Other"
-            else f"Any non-empty {source} consequence not listed above.",
+            f"{source} consequence values": definition(group),
         }
         for group in CONSEQUENCE_GROUP_ORDER
     ]

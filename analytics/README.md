@@ -146,7 +146,8 @@ The report requires this finalized artifact to match the current pipeline
 annotation file. It fails before expensive analysis when the artifact is
 missing, incomplete, or stale. Finalization requires coverage of every source
 row, not an `ok` consequence for every row; non-`ok` VEP statuses remain
-explicit. Candidate consequence plots use primary RefSeq VEP consequences.
+explicit. Candidate consequence plots use primary RefSeq VEP consequences and
+retain non-`ok` rows in a separate light-grey `Not annotated` group.
 
 The same report invocation annotates the much smaller normalized ClinVar
 validation universe with the configured VEP release and caches it as

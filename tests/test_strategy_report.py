@@ -8,8 +8,10 @@ import pandas as pd
 import pytest
 
 from analytics.analyses.matched_control import TargetSpaceNullAnalysis
+from analytics.annotation.consequences import UNANNOTATED_CONSEQUENCE
 from analytics.io.run_inputs import RunInputs, resolve_run_inputs, validate_report_inputs
 from analytics.reporting.components import dataframe_records, format_table_dataframe
+from analytics.reporting.config import CONSEQUENCE_GROUP_COLORS
 from analytics.reporting.conservation import (
     clinvar_association_view,
     hidden_clinvar_association_views,
@@ -32,6 +34,7 @@ from analytics.reporting.variant_profile import (
     gene_variant_distribution_counts,
     gene_variant_distribution_figure,
     gnomad_stratification_figure,
+    group_consequence_counts,
     pathogenic_variant_table,
     top_gene_contribution_counts,
     top_gene_contribution_figure,
@@ -211,6 +214,22 @@ def test_vep_qc_reports_candidate_and_clinvar_statuses() -> None:
             "Fraction": "10.000%",
         },
     ]
+
+
+def test_unannotated_vep_rows_are_a_separate_grey_consequence_group() -> None:
+    grouped = group_consequence_counts(
+        pd.DataFrame(
+            [
+                {"strategy": "s1", "value": "missense_variant", "Variant_Count": 9},
+                {"strategy": "s1", "value": UNANNOTATED_CONSEQUENCE, "Variant_Count": 1},
+            ]
+        )
+    )
+
+    unannotated = grouped[grouped["Consequence group"].astype(str).eq("Not annotated")]
+    assert unannotated.iloc[0]["Variant_Count"] == 1
+    assert unannotated.iloc[0]["Fraction"] == pytest.approx(0.1)
+    assert CONSEQUENCE_GROUP_COLORS["Not annotated"] == "#d9d9d9"
 
 
 def test_pathogenic_table_exposes_only_vep_consequence() -> None:

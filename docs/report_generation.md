@@ -101,7 +101,8 @@ the manifest before expensive analysis and fails with the VEP preparation and
 finalization commands when the artifact is missing. Non-`ok` per-row VEP
 statuses are valid in a finalized artifact and are reported in QC. The Slurm
 launcher checks that the final manifest and joined VEP table exist before it
-submits a report job.
+submits a report job. Consequence plots retain those rows as a light-grey
+`Not annotated` group instead of excluding them from the plotted denominator.
 
 ## Monitoring And Completion
 

@@ -48,7 +48,7 @@ VARIANT_USECOLS = [
     "vep_status",
     "vep_primary_consequence",
 ]
-SUMMARY_CACHE_VERSION = 13
+SUMMARY_CACHE_VERSION = 14
 SUMMARY_CACHE_NAME = "variant_summary.json.gz"
 SPECIAL_FLOAT_KEY = "__gaph_float__"
 ORTHOLOG_EVIDENCE_COLUMNS = [
@@ -826,15 +826,11 @@ def _summary_from_grouped_aggregation(
     consequence_counts = grouped_counts(
         allele_gene_rows,
         ["consequence"],
-        where=allele_gene_rows["consequence"].ne(""),
     ).rename(columns={"consequence": "value"})
     pathogenic_consequence_counts = grouped_counts(
         allele_gene_rows,
         ["consequence"],
-        where=(
-            allele_gene_rows["consequence"].ne("")
-            & allele_gene_rows["clinvar_category"].eq("P/LP")
-        ),
+        where=allele_gene_rows["clinvar_category"].eq("P/LP"),
     ).rename(columns={"consequence": "value"})
 
     af_summary = grouped.gnomad_af_summary.drop(columns=["Median gnomAD AF"], errors="ignore").copy()

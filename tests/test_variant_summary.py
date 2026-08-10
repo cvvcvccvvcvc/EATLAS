@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pandas as pd
 
+from analytics.annotation.consequences import UNANNOTATED_CONSEQUENCE
 from analytics.analyses.variant_summary import (
     VARIANT_USECOLS,
     _categorize_clinvar,
@@ -319,7 +320,8 @@ def test_variant_summary_uses_vep_consequences_for_all_candidates(tmp_path: Path
 
     assert summary.consequence_source == "Ensembl VEP"
     assert summary.consequence_counts.to_dict(orient="records") == [
-        {"strategy": "s1", "value": "missense_variant", "Variant_Count": 1}
+        {"strategy": "s1", "value": UNANNOTATED_CONSEQUENCE, "Variant_Count": 1},
+        {"strategy": "s1", "value": "missense_variant", "Variant_Count": 1},
     ]
 
 

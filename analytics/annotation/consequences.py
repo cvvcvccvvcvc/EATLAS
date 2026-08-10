@@ -123,7 +123,10 @@ DISPLAY_CONSEQUENCE_GROUP_ORDER = (
     "Synonymous",
     "Noncoding/UTR/intron",
     "Other",
+    "Not annotated",
 )
+
+UNANNOTATED_CONSEQUENCE = "__not_annotated__"
 
 DISPLAY_CONSEQUENCE_GROUP_TERMS = {
     "LoF/splice": (
@@ -184,6 +187,8 @@ def validation_consequence_membership_mask(terms_text: object) -> int:
 
 def display_consequence_group(value: object) -> str:
     consequence = str(value or "")
+    if consequence == UNANNOTATED_CONSEQUENCE:
+        return "Not annotated"
     for group, terms in DISPLAY_CONSEQUENCE_GROUP_TERMS.items():
         if consequence in terms:
             return group
