@@ -48,7 +48,7 @@ VARIANT_USECOLS = [
     "vep_status",
     "vep_primary_consequence",
 ]
-SUMMARY_CACHE_VERSION = 14
+SUMMARY_CACHE_VERSION = 15
 SUMMARY_CACHE_NAME = "variant_summary.json.gz"
 SPECIAL_FLOAT_KEY = "__gaph_float__"
 ORTHOLOG_EVIDENCE_COLUMNS = [
@@ -104,6 +104,7 @@ class VariantSummary:
     target_context_counts: pd.DataFrame
     gnomad_event_counts: pd.DataFrame
     gnomad_context_counts: pd.DataFrame
+    gnomad_consequence_counts: pd.DataFrame
     overlap: StrategyOverlap | None
     clinvar_counts: pd.DataFrame
     gnomad_af_summary: pd.DataFrame
@@ -204,6 +205,7 @@ def _summary_payload(
         "target_context_counts",
         "gnomad_event_counts",
         "gnomad_context_counts",
+        "gnomad_consequence_counts",
         "clinvar_counts",
         "gnomad_af_summary",
         "pathogenic_star_counts",
@@ -291,6 +293,7 @@ def _summary_from_payload(payload: dict[str, object]) -> VariantSummary:
         target_context_counts=_frame_from_payload(frames["target_context_counts"]),
         gnomad_event_counts=_frame_from_payload(frames["gnomad_event_counts"]),
         gnomad_context_counts=_frame_from_payload(frames["gnomad_context_counts"]),
+        gnomad_consequence_counts=_frame_from_payload(frames["gnomad_consequence_counts"]),
         overlap=overlap,
         clinvar_counts=_frame_from_payload(frames["clinvar_counts"]),
         gnomad_af_summary=_frame_from_payload(frames["gnomad_af_summary"]),
@@ -817,6 +820,11 @@ def _summary_from_grouped_aggregation(
         ["gnomad_status", "target_context"],
         where=allele_gene_rows["gnomad_status"].isin(["found", "not_found"]),
     )
+    gnomad_consequence_counts = grouped_counts(
+        allele_gene_rows,
+        ["gnomad_status", "consequence"],
+        where=allele_gene_rows["gnomad_status"].isin(["found", "not_found"]),
+    ).rename(columns={"consequence": "value"})
     clinvar_counts = grouped_counts(global_rows, ["clinvar_category"])
     star_counts = grouped_counts(
         global_rows,
@@ -882,6 +890,7 @@ def _summary_from_grouped_aggregation(
         target_context_counts=target_context_counts,
         gnomad_event_counts=gnomad_event_counts,
         gnomad_context_counts=gnomad_context_counts,
+        gnomad_consequence_counts=gnomad_consequence_counts,
         overlap=overlap,
         clinvar_counts=clinvar_counts,
         gnomad_af_summary=af_summary,

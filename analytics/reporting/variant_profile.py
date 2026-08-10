@@ -91,17 +91,19 @@ def group_consequence_counts(raw_counts: pd.DataFrame) -> pd.DataFrame:
         return pd.DataFrame(columns=["Strategy", "Consequence group", "Variant_Count", "Fraction"])
     counts = raw_counts.rename(columns={"strategy": "Strategy"}).copy()
     counts["Consequence group"] = counts["value"].map(consequence_group)
+    strata = ["gnomad_status"] if "gnomad_status" in counts.columns else []
+    group_columns = ["Strategy", *strata, "Consequence group"]
     counts = (
-        counts.groupby(["Strategy", "Consequence group"], observed=True)["Variant_Count"]
+        counts.groupby(group_columns, observed=True)["Variant_Count"]
         .sum()
         .reset_index()
     )
-    totals = counts.groupby("Strategy", observed=True)["Variant_Count"].transform("sum")
+    totals = counts.groupby(["Strategy", *strata], observed=True)["Variant_Count"].transform("sum")
     counts["Fraction"] = counts["Variant_Count"] / totals.replace(0, np.nan)
     counts["Consequence group"] = pd.Categorical(
         counts["Consequence group"], categories=CONSEQUENCE_GROUP_ORDER, ordered=True
     )
-    return counts.sort_values(["Strategy", "Consequence group"])
+    return counts.sort_values(["Strategy", *strata, "Consequence group"])
 
 
 def consequence_strategy_order(counts: pd.DataFrame) -> list[str]:
@@ -871,11 +873,22 @@ def build_gnomad_stratification_sections(
     else:
         sections.append("<p>No candidate-wide phyloP100way scores were available.</p>")
 
-    sections.extend(
-        [
-            "<h3>Functional Consequence</h3>",
-            "<p class=\"analysis-note\">Not computed. A defensible comparison requires the same VEP release, "
-            "transcript set, and consequence-selection rule for both gnomAD strata.</p>",
-        ]
+    sections.append("<h3>Functional Consequence</h3>")
+    consequence_counts = group_consequence_counts(variant_summary.gnomad_consequence_counts)
+    consequence_fig = gnomad_stratification_figure(
+        consequence_counts.rename(columns={"Strategy": "strategy"}),
+        "Consequence group",
+        CONSEQUENCE_GROUP_ORDER,
+        strategy_order,
+        f"{variant_summary.consequence_source} consequence: gnomAD hits versus non-hits",
+        CONSEQUENCE_GROUP_COLORS,
     )
+    if consequence_fig is not None:
+        sections.append(
+            "<p class=\"lead\">Release-pinned RefSeq VEP consequence groups are compared "
+            "within completed gnomAD lookups. Failed lookups are excluded from both strata.</p>"
+        )
+        sections.append(fig_html(consequence_fig))
+    else:
+        sections.append("<p>No VEP consequence counts were available for completed gnomAD lookups.</p>")
     return sections

@@ -148,6 +148,8 @@ missing, incomplete, or stale. Finalization requires coverage of every source
 row, not an `ok` consequence for every row; non-`ok` VEP statuses remain
 explicit. Candidate consequence plots use primary RefSeq VEP consequences and
 retain non-`ok` rows in a separate light-grey `Not annotated` group.
+The gnomAD found-versus-not-found view uses the same consequence groups and
+excludes failed gnomAD lookups from both stratum denominators.
 
 The same report invocation annotates the much smaller normalized ClinVar
 validation universe with the configured VEP release and caches it as

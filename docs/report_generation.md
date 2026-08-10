@@ -103,6 +103,8 @@ statuses are valid in a finalized artifact and are reported in QC. The Slurm
 launcher checks that the final manifest and joined VEP table exist before it
 submits a report job. Consequence plots retain those rows as a light-grey
 `Not annotated` group instead of excluding them from the plotted denominator.
+The gnomAD Stratification consequence view uses these same VEP groups and only
+completed gnomAD lookups (`found` or `not_found`).
 
 ## Monitoring And Completion
 

@@ -274,6 +274,7 @@ def test_variant_groups_keep_gene_specific_context_and_consequence(tmp_path: Pat
         "event_counts",
         "clinvar_counts",
         "gnomad_event_counts",
+        "gnomad_consequence_counts",
         "gnomad_af_summary",
     ):
         left = getattr(duckdb_summary, name).sort_values(

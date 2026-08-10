@@ -323,6 +323,20 @@ def test_variant_summary_uses_vep_consequences_for_all_candidates(tmp_path: Path
         {"strategy": "s1", "value": UNANNOTATED_CONSEQUENCE, "Variant_Count": 1},
         {"strategy": "s1", "value": "missense_variant", "Variant_Count": 1},
     ]
+    assert summary.gnomad_consequence_counts.to_dict(orient="records") == [
+        {
+            "strategy": "s1",
+            "gnomad_status": "found",
+            "value": UNANNOTATED_CONSEQUENCE,
+            "Variant_Count": 1,
+        },
+        {
+            "strategy": "s1",
+            "gnomad_status": "not_found",
+            "value": "missense_variant",
+            "Variant_Count": 1,
+        },
+    ]
 
 
 def test_variant_summary_rebuilds_a_corrupt_cache(tmp_path: Path) -> None:
@@ -610,3 +624,5 @@ def test_variant_summary_excludes_failed_gnomad_lookups_from_denominator(tmp_pat
     assert stats["gnomAD found %"] == 0.5
     assert summary.gnomad_lookup_failed == 2
     assert set(summary.gnomad_event_counts["gnomad_status"]) == {"found", "not_found"}
+    assert set(summary.gnomad_consequence_counts["gnomad_status"]) == {"found", "not_found"}
+    assert summary.gnomad_consequence_counts["Variant_Count"].sum() == 2

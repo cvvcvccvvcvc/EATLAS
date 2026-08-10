@@ -7,6 +7,7 @@ from types import SimpleNamespace
 import pandas as pd
 import pytest
 
+from analytics.analyses.candidate_conservation import CandidateConservation
 from analytics.analyses.matched_control import TargetSpaceNullAnalysis
 from analytics.annotation.consequences import UNANNOTATED_CONSEQUENCE
 from analytics.io.run_inputs import RunInputs, resolve_run_inputs, validate_report_inputs
@@ -30,6 +31,7 @@ from analytics.reporting.ortholog_evidence import (
 from analytics.reporting.overview import overview_strategy_table
 from analytics.reporting.qc import vep_qc_tables
 from analytics.reporting.variant_profile import (
+    build_gnomad_stratification_sections,
     build_variant_sections,
     gene_variant_distribution_counts,
     gene_variant_distribution_figure,
@@ -509,6 +511,50 @@ def test_gnomad_stratification_places_found_and_not_found_bars_side_by_side() ->
     assert list(figure.data[0].x[0]) == ["s1", "s1"]
     assert list(figure.data[0].x[1]) == ["Found", "Not found"]
     assert list(figure.data[0].y) == [0.75, 0.25]
+
+
+def test_gnomad_stratification_uses_vep_consequence_groups(tmp_path: Path) -> None:
+    summary = SimpleNamespace(
+        consequence_source="Ensembl VEP",
+        gnomad_event_counts=pd.DataFrame(),
+        gnomad_context_counts=pd.DataFrame(),
+        gnomad_consequence_counts=pd.DataFrame(
+            [
+                {
+                    "strategy": "s1",
+                    "gnomad_status": "found",
+                    "value": "missense_variant",
+                    "Variant_Count": 3,
+                },
+                {
+                    "strategy": "s1",
+                    "gnomad_status": "not_found",
+                    "value": UNANNOTATED_CONSEQUENCE,
+                    "Variant_Count": 1,
+                },
+            ]
+        ),
+    )
+    candidate = CandidateConservation(
+        distributions_path=tmp_path / "distributions.tsv.gz",
+        histograms_path=tmp_path / "histograms.tsv.gz",
+        manifest_path=tmp_path / "manifest.json",
+        distributions=pd.DataFrame(),
+        histograms=pd.DataFrame(),
+        manifest={},
+    )
+
+    sections = build_gnomad_stratification_sections(
+        summary,
+        pd.DataFrame([{"Strategy": "s1", "gnomAD found %": 0.5}]),
+        candidate,
+    )
+    rendered = "".join(sections)
+
+    assert "Ensembl VEP consequence: gnomAD hits versus non-hits" in rendered
+    assert "Not annotated" in rendered
+    assert "#d9d9d9" in rendered
+    assert "Not computed" not in rendered
 
 
 def test_target_space_null_section_reports_consequence_matched_design(tmp_path: Path) -> None:
