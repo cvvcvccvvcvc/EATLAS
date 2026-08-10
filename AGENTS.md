@@ -113,6 +113,10 @@ Agent workflow rules:
 20. Large annotation runs must reuse the shared gnomAD regional cache. On the
    ITMO cluster use `$GAPH_ROOT/cache/gnomad`; pass it explicitly with
    `--gnomad_cache_dir` or export `GAPH_GNOMAD_CACHE_DIR` before launch.
+21. This is a single-maintainer repository: after completing and committing
+   verified changes, always push the current branch directly to origin,
+   including any existing unpushed commits; do not create pull requests or
+   invent collaboration/conflict workflows.
 
 ## Progressive Disclosure
 
