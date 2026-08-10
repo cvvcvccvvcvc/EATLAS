@@ -45,9 +45,9 @@ VARIANT_USECOLS = [
     "clinvar_disease",
     "clinvar_variant_type",
     "gnomad_af",
-    "gnomad_csq",
+    "vep_status",
+    "vep_primary_consequence",
 ]
-VEP_USECOLS = ["vep_status", "vep_primary_consequence"]
 SUMMARY_CACHE_VERSION = 13
 SUMMARY_CACHE_NAME = "variant_summary.json.gz"
 SPECIAL_FLOAT_KEY = "__gaph_float__"

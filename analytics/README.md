@@ -96,7 +96,8 @@ size, and modification time in candidate, ClinVar, and target-null cache
 contracts.
 
 Full candidate annotation is a separate resumable precompute, not an implicit
-part of HTML generation. Prepare deterministic input partitions once:
+part of HTML generation. It is a required report input. Prepare deterministic
+input partitions once:
 
 ```bash
 python -m analytics.vep_annotation prepare \
@@ -141,26 +142,24 @@ the source annotation columns and adds `vep_*` fields. Prepared inputs,
 headerless output partitions, and their manifests remain in the same directory
 for resume and audit. A changed source, partition contract, or VEP runtime
 configuration is rejected instead of being silently mixed with old results.
-When this finalized artifact matches the current pipeline annotation file, the
-report selects it automatically. Candidate consequence plots then use primary
-RefSeq VEP consequences for every successfully annotated candidate; raw
-`gnomad_csq` remains available as provenance. Runs without the artifact retain
-the legacy gnomAD-CSQ plots.
+The report requires this finalized artifact to match the current pipeline
+annotation file. It fails before expensive analysis when the artifact is
+missing, incomplete, or stale. Finalization requires coverage of every source
+row, not an `ok` consequence for every row; non-`ok` VEP statuses remain
+explicit. Candidate consequence plots use primary RefSeq VEP consequences.
 
 The same report invocation annotates the much smaller normalized ClinVar
 validation universe with the configured VEP release and caches it as
 `<run-dir>/analytics/clinvar_universe.snv_indel.vep.tsv.gz`. ClinVar Association
-then uses those RefSeq VEP terms for consequence subsets while retaining raw
-ClinVar MC fields in the artifact. A matching source and VEP release reuse the
-file without another VEP process.
+uses those RefSeq VEP terms for consequence subsets. A matching source and VEP
+release reuse the file without another VEP process.
 
 Set `GAPH_GNOMAD_CACHE_DIR` to the same shared path used by pipeline annotation,
 or pass `--gnomad-cache-dir`, so new matched-control reports reuse complete
 regional responses instead of requesting them again.
 
 The ClinVar association view compares all strategies and supports variant-type
-and consequence selectors. With a completed bulk-VEP artifact these selectors
-use RefSeq VEP; legacy runs use ClinVar MC. A second selector exposes the 2x2,
+and RefSeq VEP consequence selectors. A second selector exposes the 2x2,
 fixed-band, or continuous-distribution data for one strategy at a time.
 
 `Ortholog Evidence` shows SNV-only heatmaps of site-aligned evidence-unit count
@@ -194,10 +193,9 @@ Independent continuous-association models run in parallel through
 count outside Slurm, capped at eight workers. `GAPH_FIRTH_WORKERS` overrides
 that default.
 
-The report aggregates completed bulk-VEP partitions directly with DuckDB. For
-legacy runs it reads the single `variant_annotations.tsv.gz` file through the
-same engine. Strategy sets are represented internally as bit masks, so the
-report does not materialize variant-by-strategy rows or a persistent database.
+The report aggregates completed bulk-VEP partitions directly with DuckDB.
+Strategy sets are represented internally as bit masks, so the report does not
+materialize variant-by-strategy rows or a persistent database.
 It materializes only temporary allele-gene and global-allele relations so
 downstream summaries do not repeatedly scan and normalize the compressed
 source. DuckDB receives 50% of the Slurm task memory allocation and spills to
@@ -321,7 +319,7 @@ matched-set bootstrap intervals; the report does not assign an inferential
 p-value to these comparators.
 
 Raw p-values remain visible for the formal validation analyses. For each
-analysis mode, SNV/INDEL selection, target-context selection, and ClinVar MC
+analysis mode, SNV/INDEL selection, target-context selection, and RefSeq VEP
 consequence selection, Benjamini-Hochberg correction is applied across
 strategies. Band-specific Fisher tests are corrected across strategies within
 the same band. Consequence options with no estimable strategy result for the

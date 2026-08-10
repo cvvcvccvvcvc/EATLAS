@@ -88,6 +88,10 @@ done
 [[ -n "$slurm_partition" ]] || fail "--slurm-partition must not be empty"
 command -v sbatch >/dev/null || fail "sbatch was not found; run this launcher on the Slurm controller"
 
+vep_dir="$run_dir/analytics/vep_consequences"
+[[ -s "$vep_dir/manifest.json" && -s "$vep_dir/variant_annotations.vep.tsv.gz" ]] || fail \
+  "missing finalized bulk VEP artifact under $vep_dir; prepare, annotate, and finalize VEP before submitting the report"
+
 for argument in "${report_args[@]}"; do
   case "$argument" in
     --run-dir|--run-dir=*|--report-name|--report-name=*)

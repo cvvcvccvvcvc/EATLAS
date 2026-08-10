@@ -375,12 +375,8 @@ def pathogenic_variant_table(variants: pd.DataFrame) -> pd.DataFrame:
             "HGVS": pathogenic["HGVS"],
             "ClinVar type": pathogenic["clinvar_variant_type"],
             "gnomAD AF": pathogenic["gnomAD AF"],
-            "gnomAD consequence": pathogenic["gnomad_csq"],
-            **(
-                {"VEP consequence": pathogenic["vep_primary_consequence"]}
-                if "vep_primary_consequence" in pathogenic.columns
-                else {}
-            ),
+            "VEP consequence": pathogenic["vep_primary_consequence"],
+            "VEP status": pathogenic["vep_status"],
             "Ortholog support / strategy": pathogenic["Ortholog support / strategy"],
             "Strategies": pathogenic["Strategies"],
         }

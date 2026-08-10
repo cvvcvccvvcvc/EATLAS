@@ -5,6 +5,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pandas as pd
+import pytest
 
 from analytics.analyses.matched_control import TargetSpaceNullAnalysis
 from analytics.io.run_inputs import RunInputs, resolve_run_inputs, validate_report_inputs
@@ -25,11 +26,13 @@ from analytics.reporting.ortholog_evidence import (
     ortholog_evidence_figure,
 )
 from analytics.reporting.overview import overview_strategy_table
+from analytics.reporting.qc import vep_qc_tables
 from analytics.reporting.variant_profile import (
     build_variant_sections,
     gene_variant_distribution_counts,
     gene_variant_distribution_figure,
     gnomad_stratification_figure,
+    pathogenic_variant_table,
     top_gene_contribution_counts,
     top_gene_contribution_figure,
 )
@@ -66,7 +69,8 @@ def test_report_preflight_accepts_compact_production_contract(tmp_path: Path) ->
         [
             "variant_key", "gene_id", "event_type", "ref", "alt", "lookup_status",
             "strategies", "support_row_count", "support_ortholog_count", "clinvar_id",
-            "clinvar_sig", "clinvar_review_stars", "clinvar_scv_count", "gnomad_af", "gnomad_csq",
+            "clinvar_sig", "clinvar_review_stars", "clinvar_scv_count", "gnomad_af",
+            "vep_status", "vep_primary_consequence", "vep_consequence_terms",
         ],
     )
     genes = write_table("genes.tsv.gz", ["gene_id", "chromosome", "begin", "end", "sequence_length"])
@@ -154,6 +158,94 @@ def test_report_inputs_use_matching_completed_vep_artifact(tmp_path: Path) -> No
     inputs = resolve_run_inputs(run_dir)
 
     assert inputs.variant_annotations_tsv == output
+
+
+def test_report_inputs_require_finalized_vep_artifact(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run"
+    annotation_dir = run_dir / "annotation"
+    (run_dir / "fetch" / "sequences" / "targets").mkdir(parents=True)
+    annotation_dir.mkdir()
+    pd.DataFrame(columns=["variant_key"]).to_csv(
+        annotation_dir / "variant_annotations.tsv.gz",
+        sep="\t",
+        index=False,
+        compression="gzip",
+    )
+
+    with pytest.raises(FileNotFoundError, match="Missing finalized bulk VEP artifact"):
+        resolve_run_inputs(run_dir)
+
+
+def test_vep_qc_reports_candidate_and_clinvar_statuses() -> None:
+    candidate_manifest = {
+        "row_count": 100,
+        "config": {"backend": "local", "release": "116"},
+        "status_counts": {"ok": 99, "invalid_variant_key": 1},
+    }
+    validation = SimpleNamespace(
+        manifest={
+            "vep": {
+                "allele_count": 20,
+                "contract": {"backend": "local", "release": "116"},
+                "status_counts": {"ok": 18, "no_target_gene": 2},
+            }
+        }
+    )
+
+    configuration, statuses = vep_qc_tables(candidate_manifest, validation)
+
+    assert configuration["VEP release"].tolist() == ["116", "116"]
+    assert statuses.to_dict(orient="records") == [
+        {"Dataset": "Candidates", "VEP status": "ok", "Rows": 99, "Fraction": "99.000%"},
+        {
+            "Dataset": "Candidates",
+            "VEP status": "invalid_variant_key",
+            "Rows": 1,
+            "Fraction": "1.000%",
+        },
+        {"Dataset": "ClinVar universe", "VEP status": "ok", "Rows": 18, "Fraction": "90.000%"},
+        {
+            "Dataset": "ClinVar universe",
+            "VEP status": "no_target_gene",
+            "Rows": 2,
+            "Fraction": "10.000%",
+        },
+    ]
+
+
+def test_pathogenic_table_exposes_only_vep_consequence() -> None:
+    variants = pd.DataFrame(
+        [
+            {
+                "variant_id": "1:100:A>G",
+                "gene_id": "1",
+                "event_type": "snv",
+                "clinvar_category": "P/LP",
+                "clinvar_sig": "Pathogenic",
+                "clinvar_review_stars": "2",
+                "clinvar_revstat": "criteria_provided",
+                "clinvar_scv_count": "3",
+                "clinvar_id": "VCV1",
+                "clinvar_allele_id": "1",
+                "clinvar_disease": "Example disease",
+                "clinvar_hgvs": "NC_000001.11:g.100A>G",
+                "clinvar_variant_type": "single nucleotide variant",
+                "gnomad_af": "0.01",
+                "vep_primary_consequence": "missense_variant",
+                "vep_status": "ok",
+                "support_ortholog_mean": 2.0,
+                "support_ortholog_min": 1,
+                "support_ortholog_max": 3,
+                "strategies": "s1",
+            }
+        ]
+    )
+
+    table = pathogenic_variant_table(variants)
+
+    assert "gnomAD consequence" not in table.columns
+    assert table.loc[0, "VEP consequence"] == "missense_variant"
+    assert table.loc[0, "VEP status"] == "ok"
 
 
 def test_single_strategy_candidate_profile_loads_plotly_without_overlap() -> None:

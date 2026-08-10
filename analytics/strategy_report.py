@@ -7,8 +7,6 @@ import argparse
 import os
 from pathlib import Path
 
-import pandas as pd
-
 from analytics.analyses.clinvar_validation import build_validation
 from analytics.analyses.conservation_analysis import (
     alignment_gene_ids_by_strategy,
@@ -21,6 +19,7 @@ from analytics.analyses.observed_variant_store import (
 )
 from analytics.analyses.variant_summary import build_variant_summary
 from analytics.io.run_inputs import (
+    bulk_vep_manifest,
     bulk_vep_release,
     read_failures,
     read_feature_coverage,
@@ -205,36 +204,23 @@ def main() -> None:
         raise ValueError("--target-space-null-sample-size must be >= 1")
     if args.target_space_null and args.target_space_null_resamples < 100:
         raise ValueError("--target-space-null-resamples must be >= 100")
-    if args.target_space_null and args.vep_forks < 1:
+    if args.vep_forks < 1:
         raise ValueError("--vep-forks must be >= 1")
     if args.firth_workers < 1:
         raise ValueError("--firth-workers must be >= 1")
     if args.vep_result_cache_tile_size_bp < 1:
         raise ValueError("--vep-result-cache-tile-size-bp must be >= 1")
-    if args.target_space_null and args.vep_backend == "local" and args.vep_cache_dir is None:
-        raise ValueError("--vep-cache-dir is required with --vep-backend local")
-    if args.target_space_null and args.vep_backend == "local" and not args.vep_release:
-        raise ValueError("--vep-release is required with --vep-backend local")
     inputs = resolve_run_inputs(args.run_dir)
     validate_report_inputs(inputs)
-    annotation_columns = set(
-        pd.read_csv(inputs.variant_annotations_tsv, sep="\t", compression="gzip", nrows=0).columns
-    )
-    use_vep_consequences = {
-        "vep_status",
-        "vep_primary_consequence",
-        "vep_consequence_terms",
-    }.issubset(annotation_columns)
-    artifact_release = bulk_vep_release(inputs) if use_vep_consequences else None
-    if artifact_release and args.vep_release and str(args.vep_release) != artifact_release:
+    candidate_vep_manifest = bulk_vep_manifest(inputs)
+    artifact_release = bulk_vep_release(inputs)
+    if args.vep_release and str(args.vep_release) != artifact_release:
         raise ValueError(
             f"Bulk VEP artifact uses release {artifact_release}, not {args.vep_release}"
         )
     if not args.vep_release:
         args.vep_release = artifact_release
-    if use_vep_consequences and not args.vep_release:
-        raise ValueError("--vep-release is required when the report uses bulk VEP consequences")
-    if use_vep_consequences and args.vep_backend == "local" and args.vep_cache_dir is None:
+    if args.vep_backend == "local" and args.vep_cache_dir is None:
         raise ValueError("--vep-cache-dir is required with --vep-backend local")
     out_html = resolve_out_html(args, inputs.run_dir)
     analytics_dir = inputs.run_dir / "analytics"
@@ -336,7 +322,6 @@ def main() -> None:
             clinvar_vcf=args.clinvar_vcf.expanduser().resolve(),
             strategies=strategies,
             observed_store=observed_store,
-            use_vep_consequences=use_vep_consequences,
             vep_backend=args.vep_backend,
             vep_release=args.vep_release,
             vep_executable=args.vep_executable,
@@ -458,6 +443,7 @@ def main() -> None:
                     performance.table_rows(),
                     taxonomy_summary,
                     performance_path,
+                    candidate_vep_manifest=candidate_vep_manifest,
                 ),
             ),
         ]

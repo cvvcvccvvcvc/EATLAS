@@ -24,12 +24,24 @@ from analytics.analyses.variant_summary_aggregation import (
 from analytics.io.artifacts import file_identity
 
 
-COLUMNS = ["variant_key", "gene_id", "event_type", "ref", "alt", "strategies"]
+CORE_COLUMNS = ["variant_key", "gene_id", "event_type", "ref", "alt", "strategies"]
+COLUMNS = [*CORE_COLUMNS, "vep_status", "vep_primary_consequence"]
 
 
 def test_available_cpu_count_prefers_slurm_allocation(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("SLURM_CPUS_PER_TASK", "12")
     assert available_cpu_count() == 12
+
+
+def test_variant_source_requires_vep_columns(tmp_path: Path) -> None:
+    path = tmp_path / "variant_annotations.tsv.gz"
+    pd.DataFrame(
+        [["1:100:A>G", "gene_a", "snv", "A", "G", "s1"]],
+        columns=CORE_COLUMNS,
+    ).to_csv(path, sep="\t", index=False, compression="gzip")
+
+    with pytest.raises(ValueError, match="vep_primary_consequence, vep_status"):
+        resolve_variant_aggregation_source(path)
 
 
 def test_slurm_memory_budget_uses_node_or_per_cpu_allocation(
@@ -65,10 +77,10 @@ def test_strategy_masks_preserve_gene_context_and_union_global_alleles(tmp_path:
     path = tmp_path / "variant_annotations.tsv.gz"
     pd.DataFrame(
         [
-            ["1:100:A>G", "gene_a", "snv", "A", "G", "s1,s2"],
-            ["1:100:A>G", "gene_a", "snv", "A", "G", "s1, s2"],
-            ["1:100:A>G", "gene_b", "snv", "A", "G", "s1,s3"],
-            ["1:200:C>T", "gene_a", "snv", "C", "T", "s2"],
+            ["1:100:A>G", "gene_a", "snv", "A", "G", "s1,s2", "ok", "missense_variant"],
+            ["1:100:A>G", "gene_a", "snv", "A", "G", "s1, s2", "ok", "missense_variant"],
+            ["1:100:A>G", "gene_b", "snv", "A", "G", "s1,s3", "ok", "intron_variant"],
+            ["1:200:C>T", "gene_a", "snv", "C", "T", "s2", "ok", "synonymous_variant"],
         ],
         columns=COLUMNS,
     ).to_csv(path, sep="\t", index=False, compression="gzip")
@@ -91,13 +103,13 @@ def test_strategy_masks_preserve_gene_context_and_union_global_alleles(tmp_path:
         aggregate_strategy_masks(source, threads=0)
 
 
-def test_partitioned_source_validates_manifests_and_matches_legacy(tmp_path: Path) -> None:
+def test_partitioned_source_validates_manifests_and_matches_merged_vep(tmp_path: Path) -> None:
     artifact = tmp_path / "vep_consequences"
     partitions = artifact / "partitions"
     partitions.mkdir(parents=True)
     rows = [
-        ["1:100:A>G", "gene_a", "snv", "A", "G", "s1,s2"],
-        ["1:200:C>T", "gene_a", "snv", "C", "T", "s2"],
+        ["1:100:A>G", "gene_a", "snv", "A", "G", "s1,s2", "ok", "missense_variant"],
+        ["1:200:C>T", "gene_a", "snv", "C", "T", "s2", "ok", "synonymous_variant"],
     ]
     entries = []
     manifest_files = []
@@ -171,7 +183,7 @@ def test_variant_groups_keep_gene_specific_context_and_consequence(tmp_path: Pat
     genes = tmp_path / "genes.tsv.gz"
     features = tmp_path / "target_features.tsv.gz"
     columns = [
-        *COLUMNS,
+        *CORE_COLUMNS,
         "lookup_status",
         "clinvar_id",
         "clinvar_sig",
@@ -245,7 +257,7 @@ def test_variant_groups_keep_gene_specific_context_and_consequence(tmp_path: Pat
     duckdb_summary = _summary_from_grouped_aggregation(result, str, None, None)
     built_summary = build_variant_summary(
         path,
-        tmp_path / "legacy_work",
+        tmp_path / "summary_work",
         str,
         target_features_path=features,
         genes_path=genes,
@@ -279,7 +291,7 @@ def test_duckdb_memory_override_takes_precedence(
 ) -> None:
     path = tmp_path / "variant_annotations.tsv.gz"
     pd.DataFrame(
-        [["1:100:A>G", "gene_a", "snv", "A", "G", "s1"]],
+        [["1:100:A>G", "gene_a", "snv", "A", "G", "s1", "ok", "missense_variant"]],
         columns=COLUMNS,
     ).to_csv(path, sep="\t", index=False, compression="gzip")
     monkeypatch.setenv(DUCKDB_MEMORY_LIMIT_ENV, "512MB")

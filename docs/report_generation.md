@@ -92,12 +92,16 @@ report argument after `--`.
 | `--vep-cache-dir PATH` | `$GAPH_VEP_CACHE_DIR`, otherwise unset | Indexed local VEP cache root. Required by the local backend. |
 | `--vep-result-cache-dir PATH` | `$GAPH_VEP_RESULT_CACHE_DIR`; otherwise `$GAPH_ROOT/cache/vep_results` | Sparse cross-run cache of completed VEP results. |
 | `--vep-result-cache-tile-size-bp N` | `$GAPH_VEP_RESULT_CACHE_TILE_SIZE_BP`, otherwise `1000000`; minimum `1` | Genomic tile size for the shared VEP result cache. |
-| `--vep-forks N` | `$GAPH_VEP_FORKS`, otherwise `4`; minimum `1` when target-space null is enabled | Local VEP worker processes. |
+| `--vep-forks N` | `$GAPH_VEP_FORKS`, otherwise `4`; minimum `1` | Local VEP worker processes for the ClinVar universe and optional target-space null. |
 | `--firth-workers N` | `$GAPH_FIRTH_WORKERS`; otherwise allocated Slurm CPUs capped at `8`; minimum `1` | Parallel independent Firth models. |
 
-The report always reads `<run>/annotation`. When a complete bulk-VEP artifact
-under `<run>/analytics/vep_consequences` matches that annotation source, the
-report selects it automatically and verifies its manifest before use.
+The report requires a finalized bulk-VEP artifact under
+`<run>/analytics/vep_consequences` that matches `<run>/annotation`. It verifies
+the manifest before expensive analysis and fails with the VEP preparation and
+finalization commands when the artifact is missing. Non-`ok` per-row VEP
+statuses are valid in a finalized artifact and are reported in QC. The Slurm
+launcher checks that the final manifest and joined VEP table exist before it
+submits a report job.
 
 ## Monitoring And Completion
 

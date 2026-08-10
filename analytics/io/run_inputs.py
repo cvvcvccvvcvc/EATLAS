@@ -44,8 +44,16 @@ def resolve_run_inputs(run_dir: Path) -> RunInputs:
         raise NotADirectoryError(f"--run-dir is not a directory: {run_dir}")
 
     annotation_dir = run_dir / "annotation"
-    variant_annotations_tsv = annotation_dir / "variant_annotations.tsv.gz"
-    variant_annotations_tsv = resolve_vep_variant_annotations(run_dir, variant_annotations_tsv)
+    source_annotations_tsv = annotation_dir / "variant_annotations.tsv.gz"
+    if not source_annotations_tsv.exists():
+        raise FileNotFoundError(
+            f"Missing variant_annotations.tsv.gz under {annotation_dir}. "
+            "Run the annotation stage before building this report."
+        )
+    variant_annotations_tsv = resolve_vep_variant_annotations(
+        run_dir,
+        source_annotations_tsv,
+    )
 
     inputs = RunInputs(
         run_dir=run_dir,
@@ -64,11 +72,6 @@ def resolve_run_inputs(run_dir: Path) -> RunInputs:
         strategy_summary_tsv=run_dir / "alignment" / "strategy_summary.tsv.gz",
         taxonomy_summary_tsv=run_dir / "alignment" / "taxonomy_summary.tsv.gz",
     )
-    if not inputs.variant_annotations_tsv.exists():
-        raise FileNotFoundError(
-            f"Missing variant_annotations.tsv.gz under {annotation_dir}. "
-            "Run the annotation stage before building this report."
-        )
     if not inputs.genes_tsv.exists():
         raise FileNotFoundError("Missing fetch/genes.tsv.gz under --run-dir.")
     if not inputs.target_features_tsv.exists():
@@ -79,13 +82,20 @@ def resolve_run_inputs(run_dir: Path) -> RunInputs:
 
 
 def resolve_vep_variant_annotations(run_dir: Path, source: Path) -> Path:
-    """Use the completed bulk-VEP artifact only when it matches the source table."""
+    """Require the finalized bulk-VEP artifact matching the source table."""
 
     artifact_dir = run_dir / "analytics" / "vep_consequences"
     manifest_path = artifact_dir / "manifest.json"
     output_path = artifact_dir / "variant_annotations.vep.tsv.gz"
     if not manifest_path.exists() and not output_path.exists():
-        return source
+        raise FileNotFoundError(
+            f"Missing finalized bulk VEP artifact under {artifact_dir}. "
+            "Build it with `python -m analytics.vep_annotation prepare --run-dir <run>`, "
+            "annotate all declared partitions, and run "
+            "`python -m analytics.vep_annotation finalize --run-dir <run>` before "
+            "generating the report. Individual non-ok vep_status values are allowed in "
+            "a finalized artifact."
+        )
     if not manifest_path.exists() or not output_path.exists():
         raise ValueError(f"Incomplete bulk VEP artifact under {artifact_dir}")
 
@@ -108,13 +118,19 @@ def resolve_vep_variant_annotations(run_dir: Path, source: Path) -> Path:
     return output_path
 
 
-def bulk_vep_release(inputs: RunInputs) -> str | None:
+def bulk_vep_manifest(inputs: RunInputs) -> dict:
     expected = inputs.run_dir / "analytics" / "vep_consequences" / "variant_annotations.vep.tsv.gz"
     if inputs.variant_annotations_tsv != expected:
-        return None
-    manifest = read_json(expected.parent / "manifest.json")
+        raise ValueError("Report inputs do not use the finalized bulk VEP artifact")
+    return read_json(expected.parent / "manifest.json")
+
+
+def bulk_vep_release(inputs: RunInputs) -> str:
+    manifest = bulk_vep_manifest(inputs)
     release = manifest.get("config", {}).get("release")
-    return str(release) if release else None
+    if not release:
+        raise ValueError("Bulk VEP manifest is missing config.release")
+    return str(release)
 
 
 def validate_report_inputs(inputs: RunInputs) -> None:
@@ -135,7 +151,9 @@ def validate_report_inputs(inputs: RunInputs) -> None:
             "clinvar_review_stars",
             "clinvar_scv_count",
             "gnomad_af",
-            "gnomad_csq",
+            "vep_status",
+            "vep_primary_consequence",
+            "vep_consequence_terms",
         },
         inputs.genes_tsv: {"gene_id", "chromosome", "begin", "end", "sequence_length"},
         inputs.target_features_tsv: {

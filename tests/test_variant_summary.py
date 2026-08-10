@@ -7,7 +7,6 @@ from pathlib import Path
 import pandas as pd
 
 from analytics.analyses.variant_summary import (
-    VEP_USECOLS,
     VARIANT_USECOLS,
     _categorize_clinvar,
     build_variant_summary,
@@ -203,7 +202,8 @@ def test_variant_summary_accepts_compact_annotation_schema(tmp_path: Path) -> No
             "clinvar_sig": "Benign",
             "clinvar_review_stars": "2",
             "gnomad_af": "0.01",
-            "gnomad_csq": "synonymous_variant",
+            "vep_status": "ok",
+            "vep_primary_consequence": "synonymous_variant",
         },
         {
             "variant_key": "1:200:C>A",
@@ -218,7 +218,8 @@ def test_variant_summary_accepts_compact_annotation_schema(tmp_path: Path) -> No
             "clinvar_sig": "Pathogenic",
             "clinvar_review_stars": "3",
             "gnomad_af": "",
-            "gnomad_csq": "missense_variant",
+            "vep_status": "ok",
+            "vep_primary_consequence": "missense_variant",
         },
         {
             "variant_key": "1:300:AT>A",
@@ -233,7 +234,8 @@ def test_variant_summary_accepts_compact_annotation_schema(tmp_path: Path) -> No
             "clinvar_sig": "",
             "clinvar_review_stars": "",
             "gnomad_af": "",
-            "gnomad_csq": "",
+            "vep_status": "no_target_gene",
+            "vep_primary_consequence": "",
         },
     ]
     with gzip.open(annotations, "wt", newline="") as handle:
@@ -267,7 +269,7 @@ def test_variant_summary_accepts_compact_annotation_schema(tmp_path: Path) -> No
     assert by_strategy.loc["s2", "Ti/Tv"] == float("inf")
     assert summary.clinvar_found == 2
     assert summary.gnomad_found == 1
-    assert summary.consequence_source == "gnomAD CSQ (legacy)"
+    assert summary.consequence_source == "Ensembl VEP"
 
     cached = build_variant_summary(
         annotations,
@@ -281,9 +283,9 @@ def test_variant_summary_accepts_compact_annotation_schema(tmp_path: Path) -> No
     assert (tmp_path / "analytics" / "variant_summary.json.gz").stat().st_mode & 0o777 == 0o644
 
 
-def test_variant_summary_prefers_vep_consequences_for_all_candidates(tmp_path: Path) -> None:
+def test_variant_summary_uses_vep_consequences_for_all_candidates(tmp_path: Path) -> None:
     annotations = tmp_path / "variant_annotations.tsv.gz"
-    fields = [*VARIANT_USECOLS, *VEP_USECOLS]
+    fields = VARIANT_USECOLS
     rows = [
         {
             "variant_key": "1:100:A>G",
@@ -293,7 +295,6 @@ def test_variant_summary_prefers_vep_consequences_for_all_candidates(tmp_path: P
             "alt": "G",
             "strategies": "s1",
             "gnomad_af": "",
-            "gnomad_csq": "synonymous_variant",
             "vep_status": "ok",
             "vep_primary_consequence": "missense_variant",
         },
@@ -305,7 +306,6 @@ def test_variant_summary_prefers_vep_consequences_for_all_candidates(tmp_path: P
             "alt": "T",
             "strategies": "s1",
             "gnomad_af": "0.01",
-            "gnomad_csq": "intron_variant",
             "vep_status": "no_target_gene",
             "vep_primary_consequence": "",
         },

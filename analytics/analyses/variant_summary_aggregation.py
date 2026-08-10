@@ -19,7 +19,14 @@ from analytics.io.artifacts import file_identity, path_metadata
 from genomics.variants import read_failed_regions
 
 
-REQUIRED_COLUMNS = {"variant_key", "gene_id", "event_type", "strategies"}
+REQUIRED_COLUMNS = {
+    "variant_key",
+    "gene_id",
+    "event_type",
+    "strategies",
+    "vep_status",
+    "vep_primary_consequence",
+}
 MAX_STRATEGIES = 63
 DUCKDB_MEMORY_LIMIT_ENV = "GAPH_DUCKDB_MEMORY_LIMIT"
 DUCKDB_MEMORY_FRACTION = 0.5
@@ -184,7 +191,7 @@ def _memory_limit_setting(value: float) -> str:
 
 
 def resolve_variant_aggregation_source(path: Path) -> VariantAggregationSource:
-    """Resolve validated VEP partitions, or a single legacy annotation table."""
+    """Resolve a validated finalized VEP artifact."""
 
     path = path.resolve()
     artifact_dir = path.parent
@@ -471,10 +478,9 @@ def aggregate_variant_groups(
             },
             allele_mask_counts=allele_mask_counts,
         )
-        has_vep = {"vep_status", "vep_primary_consequence"}.issubset(source.columns)
         return VariantGroupedAggregation(
             masks=masks,
-            consequence_source="Ensembl VEP" if has_vep else "gnomAD CSQ (legacy)",
+            consequence_source="Ensembl VEP",
             gene_count=int(gene_count),
             global_groups=global_groups,
             allele_gene_groups=allele_gene_groups,
@@ -637,12 +643,7 @@ def _create_normalized_views(
         else "false"
     )
     sig = "lower(coalesce(p.clinvar_sig, ''))"
-    has_vep = {"vep_status", "vep_primary_consequence"}.issubset(source.columns)
-    consequence = (
-        "CASE WHEN p.vep_status = 'ok' THEN p.vep_primary_consequence ELSE '' END"
-        if has_vep
-        else "coalesce(p.gnomad_csq, '')"
-    )
+    consequence = "CASE WHEN p.vep_status = 'ok' THEN p.vep_primary_consequence ELSE '' END"
     failed = (
         "EXISTS (SELECT 1 FROM gnomad_failures f WHERE f.chrom = p.key_chrom "
         "AND p.key_pos BETWEEN f.start1 AND f.end1)"
@@ -885,7 +886,6 @@ def _pathogenic_source_columns() -> list[str]:
         "clinvar_disease",
         "clinvar_variant_type",
         "gnomad_af",
-        "gnomad_csq",
         "vep_status",
         "vep_primary_consequence",
     ]

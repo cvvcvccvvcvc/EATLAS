@@ -70,8 +70,8 @@ class ClinvarValidation:
     universe: pd.DataFrame
     manifest: dict
     observed_by_strategy_type: dict[tuple[str, str], set[str]]
-    consequence_column: str = "clinvar_mc_terms"
-    consequence_source: str = "ClinVar MC"
+    consequence_column: str = "vep_consequence_terms"
+    consequence_source: str = "Ensembl VEP"
     observed_memberships_path: Path | None = None
     observed_memberships_manifest_path: Path | None = None
 
@@ -84,7 +84,6 @@ def build_validation(
     clinvar_vcf: Path,
     strategies: list[str],
     observed_store: ObservedVariantStore,
-    use_vep_consequences: bool = False,
     vep_backend: str = "rest",
     vep_release: str | None = None,
     vep_executable: str | Path = "vep",
@@ -117,33 +116,28 @@ def build_validation(
         )
         timing["metrics"] = {"alleles": int(len(universe))}
     membership_universe_path = universe_path
-    consequence_column = "clinvar_mc_terms"
-    consequence_source = "ClinVar MC"
-    if use_vep_consequences:
-        if not vep_release:
-            raise ValueError("A pinned VEP release is required for ClinVar consequence annotation")
-        with profile_stage(performance_profile, "ClinVar VEP consequences") as timing:
-            universe_path, vep_manifest_path, universe, vep_manifest = build_or_load_vep_universe(
-                universe=universe,
-                universe_path=universe_path,
-                analytics_dir=analytics_dir,
-                backend=vep_backend,
-                release=str(vep_release),
-                vep_executable=vep_executable,
-                vep_cache_dir=vep_cache_dir,
-                vep_forks=vep_forks,
-                vep_result_cache_dir=vep_result_cache_dir,
-                vep_result_cache_tile_size_bp=vep_result_cache_tile_size_bp,
-            )
-            timing["details"] = "cache hit" if vep_manifest["cache_hit"] else "cache miss"
-            timing["metrics"] = {
-                "alleles": int(len(universe)),
-                "requested": int(vep_manifest.get("request_count", 0)),
-            }
-        manifest = {**manifest, "consequence_source": "Ensembl VEP", "vep": vep_manifest}
-        manifest_path = vep_manifest_path
-        consequence_column = "vep_consequence_terms"
-        consequence_source = "Ensembl VEP"
+    if not vep_release:
+        raise ValueError("A pinned VEP release is required for ClinVar consequence annotation")
+    with profile_stage(performance_profile, "ClinVar VEP consequences") as timing:
+        universe_path, vep_manifest_path, universe, vep_manifest = build_or_load_vep_universe(
+            universe=universe,
+            universe_path=universe_path,
+            analytics_dir=analytics_dir,
+            backend=vep_backend,
+            release=str(vep_release),
+            vep_executable=vep_executable,
+            vep_cache_dir=vep_cache_dir,
+            vep_forks=vep_forks,
+            vep_result_cache_dir=vep_result_cache_dir,
+            vep_result_cache_tile_size_bp=vep_result_cache_tile_size_bp,
+        )
+        timing["details"] = "cache hit" if vep_manifest["cache_hit"] else "cache miss"
+        timing["metrics"] = {
+            "alleles": int(len(universe)),
+            "requested": int(vep_manifest.get("request_count", 0)),
+        }
+    manifest = {**manifest, "consequence_source": "Ensembl VEP", "vep": vep_manifest}
+    manifest_path = vep_manifest_path
     with profile_stage(performance_profile, "ClinVar observed memberships") as timing:
         (
             observed_by_strategy_type,
@@ -169,8 +163,8 @@ def build_validation(
         universe,
         manifest,
         observed_by_strategy_type,
-        consequence_column,
-        consequence_source,
+        "vep_consequence_terms",
+        "Ensembl VEP",
         observed_memberships_path,
         observed_memberships_manifest_path,
     )

@@ -166,7 +166,7 @@ def validation_method_table() -> pd.DataFrame:
     )
 
 
-def validation_consequence_grouping_table(source: str = "ClinVar MC") -> pd.DataFrame:
+def validation_consequence_grouping_table(source: str = "Ensembl VEP") -> pd.DataFrame:
     rows = []
     for key, label in CONSEQUENCE_OPTIONS:
         if key == "all":
@@ -181,6 +181,52 @@ def validation_consequence_grouping_table(source: str = "ClinVar MC") -> pd.Data
             }
         )
     return pd.DataFrame(rows)
+
+
+def vep_qc_tables(
+    candidate_manifest: dict | None,
+    validation,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    candidate = candidate_manifest or {}
+    clinvar = dict(getattr(validation, "manifest", {}).get("vep", {}))
+    datasets = [
+        (
+            "Candidates",
+            int(candidate.get("row_count", 0)),
+            dict(candidate.get("status_counts", {})),
+            dict(candidate.get("config", {})),
+        ),
+        (
+            "ClinVar universe",
+            int(clinvar.get("allele_count", 0)),
+            dict(clinvar.get("status_counts", {})),
+            dict(clinvar.get("contract", {})),
+        ),
+    ]
+    configuration_rows = []
+    status_rows = []
+    for dataset, total, status_counts, config in datasets:
+        configuration_rows.append(
+            {
+                "Dataset": dataset,
+                "VEP release": str(config.get("release", "")),
+                "Backend": str(config.get("backend", "")),
+                "Rows": total,
+            }
+        )
+        statuses = ["ok"] if "ok" in status_counts else []
+        statuses.extend(sorted(status for status in status_counts if status != "ok"))
+        for status in statuses:
+            count = int(status_counts[status])
+            status_rows.append(
+                {
+                    "Dataset": dataset,
+                    "VEP status": status,
+                    "Rows": count,
+                    "Fraction": f"{count / total:.3%}" if total else "",
+                }
+            )
+    return pd.DataFrame(configuration_rows), pd.DataFrame(status_rows)
 
 
 def conservation_validation_method_table(analysis: ConservationAnalysis | None) -> pd.DataFrame:
@@ -208,7 +254,7 @@ def conservation_validation_method_table(analysis: ConservationAnalysis | None) 
             {
                 "Step": "Consequence subsets",
                 "Definition": (
-                    "Subsets use ClinVar MC Sequence Ontology terms. A record with terms from multiple groups enters "
+                    "Subsets use release-pinned RefSeq VEP Sequence Ontology terms. A record with terms from multiple groups enters "
                     "each matching group once and also enters All consequences; consequence-view counts are not additive."
                 ),
             },
@@ -376,6 +422,7 @@ def build_methods_sections(
     report_timings: list[dict[str, object]] | None = None,
     taxonomy_summary: pd.DataFrame | None = None,
     report_profile_path: Path | None = None,
+    candidate_vep_manifest: dict | None = None,
 ) -> list[str]:
     files = [
         ("Run Dir", inputs.run_dir),
@@ -391,8 +438,19 @@ def build_methods_sections(
         ("Taxonomy Summary", inputs.taxonomy_summary_tsv),
         ("Annotation Manifest", inputs.annotation_manifest_json),
         ("Alignment Manifest", inputs.alignment_manifest_json),
+        (
+            "Bulk VEP Manifest",
+            inputs.run_dir / "analytics" / "vep_consequences" / "manifest.json",
+        ),
         ("Output HTML", out_html),
     ]
+    if validation is not None:
+        files.extend(
+            [
+                ("ClinVar VEP Universe", validation.universe_path),
+                ("ClinVar VEP Manifest", validation.manifest_path),
+            ]
+        )
     if conservation_analysis is not None:
         files.extend(
             [
@@ -408,10 +466,22 @@ def build_methods_sections(
 
     ok_events = int(annotation_manifest.get("event_key_status_counts", {}).get("ok", 0))
     missing_left_anchor = int(annotation_manifest.get("event_key_status_counts", {}).get("missing_left_anchor", 0))
+    vep_config, vep_status = vep_qc_tables(candidate_vep_manifest, validation)
+    candidate_vep_ok = int(
+        (candidate_vep_manifest or {}).get("status_counts", {}).get("ok", 0)
+    )
+    clinvar_vep = dict(getattr(validation, "manifest", {}).get("vep", {}))
+    clinvar_vep_ok = int(clinvar_vep.get("status_counts", {}).get("ok", 0))
     sections = [
         "<h2>QC</h2>",
         metric_cards(
             [
+                (
+                    "VEP release",
+                    str((candidate_vep_manifest or {}).get("config", {}).get("release", "")),
+                ),
+                ("Candidate rows VEP ok", format_int(candidate_vep_ok)),
+                ("ClinVar alleles VEP ok", format_int(clinvar_vep_ok)),
                 ("Event keys normalized", format_int(ok_events)),
                 ("Missing left anchor", format_int(missing_left_anchor)),
                 ("gnomAD regions failed", format_int(annotation_manifest.get("gnomad_region_failure_count", 0))),
@@ -422,6 +492,16 @@ def build_methods_sections(
             ]
         ),
     ]
+    sections.append("<details><summary>VEP annotation coverage</summary>")
+    sections.append(
+        "<p class=\"lead\">Candidate and ClinVar consequence analyses use release-pinned "
+        "Ensembl VEP with RefSeq transcripts and the target-gene consequence selection rule. "
+        "A finalized artifact covers every input row; non-<code>ok</code> statuses remain "
+        "explicit in the report QC.</p>"
+    )
+    sections.append(table_html(vep_config, classes="table table-sm table-striped"))
+    sections.append(table_html(vep_status, classes="table table-sm table-striped"))
+    sections.append("</details>")
     if not failures.empty:
         sections.append("<h3>Annotation Failures</h3>")
         sections.append(table_html(failures, classes="table table-sm table-striped", max_rows=50))
@@ -525,7 +605,7 @@ def build_methods_sections(
     sections.append(
         f"<p class=\"lead\">The Candidate Profile consequence plots use "
         f"{variant_summary.consequence_source} annotations and group them as follows. "
-        "Raw <code>gnomad_csq</code> remains available as provenance.</p>"
+        "Only the release-pinned VEP annotations define these groups.</p>"
     )
     sections.append(
         table_html(
@@ -566,7 +646,7 @@ def build_methods_sections(
         "in whether and how phyloP100way is included.</p>"
     )
     sections.append(table_html(conservation_validation_method_table(conservation_analysis), classes="table table-sm table-striped"))
-    consequence_source = validation.consequence_source if validation is not None else "ClinVar MC"
+    consequence_source = validation.consequence_source if validation is not None else "Ensembl VEP"
     sections.append(f"<h4>{consequence_source} consequence subsets</h4>")
     sections.append(
         table_html(
