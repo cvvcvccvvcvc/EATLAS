@@ -103,7 +103,7 @@ export NXF_HOME="$GAPH_ROOT/nextflow"
 
 RUN="$GAPH_ROOT/results/run_001"
 nextflow run . \
-  -profile slurm,low_storage \
+  -profile slurm \
   --ids_file /path/to/gene_ids.txt \
   --gnomad_cache_dir "$GAPH_GNOMAD_CACHE_DIR" \
   --outdir "$RUN"
@@ -148,10 +148,12 @@ In the `slurm` profile, `executor.queueSize` limits how many jobs Nextflow keeps
 submitted to Slurm at once. It does not affect local runs, task CPU count, or
 threads inside an aligner process.
 
-Combine `slurm` with `low_storage` to retain process cache for recovery from a
-failed or interrupted run and clean the work directory after the workflow
-finishes successfully. Resume requires the original work directory and Nextflow
-execution metadata; after successful cleanup there is no task cache to reuse.
+The default storage policy retains process cache for recovery from a failed or
+interrupted run and cleans task work created by a successful execution session.
+Resume requires the original work directory and Nextflow execution metadata. A
+fresh successful run has no task cache to reuse; a resumed run can retain task
+directories from its earlier failed session, which can be removed after recovery
+when the work path is dedicated to that run.
 
 ## End-To-End Smoke Test
 

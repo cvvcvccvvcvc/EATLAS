@@ -56,7 +56,7 @@ RUN="$GAPH_ROOT/results/run_name"
 WORK="$GAPH_ROOT/work/run_name"
 
 micromamba run -p "$GAPH_ROOT/envs/controller" nextflow run . \
-  -profile slurm,low_storage \
+  -profile slurm \
   --stage all \
   --ids_file "$IDS" \
   --outdir "$RUN" \

@@ -19,7 +19,7 @@ Default local execution runs every stage in one command:
 RUN="results/run_default_strategies_$(date +%Y%m%d_%H%M%S)"
 
 nextflow run . \
-  -profile local,conda,low_storage \
+  -profile local,conda \
   --stage all \
   --ids_file assets/inputs/gene_ids/panel_10_genes.txt \
   --outdir "$RUN" \
@@ -60,8 +60,8 @@ If `--clinvar_vcf` and `CLINVAR_VCF` are unset, annotation uses
 ClinVar VCF and matching `.tbi`; the workflow fails early when neither the
 parameter, environment variable, nor default asset is available.
 
-For Slurm, combine the `slurm` and `low_storage` profiles and put `work/`,
-results, and environment caches under the assigned shared scratch allocation.
+For Slurm, use the `slurm` profile and put `work/`, results, and environment
+caches under the assigned shared scratch allocation.
 The ITMO-specific bootstrap and validation procedure is documented in
 `docs/itmo_cluster.md`.
 
@@ -73,7 +73,7 @@ export MAMBA_ROOT_PREFIX="$GAPH_ROOT/micromamba"
 export NXF_HOME="$GAPH_ROOT/nextflow"
 
 nextflow run . \
-  -profile slurm,low_storage \
+  -profile slurm \
   --ids_file /path/to/gene_ids.txt \
   --outdir "$GAPH_ROOT/results/run_001"
 ```
@@ -179,7 +179,9 @@ retrieval always uses the complete NCBI ortholog set (`--ortholog all`).
 ## Storage Model
 
 Nextflow `work/` is the execution cache used by `-resume`. Published `results/`
-is the durable data layer for downstream stages.
+is the durable data layer for downstream stages. Successful execution sessions
+clean their task work by default; failed or interrupted work remains available
+for recovery. See `docs/storage_model.md` for resumed-run cleanup details.
 
 Raw NCBI zip files, unpacked `gene.fna`, minimap2 PAF, MUMmer delta/coords
 files, and external Ensembl Compara MAF chunks are not published by default.

@@ -69,8 +69,8 @@ and temporary taxonomy-aware counts containing only observed concrete SNV
 positions before annotation. Annotation normalizes and locally aggregates the
 positive support into `variant_ortholog_support/*.parquet`; finalization keeps
 the partition files instead of rewriting a global gzip TSV. It also reduces the
-taxonomy-aware counts to a bounded histogram. The large handoff artifacts are
-removed after a successful `low_storage` run:
+taxonomy-aware counts to a bounded histogram. In a fresh successful run, the
+large handoff artifacts are removed with that run's task work:
 
 - selected ortholog FASTA files
 - raw alignment events
@@ -98,12 +98,15 @@ contain:
 It is useful while developing or recovering a failed run with `-resume`, but it
 is not the data product.
 
-The `low_storage` profile keeps the default process cache while a run is active
-or failed, enables Nextflow successful-run cleanup, and moves terminal
-annotation outputs into the published annotation directory instead of keeping a
-second copy in `work/`. A failed or interrupted run can use `-resume` while its
-work directory and Nextflow execution metadata remain. After a successful run,
-cleanup removes the task work, so that run is no longer reusable with `-resume`.
+The default storage policy keeps the process cache while a run is active or
+failed, enables Nextflow successful-run cleanup, and moves terminal end-to-end
+fetch and annotation outputs into their published directories instead of
+keeping a second copy in `work/`. A failed or interrupted run can use `-resume`
+while its work directory and Nextflow execution metadata remain. Cleanup removes
+task work created by a successful execution session, so a fresh completed run is
+no longer reusable with `-resume`. A resumed run can retain task directories
+from its earlier failed session; remove those explicitly after recovery when the
+work path is dedicated to that run.
 
 Alignment task directories are metadata-only. They do not duplicate Stage 1
 target or ortholog FASTA files. Sequence-based aligner processes receive the
@@ -132,11 +135,10 @@ Control peak disk with:
 - `-work-dir` on scratch storage
 - `GAPH_WORK_DIR=/path/to/scratch/gaph_v2_work`
 - `NXF_CONDA_CACHEDIR=/path/to/shared/scratch/gaph_v2_conda`
-- `-profile low_storage` when resume is required only until successful completion
 
 On Slurm, both paths must be visible from the controller and every compute node.
 The Conda cache is reusable infrastructure and should remain outside individual
-run directories; `low_storage` cleanup applies to task work, not that cache.
+run directories; successful-run cleanup applies to task work, not that cache.
 The repository's `slurm` profile disables task-local scratch so staged task data
 stays under the assigned shared work allocation. Local execution retains
 task-local scratch for fetch and alignment processes.

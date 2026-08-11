@@ -128,7 +128,7 @@ mkdir -p "$GAPH_GNOMAD_CACHE_DIR"
 test -w "$GAPH_GNOMAD_CACHE_DIR"
 
 nextflow run . \
-  -profile slurm,low_storage \
+  -profile slurm \
   --ids_file /path/to/gene_ids.txt \
   --gnomad_cache_dir "$GAPH_GNOMAD_CACHE_DIR" \
   --outdir "$RUN"
@@ -167,10 +167,12 @@ per-user policy are not guaranteed for this project. The repository therefore
 sets `scratch = false` in the `slurm` profile. Large task data remains under
 `GAPH_WORK_DIR`; local profiles retain task scratch.
 
-The `low_storage` profile keeps process cache available while a run is active or
-failed, then cleans task work after the workflow finishes successfully. This
-supports recovery with `-resume` without retaining successful-run work
-indefinitely.
+The default storage policy keeps process cache available while a run is active
+or failed, then cleans task work created by a successful execution session. This
+supports recovery with `-resume` without retaining fresh successful-run work
+indefinitely. After a resumed run succeeds, task directories from its earlier
+failed session can remain and may be removed when its dedicated work path is no
+longer needed.
 
 ## Login
 
@@ -436,7 +438,7 @@ cd "$GAPH_CODE"
 RUN="$GAPH_ROOT/results/slurm_smoke_1gene_asm20_$(date +%Y%m%d_%H%M%S)"
 
 micromamba run -p "$GAPH_ROOT/envs/controller" nextflow run . \
-  -profile slurm,low_storage \
+  -profile slurm \
   --stage all \
   --ids_file "$GAPH_ROOT/inputs/smoke_1_gene.ids" \
   --outdir "$RUN" \
