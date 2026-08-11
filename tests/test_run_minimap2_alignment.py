@@ -3,6 +3,8 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+import pytest
+
 
 BIN_DIR = Path(__file__).resolve().parents[1] / "bin"
 sys.path.insert(0, str(BIN_DIR))
@@ -11,6 +13,7 @@ from run_minimap2_alignment import (  # noqa: E402
     EVENT_FIELDS,
     SEGMENT_FIELDS,
     empty_summary,
+    parse_args,
     parse_paf,
 )
 
@@ -19,6 +22,43 @@ PAF_LINES = [
     "q1\t10\t0\t10\t+\ttarget_1\t10\t0\t10\t9\t10\t60\ttp:A:P\tcs:Z::4*ag:5",
     "q2\t10\t0\t10\t+\ttarget_1\t10\t0\t10\t9\t10\t60\ttp:A:P\tcs:Z::2*ct:7",
 ]
+
+
+def minimap2_cli_args(preset: str) -> list[str]:
+    return [
+        "run_minimap2_alignment.py",
+        "--task-dir",
+        "task",
+        "--source-target-fasta",
+        "target.fa.gz",
+        "--source-ortholog-fasta",
+        "ortholog.fa.gz",
+        "--outdir",
+        "out",
+        "--strategy",
+        f"minimap2_{preset}",
+        "--preset",
+        preset,
+        "--minimap2-bin",
+        "minimap2",
+    ]
+
+
+@pytest.mark.parametrize("preset", ["asm10", "asm20"])
+def test_cli_accepts_supported_fixed_presets(
+    monkeypatch: pytest.MonkeyPatch,
+    preset: str,
+) -> None:
+    monkeypatch.setattr(sys, "argv", minimap2_cli_args(preset))
+
+    assert parse_args().preset == preset
+
+
+def test_cli_rejects_other_presets(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(sys, "argv", minimap2_cli_args("asm5"))
+
+    with pytest.raises(SystemExit):
+        parse_args()
 
 
 def parse_rows(path: Path, lines: list[str]):

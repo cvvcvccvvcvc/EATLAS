@@ -55,7 +55,7 @@ def main() -> None:
 
     if args.stage in {"all", "align"}:
         require_executable("bedtools", "bedtools", errors)
-        if strategies & {"minimap2_asm10", "minimap2_asm20", "minimap2_taxonomy_adaptive"}:
+        if strategies & {"minimap2_asm10", "minimap2_asm20"}:
             require_executable("minimap2", args.minimap2_bin, errors)
         if "nucmer" in strategies:
             require_python_module("pysam", errors)

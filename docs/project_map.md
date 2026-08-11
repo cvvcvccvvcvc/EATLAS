@@ -71,7 +71,7 @@ Runtime environments:
   - writes per-gene task directories and `alignment_tasks.tsv.gz`
 
 - `bin/run_minimap2_alignment.py`
-  - runs fixed or taxonomy-adaptive minimap2
+  - runs fixed-preset minimap2
   - parses PAF `cs` evidence
   - writes alignment segments, events, summaries, and failures
 

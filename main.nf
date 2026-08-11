@@ -5,21 +5,24 @@ import RunManifest
 
 include { validateParameters; paramsHelp } from 'plugin/nf-validation'
 
-AVAILABLE_ALIGNMENT_STRATEGIES = [
-    'minimap2_asm10',
-    'minimap2_asm20',
-    'minimap2_taxonomy_adaptive',
-    'nucmer',
-    'bwa_pseudoreads',
-    'precomputed_ensembl_92_mammals_epo_extended',
-]
 ENSEMBL_COMPARA_STRATEGY = 'precomputed_ensembl_92_mammals_epo_extended'
+ALIGNMENT_STRATEGY_REGISTRY = [
+    [name: 'minimap2_asm10', default_enabled: true],
+    [name: 'minimap2_asm20', default_enabled: true],
+    [name: 'nucmer', default_enabled: true],
+    [name: 'bwa_pseudoreads', default_enabled: true],
+    [name: ENSEMBL_COMPARA_STRATEGY, default_enabled: false],
+]
+AVAILABLE_ALIGNMENT_STRATEGIES = ALIGNMENT_STRATEGY_REGISTRY.collect { it.name }
+DEFAULT_ALIGNMENT_STRATEGIES = ALIGNMENT_STRATEGY_REGISTRY
+    .findAll { it.default_enabled }
+    .collect { it.name }
 
 def parseAlignmentStrategies(rawValue) {
     def raw = rawValue == null ? 'all' : rawValue.toString().trim()
     def selected = []
     if (!raw || raw == 'all') {
-        selected = AVAILABLE_ALIGNMENT_STRATEGIES
+        selected = DEFAULT_ALIGNMENT_STRATEGIES
     } else {
         selected = raw.split(',')
             .collect { it.trim() }
@@ -146,7 +149,6 @@ include { FETCH_TAXONOMY_PRESETS } from './modules/local/fetch_taxonomy_presets.
 include { BUILD_ALIGNMENT_TASKS } from './modules/local/build_alignment_tasks.nf'
 include { ALIGN_MINIMAP2_ASM10 } from './modules/local/align_minimap2_asm10.nf'
 include { ALIGN_MINIMAP2_ASM20 } from './modules/local/align_minimap2_asm20.nf'
-include { ALIGN_MINIMAP2_ADAPTIVE } from './modules/local/align_minimap2_adaptive.nf'
 include { MERGE_ALIGNMENT } from './modules/local/merge_alignment.nf'
 include { MERGE_ALIGNMENT_PARTITION } from './modules/local/merge_alignment_partition.nf'
 include { ALIGN_NUCMER_COMPARATOR } from './modules/local/align_nucmer_comparator.nf'
@@ -329,11 +331,6 @@ workflow ALIGNMENT_STAGE {
     if (SELECTED_ALIGNMENT_STRATEGIES.contains('minimap2_asm20')) {
         ALIGN_MINIMAP2_ASM20(alignment_inputs, minimap2_script)
         alignment_result_dirs = alignment_result_dirs.mix(ALIGN_MINIMAP2_ASM20.out.asm20_result_dirs)
-    }
-
-    if (SELECTED_ALIGNMENT_STRATEGIES.contains('minimap2_taxonomy_adaptive')) {
-        ALIGN_MINIMAP2_ADAPTIVE(alignment_inputs, minimap2_script)
-        alignment_result_dirs = alignment_result_dirs.mix(ALIGN_MINIMAP2_ADAPTIVE.out.adaptive_result_dirs)
     }
 
     if (SELECTED_ALIGNMENT_STRATEGIES.contains('nucmer')) {

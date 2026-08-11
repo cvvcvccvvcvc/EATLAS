@@ -67,6 +67,7 @@ STRATEGY_LABELS = {
     "bwa_pseudoreads": "BWA pseudo",
     "minimap2_asm10": "minimap2 asm10",
     "minimap2_asm20": "minimap2 asm20",
+    # Display-only compatibility for completed runs from before this strategy was retired.
     "minimap2_taxonomy_adaptive": "minimap2 adaptive",
     "nucmer": "nucmer",
     "precomputed_ensembl_92_mammals_epo_extended": "Ensembl EPO",

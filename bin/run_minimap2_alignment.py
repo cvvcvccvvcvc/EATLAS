@@ -108,8 +108,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--source-ortholog-fasta", required=True, type=Path)
     parser.add_argument("--outdir", required=True, type=Path)
     parser.add_argument("--strategy", required=True)
-    parser.add_argument("--mode", choices=["fixed", "adaptive"], required=True)
-    parser.add_argument("--fixed-preset", default="asm10")
+    parser.add_argument("--preset", choices=["asm10", "asm20"], required=True)
     parser.add_argument("--minimap2-bin", required=True)
     parser.add_argument("--threads", default=1, type=int)
     parser.add_argument("--target-features", type=Path)
@@ -131,50 +130,6 @@ def write_tsv_gz(path: Path, fields: list[str], rows: Iterable[dict[str, object]
             writer.writerow({field: row.get(field, TSV_NULL) for field in fields})
             count += 1
     return count
-
-
-def iter_fasta(path: Path):
-    opener = gzip.open if path.suffix == ".gz" else open
-    header = None
-    seq_parts: list[str] = []
-    with opener(path, "rt") as handle:
-        for line in handle:
-            line = line.rstrip("\n")
-            if line.startswith(">"):
-                if header is not None:
-                    yield header, "".join(seq_parts)
-                header = line[1:]
-                seq_parts = []
-            elif header is not None:
-                seq_parts.append(line.strip())
-        if header is not None:
-            yield header, "".join(seq_parts)
-
-
-def write_fasta_record(handle, sequence_id: str, seq: str) -> None:
-    handle.write(f">{sequence_id}\n")
-    for index in range(0, len(seq), 80):
-        handle.write(seq[index : index + 80] + "\n")
-
-
-def split_orthologs_by_preset(
-    orthologs_fasta: Path,
-    meta_by_sequence: dict[str, dict[str, str]],
-    outdir: Path,
-) -> dict[str, Path]:
-    grouped: dict[str, list[tuple[str, str]]] = defaultdict(list)
-    for sequence_id, seq in iter_fasta(orthologs_fasta):
-        preset = meta_by_sequence.get(sequence_id, {}).get("minimap2_preset") or "asm20"
-        grouped[preset].append((sequence_id, seq))
-
-    paths: dict[str, Path] = {}
-    for preset, records in grouped.items():
-        path = outdir / f"orthologs.{preset}.fa"
-        with path.open("w") as handle:
-            for sequence_id, seq in records:
-                write_fasta_record(handle, sequence_id, seq)
-        paths[preset] = path
-    return paths
 
 
 def parse_tags(fields: list[str]) -> dict[str, str]:
@@ -560,7 +515,7 @@ def main() -> None:
         sequence_id: empty_summary(
             gene_id,
             args.strategy,
-            args.fixed_preset if args.mode == "fixed" else meta.get("minimap2_preset", "asm20"),
+            args.preset,
             meta,
             target_length,
         )
@@ -582,53 +537,49 @@ def main() -> None:
             ortholog_meta,
             work_dir,
         )
-        groups = (
-            {args.fixed_preset: orthologs_fasta}
-            if args.mode == "fixed"
-            else split_orthologs_by_preset(orthologs_fasta, meta_by_sequence, work_dir)
-        )
-
-        for preset, query_fa in sorted(groups.items()):
-            paf_path = Path(f"{args.strategy}.{preset}.paf")
-            try:
-                command = run_minimap2(
-                    args.minimap2_bin,
-                    preset,
-                    target_fasta,
-                    query_fa,
+        paf_path = Path(f"{args.strategy}.{args.preset}.paf")
+        try:
+            command = run_minimap2(
+                args.minimap2_bin,
+                args.preset,
+                target_fasta,
+                orthologs_fasta,
+                paf_path,
+                args.threads,
+            )
+            commands.append(command)
+            segments, events, event_index = parse_paf(
+                paf_path,
+                gene_id,
+                args.strategy,
+                args.preset,
+                target_meta,
+                meta_by_sequence,
+                summaries,
+                event_index,
+            )
+            all_segments.extend(segments)
+            all_events.extend(events)
+            if keep_native:
+                gzip_copy(
                     paf_path,
-                    args.threads,
+                    args.outdir / "native" / f"{gene_id}.{args.preset}.paf.gz",
                 )
-                commands.append(command)
-                segments, events, event_index = parse_paf(
-                    paf_path,
-                    gene_id,
-                    args.strategy,
-                    preset,
-                    target_meta,
-                    meta_by_sequence,
-                    summaries,
-                    event_index,
-                )
-                all_segments.extend(segments)
-                all_events.extend(events)
-                if keep_native:
-                    gzip_copy(paf_path, args.outdir / "native" / f"{gene_id}.{preset}.paf.gz")
-            except Exception as exc:
-                failures.append(
-                    {
-                        "gene_id": gene_id,
-                        "ortholog_gene_id": "",
-                        "strategy": args.strategy,
-                        "tool": "minimap2",
-                        "failure_type": "minimap2_failed",
-                        "message": str(exc),
-                    }
-                )
-                raise
-            finally:
-                if paf_path.exists() and not keep_native:
-                    paf_path.unlink()
+        except Exception as exc:
+            failures.append(
+                {
+                    "gene_id": gene_id,
+                    "ortholog_gene_id": "",
+                    "strategy": args.strategy,
+                    "tool": "minimap2",
+                    "failure_type": "minimap2_failed",
+                    "message": str(exc),
+                }
+            )
+            raise
+        finally:
+            if paf_path.exists() and not keep_native:
+                paf_path.unlink()
 
     summary_rows = [finalize_summary(row) for row in summaries.values()]
     write_tsv_gz(args.outdir / "alignment_segments.tsv.gz", SEGMENT_FIELDS, all_segments)
@@ -647,7 +598,7 @@ def main() -> None:
         "gene_id": gene_id,
         "strategy": args.strategy,
         "tool": "minimap2",
-        "mode": args.mode,
+        "preset": args.preset,
         "commands": commands,
         "segment_count": len(all_segments),
         "event_count": len(all_events),

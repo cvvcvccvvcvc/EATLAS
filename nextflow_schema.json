@@ -60,7 +60,7 @@
                 "alignment_strategies": {
                     "type": "string",
                     "default": "all",
-                    "description": "Comma-separated alignment strategies to run, or 'all' for every strategy registered in the workflow"
+                    "description": "Comma-separated alignment strategies to run, or 'all' for the default-enabled strategy set. The precomputed Ensembl strategy is explicit opt-in."
                 },
                 "clinvar_vcf": {
                     "type": "string",

@@ -18,8 +18,7 @@ process ALIGN_MINIMAP2_ASM10 {
         --source-ortholog-fasta "${source_ortholog_fasta}" \\
         --outdir "${resultDir}" \\
         --strategy minimap2_asm10 \\
-        --mode fixed \\
-        --fixed-preset asm10 \\
+        --preset asm10 \\
         --minimap2-bin "${params.minimap2_bin}" \\
         --threads "${task.cpus}" \\
         --target-features "${task_dir}/target_features.tsv.gz" \\

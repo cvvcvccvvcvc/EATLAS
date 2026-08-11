@@ -15,8 +15,9 @@ Obtain or identify:
 - any explicitly requested alignment strategies or concurrency overrides.
 
 When an option is not specified, keep the Nextflow/config default. In
-particular, the default stage is `all` and the default strategy selection means
-all registered strategies.
+particular, the default stage is `all` and the default strategy selection runs
+`minimap2_asm10`, `minimap2_asm20`, `nucmer`, and `bwa_pseudoreads`. The
+precomputed Ensembl strategy must be selected explicitly.
 
 ## Connect And Update
 

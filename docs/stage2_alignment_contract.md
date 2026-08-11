@@ -34,18 +34,20 @@ orientation.
 
 ## Strategies
 
-Current strategies are registered in the workflow and can be selected with
-`--alignment_strategies`. The default value is `all`, meaning every registered
-strategy, not a hard-coded command-line list.
+Runnable strategies are registered in the workflow and can be selected with
+`--alignment_strategies`. The default value is `all`, meaning every strategy
+marked as default-enabled in that registry.
 
 | Strategy | Tool | Policy |
 | --- | --- | --- |
 | `minimap2_asm10` | minimap2 | Fixed baseline preset for every ortholog. |
 | `minimap2_asm20` | minimap2 | More permissive fixed minimap2 preset. |
-| `minimap2_taxonomy_adaptive` | minimap2 | Preset chosen from NCBI taxonomy summary. |
 | `nucmer` | MUMmer/nucmer | Independent comparator using multi-query nucmer output. |
 | `bwa_pseudoreads` | BWA/samtools/pysam | Pseudoread comparator that maps generated ortholog pseudo-reads to the target and extracts BAM/CIGAR-supported events. |
 | `precomputed_ensembl_92_mammals_epo_extended` | Ensembl Compara MAF | Uses release-pinned precomputed `92_mammals.epo_extended` whole-genome MSA blocks overlapping the human target gene interval. |
+
+The two minimap2 strategies, nucmer, and BWA pseudoreads are default-enabled.
+The precomputed Ensembl strategy is runnable only when named explicitly.
 
 No LASTZ, consensus calling, or production variant filtering is part of Stage 2.
 Conservation scores such as GERP are not part of alignment; they belong to the
@@ -65,10 +67,10 @@ At least one strategy must be selected. Single-strategy runs are valid; compare
 or report layers must treat cross-strategy-only sections as not applicable or
 empty rather than failing.
 
-`all` means every registered strategy, including precomputed alignment
-strategies. Remote Ensembl MAF chunk tasks default to
-`--ensembl_compara_maf_max_forks 3`; increase it only after checking network
-stability.
+`all` selects `minimap2_asm10`, `minimap2_asm20`, `nucmer`, and
+`bwa_pseudoreads`. When the precomputed Ensembl strategy is selected explicitly,
+its remote MAF chunk tasks default to `--ensembl_compara_maf_max_forks 3`;
+increase it only after checking network stability.
 
 Large runs can enable `--compact_alignment_events true` to publish one support
 row per unique event and strategy instead of raw per-ortholog event rows. Each
@@ -76,28 +78,14 @@ compact row receives a partition-local `event_group_id`; the exact positive
 support handoff refers to that ID instead of repeating event coordinates. Raw
 remains the default because it preserves maximum traceability.
 
-## Taxonomy Presets
+## Taxonomy Metadata
 
-Preset selection uses the offline class dictionary published in
-`assets/reference/ncbi/taxonomy/taxonomy_classes.json.gz`. Once per run, the
-alignment stage also requests the NCBI taxonomy summary for the selected tax IDs
-to record lineage and species/genus/family/order identifiers. These identifiers
-support the report's taxonomic scope and evidence-unit controls; they do not
-change aligner selection or presets.
-
-Preset policy:
-
-| Group | Detection | minimap2 preset |
-| --- | --- | --- |
-| `primates` | ancestor `9443` | `asm10` |
-| `other_mammals` | ancestor `40674`, not `9443` | `asm20` |
-| `other_vertebrates` | ancestor `7742`, not `40674` | `asm20` |
-| `other_or_unknown` | fallback | `asm20` |
-
-`Hominidae` is retained as a metadata flag but does not currently change the
-preset. The `asm5` preset is intentionally not used by the default adaptive
-policy because it is too strict for broad inter-species ortholog alignment; it
-can be added later as a separate benchmark strategy.
+Once per run, the alignment stage requests the NCBI taxonomy summary for the
+selected tax IDs and records lineage plus species/genus/family/order
+identifiers. These identifiers support the report's taxonomic scope and
+evidence-unit controls; they do not change aligner selection. The existing
+`taxonomy_presets.tsv.gz` filename and its legacy preset columns are retained
+to preserve the Stage 2 output contract.
 
 ## Alignment Granularity
 
@@ -113,10 +101,6 @@ This is equivalent in intent to running each ortholog separately with the same
 reference and options: minimap2 maps each query independently against the target
 index. Multi-query execution avoids rebuilding the target index and avoids
 creating thousands of scheduler tasks.
-
-For taxonomy-adaptive minimap2, the task temporarily splits the ortholog FASTA
-into preset groups and runs one minimap2 command per non-empty preset group.
-These split FASTA files are scratch-only and are not published.
 
 For nucmer:
 
