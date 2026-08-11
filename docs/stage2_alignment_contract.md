@@ -73,11 +73,11 @@ the `92_mammals.epo_extended` set, and at most three concurrent remote chunk
 tasks. These values are part of the strategy definition rather than separate
 user options.
 
-Large runs can enable `--compact_alignment_events true` to publish one support
-row per unique event and strategy instead of raw per-ortholog event rows. Each
-compact row receives a partition-local `event_group_id`; the exact positive
-support handoff refers to that ID instead of repeating event coordinates. Raw
-remains the default because it preserves maximum traceability.
+Each bounded partition merge reduces raw per-ortholog observations to one
+compact row per unique event and strategy. Every compact row receives a
+partition-local `event_group_id`; the exact positive-support sidecar refers to
+that ID instead of repeating event coordinates. Raw event rows exist only
+inside aligner task outputs before the partition merge.
 
 ## Taxonomy Metadata
 
@@ -187,8 +187,8 @@ Standalone `--stage align` publishes the full handoff contract:
 | `alignment_segments.tsv.gz` | Normalized alignment intervals. |
 | `snv_site_depth.tsv.gz` | Distinct aligned-ortholog depth for each observed concrete SNV position and strategy. |
 | `feature_coverage.tsv.gz` | Per-gene, per-strategy coverage and depth over target structural intervals. |
-| `alignment_events.tsv.gz` | Raw mismatch/indel events normalized to target coordinates by default; unique event support rows when `--compact_alignment_events true`. |
-| `event_ortholog_support.tsv.gz` | Positive ortholog identities keyed by `event_group_id` and retained when `--compact_alignment_events true`; pass this file with the compact event table to a later standalone annotation run. Coordinate-keyed support from older runs is not accepted. |
+| `alignment_events.tsv.gz` | One compact row per unique target-coordinate event and strategy, keyed by consecutive `event_group_id`. |
+| `event_ortholog_support.tsv.gz` | Exact positive ortholog identities keyed by `event_group_id`; pass this file together with the compact event table to a later standalone annotation run. |
 | `failures.tsv.gz` | Alignment-stage failures. |
 | `native/` | Optional raw PAF/SAM files when enabled. |
 
@@ -201,7 +201,7 @@ singular fields. `feature_coverage.tsv.gz` is mandatory for every alignment
 result and is never reconstructed by a later fallback.
 
 In an end-to-end `--stage all` run, Stage 3 consumes partitioned events directly
-from Nextflow `work/`. Before the raw partition segments are discarded, the
+from Nextflow `work/`. Before the per-aligner evidence is discarded, the
 partition merge derives SNV-only site depth, positive per-ortholog support, and
 taxonomic-unit counts for the observed concrete variant positions. The compact
 event row and exact supporters are emitted together in one index-ordered pass;
@@ -309,12 +309,13 @@ is carried in task metadata for bounded downstream merge and annotation; it does
 not change gene-level alignment behavior.
 
 Alignment results are merged in two bounded levels. Each partition merges at
-most `--alignment_partition_size` genes and, when compact events are requested,
-streams one raw event group at a time from its SQLite key index. The final merge
-then streams those disjoint partitions through one staged directory and rebases
-their local group IDs when a standalone global handoff is requested. This avoids
-one global event database and avoids placing every gene/strategy result path on
-a single command line while preserving the Stage 2 logical evidence.
+most `--alignment_partition_size` genes and streams one raw event group at a
+time from its SQLite key index into the compact event/support pair. The final
+merge streams those disjoint compact partitions through one staged directory
+and rebases their local group IDs when a standalone global handoff is requested.
+This avoids one global event database and avoids placing every gene/strategy
+result path on a single command line while preserving the Stage 2 logical
+evidence.
 
 Both merge levels fail closed. A partition must contain exactly one result for
 every eligible gene/strategy pair, required TSV inputs must exist with valid

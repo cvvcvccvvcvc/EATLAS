@@ -19,7 +19,7 @@ Stage 1 produces:
 Stage 2 produces:
 - compact taxonomy metadata for selected orthologs
 - normalized alignment segments
-- normalized raw alignment events
+- compact alignment events with exact ortholog support
 - per-ortholog alignment summaries for downstream variant-support logic
 
 Stage 3 produces:

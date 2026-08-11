@@ -5,30 +5,20 @@ current narrow cleanup, but matter for larger runs.
 
 ## Raw Events vs Compact Support
 
-Standalone `--stage align` output remains raw by default:
+Aligner tasks emit one raw row per observed event, strategy, and support unit.
+For minimap2/nucmer/BWA the support unit is an ortholog; for Ensembl MAF it is a
+species row. These raw rows are an internal input to the bounded partition
+merge, not a public Stage 2 output.
 
-```text
-alignment_events.tsv.gz
-```
-
-In raw mode, one row means one observed event from one strategy for one support
-unit. For minimap2/nucmer/BWA the support unit is an ortholog. For Ensembl MAF
-it is a species row.
-
-Large runs can enable:
-
-```bash
---compact_alignment_events true
-```
-
-In compact mode, `alignment_events.tsv.gz` contains one row per unique target
-event and strategy plus support counts. A separate
+The partition merge always writes `alignment_events.tsv.gz` with one row per
+unique target event and strategy plus support counts. A separate
 `event_ortholog_support.tsv.gz` retains one positive row per supporting ortholog,
 keyed by the compact row's `event_group_id`. The partition merge writes both in
 one index-ordered pass, so it does not globally group and sort the almost
 unreduced event-by-ortholog relation. Native-record traceability is still
 dropped. Raw per-task event files remain recoverable through Nextflow `work/`
-while the cache is retained.
+while the cache is retained. Standalone `--stage align` publishes the compact
+pair, and standalone `--stage annotate` requires both files.
 
 End-to-end `--stage all` does not publish a global event table. Partition events
 remain in `work/` until annotation consumes them, and Stage 3 preserves compact

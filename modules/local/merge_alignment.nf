@@ -27,7 +27,6 @@ process MERGE_ALIGNMENT {
     path "native", optional: true, emit: native_outputs
 
     script:
-    def compactEventsArg = params.compact_alignment_events ? "--compact-events" : ""
     def outputProfile = params.stage == 'all' ? "report-input" : "full"
     """
     python3 "${merge_script}" \\
@@ -38,7 +37,6 @@ process MERGE_ALIGNMENT {
         --result-root partitions \\
         --expected-strategies "${expected_strategies}" \\
         --output-profile "${outputProfile}" \\
-        --outdir . \\
-        ${compactEventsArg}
+        --outdir .
     """
 }

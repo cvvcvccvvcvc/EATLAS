@@ -323,6 +323,7 @@ lookup normalizes events to VCF keys using `genes.tsv.gz` and
 nextflow run . \
   --stage annotate \
   --events_tsv /path/to/alignment_events.tsv.gz \
+  --event_ortholog_support_tsv /path/to/event_ortholog_support.tsv.gz \
   --segments_tsv /path/to/alignment_segments.tsv.gz \
   --fetch_dir /path/to/fetch \
   --outdir /tmp/gaph_v2_annotate_debug \

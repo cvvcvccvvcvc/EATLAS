@@ -13,13 +13,13 @@ BIN_DIR = Path(__file__).resolve().parents[1] / "bin"
 sys.path.insert(0, str(BIN_DIR))
 
 from annotate_events import (  # noqa: E402
+    EventOrthologSupportStream,
     PARTITION_TSV_SHARD_FORMAT,
     VARIANT_ANNOTATION_FIELDS,
     VARIANT_ORTHOLOG_SUPPORT_FIELDS,
     VARIANT_STRATEGY_SUPPORT_FIELDS,
     add_strategy_support,
     build_variant_strategy_support,
-    event_input_mode,
     event_vcf_key,
     iter_variant_strategy_snv_sites,
     variant_aggregate_key,
@@ -39,7 +39,6 @@ def canonical_partition_manifest(partition_id: str) -> dict:
     return {
         "partition_id": partition_id,
         "output_mode": "unique_variant_context",
-        "event_input_mode": "compact",
         **{field: 0 for field in COUNT_FIELDS},
         **{field: {} for field in COUNTER_FIELDS},
         "failure_count": 0,
@@ -132,15 +131,6 @@ def test_partition_manifest_validation_requires_current_contract(tmp_path: Path)
 
     del manifest["event_row_count"]
     with pytest.raises(ValueError, match="missing event_row_count"):
-        validate_partition_manifests([(partition, manifest)])
-
-
-def test_partition_manifest_validation_rejects_raw_event_input(tmp_path: Path) -> None:
-    partition = tmp_path / "annotation_partition_000001"
-    manifest = canonical_partition_manifest("partition_000001")
-    manifest["event_input_mode"] = "raw"
-
-    with pytest.raises(ValueError, match="must consume compact events"):
         validate_partition_manifests([(partition, manifest)])
 
 
@@ -361,25 +351,69 @@ def test_variant_strategy_support_counts_distinct_orthologs() -> None:
     ]
 
 
-def test_event_input_mode_accepts_only_current_raw_or_compact_contract() -> None:
-    raw_fields = ["strategy", "ortholog_gene_id", "tax_id", "taxname"]
-    compact_fields = ["event_group_id", "strategy"]
+def test_event_ortholog_support_stream_reads_consecutive_compact_groups(
+    tmp_path: Path,
+) -> None:
+    support_tsv = tmp_path / "event_ortholog_support.tsv.gz"
+    write_tsv_gz(
+        support_tsv,
+        [
+            "event_group_id",
+            "ortholog_gene_id",
+            "tax_id",
+            "taxname",
+            "support_row_count",
+        ],
+        [
+            {
+                "event_group_id": "1",
+                "ortholog_gene_id": "101",
+                "tax_id": "10090",
+                "taxname": "Mus musculus",
+                "support_row_count": "2",
+            },
+            {
+                "event_group_id": "2",
+                "ortholog_gene_id": "201",
+                "tax_id": "10116",
+                "taxname": "Rattus norvegicus",
+                "support_row_count": "1",
+            },
+        ],
+    )
 
-    assert event_input_mode(raw_fields, None) == "raw"
-    assert event_input_mode(compact_fields, Path("support.tsv.gz")) == "compact"
+    with EventOrthologSupportStream(support_tsv) as stream:
+        assert [row["ortholog_gene_id"] for row in stream.take(1)] == ["101"]
+        assert [row["ortholog_gene_id"] for row in stream.take(2)] == ["201"]
+        stream.finish()
 
 
-def test_event_input_mode_rejects_legacy_coordinate_support() -> None:
-    with pytest.raises(ValueError, match="valid only for compact events"):
-        event_input_mode(
-            ["strategy", "ortholog_gene_id", "tax_id", "taxname"],
-            Path("legacy-coordinate-support.tsv.gz"),
-        )
+def test_event_ortholog_support_stream_rejects_unmatched_group(tmp_path: Path) -> None:
+    support_tsv = tmp_path / "event_ortholog_support.tsv.gz"
+    write_tsv_gz(
+        support_tsv,
+        [
+            "event_group_id",
+            "ortholog_gene_id",
+            "tax_id",
+            "taxname",
+            "support_row_count",
+        ],
+        [
+            {
+                "event_group_id": "2",
+                "ortholog_gene_id": "201",
+                "tax_id": "10116",
+                "taxname": "Rattus norvegicus",
+                "support_row_count": "1",
+            }
+        ],
+    )
 
-
-def test_event_input_mode_requires_compact_sidecar() -> None:
-    with pytest.raises(ValueError, match="require --event-ortholog-support-tsv"):
-        event_input_mode(["event_group_id", "strategy"], None)
+    with EventOrthologSupportStream(support_tsv) as stream:
+        assert stream.take(1) == []
+        with pytest.raises(ValueError, match="no matching compact event"):
+            stream.finish()
 
 
 def test_snv_support_uses_site_aligned_depth() -> None:

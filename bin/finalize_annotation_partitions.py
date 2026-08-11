@@ -163,8 +163,6 @@ def validate_partition_manifests(partitions: list[tuple[Path, dict]]) -> None:
     for partition, manifest in partitions:
         if manifest_string(manifest, "output_mode", partition) != "unique_variant_context":
             raise ValueError(f"Annotation partition has unexpected output_mode: {partition}")
-        if manifest_string(manifest, "event_input_mode", partition) != "compact":
-            raise ValueError(f"Annotation partition must consume compact events: {partition}")
         for field in [
             *COUNT_FIELDS,
             "failure_count",
@@ -595,7 +593,6 @@ def main() -> None:
     manifest = {
         "created_at": utc_now(),
         "output_mode": "unique_variant_context_partitioned",
-        "event_input_mode": "compact",
         "partition_count": len(partitions),
         "partition_ids": [manifest_string(item, "partition_id", path) for path, item in partitions],
         **counts,

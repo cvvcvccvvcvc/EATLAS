@@ -67,7 +67,7 @@ def test_exact_support_collapses_normalized_event_collisions(tmp_path: Path) -> 
     assert aggregate["_exact_ortholog_count"] == 1
 
 
-def test_raw_event_support_uses_the_same_exact_spool(tmp_path: Path) -> None:
+def test_compact_event_sidecar_uses_the_same_exact_spool(tmp_path: Path) -> None:
     aggregate = {
         "variant_key": "1:100:A>G",
         "gene_id": "1",
@@ -77,6 +77,10 @@ def test_raw_event_support_uses_the_same_exact_spool(tmp_path: Path) -> None:
     }
     event = {
         "strategy": "s1",
+        "support_row_count": "1",
+        "support_ortholog_count": "1",
+    }
+    support_edge = {
         "ortholog_gene_id": "101",
         "tax_id": "10090",
         "taxname": "Mus musculus",
@@ -84,7 +88,7 @@ def test_raw_event_support_uses_the_same_exact_spool(tmp_path: Path) -> None:
     }
     add_strategy_support(aggregate, event)
     spool = ExactSupportSpool(tmp_path)
-    spool.add_group(aggregate, event, [event])
+    spool.add_group(aggregate, event, [support_edge])
 
     row_count = aggregate_exact_support(
         spool,

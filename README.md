@@ -90,18 +90,17 @@ Annotation-only debug mode can reuse an existing alignment event table:
 nextflow run . \
   --stage annotate \
   --events_tsv results/align_debug/alignment_events.tsv.gz \
+  --event_ortholog_support_tsv results/align_debug/event_ortholog_support.tsv.gz \
   --segments_tsv results/align_debug/alignment_segments.tsv.gz \
   --fetch_dir results/run_test/fetch \
   --outdir results/annotate_debug \
   -resume
 ```
 
-When `alignment_events.tsv.gz` was produced with
-`--compact_alignment_events true`, also pass the sibling
-`--event_ortholog_support_tsv event_ortholog_support.tsv.gz`. The two files are
-joined by `event_group_id`; raw event tables already contain the required
-ortholog identity. Annotation accepts only those two forms; coordinate-keyed
-support tables from older runs are not inferred.
+`alignment_events.tsv.gz` and `event_ortholog_support.tsv.gz` form one handoff.
+The compact event table contains one row per target event and strategy; the
+sidecar retains its exact supporting orthologs and joins through
+`event_group_id`. Standalone annotation requires both files.
 
 By default, `--alignment_strategies all` runs `minimap2_asm10`,
 `minimap2_asm20`, `nucmer`, and `bwa_pseudoreads`. The precomputed Ensembl

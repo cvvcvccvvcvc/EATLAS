@@ -128,7 +128,7 @@ class StrategySupport:
 def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--events-tsv", required=True, type=Path)
-    parser.add_argument("--event-ortholog-support-tsv", type=Path)
+    parser.add_argument("--event-ortholog-support-tsv", required=True, type=Path)
     depth_input = parser.add_mutually_exclusive_group(required=True)
     depth_input.add_argument("--segments-tsv", type=Path)
     depth_input.add_argument("--snv-site-depth-tsv", type=Path)
@@ -253,34 +253,6 @@ class EventOrthologSupportStream:
                 "Event ortholog support has no matching compact event: "
                 f"event_group_id={self.group_id(self.current)}"
             )
-
-
-def event_input_mode(
-    header: list[str] | None,
-    support_path: Path | None,
-) -> str:
-    fields = set(header or [])
-    if support_path is not None:
-        if "event_group_id" not in fields:
-            raise ValueError(
-                "--event-ortholog-support-tsv is valid only for compact events with "
-                "event_group_id"
-            )
-        if "strategy" not in fields:
-            raise ValueError("Compact events must include strategy")
-        return "compact"
-
-    if "event_group_id" in fields:
-        raise ValueError(
-            "Compact events require --event-ortholog-support-tsv for exact supporters"
-        )
-    required = {"strategy", "ortholog_gene_id", "tax_id", "taxname"}
-    missing = required - fields
-    if missing:
-        raise ValueError(
-            "Raw events missing exact-support columns: " + ", ".join(sorted(missing))
-        )
-    return "raw"
 
 
 class ExactSupportSpool:
@@ -940,7 +912,7 @@ def main():
         raise FileNotFoundError(f"Alignment segments TSV not found: {args.segments_tsv}")
     if args.snv_site_depth_tsv is not None and not args.snv_site_depth_tsv.exists():
         raise FileNotFoundError(f"SNV site-depth TSV not found: {args.snv_site_depth_tsv}")
-    if args.event_ortholog_support_tsv is not None and not args.event_ortholog_support_tsv.exists():
+    if not args.event_ortholog_support_tsv.exists():
         raise FileNotFoundError(
             f"Event ortholog support TSV not found: {args.event_ortholog_support_tsv}"
         )
@@ -985,21 +957,16 @@ def main():
     variant_aggregates: dict[tuple, dict] = {}
     aggregates_by_id: list[dict | None] = [None]
     input_row_count = 0
-    support_stream = (
-        EventOrthologSupportStream(args.event_ortholog_support_tsv)
-        if args.event_ortholog_support_tsv is not None
-        else None
-    )
+    support_stream = EventOrthologSupportStream(args.event_ortholog_support_tsv)
     exact_spool = ExactSupportSpool(args.outdir)
-    event_mode = ""
     collapse_complete = False
     try:
-        if support_stream is not None:
-            support_stream.__enter__()
+        support_stream.__enter__()
         with gzip.open(args.events_tsv, "rt") as f:
             reader = csv.DictReader(f, delimiter="\t")
             header = reader.fieldnames
             required = {
+                "event_group_id",
                 "gene_id",
                 "event_type",
                 "target_start0",
@@ -1007,31 +974,22 @@ def main():
                 "genomic_start1",
                 "ref",
                 "alt",
+                "strategy",
             }
             missing = required - set(header or [])
             if missing:
                 raise ValueError(
                     f"Events table missing required columns: {', '.join(sorted(missing))}"
                 )
-            event_mode = event_input_mode(header, args.event_ortholog_support_tsv)
             for row in reader:
                 input_row_count += 1
-                exact_support_rows = [
-                    {
-                        **row,
-                        "support_row_count": str(
-                            int_or_default(row.get("support_row_count"), 1)
-                        ),
-                    }
-                ]
-                if support_stream is not None:
-                    event_group_id = int_or_default(row.get("event_group_id"), 0)
-                    if event_group_id != input_row_count:
-                        raise ValueError(
-                            "Compact event_group_id values must be consecutive from 1; "
-                            f"expected {input_row_count}, observed {event_group_id}"
-                        )
-                    exact_support_rows = support_stream.take(event_group_id)
+                event_group_id = int_or_default(row.get("event_group_id"), 0)
+                if event_group_id != input_row_count:
+                    raise ValueError(
+                        "Compact event_group_id values must be consecutive from 1; "
+                        f"expected {input_row_count}, observed {event_group_id}"
+                    )
+                exact_support_rows = support_stream.take(event_group_id)
 
                 acc = row["genomic_accession"]
                 lookup_key, status = event_vcf_key(row, contexts)
@@ -1074,12 +1032,10 @@ def main():
                 )
                 add_strategy_support(aggregate, row)
                 exact_spool.add_group(aggregate, row, exact_support_rows)
-        if support_stream is not None:
-            support_stream.finish()
+        support_stream.finish()
         collapse_complete = True
     finally:
-        if support_stream is not None:
-            support_stream.__exit__(None, None, None)
+        support_stream.__exit__(None, None, None)
         exact_spool.close()
         if not collapse_complete:
             exact_spool.path.unlink(missing_ok=True)
@@ -1261,7 +1217,6 @@ def main():
     finish_phase(timings_seconds, "write_failures", phase_started)
     manifest = {
         "output_mode": "unique_variant_context",
-        "event_input_mode": event_mode,
         "partition_id": args.partition_id,
         "event_row_count": input_row_count,
         "excluded_non_concrete_event_count": event_key_status_counts["non_concrete_allele"],

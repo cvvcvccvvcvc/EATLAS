@@ -159,6 +159,23 @@ def write_result_dir(
     return result_dir
 
 
+def write_compact_result_dir(root: Path, name: str, manifest: dict) -> Path:
+    compact_manifest = {
+        **manifest,
+        "alignment_event_mode": "compact_support",
+    }
+    result_dir = write_result_dir(root, name, compact_manifest)
+    write_tsv_gz(
+        result_dir / "alignment_events.tsv.gz",
+        COMPACT_EVENT_HEADER,
+    )
+    write_tsv_gz(
+        result_dir / "event_ortholog_support.tsv.gz",
+        EVENT_ORTHOLOG_SUPPORT_HEADER,
+    )
+    return result_dir
+
+
 def run_merge(arguments: list[str]) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         [sys.executable, str(MERGE_SCRIPT), *arguments],
@@ -361,7 +378,7 @@ def test_partition_merge_uses_strategy_specific_gene_eligibility(tmp_path: Path)
     assert manifest["strategy_eligible_gene_counts"] == {"s1": 1, ensembl: 2}
 
 
-def test_partition_merge_supports_compact_events(tmp_path: Path) -> None:
+def test_partition_merge_always_publishes_compact_events(tmp_path: Path) -> None:
     result_dirs = [
         write_result_dir(
             tmp_path,
@@ -376,8 +393,6 @@ def test_partition_merge_supports_compact_events(tmp_path: Path) -> None:
         gene_ids="1",
         strategies="s1,s2",
     )
-    arguments.append("--compact-events")
-
     completed = run_merge(arguments)
 
     assert completed.returncode == 0, completed.stderr
@@ -429,6 +444,7 @@ def test_partition_annotation_input_keeps_compact_annotation_tables(tmp_path: Pa
         for path in outdir.iterdir()
     } == {
         "alignment_events.tsv.gz",
+        "event_ortholog_support.tsv.gz",
         "failures.tsv.gz",
         "feature_coverage.tsv.gz",
         "manifest.json",
@@ -479,8 +495,6 @@ def test_compact_events_preserve_strategy_specific_support(tmp_path: Path) -> No
         gene_ids="1",
         strategies="s1,s2",
     )
-    arguments.append("--compact-events")
-
     completed = run_merge(arguments)
 
     assert completed.returncode == 0, completed.stderr
@@ -546,15 +560,12 @@ def test_compact_events_accept_large_allele_fields(tmp_path: Path) -> None:
     )
 
     completed = run_merge(
-        [
-            *final_arguments(
-                [result_dir],
-                tmp_path / "merged",
-                write_final_inputs(tmp_path, [["3492", "ready"]]),
-                strategies=strategy,
-            ),
-            "--compact-events",
-        ]
+        partition_arguments(
+            [result_dir],
+            tmp_path / "merged",
+            gene_ids="3492",
+            strategies=strategy,
+        )
     )
 
     assert completed.returncode == 0, completed.stderr
@@ -611,7 +622,7 @@ def test_partition_merge_rejects_missing_required_table(tmp_path: Path) -> None:
 
 def test_final_merge_writes_exact_gene_manifest(tmp_path: Path) -> None:
     partition_dirs = [
-        write_result_dir(
+        write_compact_result_dir(
             tmp_path,
             f"partition_{index:06d}",
             {
@@ -644,7 +655,7 @@ def test_final_merge_writes_exact_gene_manifest(tmp_path: Path) -> None:
 def test_final_merge_reports_strategy_specific_eligible_gene_counts(tmp_path: Path) -> None:
     ensembl = "precomputed_ensembl_92_mammals_epo_extended"
     partition_dirs = [
-        write_result_dir(
+        write_compact_result_dir(
             tmp_path,
             "partition_000001",
             {
@@ -654,7 +665,7 @@ def test_final_merge_reports_strategy_specific_eligible_gene_counts(tmp_path: Pa
                 "strategies": ["s1", ensembl],
             },
         ),
-        write_result_dir(
+        write_compact_result_dir(
             tmp_path,
             "partition_000002",
             {
@@ -693,7 +704,7 @@ def test_final_merge_reports_strategy_specific_eligible_gene_counts(tmp_path: Pa
 def test_final_merge_preserves_precompacted_ortholog_support(tmp_path: Path) -> None:
     partition_dirs = []
     for index, (gene_id, ortholog_gene_id) in enumerate([("1", "101"), ("2", "201")], 1):
-        partition = write_result_dir(
+        partition = write_compact_result_dir(
             tmp_path,
             f"partition_{index:06d}",
             {
@@ -749,10 +760,7 @@ def test_final_merge_preserves_precompacted_ortholog_support(tmp_path: Path) -> 
         partition_dirs.append(partition)
     inputs = write_final_inputs(tmp_path, [["1", "ready"], ["2", "ready"]])
     outdir = tmp_path / "merged"
-    arguments = final_arguments(partition_dirs, outdir, inputs, strategies="s1")
-    arguments.append("--compact-events")
-
-    completed = run_merge(arguments)
+    completed = run_merge(final_arguments(partition_dirs, outdir, inputs, strategies="s1"))
 
     assert completed.returncode == 0, completed.stderr
     with gzip.open(outdir / "event_ortholog_support.tsv.gz", "rt", newline="") as handle:
@@ -765,7 +773,7 @@ def test_final_merge_preserves_precompacted_ortholog_support(tmp_path: Path) -> 
 
 def test_final_report_input_omits_handoff_tables(tmp_path: Path) -> None:
     partition_dirs = [
-        write_result_dir(
+        write_compact_result_dir(
             tmp_path,
             f"partition_{index:06d}",
             {
@@ -777,7 +785,6 @@ def test_final_report_input_omits_handoff_tables(tmp_path: Path) -> None:
                 "alignment_segment_count": 5,
                 "alignment_event_count": 6,
                 "raw_alignment_event_count": 6,
-                "alignment_event_mode": "raw",
             },
         )
         for index, gene_id in enumerate(["1", "2"], start=1)
@@ -811,8 +818,34 @@ def test_final_report_input_omits_handoff_tables(tmp_path: Path) -> None:
     assert manifest["alignment_event_count"] == 12
 
 
-def test_final_merge_rejects_missing_ready_gene(tmp_path: Path) -> None:
+def test_final_merge_rejects_raw_partition_results(tmp_path: Path) -> None:
     partition_dir = write_result_dir(
+        tmp_path,
+        "partition_000001",
+        {
+            "partition_id": "partition_000001",
+            "gene_count": 1,
+            "gene_ids": ["1"],
+            "strategies": ["s1"],
+        },
+    )
+    inputs = write_final_inputs(tmp_path, [["1", "ready"]])
+
+    completed = run_merge(
+        final_arguments(
+            [partition_dir],
+            tmp_path / "merged",
+            inputs,
+            strategies="s1",
+        )
+    )
+
+    assert completed.returncode != 0
+    assert "Final alignment merge requires compact_support inputs" in completed.stderr
+
+
+def test_final_merge_rejects_missing_ready_gene(tmp_path: Path) -> None:
+    partition_dir = write_compact_result_dir(
         tmp_path,
         "partition_000001",
         {

@@ -127,7 +127,11 @@ if (params.stage == 'annotate' && !params.segments_tsv) {
     error "Missing required parameter for --stage annotate: --segments_tsv"
 }
 
-if (params.stage == 'annotate' && params.event_ortholog_support_tsv && !file(params.event_ortholog_support_tsv).exists()) {
+if (params.stage == 'annotate' && !params.event_ortholog_support_tsv) {
+    error "Missing required parameter for --stage annotate: --event_ortholog_support_tsv"
+}
+
+if (params.stage == 'annotate' && !file(params.event_ortholog_support_tsv).exists()) {
     error "Event ortholog support TSV not found: ${params.event_ortholog_support_tsv}"
 }
 
@@ -491,7 +495,8 @@ workflow ALIGNMENT_STAGE_FROM_DIR {
 
 workflow ANNOTATION_STAGE {
     take:
-    annotation_inputs
+    events_tsv
+    event_ortholog_support_tsv
     segments_tsv
     genes_tsv
     sequences_dir
@@ -514,7 +519,8 @@ workflow ANNOTATION_STAGE {
         file("${projectDir}/genomics/variants.py"),
     ]
     ANNOTATE_EVENTS(
-        annotation_inputs,
+        events_tsv,
+        event_ortholog_support_tsv,
         segments_tsv,
         genes_tsv,
         sequences_dir,
@@ -651,13 +657,9 @@ workflow {
         clinvar_inputs = resolveClinvarInputs()
         log.info "Using ClinVar VCF: ${clinvar_inputs.path}"
         fetch_dir = file(params.fetch_dir)
-        has_event_support = params.event_ortholog_support_tsv ? true : false
-        annotation_input_files = [file(params.events_tsv)]
-        if (has_event_support) {
-            annotation_input_files.add(file(params.event_ortholog_support_tsv))
-        }
         ANNOTATION_STAGE(
-            tuple(has_event_support, annotation_input_files),
+            file(params.events_tsv),
+            file(params.event_ortholog_support_tsv),
             file(params.segments_tsv),
             file("${fetch_dir}/genes.tsv.gz"),
             file("${fetch_dir}/sequences"),

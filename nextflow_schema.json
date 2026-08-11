@@ -34,7 +34,7 @@
                 },
                 "event_ortholog_support_tsv": {
                     "type": "string",
-                    "description": "Path to event_ortholog_support.tsv.gz when annotating compact alignment events. Raw events retain ortholog identity and do not require this input."
+                    "description": "Path to the event_group_id-keyed event_ortholog_support.tsv.gz companion required with alignment_events.tsv.gz for standalone annotation."
                 },
                 "segments_tsv": {
                     "type": "string",
@@ -94,11 +94,6 @@
                     "minimum": 1,
                     "default": 10,
                     "description": "Maximum target genes per bounded alignment and annotation output partition."
-                },
-                "compact_alignment_events": {
-                    "type": "boolean",
-                    "default": false,
-                    "description": "Write final alignment_events.tsv.gz as unique event support rows instead of raw per-ortholog/per-strategy event rows. Raw remains the default."
                 },
                 "annotation_max_forks": {
                     "type": "integer",

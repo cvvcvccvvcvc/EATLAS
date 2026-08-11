@@ -15,7 +15,6 @@ process MERGE_ALIGNMENT_PARTITION {
 
     script:
     def outputProfile = params.stage == 'all' ? "annotation-input" : "full"
-    def compactEventsArg = (params.compact_alignment_events || outputProfile == 'annotation-input') ? "--compact-events" : ""
     def taxonomyArg = outputProfile == 'annotation-input' ? "--taxonomy \"${taxonomy}\"" : ""
     """
     export PYTHONPATH="\$PWD:\${PYTHONPATH:-}"
@@ -27,7 +26,6 @@ process MERGE_ALIGNMENT_PARTITION {
         --expected-strategies "${expected_strategies}" \\
         --output-profile "${outputProfile}" \\
         --outdir "${meta.partition_id}" \\
-        ${compactEventsArg} \\
         ${taxonomyArg}
     """
 }

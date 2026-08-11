@@ -101,7 +101,7 @@ Runtime environments:
 - `bin/merge_alignment_results.py`
   - merges per-gene/per-strategy evidence into bounded genomic partitions
   - keeps only annotation inputs in end-to-end partitions
-  - writes report-ready Stage 2 summaries without globally rewriting raw events
+  - writes report-ready Stage 2 summaries without a global raw-event handoff
   - requires and merges gene-local feature coverage from every aligner
   - writes a canonical small per-strategy summary for downstream reports
   - writes compact events and their `event_group_id`-keyed positive ortholog

@@ -42,7 +42,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--partition-id")
     parser.add_argument("--expected-strategies", required=True)
     parser.add_argument("--expected-gene-ids")
-    parser.add_argument("--compact-events", action="store_true")
     parser.add_argument(
         "--output-profile",
         choices=["full", "annotation-input", "report-input"],
@@ -1229,6 +1228,13 @@ def main() -> None:
     gene_count = len(gene_ids)
 
     input_event_mode = merged_event_mode(manifests)
+    expected_event_mode = "raw" if args.partition_id else "compact_support"
+    if input_event_mode != expected_event_mode:
+        merge_level = "Partition" if args.partition_id else "Final"
+        raise ValueError(
+            f"{merge_level} alignment merge requires {expected_event_mode} inputs, "
+            f"observed {input_event_mode}"
+        )
     if args.output_profile == "report-input":
         summary_count = sum_manifest_count(manifests, "ortholog_alignment_summary_count")
         strategy_summary_count = merge_strategy_summaries(
@@ -1285,7 +1291,7 @@ def main() -> None:
         alignment_event_mode = input_event_mode
     else:
         event_inputs = [path / "alignment_events.tsv.gz" for path in result_dirs]
-        if args.compact_events and input_event_mode == "raw":
+        if args.partition_id:
             (
                 event_count,
                 raw_event_count,
@@ -1301,7 +1307,7 @@ def main() -> None:
                 else None,
                 timings=timings_seconds,
             )
-        elif args.compact_events and input_event_mode == "compact_support":
+        else:
             raw_event_count = sum_manifest_count(manifests, "raw_alignment_event_count")
             event_count, event_ortholog_support_count = merge_compact_event_handoffs(
                 result_dirs,
@@ -1309,19 +1315,7 @@ def main() -> None:
                 args.outdir / "event_ortholog_support.tsv.gz",
             )
             taxonomic_alt_support_count = 0
-        else:
-            if input_event_mode != "raw":
-                raise ValueError(
-                    "Compact alignment inputs require --compact-events in the final merge"
-                )
-            event_count = merge_tsv_gz(
-                event_inputs,
-                args.outdir / "alignment_events.tsv.gz",
-            )
-            raw_event_count = event_count
-            taxonomic_alt_support_count = 0
-            event_ortholog_support_count = 0
-        alignment_event_mode = "compact_support" if args.compact_events else "raw"
+        alignment_event_mode = "compact_support"
 
     if args.partition_id:
         phase_started = start_phase("snv_site_depth")

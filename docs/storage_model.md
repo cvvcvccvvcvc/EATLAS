@@ -83,7 +83,9 @@ but their internal partition gzip members are copied into the final files
 without row parsing or recompression.
 
 Standalone `--stage fetch` and `--stage align` runs still publish their full
-handoff datasets because a later invocation needs those files.
+handoff datasets because a later invocation needs those files. The Stage 2
+event handoff is always the compact `alignment_events.tsv.gz` table together
+with its exact `event_group_id`-keyed `event_ortholog_support.tsv.gz` sidecar.
 
 ## Execution Cache
 
