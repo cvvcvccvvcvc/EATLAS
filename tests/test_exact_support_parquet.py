@@ -67,6 +67,35 @@ def test_exact_support_collapses_normalized_event_collisions(tmp_path: Path) -> 
     assert aggregate["_exact_ortholog_count"] == 1
 
 
+def test_raw_event_support_uses_the_same_exact_spool(tmp_path: Path) -> None:
+    aggregate = {
+        "variant_key": "1:100:A>G",
+        "gene_id": "1",
+        "_variant_context_id": 1,
+        "_exact_ortholog_count": 0,
+        "_support_by_strategy": {},
+    }
+    event = {
+        "strategy": "s1",
+        "ortholog_gene_id": "101",
+        "tax_id": "10090",
+        "taxname": "Mus musculus",
+        "support_row_count": "1",
+    }
+    add_strategy_support(aggregate, event)
+    spool = ExactSupportSpool(tmp_path)
+    spool.add_group(aggregate, event, [event])
+
+    row_count = aggregate_exact_support(
+        spool,
+        [None, aggregate],
+        tmp_path / "variant_ortholog_support",
+    )
+
+    assert row_count == 1
+    assert aggregate["_exact_ortholog_count"] == 1
+
+
 def test_finalizer_copies_partition_parquet_without_row_rewrite(tmp_path: Path) -> None:
     partitions = []
     connection = duckdb.connect()

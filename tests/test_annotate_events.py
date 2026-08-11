@@ -17,23 +17,41 @@ from annotate_events import (  # noqa: E402
     VARIANT_ANNOTATION_FIELDS,
     VARIANT_ORTHOLOG_SUPPORT_FIELDS,
     VARIANT_STRATEGY_SUPPORT_FIELDS,
-    add_ortholog_support,
     add_strategy_support,
-    build_variant_ortholog_support,
     build_variant_strategy_support,
+    event_input_mode,
     event_vcf_key,
     iter_variant_strategy_snv_sites,
-    reconcile_strategy_support_from_orthologs,
-    validate_ortholog_support_totals,
     variant_aggregate_key,
     write_tsv_gz,
 )
 from finalize_annotation_partitions import (  # noqa: E402
+    COUNTER_FIELDS,
     COUNT_FIELDS,
     concatenate_tsv_gz_members,
     merge_gnomad_shared_cache,
     merge_partition_timings,
+    validate_partition_manifests,
 )
+
+
+def canonical_partition_manifest(partition_id: str) -> dict:
+    return {
+        "partition_id": partition_id,
+        "output_mode": "unique_variant_context",
+        "event_input_mode": "compact",
+        **{field: 0 for field in COUNT_FIELDS},
+        **{field: {} for field in COUNTER_FIELDS},
+        "failure_count": 0,
+        "ortholog_evidence_summary_count": 0,
+        "variant_ortholog_support_format": "parquet_dataset",
+        "variant_ortholog_support_path": "variant_ortholog_support",
+        "variant_ortholog_support_file_count": 1,
+        "clinvar_vcf": {"path": "clinvar.vcf.gz", "size_bytes": 1, "mtime": 1},
+        "clinvar_tbi": {"path": "clinvar.vcf.gz.tbi", "size_bytes": 1, "mtime": 1},
+        "gnomad_api_url": "https://gnomad.example/api",
+        "gnomad_dataset": "gnomad_r4",
+    }
 
 
 def test_variant_annotation_schema_is_analysis_ready() -> None:
@@ -104,6 +122,26 @@ def test_annotation_entrypoints_accept_large_tsv_fields(
 
 def test_partitioned_manifest_keeps_non_concrete_exclusion_count() -> None:
     assert "excluded_non_concrete_event_count" in COUNT_FIELDS
+
+
+def test_partition_manifest_validation_requires_current_contract(tmp_path: Path) -> None:
+    partition = tmp_path / "annotation_partition_000001"
+    manifest = canonical_partition_manifest("partition_000001")
+
+    validate_partition_manifests([(partition, manifest)])
+
+    del manifest["event_row_count"]
+    with pytest.raises(ValueError, match="missing event_row_count"):
+        validate_partition_manifests([(partition, manifest)])
+
+
+def test_partition_manifest_validation_rejects_raw_event_input(tmp_path: Path) -> None:
+    partition = tmp_path / "annotation_partition_000001"
+    manifest = canonical_partition_manifest("partition_000001")
+    manifest["event_input_mode"] = "raw"
+
+    with pytest.raises(ValueError, match="must consume compact events"):
+        validate_partition_manifests([(partition, manifest)])
 
 
 def test_partition_timings_are_preserved_and_summed(tmp_path: Path) -> None:
@@ -249,7 +287,9 @@ def test_partitioned_manifest_aggregates_shared_gnomad_cache_metrics(tmp_path: P
                     "tile_hit_count": 2,
                     "tile_miss_count": 3,
                     "tile_write_count": 3,
+                    "corrupt_tile_count": 0,
                     "fetch_batch_count": 1,
+                    "split_count": 0,
                 }
             },
         ),
@@ -261,7 +301,9 @@ def test_partitioned_manifest_aggregates_shared_gnomad_cache_metrics(tmp_path: P
                     "tile_hit_count": 5,
                     "tile_miss_count": 0,
                     "tile_write_count": 0,
+                    "corrupt_tile_count": 0,
                     "fetch_batch_count": 0,
+                    "split_count": 0,
                 }
             },
         ),
@@ -319,118 +361,25 @@ def test_variant_strategy_support_counts_distinct_orthologs() -> None:
     ]
 
 
-def test_variant_ortholog_support_collapses_repeated_observations() -> None:
-    aggregate = {
-        "variant_key": "1:100:A>G",
-        "gene_id": "1",
-        "_ortholog_support": {},
-    }
-    add_ortholog_support(
-        aggregate,
-        {
-            "strategy": "s1",
-            "ortholog_gene_id": "101",
-            "tax_id": "10090",
-            "taxname": "Mus musculus",
-            "support_row_count": "2",
-        },
-    )
-    add_ortholog_support(
-        aggregate,
-        {
-            "strategy": "s1",
-            "ortholog_gene_id": "101",
-            "tax_id": "10090",
-            "taxname": "Mus musculus",
-        },
-    )
+def test_event_input_mode_accepts_only_current_raw_or_compact_contract() -> None:
+    raw_fields = ["strategy", "ortholog_gene_id", "tax_id", "taxname"]
+    compact_fields = ["event_group_id", "strategy"]
 
-    rows, missing_key_count = build_variant_ortholog_support([aggregate])
-
-    assert missing_key_count == 0
-    assert rows == [
-        {
-            "variant_key": "1:100:A>G",
-            "gene_id": "1",
-            "strategy": "s1",
-            "ortholog_gene_id": "101",
-            "tax_id": "10090",
-            "taxname": "Mus musculus",
-            "support_row_count": 3,
-        }
-    ]
-    validate_ortholog_support_totals(
-        [
-            {
-                "variant_key": "1:100:A>G",
-                "gene_id": "1",
-                "strategy": "s1",
-                "alt_support_ortholog_count": 1,
-                "alt_support_row_count": 3,
-            }
-        ],
-        rows,
-    )
+    assert event_input_mode(raw_fields, None) == "raw"
+    assert event_input_mode(compact_fields, Path("support.tsv.gz")) == "compact"
 
 
-def test_detailed_support_reconciles_normalized_indel_collisions() -> None:
-    aggregate = {
-        "variant_key": "1:100:AA>A",
-        "gene_id": "1",
-        "_support_by_strategy": {},
-        "_ortholog_support": {},
-    }
-    for _raw_event in range(2):
-        add_strategy_support(
-            aggregate,
-            {
-                "strategy": "s1",
-                "support_row_count": "1",
-                "support_ortholog_count": "1",
-            },
-        )
-        add_ortholog_support(
-            aggregate,
-            {
-                "strategy": "s1",
-                "ortholog_gene_id": "101",
-                "tax_id": "10090",
-                "taxname": "Mus musculus",
-                "support_row_count": "1",
-            },
+def test_event_input_mode_rejects_legacy_coordinate_support() -> None:
+    with pytest.raises(ValueError, match="valid only for compact events"):
+        event_input_mode(
+            ["strategy", "ortholog_gene_id", "tax_id", "taxname"],
+            Path("legacy-coordinate-support.tsv.gz"),
         )
 
-    reconcile_strategy_support_from_orthologs(aggregate)
-    strategy_rows, _ = build_variant_strategy_support([aggregate])
-    ortholog_rows, _ = build_variant_ortholog_support([aggregate])
 
-    assert strategy_rows[0]["alt_support_ortholog_count"] == 1
-    assert strategy_rows[0]["alt_support_row_count"] == 2
-    validate_ortholog_support_totals(strategy_rows, ortholog_rows)
-
-
-def test_variant_ortholog_support_rejects_conflicting_taxonomy() -> None:
-    aggregate = {"_ortholog_support": {}}
-    add_ortholog_support(
-        aggregate,
-        {
-            "strategy": "s1",
-            "ortholog_gene_id": "101",
-            "tax_id": "10090",
-            "taxname": "Mus musculus",
-        },
-    )
-
-    with pytest.raises(ValueError, match="Conflicting taxname"):
-        add_ortholog_support(
-            aggregate,
-            {
-                "strategy": "s1",
-                "ortholog_gene_id": "101",
-                "tax_id": "10090",
-                "taxname": "Rattus norvegicus",
-            },
-        )
+def test_event_input_mode_requires_compact_sidecar() -> None:
+    with pytest.raises(ValueError, match="require --event-ortholog-support-tsv"):
+        event_input_mode(["event_group_id", "strategy"], None)
 
 
 def test_snv_support_uses_site_aligned_depth() -> None:
@@ -500,14 +449,14 @@ def test_variant_strategy_support_accepts_single_strategy_compact_counts() -> No
     assert rows[0]["alt_support_ortholog_count"] == 3
 
 
-def test_variant_strategy_support_rejects_cross_strategy_compact_counts() -> None:
+def test_variant_strategy_support_requires_one_strategy() -> None:
     aggregate = {
         "variant_key": "1:100:A>G",
         "gene_id": "1",
         "_support_by_strategy": {},
     }
 
-    with pytest.raises(ValueError, match="aggregated across multiple strategies"):
+    with pytest.raises(ValueError, match="requires one alignment strategy"):
         add_strategy_support(
             aggregate,
             {

@@ -188,7 +188,7 @@ Standalone `--stage align` publishes the full handoff contract:
 | `snv_site_depth.tsv.gz` | Distinct aligned-ortholog depth for each observed concrete SNV position and strategy. |
 | `feature_coverage.tsv.gz` | Per-gene, per-strategy coverage and depth over target structural intervals. |
 | `alignment_events.tsv.gz` | Raw mismatch/indel events normalized to target coordinates by default; unique event support rows when `--compact_alignment_events true`. |
-| `event_ortholog_support.tsv.gz` | Positive ortholog identities keyed by `event_group_id` and retained when `--compact_alignment_events true`; pass this file with the compact event table to a later standalone annotation run. |
+| `event_ortholog_support.tsv.gz` | Positive ortholog identities keyed by `event_group_id` and retained when `--compact_alignment_events true`; pass this file with the compact event table to a later standalone annotation run. Coordinate-keyed support from older runs is not accepted. |
 | `failures.tsv.gz` | Alignment-stage failures. |
 | `native/` | Optional raw PAF/SAM files when enabled. |
 

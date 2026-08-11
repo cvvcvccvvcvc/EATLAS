@@ -491,8 +491,7 @@ workflow ALIGNMENT_STAGE_FROM_DIR {
 
 workflow ANNOTATION_STAGE {
     take:
-    events_tsv
-    event_ortholog_support_tsv
+    annotation_inputs
     segments_tsv
     genes_tsv
     sequences_dir
@@ -515,8 +514,7 @@ workflow ANNOTATION_STAGE {
         file("${projectDir}/genomics/variants.py"),
     ]
     ANNOTATE_EVENTS(
-        events_tsv,
-        event_ortholog_support_tsv,
+        annotation_inputs,
         segments_tsv,
         genes_tsv,
         sequences_dir,
@@ -653,9 +651,13 @@ workflow {
         clinvar_inputs = resolveClinvarInputs()
         log.info "Using ClinVar VCF: ${clinvar_inputs.path}"
         fetch_dir = file(params.fetch_dir)
+        has_event_support = params.event_ortholog_support_tsv ? true : false
+        annotation_input_files = [file(params.events_tsv)]
+        if (has_event_support) {
+            annotation_input_files.add(file(params.event_ortholog_support_tsv))
+        }
         ANNOTATION_STAGE(
-            file(params.events_tsv),
-            file(params.event_ortholog_support_tsv ?: params.events_tsv),
+            tuple(has_event_support, annotation_input_files),
             file(params.segments_tsv),
             file("${fetch_dir}/genes.tsv.gz"),
             file("${fetch_dir}/sequences"),

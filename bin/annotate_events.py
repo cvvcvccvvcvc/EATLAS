@@ -183,16 +183,6 @@ def write_tsv_gz(
     return len(rows)
 
 
-def event_support_uses_group_ids(path: Path | None) -> bool:
-    if path is None:
-        return False
-    with open_text(path) as handle:
-        header = next(csv.reader(handle, delimiter="\t"), None)
-    if header is None:
-        raise ValueError(f"Event ortholog support table has no header: {path}")
-    return "event_group_id" in header
-
-
 class EventOrthologSupportStream:
     """Read the compact merge handoff one event group at a time."""
 
@@ -263,6 +253,34 @@ class EventOrthologSupportStream:
                 "Event ortholog support has no matching compact event: "
                 f"event_group_id={self.group_id(self.current)}"
             )
+
+
+def event_input_mode(
+    header: list[str] | None,
+    support_path: Path | None,
+) -> str:
+    fields = set(header or [])
+    if support_path is not None:
+        if "event_group_id" not in fields:
+            raise ValueError(
+                "--event-ortholog-support-tsv is valid only for compact events with "
+                "event_group_id"
+            )
+        if "strategy" not in fields:
+            raise ValueError("Compact events must include strategy")
+        return "compact"
+
+    if "event_group_id" in fields:
+        raise ValueError(
+            "Compact events require --event-ortholog-support-tsv for exact supporters"
+        )
+    required = {"strategy", "ortholog_gene_id", "tax_id", "taxname"}
+    missing = required - fields
+    if missing:
+        raise ValueError(
+            "Raw events missing exact-support columns: " + ", ".join(sorted(missing))
+        )
+    return "raw"
 
 
 class ExactSupportSpool:
@@ -337,7 +355,7 @@ class ExactSupportSpool:
             return
         strategy = str(event_row.get("strategy") or "")
         if not strategy:
-            raise ValueError("Grouped exact support requires one event strategy")
+            raise ValueError("Exact ortholog support requires one event strategy")
         variant_context_id = int(aggregate["_variant_context_id"])
         strategy_id = self.strategy_id(strategy)
         gene_id = str(aggregate.get("gene_id") or "")
@@ -353,12 +371,6 @@ class ExactSupportSpool:
             self.input_edge_count += 1
 
 
-def split_values(value: str | None) -> set[str]:
-    if not value:
-        return set()
-    return {item for item in str(value).replace("|", ",").split(",") if item}
-
-
 def int_or_default(value, default: int = 0) -> int:
     try:
         return int(value)
@@ -367,138 +379,22 @@ def int_or_default(value, default: int = 0) -> int:
 
 
 def add_strategy_support(aggregate: dict, row: dict[str, str]) -> None:
-    singular_strategies = split_values(row.get("strategy"))
-    strategies = singular_strategies | split_values(row.get("strategies"))
-    if not strategies:
-        raise ValueError("Event row does not identify an alignment strategy")
-    if len(strategies) > 1 and not singular_strategies:
-        raise ValueError(
-            "Event row contains support aggregated across multiple strategies; "
-            "per-strategy support counts cannot be recovered"
-        )
-
+    strategy = str(row.get("strategy") or "")
+    if not strategy:
+        raise ValueError("Event row requires one alignment strategy")
     support_row_count = int_or_default(row.get("support_row_count"), 1)
     ortholog_gene_id = row.get("ortholog_gene_id", "")
     ortholog_count_hint = int_or_default(row.get("support_ortholog_count"), 0)
     support_by_strategy = aggregate["_support_by_strategy"]
-    for strategy in strategies:
-        support = support_by_strategy.get(strategy)
-        if support is None:
-            support = StrategySupport()
-            support_by_strategy[strategy] = support
-        support.row_count += support_row_count
-        if ortholog_gene_id:
-            support.orthologs.add(ortholog_gene_id)
-        else:
-            support.ortholog_count_hint += ortholog_count_hint
-
-
-def add_ortholog_support(aggregate: dict, row: dict[str, str]) -> None:
-    strategy = str(row.get("strategy") or "")
-    ortholog_gene_id = str(row.get("ortholog_gene_id") or "")
-    if not strategy or not ortholog_gene_id:
-        raise ValueError("Ortholog support row requires strategy and ortholog_gene_id")
-    support_row_count = int_or_default(row.get("support_row_count"), 1)
-    if support_row_count < 1:
-        raise ValueError("Ortholog support_row_count must be positive")
-
-    support_by_ortholog = aggregate["_ortholog_support"]
-    key = (strategy, ortholog_gene_id)
-    support = support_by_ortholog.get(key)
+    support = support_by_strategy.get(strategy)
     if support is None:
-        support_by_ortholog[key] = {
-            "strategy": strategy,
-            "ortholog_gene_id": ortholog_gene_id,
-            "tax_id": str(row.get("tax_id") or ""),
-            "taxname": str(row.get("taxname") or ""),
-            "support_row_count": support_row_count,
-        }
-        return
-
-    for field in ("tax_id", "taxname"):
-        observed = str(row.get(field) or "")
-        current = str(support.get(field) or "")
-        if current and observed and current != observed:
-            raise ValueError(
-                f"Conflicting {field} for strategy={strategy}, "
-                f"ortholog_gene_id={ortholog_gene_id}: {current!r} != {observed!r}"
-            )
-        if not current and observed:
-            support[field] = observed
-    support["support_row_count"] += support_row_count
-
-
-def reconcile_strategy_support_from_orthologs(aggregate: dict) -> None:
-    exact_by_strategy: dict[str, StrategySupport] = {}
-    for (strategy, ortholog_gene_id), row in aggregate["_ortholog_support"].items():
-        support = exact_by_strategy.setdefault(strategy, StrategySupport())
-        support.orthologs.add(ortholog_gene_id)
-        support.row_count += int(row["support_row_count"])
-
-    support_by_strategy = aggregate["_support_by_strategy"]
-    unknown = exact_by_strategy.keys() - support_by_strategy.keys()
-    if unknown:
-        raise ValueError(
-            "Ortholog support identifies strategies absent from compact events: "
-            + ", ".join(sorted(unknown))
-        )
-    for strategy, support in exact_by_strategy.items():
+        support = StrategySupport()
         support_by_strategy[strategy] = support
-
-
-def build_variant_ortholog_support(
-    aggregates: Iterable[dict],
-) -> tuple[list[dict[str, object]], int]:
-    rows: list[dict[str, object]] = []
-    missing_key_count = 0
-    for aggregate in aggregates:
-        variant_key = aggregate.get("variant_key", "")
-        ortholog_support = aggregate["_ortholog_support"]
-        if not variant_key:
-            missing_key_count += len(ortholog_support)
-            continue
-        for support in ortholog_support.values():
-            rows.append(
-                {
-                    "variant_key": variant_key,
-                    "gene_id": aggregate.get("gene_id", ""),
-                    **support,
-                }
-            )
-    rows.sort(
-        key=lambda row: (
-            int_or_default(row.get("gene_id"), 10**18),
-            row["variant_key"],
-            row["strategy"],
-            row["ortholog_gene_id"],
-        )
-    )
-    return rows, missing_key_count
-
-
-def validate_ortholog_support_totals(
-    strategy_rows: Iterable[dict[str, object]],
-    ortholog_rows: Iterable[dict[str, object]],
-) -> None:
-    observed: dict[tuple[str, str, str], tuple[int, int]] = {}
-    for row in ortholog_rows:
-        key = (str(row["variant_key"]), str(row["gene_id"]), str(row["strategy"]))
-        ortholog_count, row_count = observed.get(key, (0, 0))
-        observed[key] = (
-            ortholog_count + 1,
-            row_count + int(row["support_row_count"]),
-        )
-    for row in strategy_rows:
-        key = (str(row["variant_key"]), str(row["gene_id"]), str(row["strategy"]))
-        actual_orthologs, actual_rows = observed.get(key, (0, 0))
-        expected_orthologs = int(row["alt_support_ortholog_count"])
-        expected_rows = int(row["alt_support_row_count"])
-        if (actual_orthologs, actual_rows) != (expected_orthologs, expected_rows):
-            raise ValueError(
-                "Variant ortholog support does not match strategy totals for "
-                f"{key}: orthologs={actual_orthologs}/{expected_orthologs}, "
-                f"rows={actual_rows}/{expected_rows}"
-            )
+    support.row_count += support_row_count
+    if ortholog_gene_id:
+        support.orthologs.add(ortholog_gene_id)
+    else:
+        support.ortholog_count_hint += ortholog_count_hint
 
 
 def sql_string(value: Path | str) -> str:
@@ -646,7 +542,7 @@ def aggregate_exact_support(
             support = aggregate["_support_by_strategy"].get(strategy)
             if support is None:
                 raise ValueError(
-                    "Exact ortholog support identifies a strategy absent from compact events: "
+                    "Exact ortholog support identifies a strategy absent from events: "
                     f"variant_context_id={variant_context_id}, strategy={strategy}"
                 )
             expected_ortholog_count = max(
@@ -659,7 +555,7 @@ def aggregate_exact_support(
                 or int(ortholog_count) > expected_ortholog_count
             ):
                 raise ValueError(
-                    "Exact ortholog support does not match compact event totals for "
+                    "Exact ortholog support does not match event totals for "
                     f"variant_context_id={variant_context_id}, strategy={strategy}: "
                     f"orthologs={ortholog_count}/at-most-{expected_ortholog_count}, "
                     f"rows={row_count}/{support.row_count}"
@@ -676,7 +572,7 @@ def aggregate_exact_support(
             for strategy, support in aggregate["_support_by_strategy"].items():
                 if support.row_count > 0 and (variant_context_id, strategy) not in observed:
                     raise ValueError(
-                        "Compact event support has no exact ortholog rows for "
+                        "Event support has no exact ortholog rows for "
                         f"variant_context_id={variant_context_id}, strategy={strategy}"
                     )
 
@@ -744,64 +640,6 @@ def aggregate_exact_support(
         for path in (spool.path, variant_dim, strategy_dim, ortholog_dim):
             path.unlink(missing_ok=True)
         shutil.rmtree(temp_dir, ignore_errors=True)
-
-
-def write_exact_support_rows_parquet(rows: list[dict], output_dir: Path) -> int:
-    """Write the compatibility path for non-grouped annotation inputs."""
-
-    try:
-        import duckdb
-    except ImportError as exc:
-        raise RuntimeError(
-            "DuckDB is required to write exact ortholog support Parquet"
-        ) from exc
-
-    output_dir.mkdir(parents=True, exist_ok=True)
-    output = output_dir / "part-00000.parquet"
-    output.unlink(missing_ok=True)
-    source = output_dir.parent / ".variant_ortholog_support_legacy.tsv"
-    write_dimension_tsv(source, VARIANT_ORTHOLOG_SUPPORT_FIELDS, rows)
-    connection = duckdb.connect()
-    try:
-        if not rows:
-            write_empty_exact_support_parquet(connection, output)
-        else:
-            connection.execute(
-                f"""
-                COPY (
-                    SELECT
-                        variant_key,
-                        gene_id,
-                        strategy,
-                        ortholog_gene_id,
-                        tax_id,
-                        taxname,
-                        support_row_count
-                    FROM read_csv(
-                        {sql_string(source)},
-                        delim = '\t',
-                        header = true,
-                        columns = {{
-                            'variant_key': 'VARCHAR',
-                            'gene_id': 'VARCHAR',
-                            'strategy': 'VARCHAR',
-                            'ortholog_gene_id': 'VARCHAR',
-                            'tax_id': 'VARCHAR',
-                            'taxname': 'VARCHAR',
-                            'support_row_count': 'UBIGINT'
-                        }}
-                    )
-                ) TO {sql_string(output)} (
-                    FORMAT PARQUET,
-                    COMPRESSION ZSTD,
-                    ROW_GROUP_SIZE 100000
-                )
-                """
-            )
-        return len(rows)
-    finally:
-        connection.close()
-        source.unlink(missing_ok=True)
 
 
 def build_variant_strategy_support(
@@ -1147,16 +985,17 @@ def main():
     variant_aggregates: dict[tuple, dict] = {}
     aggregates_by_id: list[dict | None] = [None]
     input_row_count = 0
-    grouped_exact_support = event_support_uses_group_ids(args.event_ortholog_support_tsv)
     support_stream = (
         EventOrthologSupportStream(args.event_ortholog_support_tsv)
-        if grouped_exact_support
+        if args.event_ortholog_support_tsv is not None
         else None
     )
-    exact_spool = ExactSupportSpool(args.outdir) if grouped_exact_support else None
-    if support_stream is not None:
-        support_stream.__enter__()
+    exact_spool = ExactSupportSpool(args.outdir)
+    event_mode = ""
+    collapse_complete = False
     try:
+        if support_stream is not None:
+            support_stream.__enter__()
         with gzip.open(args.events_tsv, "rt") as f:
             reader = csv.DictReader(f, delimiter="\t")
             header = reader.fieldnames
@@ -1174,20 +1013,17 @@ def main():
                 raise ValueError(
                     f"Events table missing required columns: {', '.join(sorted(missing))}"
                 )
-            if not {"strategy", "strategies"} & set(header or []):
-                raise ValueError("Events table must include strategy or strategies")
-            if grouped_exact_support and "event_group_id" not in set(header or []):
-                raise ValueError(
-                    "Grouped event ortholog support requires event_group_id in compact events"
-                )
-            events_have_ortholog_identity = "ortholog_gene_id" in set(header or [])
-            if not events_have_ortholog_identity and args.event_ortholog_support_tsv is None:
-                raise ValueError(
-                    "Compact events require --event-ortholog-support-tsv to publish exact supporters"
-                )
+            event_mode = event_input_mode(header, args.event_ortholog_support_tsv)
             for row in reader:
                 input_row_count += 1
-                grouped_support_rows: list[dict[str, str]] = []
+                exact_support_rows = [
+                    {
+                        **row,
+                        "support_row_count": str(
+                            int_or_default(row.get("support_row_count"), 1)
+                        ),
+                    }
+                ]
                 if support_stream is not None:
                     event_group_id = int_or_default(row.get("event_group_id"), 0)
                     if event_group_id != input_row_count:
@@ -1195,14 +1031,13 @@ def main():
                             "Compact event_group_id values must be consecutive from 1; "
                             f"expected {input_row_count}, observed {event_group_id}"
                         )
-                    grouped_support_rows = support_stream.take(event_group_id)
+                    exact_support_rows = support_stream.take(event_group_id)
 
                 acc = row["genomic_accession"]
                 lookup_key, status = event_vcf_key(row, contexts)
                 event_key_status_counts[status] += 1
                 if status == "non_concrete_allele":
-                    if exact_spool is not None:
-                        exact_spool.missing_key_count += len(grouped_support_rows)
+                    exact_spool.missing_key_count += len(exact_support_rows)
                     continue
                 raw_pos = int_or_default(row.get("genomic_start1"), -1)
                 if acc and raw_pos > 0:
@@ -1228,7 +1063,6 @@ def main():
                         "_variant_context_id": variant_context_id,
                         "_exact_ortholog_count": 0,
                         "_support_by_strategy": {},
-                        "_ortholog_support": {},
                     }
                     variant_aggregates[aggregate_key] = aggregate
                     aggregates_by_id.append(aggregate)
@@ -1239,70 +1073,27 @@ def main():
                     1,
                 )
                 add_strategy_support(aggregate, row)
-                if exact_spool is not None:
-                    exact_spool.add_group(aggregate, row, grouped_support_rows)
-                elif events_have_ortholog_identity and args.event_ortholog_support_tsv is None:
-                    add_ortholog_support(aggregate, row)
+                exact_spool.add_group(aggregate, row, exact_support_rows)
         if support_stream is not None:
             support_stream.finish()
+        collapse_complete = True
     finally:
         if support_stream is not None:
             support_stream.__exit__(None, None, None)
-        if exact_spool is not None:
-            exact_spool.close()
+        exact_spool.close()
+        if not collapse_complete:
+            exact_spool.path.unlink(missing_ok=True)
     logger.info(f"Event key normalization status: {dict(event_key_status_counts)}")
     logger.info(f"Collapsed {input_row_count} event row(s) to {len(variant_aggregates)} variant-context row(s).")
     finish_phase(timings_seconds, "collapse_events", phase_started)
 
     phase_started = start_phase("aggregate_ortholog_support")
-    ortholog_support_count = 0
-    ortholog_support_missing_key_count = 0
-    if exact_spool is not None:
-        ortholog_support_count = aggregate_exact_support(
-            exact_spool,
-            aggregates_by_id,
-            ortholog_support_dir,
-        )
-        ortholog_support_missing_key_count = exact_spool.missing_key_count
-    elif args.event_ortholog_support_tsv is not None:
-        with open_text(args.event_ortholog_support_tsv) as handle:
-            reader = csv.DictReader(handle, delimiter="\t")
-            required = {
-                "gene_id",
-                "event_type",
-                "target_start0",
-                "genomic_accession",
-                "genomic_start1",
-                "ref",
-                "alt",
-                "strategy",
-                "ortholog_gene_id",
-                "tax_id",
-                "taxname",
-            }
-            missing = required - set(reader.fieldnames or [])
-            if missing:
-                raise ValueError(
-                    "Event ortholog support table missing required columns: "
-                    + ", ".join(sorted(missing))
-                )
-            for row in reader:
-                lookup_key, status = event_vcf_key(row, contexts)
-                if status == "non_concrete_allele":
-                    continue
-                variant_key = variant_key_text(lookup_key)
-                aggregate_key = variant_aggregate_key(row, variant_key)
-                aggregate = variant_aggregates.get(aggregate_key)
-                if aggregate is None:
-                    raise ValueError(
-                        "Event ortholog support row has no matching aggregate event: "
-                        f"gene_id={row.get('gene_id', '')}, strategy={row.get('strategy', '')}, "
-                        f"variant_key={variant_key}"
-                    )
-                add_ortholog_support(aggregate, row)
-
-        for aggregate in variant_aggregates.values():
-            reconcile_strategy_support_from_orthologs(aggregate)
+    ortholog_support_count = aggregate_exact_support(
+        exact_spool,
+        aggregates_by_id,
+        ortholog_support_dir,
+    )
+    ortholog_support_missing_key_count = exact_spool.missing_key_count
     finish_phase(timings_seconds, "aggregate_ortholog_support", phase_started)
 
     phase_started = start_phase("load_site_depth")
@@ -1413,18 +1204,7 @@ def main():
 
         row = {field: aggregate.get(field, "") for field in VARIANT_ANNOTATION_FIELDS}
         support_by_strategy = aggregate["_support_by_strategy"]
-        if grouped_exact_support:
-            row["support_ortholog_count"] = aggregate["_exact_ortholog_count"]
-        else:
-            orthologs = set()
-            ortholog_count_hint = 0
-            for support in support_by_strategy.values():
-                orthologs.update(support.orthologs)
-                ortholog_count_hint += support.ortholog_count_hint
-            row["support_ortholog_count"] = max(
-                len(orthologs),
-                ortholog_count_hint,
-            )
+        row["support_ortholog_count"] = aggregate["_exact_ortholog_count"]
         row["strategies"] = ",".join(sorted(support_by_strategy))
         row.update(clinvar_annotation)
         row.update(gnomad_annotation)
@@ -1459,15 +1239,6 @@ def main():
         strategy_support_rows,
         include_header=not bool(args.partition_id),
     )
-    if not grouped_exact_support:
-        ortholog_support_rows, ortholog_support_missing_key_count = build_variant_ortholog_support(
-            variant_aggregates.values()
-        )
-        validate_ortholog_support_totals(strategy_support_rows, ortholog_support_rows)
-        ortholog_support_count = write_exact_support_rows_parquet(
-            ortholog_support_rows,
-            ortholog_support_dir,
-        )
     finish_phase(timings_seconds, "write_support_tables", phase_started)
 
     phase_started = start_phase("write_ortholog_evidence")
@@ -1490,6 +1261,7 @@ def main():
     finish_phase(timings_seconds, "write_failures", phase_started)
     manifest = {
         "output_mode": "unique_variant_context",
+        "event_input_mode": event_mode,
         "partition_id": args.partition_id,
         "event_row_count": input_row_count,
         "excluded_non_concrete_event_count": event_key_status_counts["non_concrete_allele"],

@@ -376,7 +376,7 @@ def test_finalizer_sums_matching_partition_histograms(tmp_path: Path) -> None:
                 }
             ],
         )
-        partitions.append((partition, {}))
+        partitions.append((partition, {"ortholog_evidence_summary_count": 1}))
 
     output = tmp_path / "merged.tsv.gz"
     assert merge_ortholog_evidence(partitions, output) == 1

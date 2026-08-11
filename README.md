@@ -100,7 +100,8 @@ When `alignment_events.tsv.gz` was produced with
 `--compact_alignment_events true`, also pass the sibling
 `--event_ortholog_support_tsv event_ortholog_support.tsv.gz`. The two files are
 joined by `event_group_id`; raw event tables already contain the required
-ortholog identity.
+ortholog identity. Annotation accepts only those two forms; coordinate-keyed
+support tables from older runs are not inferred.
 
 By default, `--alignment_strategies all` runs `minimap2_asm10`,
 `minimap2_asm20`, `nucmer`, and `bwa_pseudoreads`. The precomputed Ensembl
