@@ -22,16 +22,6 @@ Optional operational parameters:
 - `--outdir`: final output directory.
 - `--chunk_size`: accepted IDs per NCBI package request.
 - `--fetch_max_forks`: max concurrent NCBI fetch/parse tasks. Default is 2.
-- `--fetch_request_stagger_seconds`: minimum spacing between starts of NCBI
-  Datasets download requests across concurrent local fetch tasks. Default is
-  5 seconds.
-- `--fetch_download_retries`: in-process retries for each NCBI Datasets
-  download, including chunk and singleton fallback requests. Default is 4.
-- `--fetch_download_retry_base_seconds`: base exponential backoff interval for
-  NCBI Datasets download retries. Default is 30 seconds.
-- `--datasets_bin`: path/name for the NCBI Datasets CLI. Defaults to
-  `DATASETS_BIN`, then `tools/bin/datasets` when present, otherwise `datasets`
-  on `PATH`.
 - `ENTREZ_API_KEY` or `NCBI_API_KEY`: optional NCBI API key passed to
   `datasets download` as `--api-key`.
 - `ENTREZ_EMAIL` or `NCBI_EMAIL`: optional contact email recorded as configured
@@ -39,6 +29,11 @@ Optional operational parameters:
 - `--target_annotation_gff3`: local NCBI RefSeq GFF3 for
   `GCF_000001405.40`; defaults to `GAPH_TARGET_ANNOTATION_GFF3`, then
   `assets/reference/ncbi/refseq/GCF_000001405.40_GRCh38.p14/genomic.gff.gz`.
+
+The fetch implementation fixes its NCBI request policy: request starts are at
+least 5 seconds apart, each download gets up to 4 retries after its initial
+attempt, and retry backoff starts at 30 seconds. The NCBI Datasets executable
+comes from the mandatory task environment.
 
 ## Processing Steps
 

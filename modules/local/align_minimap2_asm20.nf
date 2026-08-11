@@ -19,7 +19,6 @@ process ALIGN_MINIMAP2_ASM20 {
         --outdir "${resultDir}" \\
         --strategy minimap2_asm20 \\
         --preset asm20 \\
-        --minimap2-bin "${params.minimap2_bin}" \\
         --threads "${task.cpus}" \\
         --target-features "${task_dir}/target_features.tsv.gz" \\
         --keep-native "${params.keep_native_alignments}"

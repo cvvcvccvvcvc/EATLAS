@@ -19,8 +19,6 @@ process ALIGN_BWA_PSEUDOREADS {
         --source-target-fasta "${source_target_fasta}" \\
         --source-ortholog-fasta "${source_ortholog_fasta}" \\
         --outdir "${resultDir}" \\
-        --bwa-bin "${params.bwa_bin}" \\
-        --samtools-bin "${params.samtools_bin}" \\
         --threads "${task.cpus}" \\
         --pseudoread-len "${params.bwa_pseudoread_len}" \\
         --pseudoread-step "${params.bwa_pseudoread_step}" \\

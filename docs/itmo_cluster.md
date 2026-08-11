@@ -234,7 +234,7 @@ sha256sum \
 ```
 
 The hashes must match line by line. Do not transfer local `results/`, `work/`,
-`.nextflow/`, Conda environments, or the ignored `tools/bin/datasets` symlink.
+`.nextflow/` or Conda environments.
 
 Expected SHA-256 values for the files transferred on 2026-07-16:
 

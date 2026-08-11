@@ -15,11 +15,6 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--stage", required=True)
     parser.add_argument("--alignment-strategies", required=True)
-    parser.add_argument("--datasets-bin", required=True)
-    parser.add_argument("--minimap2-bin", required=True)
-    parser.add_argument("--nucmer-bin", required=True)
-    parser.add_argument("--bwa-bin", required=True)
-    parser.add_argument("--samtools-bin", required=True)
     parser.add_argument("--out-json", required=True, type=Path)
     return parser.parse_args()
 
@@ -51,20 +46,20 @@ def main() -> None:
     errors: list[str] = []
 
     if args.stage in {"all", "fetch"}:
-        require_executable("datasets", args.datasets_bin, errors)
+        require_executable("datasets", "datasets", errors)
 
     if args.stage in {"all", "align"}:
         require_executable("bedtools", "bedtools", errors)
         if strategies & {"minimap2_asm10", "minimap2_asm20"}:
-            require_executable("minimap2", args.minimap2_bin, errors)
+            require_executable("minimap2", "minimap2", errors)
         if "nucmer" in strategies:
             require_python_module("pysam", errors)
-            require_executable("nucmer", args.nucmer_bin, errors)
+            require_executable("nucmer", "nucmer", errors)
         if "bwa_pseudoreads" in strategies:
             require_python_module("pysam", errors)
             require_python_module("bam_filtering_v1", errors)
-            require_executable("bwa", args.bwa_bin, errors)
-            require_executable("samtools", args.samtools_bin, errors)
+            require_executable("bwa", "bwa", errors)
+            require_executable("samtools", "samtools", errors)
 
     if args.stage in {"all", "annotate"}:
         require_python_module("pysam", errors)

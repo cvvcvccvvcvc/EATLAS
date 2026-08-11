@@ -19,22 +19,18 @@ Default local execution runs every stage in one command:
 RUN="results/run_default_strategies_$(date +%Y%m%d_%H%M%S)"
 
 nextflow run . \
-  -profile local,conda \
   --stage all \
   --ids_file assets/inputs/gene_ids/panel_10_genes.txt \
   --outdir "$RUN" \
   --alignment_strategies all
 ```
 
-Use the `conda` profile for normal runs so tasks use `envs/*.yml` through
-micromamba/conda instead of whatever Python environment is active in the shell.
-By default the workflow resolves the NCBI Datasets CLI as `DATASETS_BIN`, then
-`tools/bin/datasets` when present, then `datasets` on `PATH`. Aligner binaries
-are expected on `PATH`.
-Set persistent local paths once through environment variables when needed:
+Every run uses the declared `envs/*.yml` task environments through Micromamba;
+local execution needs no profile and never depends on the active shell's Python
+or command-line tools. Set machine-specific data paths through environment
+variables when needed:
 
 ```bash
-export DATASETS_BIN=/path/to/datasets
 export ENTREZ_EMAIL=you@example.org
 export ENTREZ_API_KEY=your_ncbi_api_key
 export GAPH_TARGET_ANNOTATION_GFF3=/path/to/genomic.gff.gz
@@ -82,7 +78,6 @@ Alignment-only debug mode can reuse an existing fetch result:
 
 ```bash
 nextflow run . \
-  -profile local \
   --stage align \
   --fetch_dir results/run_test/fetch \
   --outdir results/align_debug \
@@ -93,7 +88,6 @@ Annotation-only debug mode can reuse an existing alignment event table:
 
 ```bash
 nextflow run . \
-  -profile local \
   --stage annotate \
   --events_tsv results/align_debug/alignment_events.tsv.gz \
   --segments_tsv results/align_debug/alignment_segments.tsv.gz \
@@ -115,7 +109,6 @@ list to select a different set:
 
 ```bash
 nextflow run . \
-  -profile local \
   --stage align \
   --fetch_dir results/run_test/fetch \
   --outdir results/align_minimap2_asm20 \
@@ -195,7 +188,7 @@ directory or home quota.
 | Step | Process | What Happens | Durable Output |
 | --- | --- | --- | --- |
 | 1 | `VALIDATE_IDS` | Read Entrez IDs, remove duplicates, split accepted IDs into chunks. | `fetch/input.ids.tsv`, `fetch/chunks.tsv` |
-| 2 | `FETCH_PARSE_CHUNK` | Download one NCBI gene package with `--ortholog all --include gene`; parse `data_report.jsonl` and `gene.fna`; select GRCh38 human target and one sequence per ortholog GeneID. Concurrent downloads are staggered by `--fetch_request_stagger_seconds`. | Per-chunk compressed FASTA/TSV files in `work/`; durable metrics in `fetch/chunk_metrics.tsv.gz` |
+| 2 | `FETCH_PARSE_CHUNK` | Download one NCBI gene package with `--ortholog all --include gene`; parse `data_report.jsonl` and `gene.fna`; select GRCh38 human target and one sequence per ortholog GeneID. Concurrent request starts are spaced by a fixed 5 seconds. | Per-chunk compressed FASTA/TSV files in `work/`; durable metrics in `fetch/chunk_metrics.tsv.gz` |
 | 3 | `BUILD_FETCH_DATASET` | Assemble chunk tables, selected per-gene FASTA files, and target structural features into the final fetch dataset. | `fetch/` |
 | 4 | `FETCH_TAXONOMY_PRESETS` | Build compact taxonomy metadata for downstream taxonomic evidence. | `alignment/taxonomy_presets.tsv.gz` |
 | 5 | `BUILD_ALIGNMENT_TASKS` | Validate fetch outputs and create per-gene alignment inputs with stable sequence IDs. | `alignment/alignment_tasks.tsv.gz` |

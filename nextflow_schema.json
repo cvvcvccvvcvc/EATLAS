@@ -45,18 +45,6 @@
                     "default": "results/run",
                     "description": "The output directory where the results will be saved."
                 },
-                "fetch_outdir": {
-                    "type": "string",
-                    "description": "Output directory specifically for fetch stage results"
-                },
-                "align_outdir": {
-                    "type": "string",
-                    "description": "Output directory specifically for alignment stage results"
-                },
-                "annotation_outdir": {
-                    "type": "string",
-                    "description": "Output directory specifically for annotation stage results"
-                },
                 "alignment_strategies": {
                     "type": "string",
                     "default": "all",
@@ -81,18 +69,6 @@
                     "default": 10,
                     "description": "Number of genes to process per chunk"
                 },
-                "target_assembly_accession": {
-                    "type": "string",
-                    "default": "GCF_000001405.40"
-                },
-                "target_assembly_name": {
-                    "type": "string",
-                    "default": "GRCh38.p14"
-                },
-                "target_tax_id": {
-                    "type": "string",
-                    "default": "9606"
-                },
                 "target_annotation_gff3": {
                     "type": "string",
                     "description": "Local NCBI RefSeq GFF3 for the target assembly. Defaults to GAPH_TARGET_ANNOTATION_GFF3, then assets/reference/ncbi/refseq/GCF_000001405.40_GRCh38.p14/genomic.gff.gz."
@@ -107,21 +83,6 @@
                     "type": "integer",
                     "default": 2,
                     "description": "Maximum concurrent NCBI fetch/parse tasks."
-                },
-                "fetch_request_stagger_seconds": {
-                    "type": "integer",
-                    "default": 5,
-                    "description": "Minimum spacing between starts of NCBI Datasets download requests across concurrent local fetch tasks."
-                },
-                "fetch_download_retries": {
-                    "type": "integer",
-                    "default": 4,
-                    "description": "Number of in-process retries for each NCBI Datasets chunk or singleton fallback download."
-                },
-                "fetch_download_retry_base_seconds": {
-                    "type": "integer",
-                    "default": 30,
-                    "description": "Base exponential backoff interval in seconds for NCBI Datasets download retries."
                 },
                 "alignment_max_forks": {
                     "type": "integer",
@@ -220,20 +181,6 @@
                     "description": "HTTP(S) URL or local directory containing the selected Ensembl Compara MAF files."
                 }
             }
-        },
-        "binary_paths": {
-            "title": "Binary Paths",
-            "type": "object",
-            "properties": {
-                "datasets_bin": {
-                    "type": "string",
-                    "description": "Path/name for the NCBI Datasets CLI. Defaults to DATASETS_BIN, then tools/bin/datasets when present, otherwise datasets on PATH."
-                },
-                "minimap2_bin": { "type": "string" },
-                "nucmer_bin": { "type": "string" },
-                "bwa_bin": { "type": "string" },
-                "samtools_bin": { "type": "string" }
-            }
         }
     },
     "allOf": [
@@ -248,9 +195,6 @@
         },
         {
             "$ref": "#/definitions/precomputed_alignment_options"
-        },
-        {
-            "$ref": "#/definitions/binary_paths"
         }
     ]
 }

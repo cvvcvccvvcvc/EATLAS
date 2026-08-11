@@ -22,13 +22,6 @@ process FETCH_PARSE_CHUNK {
     python3 "${fetch_script}" \\
         --ids-file "${chunk_file}" \\
         --outdir "fetch_\${chunk_name}" \\
-        --datasets-bin "${params.datasets_bin}" \\
-        --target-assembly-accession "${params.target_assembly_accession}" \\
-        --target-assembly-name "${params.target_assembly_name}" \\
-        --target-tax-id "${params.target_tax_id}" \\
-        --request-stagger-seconds "${params.fetch_request_stagger_seconds}" \\
-        --request-throttle-dir "${request_throttle_dir}" \\
-        --download-retries "${params.fetch_download_retries}" \\
-        --download-retry-base-seconds "${params.fetch_download_retry_base_seconds}"
+        --request-throttle-dir "${request_throttle_dir}"
     """
 }

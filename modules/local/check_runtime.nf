@@ -14,11 +14,6 @@ process CHECK_RUNTIME {
     PYTHONPATH="${projectDir}/bin:\${PYTHONPATH:-}" python3 "${check_script}" \\
         --stage "${stage}" \\
         --alignment-strategies "${alignment_strategies}" \\
-        --datasets-bin "${params.datasets_bin}" \\
-        --minimap2-bin "${params.minimap2_bin}" \\
-        --nucmer-bin "${params.nucmer_bin}" \\
-        --bwa-bin "${params.bwa_bin}" \\
-        --samtools-bin "${params.samtools_bin}" \\
         --out-json runtime_check.json
     """
 }

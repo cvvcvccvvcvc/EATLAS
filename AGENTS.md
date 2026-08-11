@@ -53,7 +53,7 @@ Core files:
 Default local run for all stages:
 
 ```bash
-nextflow run . -profile local,conda --ids_file assets/inputs/gene_ids/smoke_5_genes.txt --outdir results/run_001 -resume
+nextflow run . --ids_file assets/inputs/gene_ids/smoke_5_genes.txt --outdir results/run_001 -resume
 ```
 
 Cluster run:
@@ -74,8 +74,8 @@ Agent workflow rules:
 6. Stage 2 native aligner outputs are debug artifacts; do not publish them by
    default.
 7. Prefer small, focused changes and validate with a small local Nextflow smoke run.
-   Use `-profile local,conda` for normal local pipeline runs so tasks use the
-   declared `envs/*.yml` environments instead of the caller's active shell env.
+   Task environments from `envs/*.yml` are mandatory for every run; local runs
+   need no profile, while cluster runs use `-profile slurm`.
 8. Keep the repository root clean: no ad hoc scripts, reports, downloaded tools,
    or smoke outputs in production paths. Use `/tmp`, `/private/tmp`, `work/`,
    or documented test fixtures.

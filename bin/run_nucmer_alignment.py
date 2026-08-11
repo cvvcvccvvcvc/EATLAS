@@ -105,7 +105,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--source-target-fasta", required=True, type=Path)
     parser.add_argument("--source-ortholog-fasta", required=True, type=Path)
     parser.add_argument("--outdir", required=True, type=Path)
-    parser.add_argument("--nucmer-bin", required=True)
+    parser.add_argument("--nucmer-bin", default="nucmer")
     parser.add_argument("--threads", default=1, type=int)
     parser.add_argument("--target-features", type=Path)
     parser.add_argument("--keep-native", default="false")

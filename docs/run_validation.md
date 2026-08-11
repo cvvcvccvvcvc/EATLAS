@@ -11,14 +11,14 @@ and failure investigation.
 
 ```bash
 nextflow run . \
-  -profile local,conda \
   --ids_file assets/inputs/gene_ids/smoke_5_genes.txt \
   --outdir results/run_001 \
   -resume
 ```
 
-The default `--stage all` runs every stage. Use the `conda` profile for normal
-local runs so tasks use `envs/*.yml` instead of the active shell environment.
+The default `--stage all` runs every stage. Every run uses the declared
+`envs/*.yml` task environments through Micromamba, including local runs without
+a profile.
 Annotation fetches gnomAD data from the live API for clustered event regions and
 uses an in-memory lookup bounded to each genomic partition. Set
 `GAPH_GNOMAD_CACHE_DIR` or `--gnomad_cache_dir` to reuse complete 25-kb regional
@@ -28,24 +28,10 @@ defaults to `$GAPH_ROOT/cache/gnomad`. End-to-end runs may process up to
 is selected from the partition's exact ortholog-support row count; retries add
 32 GB per attempt.
 
-If command-line tools are not on `PATH`, pass them explicitly:
-
-```bash
-nextflow run . \
-  -profile local,conda \
-  --ids_file assets/inputs/gene_ids/smoke_5_genes.txt \
-  --outdir results/run_001 \
-  --datasets_bin /path/to/datasets \
-  --minimap2_bin /path/to/minimap2 \
-  --nucmer_bin /path/to/nucmer \
-  -resume
-```
-
 For persistent local paths, environment variables keep machine-specific values
 out of the repository:
 
 ```bash
-export DATASETS_BIN=/path/to/datasets
 export GAPH_TARGET_ANNOTATION_GFF3=/path/to/genomic.gff.gz
 export CLINVAR_VCF=/path/to/clinvar.vcf.gz
 export GAPH_WORK_DIR=/path/to/scratch/gaph_v2_work
@@ -60,16 +46,15 @@ When neither `--clinvar_vcf` nor `CLINVAR_VCF` is set, annotation uses
 required for annotation, so the workflow fails early when no VCF and matching
 `.tbi` are available.
 
-The NCBI Datasets CLI is resolved as `DATASETS_BIN`, then
-`tools/bin/datasets` when present, then `datasets` on `PATH`.
-`FETCH_PARSE_CHUNK` also loads an ignored project `.env` file when present.
-Use `.env.example` as the template for `ENTREZ_EMAIL` and `ENTREZ_API_KEY`.
+The NCBI Datasets CLI and aligners come from their declared task environments.
+`FETCH_PARSE_CHUNK` also loads an ignored project `.env` file when present. Use
+`.env.example` as the template for `ENTREZ_EMAIL` and `ENTREZ_API_KEY`.
 
 ## Cluster Run
 
-The `slurm` profile enables the declared `envs/*.yml` environments through
-Micromamba. Every Python process has an explicit environment; compute nodes do
-not depend on their system Python.
+The `slurm` profile changes the executor and scratch policy; the declared
+`envs/*.yml` environments are already mandatory globally. Every Python process
+has an explicit environment, so compute nodes do not depend on system Python.
 
 For a new account, keep reusable environments and run data in the assigned
 scratch area. From the repository, create the controller environment once:
@@ -134,15 +119,14 @@ reference transfer, preflight checks, and staged smoke-test procedure.
 Conservative starting parameters:
 
 ```bash
---chunk_size 10 --fetch_max_forks 2 --fetch_request_stagger_seconds 5 --alignment_max_forks 4 --annotation_max_forks 4
+--chunk_size 10 --fetch_max_forks 2 --alignment_max_forks 4 --annotation_max_forks 4
 ```
 
-`fetch_max_forks` controls local fetch concurrency. `fetch_request_stagger_seconds`
-spaces out the starts of NCBI Datasets download requests so concurrent tasks do
-not all submit at the same instant. `fetch_download_retries` handles transient
-NCBI stream resets inside one fetch task before Nextflow sees a failure. Tune
-these only after measuring disk, runtime, NCBI behavior, and alignment task
-memory on the target cluster.
+`fetch_max_forks` controls local fetch concurrency. The fetch implementation
+always spaces request starts by 5 seconds and gives each download up to 4
+retries after its initial attempt, with exponential backoff starting at 30
+seconds. Tune concurrency only after measuring disk, runtime, NCBI behavior,
+and alignment task memory on the target cluster.
 
 In the `slurm` profile, `executor.queueSize` limits how many jobs Nextflow keeps
 submitted to Slurm at once. It does not affect local runs, task CPU count, or
@@ -163,7 +147,6 @@ Small multi-chunk smoke test:
 printf '59067\n12\n59067\n355\n' > /tmp/gaph_v2_ids.txt
 
 nextflow run . \
-  -profile local \
   --ids_file /tmp/gaph_v2_ids.txt \
   --outdir /tmp/gaph_v2_smoke_run \
   --chunk_size 1 \
@@ -177,7 +160,6 @@ Run only one alignment strategy when debugging strategy-specific failures:
 
 ```bash
 nextflow run . \
-  -profile local \
   --ids_file /tmp/gaph_v2_ids.txt \
   --outdir /tmp/gaph_v2_smoke_run_asm20 \
   --alignment_strategies minimap2_asm20 \
@@ -311,7 +293,6 @@ debugged:
 
 ```bash
 nextflow run . \
-  -profile local \
   --stage align \
   --fetch_dir /path/to/fetch \
   --outdir /tmp/gaph_v2_align_debug \
@@ -323,7 +304,6 @@ Strategy selection works in alignment-only mode as well:
 
 ```bash
 nextflow run . \
-  -profile local \
   --stage align \
   --fetch_dir /path/to/fetch \
   --outdir /tmp/gaph_v2_align_debug_asm20 \
@@ -341,7 +321,6 @@ lookup normalizes events to VCF keys using `genes.tsv.gz` and
 
 ```bash
 nextflow run . \
-  -profile local \
   --stage annotate \
   --events_tsv /path/to/alignment_events.tsv.gz \
   --segments_tsv /path/to/alignment_segments.tsv.gz \

@@ -30,7 +30,7 @@ runs.
 - Analytics report: `python -m analytics.strategy_report --run-dir <run-dir>`
 - Bulk VEP annotation: `python -m analytics.vep_annotation`
 - Run archive: `python -m run_archiving`
-- Local run profile: `-profile local`
+- Local execution: no profile required
 - Cluster run profile: `-profile slurm`
 
 Runtime environments:
@@ -197,13 +197,6 @@ reference files are not Git-tracked source files. Small required lookup tables
 under `assets/reference/` can be Git-tracked through `.gitignore` exceptions.
 The workflow uses these paths as defaults when matching explicit parameters or
 environment variables are not set.
-
-## Local Tools
-
-`tools/bin/` is an ignored local directory for symlinks or copies of external
-CLI binaries that should not be committed. The workflow resolves the NCBI
-Datasets CLI as `DATASETS_BIN`, then `tools/bin/datasets` when present, then
-`datasets` on `PATH`.
 
 ## Design Direction
 

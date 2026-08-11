@@ -109,7 +109,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--outdir", required=True, type=Path)
     parser.add_argument("--strategy", required=True)
     parser.add_argument("--preset", choices=["asm10", "asm20"], required=True)
-    parser.add_argument("--minimap2-bin", required=True)
+    parser.add_argument("--minimap2-bin", default="minimap2")
     parser.add_argument("--threads", default=1, type=int)
     parser.add_argument("--target-features", type=Path)
     parser.add_argument("--keep-native", default="false")

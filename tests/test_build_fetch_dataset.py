@@ -20,6 +20,27 @@ def test_validate_chunk_manifests_requires_every_expected_chunk() -> None:
         )
 
 
+def test_consistent_manifest_value_returns_shared_value() -> None:
+    assert fetch_dataset.consistent_manifest_value(
+        [
+            {"target_tax_id": "9606"},
+            {"target_tax_id": "9606"},
+        ],
+        "target_tax_id",
+    ) == "9606"
+
+
+def test_consistent_manifest_value_rejects_mismatch() -> None:
+    with pytest.raises(ValueError, match="must agree"):
+        fetch_dataset.consistent_manifest_value(
+            [
+                {"target_assembly_name": "GRCh38.p14"},
+                {"target_assembly_name": "other"},
+            ],
+            "target_assembly_name",
+        )
+
+
 def test_validate_gene_outcomes_accepts_success_or_failure() -> None:
     fetch_dataset.validate_gene_outcomes(
         {"1", "2"},

@@ -35,6 +35,9 @@ TSV_NULL = ""
 FASTA_WIDTH = 80
 TARGET_SEQUENCE_ORIENTATION = "plus"
 SEQUENCE_GZIP_COMPRESSLEVEL = 3
+TARGET_ASSEMBLY_ACCESSION = "GCF_000001405.40"
+TARGET_ASSEMBLY_NAME = "GRCh38.p14"
+TARGET_TAX_ID = "9606"
 
 
 @dataclass
@@ -101,11 +104,8 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--ids-file", required=True, type=Path)
     parser.add_argument("--outdir", required=True, type=Path)
-    parser.add_argument("--datasets-bin", required=True)
-    parser.add_argument("--target-assembly-accession", required=True)
-    parser.add_argument("--target-assembly-name", required=True)
-    parser.add_argument("--target-tax-id", required=True)
-    parser.add_argument("--request-stagger-seconds", type=float, default=0.0)
+    parser.add_argument("--datasets-bin", default="datasets")
+    parser.add_argument("--request-stagger-seconds", type=float, default=5.0)
     parser.add_argument("--request-throttle-dir", type=Path)
     parser.add_argument("--download-retries", type=int, default=4)
     parser.add_argument("--download-retry-base-seconds", type=float, default=30.0)
@@ -920,9 +920,9 @@ def main() -> None:
                 extract_dir,
                 requested_ids,
                 outdir,
-                args.target_assembly_accession,
-                args.target_assembly_name,
-                args.target_tax_id,
+                TARGET_ASSEMBLY_ACCESSION,
+                TARGET_ASSEMBLY_NAME,
+                TARGET_TAX_ID,
                 timings,
             )
         )
@@ -969,9 +969,9 @@ def main() -> None:
                             singleton_extract,
                             [gene_id],
                             outdir,
-                            args.target_assembly_accession,
-                            args.target_assembly_name,
-                            args.target_tax_id,
+                            TARGET_ASSEMBLY_ACCESSION,
+                            TARGET_ASSEMBLY_NAME,
+                            TARGET_TAX_ID,
                             timings,
                         )
                     )
@@ -1110,8 +1110,9 @@ def main() -> None:
         "failure_count": failure_count,
         "gene_fna_uncompressed_bytes": gene_fna_uncompressed_bytes,
         "data_report_uncompressed_bytes": report_uncompressed_bytes,
-        "target_assembly_accession": args.target_assembly_accession,
-        "target_assembly_name": args.target_assembly_name,
+        "target_assembly_accession": TARGET_ASSEMBLY_ACCESSION,
+        "target_assembly_name": TARGET_ASSEMBLY_NAME,
+        "target_tax_id": TARGET_TAX_ID,
         "ortholog_scope": "all",
         "datasets_bin": datasets_bin,
         "datasets_version": version,

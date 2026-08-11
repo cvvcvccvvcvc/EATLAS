@@ -146,12 +146,13 @@ task-local scratch for fetch and alignment processes.
 Recommended starting point for large runs:
 
 ```bash
---chunk_size 10 --fetch_max_forks 2 --fetch_request_stagger_seconds 5
+--chunk_size 10 --fetch_max_forks 2
 ```
 
 Lower `--fetch_max_forks` if the target cluster, network, scratch filesystem, or
 NCBI behavior becomes unstable. Increase only after measuring on the target
-cluster.
+cluster. Request starts are always spaced by 5 seconds inside the fetch
+implementation.
 
 ## What To Keep
 

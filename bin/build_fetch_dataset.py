@@ -22,9 +22,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--ids-tsv", required=True, type=Path)
     parser.add_argument("--chunks-tsv", required=True, type=Path)
     parser.add_argument("--outdir", required=True, type=Path)
-    parser.add_argument("--target-assembly-accession", required=True)
-    parser.add_argument("--target-assembly-name", required=True)
-    parser.add_argument("--target-tax-id", required=True)
     parser.add_argument("--target-annotation-gff3", required=True, type=Path)
     parser.add_argument("--chunk-dir", action="append", default=[], type=Path)
     parser.add_argument(
@@ -513,6 +510,16 @@ def validate_chunk_manifests(expected_ids: set[str], manifests: list[dict]) -> N
         )
 
 
+def consistent_manifest_value(manifests: list[dict], field: str) -> str:
+    values = {str(manifest.get(field) or "") for manifest in manifests}
+    if "" in values or len(values) != 1:
+        raise ValueError(
+            f"Chunk manifests must agree on a non-empty {field}: "
+            f"values={sorted(values)}"
+        )
+    return next(iter(values))
+
+
 def validate_gene_outcomes(
     accepted_ids: set[str],
     gene_ids: list[str],
@@ -585,6 +592,14 @@ def main() -> None:
     expected_chunk_ids = read_expected_chunk_ids(args.chunks_tsv)
     chunk_manifests = load_chunk_manifests(chunk_dirs)
     validate_chunk_manifests(expected_chunk_ids, chunk_manifests)
+    target_metadata = {
+        field: consistent_manifest_value(chunk_manifests, field)
+        for field in (
+            "target_assembly_accession",
+            "target_assembly_name",
+            "target_tax_id",
+        )
+    }
 
     table_inputs = {
         "genes.tsv.gz": [chunk / "genes.tsv.gz" for chunk in chunk_dirs],
@@ -659,9 +674,7 @@ def main() -> None:
         "ortholog_sequence_files": ortholog_files,
         "target_feature_count": target_feature_count,
         "target_features_grouped_by_gene_id": True,
-        "target_assembly_accession": args.target_assembly_accession,
-        "target_assembly_name": args.target_assembly_name,
-        "target_tax_id": args.target_tax_id,
+        **target_metadata,
         "ortholog_scope": "all",
         "datasets_versions": datasets_versions,
         **annotation_manifest,

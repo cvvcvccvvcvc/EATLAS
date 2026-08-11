@@ -22,7 +22,6 @@ process FETCH_TAXONOMY_PRESETS {
     python3 "${taxonomy_script}" \\
         --orthologs-tsv "${orthologs_tsv}" \\
         --outdir . \\
-        --taxonomy-classes "${taxonomy_classes}" \\
-        --datasets-bin "${params.datasets_bin}"
+        --taxonomy-classes "${taxonomy_classes}"
     """
 }

@@ -26,9 +26,6 @@ process BUILD_FETCH_DATASET {
         --ids-tsv "${ids_tsv}" \\
         --chunks-tsv "${chunks_tsv}" \\
         --outdir . \\
-        --target-assembly-accession "${params.target_assembly_accession}" \\
-        --target-assembly-name "${params.target_assembly_name}" \\
-        --target-tax-id "${params.target_tax_id}" \\
         --target-annotation-gff3 "${target_annotation_gff3}" \\
         --chunk-root fetch_chunks
     """
