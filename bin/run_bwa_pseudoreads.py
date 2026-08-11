@@ -122,7 +122,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--pseudoread-len", default=150, type=int)
     parser.add_argument("--pseudoread-step", default=75, type=int)
     parser.add_argument("--pseudoread-phred", default=30, type=int)
-    parser.add_argument("--target-features", type=Path)
+    parser.add_argument("--target-features", required=True, type=Path)
     parser.add_argument("--keep-native", default="false")
     return parser.parse_args()
 
@@ -693,34 +693,37 @@ def main() -> None:
         write_tsv_gz(outdir / "alignment_events.tsv.gz", EVENT_FIELDS, event_rows)
         write_tsv_gz(outdir / "ortholog_alignment_summary.tsv.gz", SUMMARY_FIELDS, summary_rows)
         write_tsv_gz(outdir / "failures.tsv.gz", FAILURE_FIELDS, [])
-        feature_coverage_count = None
-        if args.target_features:
-            feature_coverage_count = summarize_feature_coverage_rows(
-                args.target_features,
-                summary_rows,
-                segment_rows,
-                outdir / "feature_coverage.tsv.gz",
-            )
+        feature_coverage_count = summarize_feature_coverage_rows(
+            args.target_features,
+            summary_rows,
+            segment_rows,
+            outdir / "feature_coverage.tsv.gz",
+        )
 
         if keep_native:
             keep_native_outputs(work_dir, outdir)
 
         manifest_out = {
-            "gene_id": gene_id,
-            "strategy": BWA_STRATEGY,
+            "gene_ids": [gene_id],
             "strategies": [BWA_STRATEGY],
+            "strategy_parameters": {
+                BWA_STRATEGY: {
+                    "pseudoread_len": args.pseudoread_len,
+                    "pseudoread_step": args.pseudoread_step,
+                    "pseudoread_phred": args.pseudoread_phred,
+                }
+            },
             "tool": "bwa",
-            "segment_count": len(segment_rows),
-            "event_count": len(event_rows),
+            "ortholog_alignment_summary_count": len(summary_rows),
+            "alignment_segment_count": len(segment_rows),
+            "alignment_event_mode": "raw",
+            "raw_alignment_event_count": len(event_rows),
+            "alignment_event_count": len(event_rows),
             "feature_coverage_count": feature_coverage_count,
+            "failure_count": 0,
             "ortholog_count": len(ortholog_meta),
             "pseudoread_count": pseudoreads.total_reads,
             "keep_native": keep_native,
-            "task_cpus": args.threads,
-            "bwa_threads": bwa_threads,
-            "pseudoread_len": args.pseudoread_len,
-            "pseudoread_step": args.pseudoread_step,
-            "pseudoread_phred": args.pseudoread_phred,
         }
         (outdir / "manifest.json").write_text(json.dumps(manifest_out, indent=2, sort_keys=True) + "\n")
 

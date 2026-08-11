@@ -10,9 +10,6 @@ tmp/
 assets/reference/
 !assets/reference/
 !assets/reference/clinvar/
-!assets/reference/ncbi/
-!assets/reference/ncbi/taxonomy/
-!assets/reference/ncbi/taxonomy/taxonomy_classes.json.gz
 /assets/reference/ncbi/refseq/
 /assets/reference/ensembl/
 /assets/reference/clinvar/clinvar.vcf.gz

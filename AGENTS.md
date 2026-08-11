@@ -17,7 +17,7 @@ Stage 1 produces:
   rejected ortholog candidates, failures, and run constants
 
 Stage 2 produces:
-- taxonomy-driven minimap2 preset metadata
+- compact taxonomy metadata for selected orthologs
 - normalized alignment segments
 - normalized raw alignment events
 - per-ortholog alignment summaries for downstream variant-support logic
@@ -34,7 +34,7 @@ Core files:
 - `bin/normalize_ids.py` - input ID normalization and chunking.
 - `bin/fetch_parse_chunk.py` - NCBI Datasets fetch + package parsing.
 - `bin/build_fetch_dataset.py` - final fetch dataset assembly.
-- `bin/fetch_taxonomy_presets.py` - compact taxonomy-to-preset table.
+- `bin/fetch_taxonomy.py` - compact ortholog taxonomy table.
 - `bin/prepare_alignment_tasks.py` - per-gene alignment task preparation.
 - `bin/run_minimap2_alignment.py` - minimap2 execution and PAF parsing.
 - `bin/run_nucmer_alignment.py` - nucmer execution and comparator parsing.

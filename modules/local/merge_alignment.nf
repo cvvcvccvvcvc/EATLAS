@@ -3,10 +3,9 @@ process MERGE_ALIGNMENT {
 
     input:
     path alignment_tasks, stageAs: "source/alignment_tasks.tsv.gz"
-    path taxonomy_presets, stageAs: "source/taxonomy_presets.tsv.gz"
+    path taxonomy, stageAs: "source/taxonomy.tsv.gz"
     path taxonomy_failures, stageAs: "source/taxonomy_failures.tsv.gz"
     path taxonomy_summary, stageAs: "source/taxonomy_summary.tsv.gz"
-    path target_features, stageAs: "source/target_features.tsv.gz"
     path result_dirs, stageAs: 'partitions/*'
     val expected_strategies
     path merge_script
@@ -14,7 +13,7 @@ process MERGE_ALIGNMENT {
     output:
     path "manifest.json", emit: manifest
     path "alignment_tasks.tsv.gz", optional: true, emit: alignment_tasks
-    path "taxonomy_presets.tsv.gz", optional: true, emit: taxonomy_presets
+    path "taxonomy.tsv.gz", optional: true, emit: taxonomy
     path "taxonomy_failures.tsv.gz", optional: true, emit: taxonomy_failures
     path "taxonomy_summary.tsv.gz", emit: taxonomy_summary
     path "ortholog_alignment_summary.tsv.gz", optional: true, emit: summaries
@@ -29,20 +28,17 @@ process MERGE_ALIGNMENT {
 
     script:
     def compactEventsArg = params.compact_alignment_events ? "--compact-events" : ""
-    def precompactedEventsArg = params.compact_alignment_events ? "--events-already-compacted" : ""
     def outputProfile = params.stage == 'all' ? "report-input" : "full"
     """
     python3 "${merge_script}" \\
         --alignment-tasks "${alignment_tasks}" \\
-        --taxonomy-presets "${taxonomy_presets}" \\
+        --taxonomy "${taxonomy}" \\
         --taxonomy-failures "${taxonomy_failures}" \\
         --taxonomy-summary "${taxonomy_summary}" \\
-        --target-features "${target_features}" \\
         --result-root partitions \\
         --expected-strategies "${expected_strategies}" \\
         --output-profile "${outputProfile}" \\
         --outdir . \\
-        ${compactEventsArg} \\
-        ${precompactedEventsArg}
+        ${compactEventsArg}
     """
 }

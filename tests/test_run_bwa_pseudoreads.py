@@ -29,6 +29,8 @@ def test_bwa_cli_uses_fixed_pseudoread_defaults(monkeypatch: pytest.MonkeyPatch)
             "ortholog.fa.gz",
             "--outdir",
             "out",
+            "--target-features",
+            "target_features.tsv.gz",
         ],
     )
 

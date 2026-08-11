@@ -107,10 +107,36 @@ def write_result_dir(
 ) -> Path:
     result_dir = root / name
     result_dir.mkdir(parents=True)
+    manifest = dict(manifest)
+    gene_ids = manifest.pop("gene_ids", None)
+    if gene_ids is None:
+        gene_ids = [manifest.pop("gene_id")]
+    else:
+        manifest.pop("gene_id", None)
+    strategies = manifest.pop("strategies", None)
+    if strategies is None:
+        strategies = [manifest.pop("strategy")]
+    else:
+        manifest.pop("strategy", None)
+    manifest["gene_ids"] = gene_ids
+    manifest["strategies"] = strategies
+    manifest.setdefault(
+        "strategy_parameters",
+        {strategy: {} for strategy in strategies},
+    )
+    manifest.setdefault("ortholog_alignment_summary_count", len(gene_ids) * len(strategies))
+    manifest.setdefault("alignment_segment_count", 0)
+    manifest.setdefault("alignment_event_mode", "raw")
+    manifest.setdefault("raw_alignment_event_count", manifest.get("alignment_event_count", 0))
+    manifest.setdefault("alignment_event_count", 0)
+    manifest.setdefault("event_ortholog_support_count", 0)
+    manifest.setdefault("snv_site_depth_count", 0)
+    manifest.setdefault("snv_taxonomic_depth_count", 0)
+    manifest.setdefault("snv_alt_taxonomic_support_count", 0)
+    manifest.setdefault("feature_coverage_count", 0)
+    manifest.setdefault("failure_count", 0)
     (result_dir / "manifest.json").write_text(json.dumps(manifest) + "\n")
 
-    gene_ids = manifest.get("gene_ids") or [manifest.get("gene_id", "")]
-    strategies = manifest.get("strategies") or [manifest.get("strategy", "")]
     summary_rows = [
         [gene_id, strategy, "aligned", "0", "1"]
         for gene_id in gene_ids
@@ -151,6 +177,16 @@ def partition_arguments(
     strategies: str,
     alignment_tasks: Path | None = None,
 ) -> list[str]:
+    if alignment_tasks is None:
+        alignment_tasks = outdir.parent / f"{outdir.name}.alignment_tasks.tsv.gz"
+        write_tsv_gz(
+            alignment_tasks,
+            ["gene_id", "status", "target_ready", "ortholog_ready"],
+            [
+                [gene_id, "ready", "true", "true"]
+                for gene_id in gene_ids.split(",")
+            ],
+        )
     arguments = [
         "--partition-id",
         "partition_000001",
@@ -160,9 +196,9 @@ def partition_arguments(
         strategies,
         "--outdir",
         str(outdir),
+        "--alignment-tasks",
+        str(alignment_tasks),
     ]
-    if alignment_tasks is not None:
-        arguments.extend(["--alignment-tasks", str(alignment_tasks)])
     for result_dir in result_dirs:
         arguments.extend(["--result-dir", str(result_dir)])
     return arguments
@@ -172,35 +208,37 @@ def write_final_inputs(
     root: Path,
     task_rows: list[list[str]],
     task_header: list[str] | None = None,
-) -> tuple[Path, Path, Path, Path]:
+) -> tuple[Path, Path, Path]:
     alignment_tasks = root / "alignment_tasks.tsv.gz"
-    taxonomy_presets = root / "taxonomy_presets.tsv.gz"
+    taxonomy = root / "taxonomy.tsv.gz"
     taxonomy_failures = root / "taxonomy_failures.tsv.gz"
-    target_features = root / "target_features.tsv.gz"
-    write_tsv_gz(alignment_tasks, task_header or ["gene_id", "status"], task_rows)
-    write_tsv_gz(taxonomy_presets, ["tax_id"])
+    if task_header is None:
+        task_header = ["gene_id", "status", "target_ready", "ortholog_ready"]
+        task_rows = [
+            [*row, "true", "true"] if len(row) == 2 else row
+            for row in task_rows
+        ]
+    write_tsv_gz(alignment_tasks, task_header, task_rows)
+    write_tsv_gz(taxonomy, ["tax_id"])
     write_tsv_gz(taxonomy_failures, ["tax_id"])
-    write_tsv_gz(target_features, ["gene_id"])
-    return alignment_tasks, taxonomy_presets, taxonomy_failures, target_features
+    return alignment_tasks, taxonomy, taxonomy_failures
 
 
 def final_arguments(
     result_dirs: list[Path],
     outdir: Path,
-    inputs: tuple[Path, Path, Path, Path],
+    inputs: tuple[Path, Path, Path],
     *,
     strategies: str,
 ) -> list[str]:
-    alignment_tasks, taxonomy_presets, taxonomy_failures, target_features = inputs
+    alignment_tasks, taxonomy, taxonomy_failures = inputs
     arguments = [
         "--alignment-tasks",
         str(alignment_tasks),
-        "--taxonomy-presets",
-        str(taxonomy_presets),
+        "--taxonomy",
+        str(taxonomy),
         "--taxonomy-failures",
         str(taxonomy_failures),
-        "--target-features",
-        str(target_features),
         "--expected-strategies",
         strategies,
         "--outdir",
@@ -264,6 +302,29 @@ def test_partition_merge_rejects_missing_strategy(tmp_path: Path) -> None:
 
     assert completed.returncode != 0
     assert "missing=1:s2" in completed.stderr
+
+
+def test_partition_merge_rejects_legacy_singular_manifest(tmp_path: Path) -> None:
+    result_dir = write_result_dir(
+        tmp_path,
+        "gene_1_s1",
+        {"gene_id": "1", "strategy": "s1"},
+    )
+    (result_dir / "manifest.json").write_text(
+        json.dumps({"gene_id": "1", "strategy": "s1"}) + "\n"
+    )
+
+    completed = run_merge(
+        partition_arguments(
+            [result_dir],
+            tmp_path / "merged",
+            gene_ids="1",
+            strategies="s1",
+        )
+    )
+
+    assert completed.returncode != 0
+    assert "invalid gene_ids" in completed.stderr
 
 
 def test_partition_merge_uses_strategy_specific_gene_eligibility(tmp_path: Path) -> None:
@@ -689,7 +750,7 @@ def test_final_merge_preserves_precompacted_ortholog_support(tmp_path: Path) -> 
     inputs = write_final_inputs(tmp_path, [["1", "ready"], ["2", "ready"]])
     outdir = tmp_path / "merged"
     arguments = final_arguments(partition_dirs, outdir, inputs, strategies="s1")
-    arguments.extend(["--compact-events", "--events-already-compacted"])
+    arguments.append("--compact-events")
 
     completed = run_merge(arguments)
 
@@ -782,8 +843,6 @@ def test_bwa_parameters_survive_partition_and_final_merge(tmp_path: Path) -> Non
         "pseudoread_len": 150,
         "pseudoread_step": 75,
         "pseudoread_phred": 30,
-        "task_cpus": 3,
-        "bwa_threads": 2,
     }
     result_dir = write_result_dir(
         tmp_path,
@@ -791,7 +850,7 @@ def test_bwa_parameters_survive_partition_and_final_merge(tmp_path: Path) -> Non
         {
             "gene_id": "1",
             "strategy": "bwa_pseudoreads",
-            **bwa_parameters,
+            "strategy_parameters": {"bwa_pseudoreads": bwa_parameters},
         },
     )
     partition_dir = tmp_path / "partition"
@@ -837,9 +896,13 @@ def test_partition_merge_rejects_inconsistent_bwa_parameters(tmp_path: Path) -> 
             {
                 "gene_id": gene_id,
                 "strategy": "bwa_pseudoreads",
-                "pseudoread_len": 150,
-                "pseudoread_step": step,
-                "pseudoread_phred": 30,
+                "strategy_parameters": {
+                    "bwa_pseudoreads": {
+                        "pseudoread_len": 150,
+                        "pseudoread_step": step,
+                        "pseudoread_phred": 30,
+                    }
+                },
             },
         )
         for gene_id, step in [("1", 75), ("2", 100)]

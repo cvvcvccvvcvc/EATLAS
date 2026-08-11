@@ -32,8 +32,8 @@ class JoinBaselineTest(unittest.TestCase):
                     str(FIXTURES / "events.tsv"),
                     "--summaries-tsv",
                     str(FIXTURES / "summaries.tsv"),
-                    "--taxonomy-presets-tsv",
-                    str(FIXTURES / "taxonomy_presets.tsv"),
+                    "--taxonomy-tsv",
+                    str(FIXTURES / "taxonomy.tsv"),
                     "--strategies",
                     "minimap2_asm20",
                     "--out-tsv",
@@ -68,4 +68,3 @@ class JoinBaselineTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

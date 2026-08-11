@@ -18,7 +18,6 @@ from pathlib import Path
 
 from feature_coverage import (
     iter_snv_event_sites,
-    summarize_feature_coverage,
     write_snv_site_depth,
     write_snv_taxonomic_depth,
 )
@@ -33,11 +32,10 @@ logger = logging.getLogger(__name__)
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--alignment-tasks", type=Path)
-    parser.add_argument("--taxonomy-presets", type=Path)
+    parser.add_argument("--alignment-tasks", required=True, type=Path)
+    parser.add_argument("--taxonomy", type=Path)
     parser.add_argument("--taxonomy-failures", type=Path)
     parser.add_argument("--taxonomy-summary", type=Path)
-    parser.add_argument("--target-features", type=Path)
     parser.add_argument("--outdir", required=True, type=Path)
     parser.add_argument("--result-dir", action="append", default=[], type=Path)
     parser.add_argument("--result-root", type=Path)
@@ -45,7 +43,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--expected-strategies", required=True)
     parser.add_argument("--expected-gene-ids")
     parser.add_argument("--compact-events", action="store_true")
-    parser.add_argument("--events-already-compacted", action="store_true")
     parser.add_argument(
         "--output-profile",
         choices=["full", "annotation-input", "report-input"],
@@ -121,15 +118,16 @@ STRATEGY_SUMMARY_FIELDS = [
     "aligned_target_bp",
 ]
 
-BWA_STRATEGY = "bwa_pseudoreads"
 ENSEMBL_COMPARA_STRATEGY = "precomputed_ensembl_92_mammals_epo_extended"
 DNA_BASES = frozenset("ACGT")
-BWA_REQUIRED_PARAMETERS = (
-    "pseudoread_len",
-    "pseudoread_step",
-    "pseudoread_phred",
+ALIGNMENT_MANIFEST_COUNT_FIELDS = (
+    "ortholog_alignment_summary_count",
+    "alignment_segment_count",
+    "feature_coverage_count",
+    "raw_alignment_event_count",
+    "alignment_event_count",
+    "failure_count",
 )
-BWA_OPTIONAL_PARAMETERS = ("task_cpus", "bwa_threads")
 
 
 def utc_now() -> str:
@@ -179,12 +177,6 @@ def parse_expected_values(raw: str | None, label: str) -> list[str]:
     return values
 
 
-def _task_ready(row: dict[str, str], field: str) -> bool:
-    if field in row:
-        return str(row[field]).lower() == "true"
-    return row.get("status") == "ready"
-
-
 def read_alignment_capabilities(
     path: Path,
 ) -> tuple[int, dict[str, tuple[bool, bool]]]:
@@ -193,7 +185,7 @@ def read_alignment_capabilities(
     capabilities: dict[str, tuple[bool, bool]] = {}
     with gzip.open(path, "rt", newline="") as handle:
         reader = csv.DictReader(handle, delimiter="\t")
-        required = {"gene_id", "status"}
+        required = {"gene_id", "target_ready", "ortholog_ready"}
         missing = required - set(reader.fieldnames or [])
         if missing:
             raise ValueError(
@@ -208,8 +200,8 @@ def read_alignment_capabilities(
             if gene_id in capabilities:
                 raise ValueError(f"Alignment tasks {path} contain duplicate gene_id {gene_id}")
             capabilities[gene_id] = (
-                _task_ready(row, "target_ready"),
-                _task_ready(row, "ortholog_ready"),
+                str(row["target_ready"]).lower() == "true",
+                str(row["ortholog_ready"]).lower() == "true",
             )
     return task_count, capabilities
 
@@ -684,12 +676,12 @@ def write_compact_events(
     paths: list[Path],
     output: Path,
     ortholog_support_output: Path,
-    taxonomy_presets: Path | None = None,
+    taxonomy: Path | None = None,
     taxonomic_support_output: Path | None = None,
     timings: dict[str, float] | None = None,
 ) -> tuple[int, int, int, int]:
-    if (taxonomy_presets is None) != (taxonomic_support_output is None):
-        raise ValueError("Taxonomic event support requires both taxonomy presets and an output path")
+    if (taxonomy is None) != (taxonomic_support_output is None):
+        raise ValueError("Taxonomic event support requires both taxonomy metadata and an output path")
     output.parent.mkdir(parents=True, exist_ok=True)
     db_path = output.parent / "alignment_event_support.sqlite"
     if db_path.exists():
@@ -761,8 +753,8 @@ def write_compact_events(
                 alt
         """
         taxonomy_profiles = (
-            load_taxonomy_profiles(taxonomy_presets)
-            if taxonomy_presets is not None
+            load_taxonomy_profiles(taxonomy)
+            if taxonomy is not None
             else None
         )
         compact_count = 0
@@ -873,75 +865,54 @@ def copy_native(result_dirs: list[Path], outdir: Path) -> int:
 
 
 def load_manifests(result_dirs: list[Path]) -> list[dict]:
-    manifests = []
-    for result_dir in result_dirs:
-        path = result_dir / "manifest.json"
-        if path.exists():
-            manifests.append(json.loads(path.read_text()))
-    return manifests
+    return [json.loads((result_dir / "manifest.json").read_text()) for result_dir in result_dirs]
+
+
+def manifest_values(manifest: dict, field: str) -> list[str]:
+    values = manifest.get(field)
+    if (
+        not isinstance(values, list)
+        or not values
+        or not all(isinstance(value, str) and value for value in values)
+        or len(values) != len(set(values))
+    ):
+        raise ValueError(f"Alignment manifest has invalid {field}: {values!r}")
+    return values
 
 
 def manifest_strategies(manifests: list[dict]) -> list[str]:
-    strategies: set[str] = set()
-    for manifest in manifests:
-        strategy_list = manifest.get("strategies", []) or []
-        if strategy_list:
-            for strategy in strategy_list:
-                if strategy:
-                    strategies.add(str(strategy))
-        elif manifest.get("strategy"):
-            strategies.add(str(manifest["strategy"]))
-    return sorted(strategies)
+    return sorted(
+        {
+            strategy
+            for manifest in manifests
+            for strategy in manifest_values(manifest, "strategies")
+        }
+    )
 
 
 def manifest_gene_ids(manifests: list[dict]) -> list[str]:
-    gene_ids: set[str] = set()
-    for manifest in manifests:
-        if manifest.get("gene_id"):
-            gene_ids.add(str(manifest["gene_id"]))
-        for gene_id in manifest.get("gene_ids", []) or []:
-            if gene_id:
-                gene_ids.add(str(gene_id))
-    return sorted_gene_ids(gene_ids)
+    return sorted_gene_ids(
+        {
+            gene_id
+            for manifest in manifests
+            for gene_id in manifest_values(manifest, "gene_ids")
+        }
+    )
 
 
 def merge_strategy_parameters(manifests: list[dict]) -> dict[str, dict]:
     merged: dict[str, dict] = {}
     for manifest in manifests:
-        parameters = manifest.get("strategy_parameters") or {}
+        parameters = manifest.get("strategy_parameters")
         if not isinstance(parameters, dict):
             raise ValueError("strategy_parameters must be a JSON object")
-        candidates = dict(parameters)
-
-        if manifest.get("strategy") == BWA_STRATEGY:
-            present_required = {
-                name: manifest[name]
-                for name in BWA_REQUIRED_PARAMETERS
-                if manifest.get(name) is not None
-            }
-            if present_required:
-                missing = sorted(set(BWA_REQUIRED_PARAMETERS) - set(present_required))
-                if missing:
-                    raise ValueError(
-                        "BWA manifest has incomplete pseudoread parameters: "
-                        + ", ".join(missing)
-                    )
-                direct = dict(present_required)
-                direct.update(
-                    {
-                        name: manifest[name]
-                        for name in BWA_OPTIONAL_PARAMETERS
-                        if manifest.get(name) is not None
-                    }
-                )
-                nested = candidates.get(BWA_STRATEGY)
-                if nested is not None and nested != direct:
-                    raise ValueError(
-                        "BWA manifest has conflicting direct and nested strategy parameters"
-                    )
-                candidates[BWA_STRATEGY] = direct
-
-        for strategy, values in candidates.items():
+        declared_strategies = set(manifest_values(manifest, "strategies"))
+        if set(parameters) != declared_strategies:
+            raise ValueError(
+                "strategy_parameters keys must match manifest strategies: "
+                f"strategies={sorted(declared_strategies)}, parameters={sorted(parameters)}"
+            )
+        for strategy, values in parameters.items():
             if not isinstance(values, dict):
                 raise ValueError(f"Strategy parameters for {strategy} must be a JSON object")
             normalized = dict(sorted(values.items()))
@@ -955,7 +926,6 @@ def merge_strategy_parameters(manifests: list[dict]) -> dict[str, dict]:
 
 def require_alignment_tables(
     result_dirs: list[Path],
-    require_feature_coverage: bool,
     output_profile: str,
 ) -> None:
     if output_profile == "report-input":
@@ -969,10 +939,9 @@ def require_alignment_tables(
             "ortholog_alignment_summary.tsv.gz",
             "alignment_segments.tsv.gz",
             "alignment_events.tsv.gz",
+            "feature_coverage.tsv.gz",
             "failures.tsv.gz",
         ]
-        if require_feature_coverage:
-            filenames.append("feature_coverage.tsv.gz")
     missing = [
         str(result_dir / filename)
         for result_dir in result_dirs
@@ -995,29 +964,22 @@ def validate_partition_manifests(
     manifests: list[dict],
     expected_gene_ids: list[str],
     expected_strategies: list[str],
-    alignment_tasks: Path | None = None,
+    alignment_tasks: Path,
 ) -> tuple[list[str], list[str]]:
-    if alignment_tasks is None:
-        expected_pairs = {
-            (gene_id, strategy)
-            for gene_id in expected_gene_ids
-            for strategy in expected_strategies
-        }
-    else:
-        _task_count, capabilities = read_alignment_capabilities(alignment_tasks)
-        expected_pairs = expected_gene_strategy_pairs(
-            capabilities,
-            expected_gene_ids,
-            expected_strategies,
+    _task_count, capabilities = read_alignment_capabilities(alignment_tasks)
+    expected_pairs = expected_gene_strategy_pairs(
+        capabilities,
+        expected_gene_ids,
+        expected_strategies,
+    )
+    genes_without_strategy = set(expected_gene_ids) - {
+        gene_id for gene_id, _strategy in expected_pairs
+    }
+    if genes_without_strategy:
+        raise ValueError(
+            "Expected genes are not eligible for any selected strategy: "
+            + ", ".join(sorted_gene_ids(genes_without_strategy))
         )
-        genes_without_strategy = set(expected_gene_ids) - {
-            gene_id for gene_id, _strategy in expected_pairs
-        }
-        if genes_without_strategy:
-            raise ValueError(
-                "Expected genes are not eligible for any selected strategy: "
-                + ", ".join(sorted_gene_ids(genes_without_strategy))
-            )
     pair_owners: dict[tuple[str, str], Path] = {}
     duplicates: list[str] = []
 
@@ -1135,29 +1097,48 @@ def validate_final_manifests(
     return sorted_gene_ids(observed_gene_set), sorted(observed_strategy_set)
 
 
-def sum_manifest_count(
-    manifests: list[dict],
-    field: str,
-    *fallback_fields: str,
-) -> int:
+def manifest_count(manifest: dict, field: str) -> int:
+    if field not in manifest:
+        raise ValueError(f"Alignment manifest missing required count: {field}")
+    try:
+        value = int(manifest[field])
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"Alignment manifest has invalid {field}: {manifest[field]!r}") from exc
+    if value < 0:
+        raise ValueError(f"Alignment manifest has negative {field}: {value}")
+    return value
+
+
+def sum_manifest_count(manifests: list[dict], field: str) -> int:
     total = 0
     for manifest in manifests:
-        value = manifest.get(field)
-        if value is None:
-            value = next(
-                (manifest.get(name) for name in fallback_fields if manifest.get(name) is not None),
-                0,
-            )
-        total += int(value or 0)
+        total += manifest_count(manifest, field)
     return total
 
 
+def validate_alignment_manifests(manifests: list[dict]) -> None:
+    for manifest in manifests:
+        manifest_values(manifest, "gene_ids")
+        manifest_values(manifest, "strategies")
+        for field in ALIGNMENT_MANIFEST_COUNT_FIELDS:
+            manifest_count(manifest, field)
+        mode = manifest.get("alignment_event_mode")
+        if mode not in {"raw", "compact_support"}:
+            raise ValueError(f"Alignment manifest has invalid alignment_event_mode: {mode!r}")
+        raw_count = manifest_count(manifest, "raw_alignment_event_count")
+        event_count = manifest_count(manifest, "alignment_event_count")
+        if raw_count < event_count:
+            raise ValueError(
+                "Alignment manifest raw_alignment_event_count cannot be smaller than "
+                "alignment_event_count"
+            )
+
+
 def merged_event_mode(manifests: list[dict]) -> str:
-    modes = {
-        str(manifest.get("alignment_event_mode") or "raw")
-        for manifest in manifests
-    }
-    return next(iter(modes)) if len(modes) == 1 else "mixed"
+    modes = {str(manifest.get("alignment_event_mode") or "") for manifest in manifests}
+    if modes - {"raw", "compact_support"} or len(modes) != 1:
+        raise ValueError(f"Alignment manifests have inconsistent event modes: {sorted(modes)}")
+    return next(iter(modes))
 
 
 def collect_partition_timings(manifests: list[dict]) -> dict[str, dict[str, float]]:
@@ -1177,8 +1158,6 @@ def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
     args = parse_args()
     timings_seconds: dict[str, float] = {}
-    if args.events_already_compacted and not args.compact_events:
-        raise ValueError("--events-already-compacted requires --compact-events")
     if args.partition_id and args.output_profile == "report-input":
         raise ValueError("--output-profile report-input is only valid for the final merge")
     if not args.partition_id and args.output_profile == "annotation-input":
@@ -1189,22 +1168,17 @@ def main() -> None:
     args.outdir.mkdir(parents=True, exist_ok=True)
     result_dirs = resolve_result_dirs(args.result_dir, args.result_root)
 
-    global_inputs = [
-        args.alignment_tasks,
-        args.taxonomy_presets,
-        args.taxonomy_failures,
-        args.target_features,
-    ]
+    global_inputs = [args.taxonomy, args.taxonomy_failures]
     if not args.partition_id and any(path is None for path in global_inputs):
         raise ValueError(
-            "Final alignment merge requires --alignment-tasks, --taxonomy-presets, "
-            "--taxonomy-failures, and --target-features"
+            "Final alignment merge requires --taxonomy and --taxonomy-failures"
         )
 
     manifests = load_manifests(result_dirs)
+    validate_alignment_manifests(manifests)
+    strategy_parameters = merge_strategy_parameters(manifests)
     require_alignment_tables(
         result_dirs,
-        require_feature_coverage=bool(args.partition_id),
         output_profile=args.output_profile,
     )
     if args.partition_id:
@@ -1248,12 +1222,13 @@ def main() -> None:
         )
         if args.output_profile == "full":
             copy_or_keep(args.alignment_tasks, args.outdir / "alignment_tasks.tsv.gz")
-            copy_or_keep(args.taxonomy_presets, args.outdir / "taxonomy_presets.tsv.gz")
+            copy_or_keep(args.taxonomy, args.outdir / "taxonomy.tsv.gz")
             copy_or_keep(args.taxonomy_failures, args.outdir / "taxonomy_failures.tsv.gz")
         if args.taxonomy_summary is not None:
             copy_or_keep(args.taxonomy_summary, args.outdir / "taxonomy_summary.tsv.gz")
     gene_count = len(gene_ids)
 
+    input_event_mode = merged_event_mode(manifests)
     if args.output_profile == "report-input":
         summary_count = sum_manifest_count(manifests, "ortholog_alignment_summary_count")
         strategy_summary_count = merge_strategy_summaries(
@@ -1289,33 +1264,13 @@ def main() -> None:
                 args.outdir / "alignment_segments.tsv.gz",
             )
         else:
-            segment_count = sum_manifest_count(
-                manifests,
-                "alignment_segment_count",
-                "segment_count",
-            )
+            segment_count = sum_manifest_count(manifests, "alignment_segment_count")
 
     feature_coverage_inputs = [path / "feature_coverage.tsv.gz" for path in result_dirs]
-    missing_feature_coverage = [str(path.parent) for path in feature_coverage_inputs if not path.exists()]
-    if missing_feature_coverage:
-        if args.partition_id or args.output_profile == "report-input":
-            raise FileNotFoundError(
-                "Alignment inputs missing feature_coverage.tsv.gz: "
-                + ", ".join(missing_feature_coverage)
-            )
-        feature_coverage_mode = "global_fallback"
-        feature_coverage_count = summarize_feature_coverage(
-            args.target_features,
-            args.outdir / "ortholog_alignment_summary.tsv.gz",
-            args.outdir / "alignment_segments.tsv.gz",
-            args.outdir / "feature_coverage.tsv.gz",
-        )
-    else:
-        feature_coverage_mode = "per_result_merge"
-        feature_coverage_count = merge_tsv_gz(
-            feature_coverage_inputs,
-            args.outdir / "feature_coverage.tsv.gz",
-        )
+    feature_coverage_count = merge_tsv_gz(
+        feature_coverage_inputs,
+        args.outdir / "feature_coverage.tsv.gz",
+    )
     if args.output_profile == "report-input":
         event_count = sum_manifest_count(manifests, "alignment_event_count")
         raw_event_count = sum_manifest_count(manifests, "raw_alignment_event_count")
@@ -1327,10 +1282,10 @@ def main() -> None:
             manifests,
             "event_ortholog_support_count",
         )
-        alignment_event_mode = merged_event_mode(manifests)
+        alignment_event_mode = input_event_mode
     else:
         event_inputs = [path / "alignment_events.tsv.gz" for path in result_dirs]
-        if args.compact_events and not args.events_already_compacted:
+        if args.compact_events and input_event_mode == "raw":
             (
                 event_count,
                 raw_event_count,
@@ -1340,21 +1295,14 @@ def main() -> None:
                 event_inputs,
                 args.outdir / "alignment_events.tsv.gz",
                 args.outdir / "event_ortholog_support.tsv.gz",
-                args.taxonomy_presets if args.partition_id and args.taxonomy_presets else None,
+                args.taxonomy if args.partition_id and args.taxonomy else None,
                 args.outdir / "snv_alt_taxonomic_support.tsv.gz"
-                if args.partition_id and args.taxonomy_presets
+                if args.partition_id and args.taxonomy
                 else None,
                 timings=timings_seconds,
             )
-        elif args.events_already_compacted:
-            raw_event_count = sum(
-                int(
-                    manifest.get("raw_alignment_event_count")
-                    or manifest.get("alignment_event_count")
-                    or 0
-                )
-                for manifest in manifests
-            )
+        elif args.compact_events and input_event_mode == "compact_support":
+            raw_event_count = sum_manifest_count(manifests, "raw_alignment_event_count")
             event_count, event_ortholog_support_count = merge_compact_event_handoffs(
                 result_dirs,
                 args.outdir / "alignment_events.tsv.gz",
@@ -1362,6 +1310,10 @@ def main() -> None:
             )
             taxonomic_alt_support_count = 0
         else:
+            if input_event_mode != "raw":
+                raise ValueError(
+                    "Compact alignment inputs require --compact-events in the final merge"
+                )
             event_count = merge_tsv_gz(
                 event_inputs,
                 args.outdir / "alignment_events.tsv.gz",
@@ -1380,12 +1332,12 @@ def main() -> None:
             args.outdir,
         )
         finish_phase(timings_seconds, "snv_site_depth", phase_started)
-        if args.taxonomy_presets is not None:
+        if args.taxonomy is not None:
             phase_started = start_phase("snv_taxonomic_depth")
             snv_taxonomic_depth_count = write_snv_taxonomic_depth(
                 [path / "alignment_segments.tsv.gz" for path in result_dirs],
                 iter_snv_event_sites([args.outdir / "alignment_events.tsv.gz"]),
-                args.taxonomy_presets,
+                args.taxonomy,
                 args.outdir / "snv_taxonomic_depth.tsv.gz",
                 args.outdir,
             )
@@ -1412,7 +1364,6 @@ def main() -> None:
         [path / "failures.tsv.gz" for path in result_dirs],
         args.outdir / "failures.tsv.gz",
     )
-    strategy_parameters = merge_strategy_parameters(manifests)
     native_file_count = (
         copy_native(result_dirs, args.outdir)
         if args.output_profile == "full"
@@ -1430,13 +1381,11 @@ def main() -> None:
         "gene_count": gene_count,
         "gene_ids": gene_ids,
         "alignment_task_count": alignment_task_count,
-        "taxonomy_tax_id_count": count_tsv_gz_rows(args.taxonomy_presets) if args.taxonomy_presets else 0,
+        "taxonomy_tax_id_count": count_tsv_gz_rows(args.taxonomy) if args.taxonomy else 0,
         "taxonomy_failure_count": count_tsv_gz_rows(args.taxonomy_failures) if args.taxonomy_failures else 0,
         "ortholog_alignment_summary_count": summary_count,
         "strategy_summary_count": strategy_summary_count,
         "alignment_segment_count": segment_count,
-        "feature_coverage_mode": feature_coverage_mode,
-        "feature_coverage_missing_result_count": len(missing_feature_coverage),
         "feature_coverage_count": feature_coverage_count,
         "alignment_event_mode": alignment_event_mode,
         "event_ortholog_support_format": (

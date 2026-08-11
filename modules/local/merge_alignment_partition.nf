@@ -5,7 +5,7 @@ process MERGE_ALIGNMENT_PARTITION {
     tuple val(meta), path(result_dirs, stageAs: 'results/*')
     path alignment_tasks
     val expected_strategies
-    path taxonomy_presets
+    path taxonomy
     path merge_script
     path feature_coverage_script
     path taxonomic_evidence_script
@@ -16,7 +16,7 @@ process MERGE_ALIGNMENT_PARTITION {
     script:
     def outputProfile = params.stage == 'all' ? "annotation-input" : "full"
     def compactEventsArg = (params.compact_alignment_events || outputProfile == 'annotation-input') ? "--compact-events" : ""
-    def taxonomyArg = outputProfile == 'annotation-input' ? "--taxonomy-presets \"${taxonomy_presets}\"" : ""
+    def taxonomyArg = outputProfile == 'annotation-input' ? "--taxonomy \"${taxonomy}\"" : ""
     """
     export PYTHONPATH="\$PWD:\${PYTHONPATH:-}"
     python3 "${merge_script}" \\

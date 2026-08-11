@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build compact taxonomy and minimap2-preset metadata for ortholog taxa."""
+"""Build compact taxonomy metadata for ortholog taxa."""
 
 from __future__ import annotations
 
@@ -33,7 +33,6 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--orthologs-tsv", required=True, type=Path)
     parser.add_argument("--outdir", required=True, type=Path)
-    parser.add_argument("--taxonomy-classes", required=True, type=Path, help="Path to taxonomy_classes.json.gz")
     parser.add_argument("--datasets-bin", default="datasets")
     return parser.parse_args()
 
@@ -59,11 +58,6 @@ def read_unique_tax_ids(path: Path) -> list[str]:
             if tax_id:
                 tax_ids.add(tax_id)
     return sorted(tax_ids, key=lambda value: int(value) if value.isdigit() else value)
-
-
-def load_taxonomy_dict(path: Path) -> dict[str, str]:
-    with gzip.open(path, "rt") as f:
-        return json.load(f)
 
 
 def fetch_taxonomy_records(
@@ -129,8 +123,7 @@ def classification_value(record: dict, rank: str, field: str) -> str:
     return str(((record.get("classification") or {}).get(rank) or {}).get(field) or "")
 
 
-def taxonomy_row(tax_id: str, preset_group: str, record: dict | None) -> dict[str, object]:
-    preset = "asm10" if preset_group == "primates" else "asm20"
+def taxonomy_row(tax_id: str, record: dict | None) -> dict[str, object]:
     record = record or {}
     ancestors = set(parent_ids(record))
     return {
@@ -141,7 +134,7 @@ def taxonomy_row(tax_id: str, preset_group: str, record: dict | None) -> dict[st
             or record.get("organism_name", "")
         ),
         "rank": record.get("rank", ""),
-        "group_name": record.get("groupName") or record.get("group_name") or preset_group,
+        "group_name": record.get("groupName") or record.get("group_name") or "",
         "class_id": classification_value(record, "class", "id"),
         "class_name": classification_value(record, "class", "name"),
         "order_id": classification_value(record, "order", "id"),
@@ -156,8 +149,6 @@ def taxonomy_row(tax_id: str, preset_group: str, record: dict | None) -> dict[st
         "is_primate": str(ANCESTOR_IDS["primates"] in ancestors).lower(),
         "is_mammal": str(ANCESTOR_IDS["mammalia"] in ancestors).lower(),
         "is_vertebrate": str(ANCESTOR_IDS["vertebrata"] in ancestors).lower(),
-        "preset_group": preset_group,
-        "minimap2_preset": preset,
         "parent_tax_ids": ",".join(parent_ids(record)),
     }
 
@@ -185,20 +176,16 @@ def main() -> None:
         "is_primate",
         "is_mammal",
         "is_vertebrate",
-        "preset_group",
-        "minimap2_preset",
         "parent_tax_ids",
     ]
     failure_fields = ["tax_id", "failure_type", "message"]
 
     tax_ids = read_unique_tax_ids(args.orthologs_tsv)
-    taxonomy_dict = load_taxonomy_dict(args.taxonomy_classes)
     taxonomy_records = fetch_taxonomy_records(tax_ids, args.datasets_bin, args.outdir)
 
     rows = []
     failures = []
     for tax_id in tax_ids:
-        preset_group = taxonomy_dict.get(str(tax_id), "other_or_unknown")
         record = taxonomy_records.get(tax_id)
         if record is None:
             failures.append(
@@ -208,11 +195,11 @@ def main() -> None:
                     "message": "NCBI Datasets taxonomy summary returned no record",
                 }
             )
-        rows.append(taxonomy_row(tax_id, preset_group, record))
+        rows.append(taxonomy_row(tax_id, record))
 
-    write_tsv_gz(args.outdir / "taxonomy_presets.tsv.gz", fields, rows)
+    write_tsv_gz(args.outdir / "taxonomy.tsv.gz", fields, rows)
     write_tsv_gz(args.outdir / "taxonomy_failures.tsv.gz", failure_fields, failures)
-    taxonomy_profiles_path = args.outdir / "taxonomy_presets.tsv.gz"
+    taxonomy_profiles_path = args.outdir / "taxonomy.tsv.gz"
     taxonomy_profiles = load_taxonomy_profiles(taxonomy_profiles_path)
     with gzip.open(args.orthologs_tsv, "rt", newline="") as handle:
         summary_rows = build_taxonomy_summary_rows(

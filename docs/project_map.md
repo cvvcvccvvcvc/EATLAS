@@ -60,10 +60,10 @@ Runtime environments:
   - derives collapsed target structural features from the configured local target assembly GFF3
   - writes final `manifest.json`
 
-- `bin/fetch_taxonomy_presets.py`
+- `bin/fetch_taxonomy.py`
   - reads unique ortholog `tax_id` values
-  - maps them through `assets/reference/ncbi/taxonomy/taxonomy_classes.json.gz`
-  - writes `taxonomy_presets.tsv.gz`
+  - fetches lineage and taxonomic-unit metadata from NCBI Datasets
+  - writes `taxonomy.tsv.gz`
 
 - `bin/prepare_alignment_tasks.py`
   - validates Stage 1 outputs for alignment
@@ -102,7 +102,7 @@ Runtime environments:
   - merges per-gene/per-strategy evidence into bounded genomic partitions
   - keeps only annotation inputs in end-to-end partitions
   - writes report-ready Stage 2 summaries without globally rewriting raw events
-  - intersects target features with alignment segments for coverage/depth summaries
+  - requires and merges gene-local feature coverage from every aligner
   - writes a canonical small per-strategy summary for downstream reports
   - writes compact events and their `event_group_id`-keyed positive ortholog
     handoff in one index-ordered pass
@@ -190,7 +190,6 @@ provider, and resource family:
 assets/inputs/gene_ids/
 assets/reference/clinvar/
 assets/reference/ncbi/refseq/GCF_000001405.40_GRCh38.p14/genomic.gff.gz
-assets/reference/ncbi/taxonomy/taxonomy_classes.json.gz
 assets/reference/ensembl/compara/release-116/92_mammals.epo_extended/
 ```
 

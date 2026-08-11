@@ -198,7 +198,7 @@ Standalone `--stage align` expected properties:
   strategies require `ortholog_ready=true`.
 - `strategy_eligible_gene_counts` reports the corresponding denominator for
   every selected strategy.
-- `alignment/taxonomy_presets.tsv.gz` has one row per unique ortholog tax_id.
+- `alignment/taxonomy.tsv.gz` has one row per unique ortholog tax_id.
 - `alignment/taxonomy_summary.tsv.gz` records run-level scope and evidence-unit
   counts.
 - `alignment/ortholog_alignment_summary.tsv.gz` has rows for each enabled strategy.

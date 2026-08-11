@@ -56,7 +56,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--out-tsv", required=True, type=Path)
     parser.add_argument("--summary-json", type=Path)
     parser.add_argument("--summaries-tsv", type=Path)
-    parser.add_argument("--taxonomy-presets-tsv", type=Path)
+    parser.add_argument("--taxonomy-tsv", type=Path)
     parser.add_argument("--target-features-tsv", type=Path)
     parser.add_argument("--feature-coverage-tsv", type=Path)
     parser.add_argument("--strategies", help="Comma-separated strategy allow-list. Default: all observed strategies.")
@@ -385,11 +385,11 @@ def collect_features(
     segments_tsv: Path,
     events_tsv: Path,
     summaries_tsv: Path | None,
-    taxonomy_presets_tsv: Path | None,
+    taxonomy_tsv: Path | None,
     feature_coverage_tsv: Path | None,
     strategy_filter: set[str] | None,
 ) -> tuple[list[dict[str, object]], dict[str, object]]:
-    taxonomy_groups = load_taxonomy_groups(taxonomy_presets_tsv)
+    taxonomy_groups = load_taxonomy_groups(taxonomy_tsv)
     feature_coverage = load_feature_coverage(feature_coverage_tsv)
     gene_index = variant_index_by_gene(variants)
     universe = load_ortholog_universe(summaries_tsv, taxonomy_groups, strategy_filter)
@@ -563,7 +563,7 @@ def main() -> None:
         segments_tsv=args.segments_tsv,
         events_tsv=args.events_tsv,
         summaries_tsv=args.summaries_tsv,
-        taxonomy_presets_tsv=args.taxonomy_presets_tsv,
+        taxonomy_tsv=args.taxonomy_tsv,
         feature_coverage_tsv=args.feature_coverage_tsv,
         strategy_filter=strategy_filter,
     )

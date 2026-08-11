@@ -48,7 +48,7 @@ Alignment trace:
 
 | Stage | Runtime |
 | --- | ---: |
-| taxonomy presets | <1s |
+| taxonomy metadata | <1s |
 | alignment task build | 1.6s |
 | PAH minimap2 | 11s |
 | CFTR minimap2 | 49s |

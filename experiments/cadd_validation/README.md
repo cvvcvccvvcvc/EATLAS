@@ -84,7 +84,7 @@ PYTHONPATH=experiments/cadd_validation/src .venv/bin/python -m cadd_validation.b
   --segments-tsv results/run_001/alignment/alignment_segments.tsv.gz \
   --events-tsv results/run_001/alignment/alignment_events.tsv.gz \
   --summaries-tsv results/run_001/alignment/ortholog_alignment_summary.tsv.gz \
-  --taxonomy-presets-tsv results/run_001/alignment/taxonomy_presets.tsv.gz \
+  --taxonomy-tsv results/run_001/alignment/taxonomy.tsv.gz \
   --target-features-tsv results/run_001/fetch/target_features.tsv.gz \
   --feature-coverage-tsv results/run_001/alignment/feature_coverage.tsv.gz \
   --out-tsv experiments/cadd_validation/outputs/pilot/variant_features.tsv

@@ -148,7 +148,7 @@ include { CHECK_RUNTIME } from './modules/local/check_runtime.nf'
 include { FETCH_PARSE_CHUNK } from './modules/local/fetch_parse_chunk.nf'
 include { BUILD_FETCH_DATASET } from './modules/local/build_fetch_dataset.nf'
 include { FINALIZE_FETCH_OUTPUT } from './modules/local/finalize_fetch_output.nf'
-include { FETCH_TAXONOMY_PRESETS } from './modules/local/fetch_taxonomy_presets.nf'
+include { FETCH_TAXONOMY } from './modules/local/fetch_taxonomy.nf'
 include { BUILD_ALIGNMENT_TASKS } from './modules/local/build_alignment_tasks.nf'
 include { ALIGN_MINIMAP2 } from './modules/local/align_minimap2.nf'
 include { MERGE_ALIGNMENT } from './modules/local/merge_alignment.nf'
@@ -219,8 +219,7 @@ workflow ALIGNMENT_STAGE {
     sequences
 
     main:
-    taxonomy_script = file("${projectDir}/bin/fetch_taxonomy_presets.py")
-    taxonomy_classes = file("${projectDir}/assets/reference/ncbi/taxonomy/taxonomy_classes.json.gz")
+    taxonomy_script = file("${projectDir}/bin/fetch_taxonomy.py")
     prepare_script = file("${projectDir}/bin/prepare_alignment_tasks.py")
     minimap2_script = file("${projectDir}/bin/run_minimap2_alignment.py")
     nucmer_script = file("${projectDir}/bin/run_nucmer_alignment.py")
@@ -234,7 +233,7 @@ workflow ALIGNMENT_STAGE {
     feature_coverage_script = file("${projectDir}/bin/feature_coverage.py")
     taxonomic_evidence_script = file("${projectDir}/bin/taxonomic_evidence.py")
 
-    FETCH_TAXONOMY_PRESETS(orthologs_selected, taxonomy_script, taxonomy_classes)
+    FETCH_TAXONOMY(orthologs_selected, taxonomy_script)
     BUILD_ALIGNMENT_TASKS(
         genes,
         orthologs_selected,
@@ -435,7 +434,7 @@ workflow ALIGNMENT_STAGE {
         partition_merge_inputs,
         BUILD_ALIGNMENT_TASKS.out.alignment_tasks,
         SELECTED_ALIGNMENT_STRATEGIES.join(','),
-        FETCH_TAXONOMY_PRESETS.out.taxonomy_presets,
+        FETCH_TAXONOMY.out.taxonomy,
         merge_script,
         feature_coverage_script,
         taxonomic_evidence_script
@@ -443,10 +442,9 @@ workflow ALIGNMENT_STAGE {
 
     MERGE_ALIGNMENT(
         BUILD_ALIGNMENT_TASKS.out.alignment_tasks,
-        FETCH_TAXONOMY_PRESETS.out.taxonomy_presets,
-        FETCH_TAXONOMY_PRESETS.out.taxonomy_failures,
-        FETCH_TAXONOMY_PRESETS.out.taxonomy_summary,
-        target_features,
+        FETCH_TAXONOMY.out.taxonomy,
+        FETCH_TAXONOMY.out.taxonomy_failures,
+        FETCH_TAXONOMY.out.taxonomy_summary,
         MERGE_ALIGNMENT_PARTITION.out.partition_dirs.map { meta, dir -> dir }.collect(),
         SELECTED_ALIGNMENT_STRATEGIES.join(','),
         merge_script
@@ -455,7 +453,7 @@ workflow ALIGNMENT_STAGE {
     emit:
     manifest = MERGE_ALIGNMENT.out.manifest
     tasks = MERGE_ALIGNMENT.out.alignment_tasks
-    taxonomy_presets = MERGE_ALIGNMENT.out.taxonomy_presets
+    taxonomy = MERGE_ALIGNMENT.out.taxonomy
     taxonomy_failures = MERGE_ALIGNMENT.out.taxonomy_failures
     taxonomy_summary = MERGE_ALIGNMENT.out.taxonomy_summary
     summaries = MERGE_ALIGNMENT.out.summaries

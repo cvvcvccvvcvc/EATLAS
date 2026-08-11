@@ -9,7 +9,7 @@ from pathlib import Path
 PROJECT_DIR = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_DIR / "bin"))
 
-from fetch_taxonomy_presets import fetch_taxonomy_records, taxonomy_row
+from fetch_taxonomy import fetch_taxonomy_records, taxonomy_row
 from finalize_annotation_partitions import merge_ortholog_evidence
 from merge_alignment_results import write_compact_events
 from ortholog_evidence_summary import write_ortholog_evidence_summary
@@ -29,7 +29,7 @@ def write_tsv_gz(path: Path, fields: list[str], rows: list[dict[str, object]]) -
 
 
 def taxonomy_fixture(tmp_path: Path) -> Path:
-    path = tmp_path / "taxonomy_presets.tsv.gz"
+    path = tmp_path / "taxonomy.tsv.gz"
     fields = ["tax_id", "species_id", "genus_id", "family_id", "order_id", "parent_tax_ids"]
     write_tsv_gz(
         path,
@@ -59,7 +59,6 @@ def taxonomy_fixture(tmp_path: Path) -> Path:
 def test_taxonomy_row_reads_ncbi_taxonomy_lineage() -> None:
     row = taxonomy_row(
         "9598",
-        "primates",
         {
             "tax_id": 9598,
             "rank": "SPECIES",
@@ -97,7 +96,7 @@ def test_taxonomy_batch_request_does_not_use_single_taxon_parents_flag(
         stdout.write(json.dumps({"taxonomy": {"tax_id": 9598}}) + "\n")
         return type("Result", (), {"returncode": 0, "stderr": ""})()
 
-    monkeypatch.setattr("fetch_taxonomy_presets.subprocess.run", fake_run)
+    monkeypatch.setattr("fetch_taxonomy.subprocess.run", fake_run)
 
     records = fetch_taxonomy_records(["9598"], "datasets", tmp_path)
 

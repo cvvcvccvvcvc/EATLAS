@@ -185,14 +185,16 @@ def write_gene_fragment_outputs(
         manifest = {
             "task_type": "maf_gene_fragment",
             "chunk_id": chunk_manifest["chunk_id"],
-            "gene_id": gene_id,
             "gene_ids": [gene_id],
-            "strategy": args.strategy,
             "strategies": [args.strategy],
+            "strategy_parameters": {
+                args.strategy: {
+                    "release": args.release,
+                    "species_set": args.species_set,
+                    "method": args.method,
+                }
+            },
             "tool": TOOL_NAME,
-            "release": args.release,
-            "species_set": args.species_set,
-            "method": args.method,
             "source": chunk_manifest.get("source", ""),
             "seq_region": chunk_manifest.get("seq_region", ""),
             "chunk_order": chunk_manifest.get("chunk_order", ""),

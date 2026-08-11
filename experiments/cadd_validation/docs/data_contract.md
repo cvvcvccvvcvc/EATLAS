@@ -38,7 +38,7 @@ are counted in the JSON summary and skipped.
 - `alignment_segments.tsv.gz`
 - `alignment_events.tsv.gz`
 - optional `ortholog_alignment_summary.tsv.gz`
-- optional `taxonomy_presets.tsv.gz`
+- optional `taxonomy.tsv.gz`
 - optional `target_features.tsv.gz`
 
 The feature builder accepts gzip or plain TSV files.

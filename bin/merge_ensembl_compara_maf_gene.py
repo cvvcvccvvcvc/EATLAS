@@ -47,10 +47,10 @@ def fragment_dirs(root: Path, gene_id: str) -> list[Path]:
         if not manifest_path.exists():
             raise FileNotFoundError(f"MAF fragment missing manifest.json: {fragment}")
         manifest = json.loads(manifest_path.read_text())
-        if str(manifest.get("gene_id") or "") != gene_id:
+        if manifest.get("gene_ids") != [gene_id]:
             raise ValueError(
                 f"MAF fragment gene mismatch in {fragment}: "
-                f"expected {gene_id}, observed {manifest.get('gene_id')!r}"
+                f"expected {[gene_id]!r}, observed {manifest.get('gene_ids')!r}"
             )
     return fragments
 
@@ -208,19 +208,27 @@ def main() -> None:
     )
 
     manifests = [json.loads((path / "manifest.json").read_text()) for path in fragments]
-    strategy = manifests[0]["strategy"]
+    strategies = {tuple(item.get("strategies") or []) for item in manifests}
+    if len(strategies) != 1 or len(next(iter(strategies))) != 1:
+        raise ValueError(f"MAF fragments have inconsistent strategies: {sorted(strategies)}")
+    strategy = next(iter(strategies))[0]
+    parameters = {json.dumps(item.get("strategy_parameters"), sort_keys=True) for item in manifests}
+    if len(parameters) != 1:
+        raise ValueError("MAF fragments have inconsistent strategy_parameters")
+    strategy_parameters = manifests[0]["strategy_parameters"]
     manifest = {
         "task_type": "maf_gene_consolidated",
-        "gene_id": args.gene_id,
         "gene_ids": [args.gene_id],
-        "strategy": strategy,
         "strategies": [strategy],
+        "strategy_parameters": strategy_parameters,
         "tool": manifests[0].get("tool", "ensembl_compara_maf"),
         "fragment_count": len(fragments),
         "source_chunk_ids": sorted(str(item.get("chunk_id") or "") for item in manifests),
-        "summary_count": len(summary_rows),
-        "segment_count": segment_count,
-        "event_count": event_count,
+        "ortholog_alignment_summary_count": len(summary_rows),
+        "alignment_segment_count": segment_count,
+        "alignment_event_mode": "raw",
+        "raw_alignment_event_count": event_count,
+        "alignment_event_count": event_count,
         "feature_coverage_count": feature_coverage_count,
         "failure_count": failure_count,
         "output_gzip_compresslevel": OUTPUT_GZIP_COMPRESSLEVEL,

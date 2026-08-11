@@ -84,9 +84,9 @@ remains the default because it preserves maximum traceability.
 Once per run, the alignment stage requests the NCBI taxonomy summary for the
 selected tax IDs and records lineage plus species/genus/family/order
 identifiers. These identifiers support the report's taxonomic scope and
-evidence-unit controls; they do not change aligner selection. The existing
-`taxonomy_presets.tsv.gz` filename and its legacy preset columns are retained
-to preserve the Stage 2 output contract.
+evidence-unit controls; they do not change aligner selection. The canonical
+`taxonomy.tsv.gz` table contains lineage and taxonomic-unit
+metadata only. Alignment presets belong to the strategy registry, not taxonomy.
 
 ## Alignment Granularity
 
@@ -179,7 +179,7 @@ Standalone `--stage align` publishes the full handoff contract:
 | --- | --- |
 | `manifest.json` | Exact selected-strategy-eligible `gene_ids`, per-strategy eligibility counts, enabled strategies, and output counts. |
 | `alignment_tasks.tsv.gz` | Per-gene task manifest with separate human-target and fetched-ortholog readiness checks. |
-| `taxonomy_presets.tsv.gz` | Compact tax_id-to-preset mapping. |
+| `taxonomy.tsv.gz` | Compact tax_id-to-lineage mapping. |
 | `taxonomy_failures.tsv.gz` | Taxonomy lookup warnings/failures. |
 | `taxonomy_summary.tsv.gz` | Run-level ortholog and taxonomic-unit counts by scope. |
 | `ortholog_alignment_summary.tsv.gz` | One row per gene/ortholog/output strategy when that strategy emits summary evidence. |
@@ -193,6 +193,12 @@ Standalone `--stage align` publishes the full handoff contract:
 | `native/` | Optional raw PAF/SAM files when enabled. |
 
 Native outputs are disabled by default.
+
+Every per-gene result and partition uses the same manifest keys: plural
+`gene_ids` and `strategies`, nested `strategy_parameters`, canonical output
+counts, and an explicit `alignment_event_mode`. Merge rejects missing or legacy
+singular fields. `feature_coverage.tsv.gz` is mandatory for every alignment
+result and is never reconstructed by a later fallback.
 
 In an end-to-end `--stage all` run, Stage 3 consumes partitioned events directly
 from Nextflow `work/`. Before the raw partition segments are discarded, the

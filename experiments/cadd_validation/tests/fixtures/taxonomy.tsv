@@ -1,0 +1,5 @@
+tax_id	scientific_name	rank	group_name	class_id	class_name	order_id	order_name	family_id	family_name	genus_id	genus_name	species_id	species_name	is_hominidae	is_primate	is_mammal	is_vertebrate	parent_tax_ids
+9443	Primates	order	primates	0	Mammalia	9443	Primates	0	unknown	0	unknown	0	unknown	false	true	true	true	none
+10090	Mus musculus	species	other_mammals	40674	Mammalia	0	Rodentia	0	Muridae	0	Mus	10090	Mus musculus	false	false	true	true	none
+10116	Rattus norvegicus	species	other_mammals	40674	Mammalia	0	Rodentia	0	Muridae	0	Rattus	10116	Rattus norvegicus	false	false	true	true	none
+7955	Danio rerio	species	other_vertebrates	0	Actinopteri	0	Cypriniformes	0	Danionidae	0	Danio	7955	Danio rerio	false	false	false	true	none

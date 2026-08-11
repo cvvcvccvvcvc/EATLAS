@@ -827,14 +827,14 @@ def write_snv_site_depth(
 def write_snv_taxonomic_depth(
     segment_paths: Iterable[Path],
     site_rows: Iterable[dict[str, object]],
-    taxonomy_presets: Path,
+    taxonomy: Path,
     output: Path,
     temp_parent: Path,
 ) -> int:
     """Write distinct aligned taxonomic-unit counts at observed concrete SNV sites."""
     if shutil.which("bedtools") is None:
         raise RuntimeError("bedtools is required for taxonomic site-depth calculation")
-    profiles = load_taxonomy_profiles(taxonomy_presets)
+    profiles = load_taxonomy_profiles(taxonomy)
     env = os.environ.copy()
     env["LC_ALL"] = "C"
     output.parent.mkdir(parents=True, exist_ok=True)
