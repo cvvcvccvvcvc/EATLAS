@@ -17,6 +17,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable, TextIO
 
+from ensembl_compara_maf import BASE_URL, RELEASE, SPECIES_SET
+
 
 FIELDS = [
     "release",
@@ -67,14 +69,11 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--genes-tsv", required=True, type=Path)
     parser.add_argument("--outdir", required=True, type=Path)
-    parser.add_argument("--release", default="116")
-    parser.add_argument("--species-set", default="92_mammals.epo_extended")
+    parser.add_argument("--release", default=RELEASE)
+    parser.add_argument("--species-set", default=SPECIES_SET)
     parser.add_argument(
         "--base-url",
-        default=(
-            "https://ftp.ensembl.org/pub/release-116/maf/ensembl-compara/"
-            "multiple_alignments/92_mammals.epo_extended"
-        ),
+        default=BASE_URL,
         help="HTTP(S) directory URL or local directory containing the selected MAF set.",
     )
     parser.add_argument("--timeout", type=float, default=120.0)

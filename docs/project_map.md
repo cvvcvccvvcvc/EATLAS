@@ -85,11 +85,14 @@ Runtime environments:
     human chromosomes present in `genes.tsv.gz`
   - reads MAF directory listings and first human rows, not whole MAF files
 
-- `bin/run_ensembl_compara_maf_alignment.py`
-  - streams selected Ensembl Compara MAF chunks for one target gene
-  - clips MSA evidence to the target gene interval
-  - writes the same normalized alignment evidence schema with species as the
-    support unit
+- `bin/ensembl_compara_maf.py`
+  - owns the fixed release-116 EPO Extended strategy constants
+  - provides shared MAF parsing, coordinate conversion, and normalized schemas
+
+- `bin/run_ensembl_compara_maf_chunk_alignment.py`
+  - streams one selected MAF chunk for all overlapping target genes
+  - clips MSA evidence to each target interval and writes per-gene fragments
+  - uses species rows as the alignment support units
 
 - `bin/merge_ensembl_compara_maf_gene.py`
   - consolidates all source-chunk fragments for one gene

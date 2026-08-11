@@ -14,11 +14,19 @@ from collections import OrderedDict, defaultdict
 from dataclasses import dataclass
 from pathlib import Path
 
-from run_ensembl_compara_maf_alignment import (
+from ensembl_compara_maf import (
+    DOWNLOAD_ATTEMPTS,
     EVENT_FIELDS,
     FAILURE_FIELDS,
+    METHOD,
     OUTPUT_GZIP_COMPRESSLEVEL,
+    RELEASE,
+    REQUEST_TIMEOUT_SECONDS,
+    RETRY_BASE_SECONDS,
+    RETRY_MAX_SECONDS,
     SEGMENT_FIELDS,
+    SPECIES_SET,
+    STRATEGY_NAME,
     SUMMARY_FIELDS,
     TOOL_NAME,
     convert_pair,
@@ -43,14 +51,14 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--chunk-task-dir", required=True, type=Path)
     parser.add_argument("--outdir", required=True, type=Path)
-    parser.add_argument("--strategy", default="precomputed_ensembl_92_mammals_epo_extended")
-    parser.add_argument("--release", default="116")
-    parser.add_argument("--species-set", default="92_mammals.epo_extended")
-    parser.add_argument("--method", default="EPO_EXTENDED")
-    parser.add_argument("--timeout", type=float, default=120.0)
-    parser.add_argument("--retries", type=int, default=8)
-    parser.add_argument("--retry-base-seconds", type=float, default=5.0)
-    parser.add_argument("--retry-max-seconds", type=float, default=300.0)
+    parser.add_argument("--strategy", default=STRATEGY_NAME)
+    parser.add_argument("--release", default=RELEASE)
+    parser.add_argument("--species-set", default=SPECIES_SET)
+    parser.add_argument("--method", default=METHOD)
+    parser.add_argument("--timeout", type=float, default=REQUEST_TIMEOUT_SECONDS)
+    parser.add_argument("--retries", type=int, default=DOWNLOAD_ATTEMPTS)
+    parser.add_argument("--retry-base-seconds", type=float, default=RETRY_BASE_SECONDS)
+    parser.add_argument("--retry-max-seconds", type=float, default=RETRY_MAX_SECONDS)
     return parser.parse_args()
 
 

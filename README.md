@@ -192,11 +192,11 @@ directory or home quota.
 | 3 | `BUILD_FETCH_DATASET` | Assemble chunk tables, selected per-gene FASTA files, and target structural features into the final fetch dataset. | `fetch/` |
 | 4 | `FETCH_TAXONOMY_PRESETS` | Build compact taxonomy metadata for downstream taxonomic evidence. | `alignment/taxonomy_presets.tsv.gz` |
 | 5 | `BUILD_ALIGNMENT_TASKS` | Validate fetch outputs and create per-gene alignment inputs with stable sequence IDs. | `alignment/alignment_tasks.tsv.gz` |
-| 6 | `ALIGN_MINIMAP2_ASM10` | Fixed minimap2 baseline. | Per-gene normalized evidence in `work/` |
-| 7 | `ALIGN_MINIMAP2_ASM20` | More permissive fixed minimap2 baseline. | Per-gene normalized evidence in `work/` |
-| 8 | `ALIGN_NUCMER_COMPARATOR` | Multi-query nucmer comparator without global one-to-one delta filtering. | Per-gene normalized evidence in `work/` |
-| 9 | `ALIGN_BWA_PSEUDOREADS` | Pseudoread comparator evidence. | Per-gene normalized evidence in `work/` |
-| 10 | `BUILD_ENSEMBL_COMPARA_MAF_MANIFEST` | When selected, build a run-specific manifest for Ensembl Compara MAF chunks covering target chromosomes. | Per-run manifest in `work/` |
-| 11 | `ALIGN_ENSEMBL_COMPARA_MAF` | When selected, stream precomputed Ensembl Compara MAF blocks and normalize species-level evidence. | Per-gene normalized evidence in `work/` |
+| 6 | `ALIGN_MINIMAP2` | Run the selected fixed asm10/asm20 minimap2 baselines. | Per-gene normalized evidence in `work/` |
+| 7 | `ALIGN_NUCMER_COMPARATOR` | Multi-query nucmer comparator without global one-to-one delta filtering. | Per-gene normalized evidence in `work/` |
+| 8 | `ALIGN_BWA_PSEUDOREADS` | Fixed pseudoread comparator evidence. | Per-gene normalized evidence in `work/` |
+| 9 | `BUILD_ENSEMBL_COMPARA_MAF_MANIFEST` | When selected, build a release-116 EPO Extended manifest covering target chromosomes. | Per-run manifest in `work/` |
+| 10 | `ALIGN_ENSEMBL_COMPARA_MAF_CHUNK` | When selected, stream each required MAF chunk once for all overlapping genes. | Per-gene fragments in `work/` |
+| 11 | `MERGE_ENSEMBL_COMPARA_MAF_GENE` | Consolidate all EPO fragments for one target gene. | Per-gene normalized evidence in `work/` |
 | 12 | `MERGE_ALIGNMENT_EVIDENCE` | Merge normalized alignment evidence and summarize feature coverage. | `alignment/` |
 | 13 | `ANNOTATE_EVENTS` | Normalize event keys and annotate with ClinVar/gnomAD evidence. | `annotation/` |

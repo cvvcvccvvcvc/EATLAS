@@ -68,9 +68,10 @@ or report layers must treat cross-strategy-only sections as not applicable or
 empty rather than failing.
 
 `all` selects `minimap2_asm10`, `minimap2_asm20`, `nucmer`, and
-`bwa_pseudoreads`. When the precomputed Ensembl strategy is selected explicitly,
-its remote MAF chunk tasks default to `--ensembl_compara_maf_max_forks 3`;
-increase it only after checking network stability.
+`bwa_pseudoreads`. The explicitly selected Ensembl strategy uses release 116,
+the `92_mammals.epo_extended` set, and at most three concurrent remote chunk
+tasks. These values are part of the strategy definition rather than separate
+user options.
 
 Large runs can enable `--compact_alignment_events true` to publish one support
 row per unique event and strategy instead of raw per-ortholog event rows. Each
@@ -102,6 +103,10 @@ reference and options: minimap2 maps each query independently against the target
 index. Multi-query execution avoids rebuilding the target index and avoids
 creating thousands of scheduler tasks.
 
+Both fixed presets run through one `ALIGN_MINIMAP2` process. Strategy metadata
+selects `asm10` or `asm20`; there are no duplicate workflow modules. Selected
+minimap2 presets share that process's `alignment_max_forks` budget.
+
 For nucmer:
 
 ```text
@@ -118,6 +123,10 @@ per affected base. Identical events repeated by overlapping Nucmer records are
 collapsed within an ortholog. The parser adds `unfiltered_nucmer` QC flags.
 Events containing IUPAC ambiguity symbols are excluded and counted in the task
 manifest; the affected ortholog summary receives `ambiguous_event_allele`.
+
+The BWA comparator always uses 150-base pseudo-reads, a 75-base step, and
+synthetic PHRED 30. These values are part of the strategy definition rather
+than runtime tuning parameters.
 
 For Ensembl Compara MAF:
 
@@ -147,7 +156,7 @@ out of `alignment_events.tsv.gz` and marked in the ortholog summary QC flags.
 
 The MAF chunk manifest can be supplied with `--ensembl_compara_maf_manifest` or
 `ENSEMBL_COMPARA_MAF_MANIFEST`. If neither is set, the workflow checks
-`assets/reference/ensembl/compara/release-<release>/<species_set>/ensembl_compara_maf_manifest.tsv.gz`;
+`assets/reference/ensembl/compara/release-116/92_mammals.epo_extended/ensembl_compara_maf_manifest.tsv.gz`;
 if that file is absent, it builds the manifest during the run.
 
 This strategy is not based on NCBI ortholog GeneIDs. Its support unit is the

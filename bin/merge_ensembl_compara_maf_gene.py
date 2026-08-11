@@ -13,7 +13,7 @@ from collections import defaultdict
 from pathlib import Path
 
 from feature_coverage import summarize_feature_coverage
-from run_ensembl_compara_maf_alignment import (
+from ensembl_compara_maf import (
     EVENT_FIELDS,
     FAILURE_FIELDS,
     OUTPUT_GZIP_COMPRESSLEVEL,

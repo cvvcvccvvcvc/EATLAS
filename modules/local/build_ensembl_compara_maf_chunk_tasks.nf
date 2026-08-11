@@ -13,10 +13,10 @@ process BUILD_ENSEMBL_COMPARA_MAF_CHUNK_TASKS {
 
     script:
     """
+    export PYTHONPATH="${projectDir}/bin:\${PYTHONPATH:-}"
     python3 "${chunk_task_script}" \\
         --maf-manifest "${maf_manifest}" \\
         --outdir . \\
-        --strategy precomputed_ensembl_92_mammals_epo_extended \\
         --genes-tsv "${genes_tsv}"
     """
 }

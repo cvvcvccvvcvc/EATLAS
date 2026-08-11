@@ -12,7 +12,8 @@ from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
 
-from run_ensembl_compara_maf_alignment import (
+from ensembl_compara_maf import (
+    STRATEGY_NAME,
     refseq_to_ensembl_seq_region,
     select_candidate_chunks,
 )
@@ -47,7 +48,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--genes-tsv", required=True, type=Path)
     parser.add_argument("--maf-manifest", required=True, type=Path)
     parser.add_argument("--outdir", required=True, type=Path)
-    parser.add_argument("--strategy", default="precomputed_ensembl_92_mammals_epo_extended")
+    parser.add_argument("--strategy", default=STRATEGY_NAME)
     parser.add_argument("--candidate-neighbors", type=int, default=1)
     return parser.parse_args()
 

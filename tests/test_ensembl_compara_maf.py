@@ -1,3 +1,5 @@
+"""Tests for shared and chunk-based Ensembl Compara MAF normalization."""
+
 from __future__ import annotations
 
 import argparse
@@ -14,9 +16,9 @@ import pytest
 BIN_DIR = Path(__file__).resolve().parents[1] / "bin"
 sys.path.insert(0, str(BIN_DIR))
 
-import run_ensembl_compara_maf_alignment as maf  # noqa: E402
+import ensembl_compara_maf as maf  # noqa: E402
 import run_ensembl_compara_maf_chunk_alignment as maf_chunk  # noqa: E402
-from run_ensembl_compara_maf_alignment import (  # noqa: E402
+from ensembl_compara_maf import (  # noqa: E402
     AlignmentRow,
     EVENT_FIELDS,
     SEGMENT_FIELDS,
@@ -42,6 +44,33 @@ def retry_args(retries: int = 8) -> argparse.Namespace:
         retry_base_seconds=5.0,
         retry_max_seconds=300.0,
         timeout=120.0,
+    )
+
+
+def test_chunk_cli_uses_fixed_epo_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "run_ensembl_compara_maf_chunk_alignment.py",
+            "--chunk-task-dir",
+            "task",
+            "--outdir",
+            "out",
+        ],
+    )
+
+    parsed = maf_chunk.parse_args()
+
+    assert parsed.strategy == maf.STRATEGY_NAME
+    assert (parsed.release, parsed.species_set, parsed.method) == (
+        maf.RELEASE,
+        maf.SPECIES_SET,
+        maf.METHOD,
+    )
+    assert (parsed.timeout, parsed.retries) == (
+        maf.REQUEST_TIMEOUT_SECONDS,
+        maf.DOWNLOAD_ATTEMPTS,
     )
 
 

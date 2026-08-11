@@ -20,9 +20,6 @@ process ALIGN_BWA_PSEUDOREADS {
         --source-ortholog-fasta "${source_ortholog_fasta}" \\
         --outdir "${resultDir}" \\
         --threads "${task.cpus}" \\
-        --pseudoread-len "${params.bwa_pseudoread_len}" \\
-        --pseudoread-step "${params.bwa_pseudoread_step}" \\
-        --pseudoread-phred "${params.bwa_pseudoread_phred}" \\
         --target-features "${task_dir}/target_features.tsv.gz" \\
         --keep-native "${params.keep_native_alignments}"
     """

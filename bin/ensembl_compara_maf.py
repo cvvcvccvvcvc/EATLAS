@@ -1,14 +1,11 @@
-#!/usr/bin/env python3
-"""Normalize precomputed Ensembl Compara MAF alignments as a GAPH Stage 2 strategy."""
+"""Shared Ensembl Compara MAF parsing and normalization primitives."""
 
 from __future__ import annotations
 
 import argparse
 import csv
 import gzip
-import json
 import random
-import sys
 import time
 import urllib.error
 import urllib.parse
@@ -17,9 +14,18 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Iterable, TextIO
 
-from alignment_task_io import load_task_context
-from feature_coverage import summarize_feature_coverage
-
+STRATEGY_NAME = "precomputed_ensembl_92_mammals_epo_extended"
+RELEASE = "116"
+SPECIES_SET = "92_mammals.epo_extended"
+METHOD = "EPO_EXTENDED"
+BASE_URL = (
+    "https://ftp.ensembl.org/pub/release-116/maf/ensembl-compara/"
+    "multiple_alignments/92_mammals.epo_extended"
+)
+REQUEST_TIMEOUT_SECONDS = 120.0
+DOWNLOAD_ATTEMPTS = 8
+RETRY_BASE_SECONDS = 5.0
+RETRY_MAX_SECONDS = 300.0
 
 SEGMENT_FIELDS = [
     "gene_id",
@@ -161,29 +167,6 @@ class TsvGzWriter:
         self.handle.close()
 
 
-def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--task-dir", required=True, type=Path)
-    parser.add_argument("--maf-manifest", required=True, type=Path)
-    parser.add_argument("--outdir", required=True, type=Path)
-    parser.add_argument("--strategy", default="precomputed_ensembl_92_mammals_epo_extended")
-    parser.add_argument("--release", default="116")
-    parser.add_argument("--species-set", default="92_mammals.epo_extended")
-    parser.add_argument("--method", default="EPO_EXTENDED")
-    parser.add_argument("--target-features", type=Path)
-    parser.add_argument("--timeout", type=float, default=120.0)
-    parser.add_argument("--retries", type=int, default=8)
-    parser.add_argument("--retry-base-seconds", type=float, default=5.0)
-    parser.add_argument("--retry-max-seconds", type=float, default=300.0)
-    parser.add_argument("--candidate-neighbors", type=int, default=1)
-    return parser.parse_args()
-
-
-def read_tsv_gz(path: Path) -> list[dict[str, str]]:
-    with gzip.open(path, "rt", newline="") as handle:
-        return [dict(row) for row in csv.DictReader(handle, delimiter="\t")]
-
-
 def write_tsv_gz(path: Path, fields: list[str], rows: Iterable[dict[str, object]]) -> int:
     path.parent.mkdir(parents=True, exist_ok=True)
     count = 0
@@ -235,10 +218,6 @@ def refseq_to_ensembl_seq_region(value: str) -> str:
         if number == 12920:
             return "MT"
     return ""
-
-
-def truthy(value: str) -> bool:
-    return str(value).lower() in {"1", "true", "yes", "y"}
 
 
 def is_remote_source(source: str) -> bool:
@@ -784,263 +763,3 @@ def select_candidate_chunks(
             for neighbor_index in range(max(0, index - neighbors), min(len(region_rows), index + neighbors + 1)):
                 selected_indices.add(neighbor_index)
     return [row for index, row in enumerate(region_rows) if index in selected_indices]
-
-
-def scan_source(
-    source: str,
-    human_src: str,
-    args: argparse.Namespace,
-    gene_id: str,
-    genomic_accession: str,
-    target_origin1: int,
-    target_end1: int,
-    summaries: dict[str, dict[str, object]],
-    segment_writer: TsvGzWriter,
-    event_writer: TsvGzWriter,
-    event_id: int,
-) -> tuple[int, int, int, dict[str, object] | None]:
-    source_name = maf_source_name(source)
-    completed_block_count = 0
-    used_block_count = 0
-    row_count = 0
-    last_error: Exception | None = None
-    attempts = max(int(args.retries), 1)
-    for attempt in range(1, attempts + 1):
-        current_block_count = 0
-        attempt_error: Exception | None = None
-        try:
-            handle = open_maf_text(source, args.timeout)
-        except Exception as exc:
-            if missing_maf_source_error(exc):
-                return (
-                    event_id,
-                    used_block_count,
-                    row_count,
-                    source_read_failure(
-                        args,
-                        gene_id,
-                        source,
-                        attempt,
-                        completed_block_count,
-                        used_block_count,
-                        exc,
-                    ),
-                )
-            if not retryable_maf_error(exc):
-                raise
-            attempt_error = exc
-        else:
-            with handle:
-                block_iter = iter_maf_blocks(handle)
-                while True:
-                    try:
-                        block = next(block_iter)
-                    except StopIteration:
-                        return event_id, used_block_count, row_count, None
-                    except Exception as exc:
-                        if not retryable_maf_error(exc):
-                            raise
-                        attempt_error = exc
-                        break
-
-                    current_block_count += 1
-                    if current_block_count <= completed_block_count:
-                        continue
-                    human_rows = [row for row in block if row.src == human_src]
-                    if not human_rows:
-                        completed_block_count = current_block_count
-                        continue
-                    human_maf = human_rows[0]
-                    human_start0, human_end0 = human_maf.forward_interval0()
-                    if not overlaps(human_start0 + 1, human_end0, target_origin1, target_end1):
-                        completed_block_count = current_block_count
-                        continue
-                    flip_orientation = human_maf.strand == "-"
-                    human_row = to_alignment_row(human_maf, flip_orientation)
-                    block_row_count = 0
-                    for query_index, maf_row in enumerate(block, start=1):
-                        if maf_row.src == human_src:
-                            continue
-                        query_row = to_alignment_row(maf_row, flip_orientation)
-                        if is_ancestral(query_row):
-                            continue
-                        query_row = resolve_maf_dots(human_row, query_row)
-                        summary = summaries.setdefault(
-                            query_row.species,
-                            empty_summary(args, query_row, target_end1 - target_origin1 + 1),
-                        )
-                        summary["gene_id"] = gene_id
-                        native_record_id = f"{source_name}:block{current_block_count}:row{query_index}"
-                        event_id = convert_pair(
-                            args,
-                            gene_id,
-                            genomic_accession,
-                            target_origin1,
-                            target_end1,
-                            human_row,
-                            query_row,
-                            native_record_id,
-                            summary,
-                            event_id,
-                            segment_writer,
-                            event_writer,
-                        )
-                        block_row_count += 1
-                    used_block_count += 1
-                    row_count += block_row_count
-                    completed_block_count = current_block_count
-
-        if attempt_error is None:
-            continue
-        last_error = attempt_error
-        message = (
-            f"MAF source read attempt {attempt}/{attempts} failed for {source_name} "
-            f"after {completed_block_count} committed blocks: "
-            f"{type(attempt_error).__name__}: {attempt_error}"
-        )
-        print(message, file=sys.stderr)
-        if attempt < attempts:
-            time.sleep(retry_sleep_seconds(args, attempt))
-            continue
-        return (
-            event_id,
-            used_block_count,
-            row_count,
-            source_read_failure(args, gene_id, source, attempts, completed_block_count, used_block_count, attempt_error),
-        )
-    return (
-        event_id,
-        used_block_count,
-        row_count,
-        source_read_failure(args, gene_id, source, attempts, completed_block_count, used_block_count, last_error),
-    )
-
-
-def main() -> None:
-    args = parse_args()
-    args.outdir.mkdir(parents=True, exist_ok=True)
-
-    task, target_meta, _ortholog_meta = load_task_context(args.task_dir)
-    gene_id = str(task["gene_id"])
-    genomic_accession = target_meta.get("genomic_accession", "")
-    seq_region = refseq_to_ensembl_seq_region(genomic_accession)
-    start_values = [int(target_meta["genomic_begin"]), int(target_meta["genomic_end"])]
-    target_origin1 = min(start_values)
-    target_end1 = max(start_values)
-    target_length = int(target_meta.get("sequence_length") or target_end1 - target_origin1 + 1)
-    human_src = f"homo_sapiens.{seq_region}" if seq_region else ""
-
-    segment_writer = TsvGzWriter(args.outdir / "alignment_segments.tsv.gz", SEGMENT_FIELDS)
-    event_writer = TsvGzWriter(args.outdir / "alignment_events.tsv.gz", EVENT_FIELDS)
-    failures: list[dict[str, object]] = []
-    summaries: dict[str, dict[str, object]] = {}
-    source_count = 0
-    source_failure_count = 0
-    used_block_count = 0
-    alignment_row_count = 0
-    event_id = 1
-
-    try:
-        if not seq_region:
-            raise ValueError(f"Could not map genomic_accession={genomic_accession!r} to an Ensembl seq_region")
-        manifest_rows = read_tsv_gz(args.maf_manifest)
-        candidates = select_candidate_chunks(
-            manifest_rows,
-            seq_region,
-            target_origin1,
-            target_end1,
-            args.candidate_neighbors,
-        )
-        if not candidates:
-            failures.append(
-                {
-                    "gene_id": gene_id,
-                    "ortholog_gene_id": "",
-                    "strategy": args.strategy,
-                    "tool": TOOL_NAME,
-                    "failure_type": "no_candidate_maf_chunks",
-                    "message": f"No MAF chunks in manifest overlap {human_src}:{target_origin1}-{target_end1}",
-                }
-            )
-        for candidate in candidates:
-            source = candidate["source"]
-            source_count += 1
-            event_id, block_delta, row_delta, source_failure = scan_source(
-                source,
-                human_src,
-                args,
-                gene_id,
-                genomic_accession,
-                target_origin1,
-                target_end1,
-                summaries,
-                segment_writer,
-                event_writer,
-                event_id,
-            )
-            used_block_count += block_delta
-            alignment_row_count += row_delta
-            if source_failure:
-                failures.append(source_failure)
-                source_failure_count += 1
-    except Exception as exc:
-        failures.append(
-            {
-                "gene_id": gene_id,
-                "ortholog_gene_id": "",
-                "strategy": args.strategy,
-                "tool": TOOL_NAME,
-                "failure_type": "ensembl_compara_maf_failed",
-                "message": str(exc),
-            }
-        )
-        raise
-    finally:
-        segment_writer.close()
-        event_writer.close()
-
-    if source_failure_count:
-        for summary in summaries.values():
-            summary["qc_flags"].add("maf_source_read_failed")
-
-    summary_rows = [finalize_summary(row) for row in summaries.values()]
-    write_tsv_gz(args.outdir / "ortholog_alignment_summary.tsv.gz", SUMMARY_FIELDS, summary_rows)
-    write_tsv_gz(args.outdir / "failures.tsv.gz", FAILURE_FIELDS, failures)
-    feature_coverage_count = None
-    if args.target_features:
-        feature_coverage_count = summarize_feature_coverage(
-            args.target_features,
-            args.outdir / "ortholog_alignment_summary.tsv.gz",
-            args.outdir / "alignment_segments.tsv.gz",
-            args.outdir / "feature_coverage.tsv.gz",
-        )
-    manifest = {
-        "gene_id": gene_id,
-        "strategy": args.strategy,
-        "tool": TOOL_NAME,
-        "release": args.release,
-        "species_set": args.species_set,
-        "method": args.method,
-        "output_gzip_compresslevel": OUTPUT_GZIP_COMPRESSLEVEL,
-        "human_src": human_src,
-        "genomic_accession": genomic_accession,
-        "target_start1": target_origin1,
-        "target_end1": target_end1,
-        "target_length": target_length,
-        "candidate_source_count": source_count,
-        "source_failure_count": source_failure_count,
-        "used_block_count": used_block_count,
-        "alignment_row_count": alignment_row_count,
-        "summary_count": len(summary_rows),
-        "segment_count": segment_writer.count,
-        "event_count": event_writer.count,
-        "feature_coverage_count": feature_coverage_count,
-        "failure_count": len(failures),
-    }
-    (args.outdir / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
-    if failures:
-        print(f"{TOOL_NAME} completed with failures for gene_id={gene_id}: {failures}", file=sys.stderr)
-
-
-if __name__ == "__main__":
-    main()

@@ -87,7 +87,7 @@
                 "alignment_max_forks": {
                     "type": "integer",
                     "default": 4,
-                    "description": "Maximum concurrent tasks per alignment strategy process. With multiple strategies selected, total alignment concurrency can be higher and is also bounded by executor CPU/queue limits."
+                    "description": "Maximum concurrent tasks in each aligner process. The two minimap2 presets share one process and one limit; nucmer and BWA each have their own process. Total alignment concurrency is also bounded by executor CPU/queue limits."
                 },
                 "alignment_partition_size": {
                     "type": "integer",
@@ -109,46 +109,6 @@
                 "keep_native_alignments": {
                     "type": "boolean",
                     "default": false
-                },
-                "bwa_pseudoread_len": {
-                    "type": "integer",
-                    "default": 150,
-                    "description": "Pseudo-read length used by the BWA pseudoread strategies."
-                },
-                "bwa_pseudoread_step": {
-                    "type": "integer",
-                    "default": 75,
-                    "description": "Step size between generated pseudo-read starts for the BWA pseudoread strategies."
-                },
-                "bwa_pseudoread_phred": {
-                    "type": "integer",
-                    "default": 30,
-                    "description": "Synthetic PHRED quality assigned to generated BWA pseudo-reads."
-                },
-                "ensembl_compara_maf_max_forks": {
-                    "type": "integer",
-                    "default": 3,
-                    "description": "Maximum concurrent Ensembl Compara MAF alignment tasks."
-                },
-                "ensembl_compara_maf_timeout_seconds": {
-                    "type": "integer",
-                    "default": 120,
-                    "description": "HTTP timeout in seconds for each Ensembl Compara MAF chunk request."
-                },
-                "ensembl_compara_maf_retries": {
-                    "type": "integer",
-                    "default": 8,
-                    "description": "Maximum attempts for transient Ensembl Compara MAF stream failures."
-                },
-                "ensembl_compara_maf_retry_base_seconds": {
-                    "type": "number",
-                    "default": 5.0,
-                    "description": "Initial retry backoff in seconds for transient Ensembl Compara MAF stream failures."
-                },
-                "ensembl_compara_maf_retry_max_seconds": {
-                    "type": "number",
-                    "default": 300.0,
-                    "description": "Maximum retry backoff in seconds for transient Ensembl Compara MAF stream failures."
                 }
             }
         },
@@ -156,29 +116,9 @@
             "title": "Precomputed Alignment Options",
             "type": "object",
             "properties": {
-                "ensembl_compara_maf_release": {
-                    "type": "string",
-                    "default": "116",
-                    "description": "Ensembl release label for the precomputed Compara MAF strategy."
-                },
-                "ensembl_compara_maf_species_set": {
-                    "type": "string",
-                    "default": "92_mammals.epo_extended",
-                    "description": "Ensembl Compara MAF species set directory/name."
-                },
-                "ensembl_compara_maf_method": {
-                    "type": "string",
-                    "default": "EPO_EXTENDED",
-                    "description": "Compara method label written to alignment output metadata."
-                },
                 "ensembl_compara_maf_manifest": {
                     "type": "string",
-                    "description": "Optional precomputed Ensembl Compara MAF chunk manifest. Defaults to ENSEMBL_COMPARA_MAF_MANIFEST when set, then assets/reference/ensembl/compara/release-<release>/<species_set>/ensembl_compara_maf_manifest.tsv.gz when present; otherwise the manifest is built during the run."
-                },
-                "ensembl_compara_maf_base_url": {
-                    "type": "string",
-                    "default": "https://ftp.ensembl.org/pub/release-116/maf/ensembl-compara/multiple_alignments/92_mammals.epo_extended",
-                    "description": "HTTP(S) URL or local directory containing the selected Ensembl Compara MAF files."
+                    "description": "Optional release-116 92-mammals EPO Extended chunk manifest. Defaults to ENSEMBL_COMPARA_MAF_MANIFEST, then the matching asset path; otherwise it is built during the run."
                 }
             }
         }

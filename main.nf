@@ -7,8 +7,8 @@ include { validateParameters; paramsHelp } from 'plugin/nf-validation'
 
 ENSEMBL_COMPARA_STRATEGY = 'precomputed_ensembl_92_mammals_epo_extended'
 ALIGNMENT_STRATEGY_REGISTRY = [
-    [name: 'minimap2_asm10', default_enabled: true],
-    [name: 'minimap2_asm20', default_enabled: true],
+    [name: 'minimap2_asm10', default_enabled: true, minimap2_preset: 'asm10'],
+    [name: 'minimap2_asm20', default_enabled: true, minimap2_preset: 'asm20'],
     [name: 'nucmer', default_enabled: true],
     [name: 'bwa_pseudoreads', default_enabled: true],
     [name: ENSEMBL_COMPARA_STRATEGY, default_enabled: false],
@@ -139,6 +139,9 @@ SELECTED_ALIGNMENT_STRATEGIES = parseAlignmentStrategies(params.alignment_strate
 SELECTED_ORTHOLOG_ALIGNMENT_STRATEGIES = SELECTED_ALIGNMENT_STRATEGIES.findAll {
     it != ENSEMBL_COMPARA_STRATEGY
 }
+SELECTED_MINIMAP2_STRATEGIES = ALIGNMENT_STRATEGY_REGISTRY.findAll {
+    it.minimap2_preset && SELECTED_ALIGNMENT_STRATEGIES.contains(it.name)
+}
 
 include { VALIDATE_IDS } from './modules/local/validate_ids.nf'
 include { CHECK_RUNTIME } from './modules/local/check_runtime.nf'
@@ -147,14 +150,12 @@ include { BUILD_FETCH_DATASET } from './modules/local/build_fetch_dataset.nf'
 include { FINALIZE_FETCH_OUTPUT } from './modules/local/finalize_fetch_output.nf'
 include { FETCH_TAXONOMY_PRESETS } from './modules/local/fetch_taxonomy_presets.nf'
 include { BUILD_ALIGNMENT_TASKS } from './modules/local/build_alignment_tasks.nf'
-include { ALIGN_MINIMAP2_ASM10 } from './modules/local/align_minimap2_asm10.nf'
-include { ALIGN_MINIMAP2_ASM20 } from './modules/local/align_minimap2_asm20.nf'
+include { ALIGN_MINIMAP2 } from './modules/local/align_minimap2.nf'
 include { MERGE_ALIGNMENT } from './modules/local/merge_alignment.nf'
 include { MERGE_ALIGNMENT_PARTITION } from './modules/local/merge_alignment_partition.nf'
 include { ALIGN_NUCMER_COMPARATOR } from './modules/local/align_nucmer_comparator.nf'
 include { ALIGN_BWA_PSEUDOREADS } from './modules/local/align_bwa_pseudoreads.nf'
 include { BUILD_ENSEMBL_COMPARA_MAF_MANIFEST } from './modules/local/build_ensembl_compara_maf_manifest.nf'
-include { ALIGN_ENSEMBL_COMPARA_MAF } from './modules/local/align_ensembl_compara_maf.nf'
 include { BUILD_ENSEMBL_COMPARA_MAF_CHUNK_TASKS } from './modules/local/build_ensembl_compara_maf_chunk_tasks.nf'
 include { ALIGN_ENSEMBL_COMPARA_MAF_CHUNK } from './modules/local/align_ensembl_compara_maf_chunk.nf'
 include { MERGE_ENSEMBL_COMPARA_MAF_GENE } from './modules/local/merge_ensembl_compara_maf_gene.nf'
@@ -227,7 +228,6 @@ workflow ALIGNMENT_STAGE {
     bwa_script = file("${projectDir}/bin/run_bwa_pseudoreads.py")
     bam_filtering_script = file("${projectDir}/bin/bam_filtering_v1.py")
     ensembl_compara_maf_manifest_script = file("${projectDir}/bin/build_ensembl_compara_maf_manifest.py")
-    ensembl_compara_maf_script = file("${projectDir}/bin/run_ensembl_compara_maf_alignment.py")
     ensembl_compara_maf_chunk_tasks_script = file("${projectDir}/bin/prepare_ensembl_compara_maf_chunk_tasks.py")
     ensembl_compara_maf_chunk_script = file("${projectDir}/bin/run_ensembl_compara_maf_chunk_alignment.py")
     ensembl_compara_maf_gene_merge_script = file("${projectDir}/bin/merge_ensembl_compara_maf_gene.py")
@@ -321,16 +321,22 @@ workflow ALIGNMENT_STAGE {
                 source_ortholog_fasta
             )
         }
+    minimap2_inputs = alignment_inputs.flatMap {
+        meta, task_dir, source_target_fasta, source_ortholog_fasta ->
+            SELECTED_MINIMAP2_STRATEGIES.collect { strategy ->
+                tuple(
+                    meta + [strategy: strategy.name, preset: strategy.minimap2_preset],
+                    task_dir,
+                    source_target_fasta,
+                    source_ortholog_fasta
+                )
+            }
+    }
     alignment_result_dirs = Channel.empty()
 
-    if (SELECTED_ALIGNMENT_STRATEGIES.contains('minimap2_asm10')) {
-        ALIGN_MINIMAP2_ASM10(alignment_inputs, minimap2_script)
-        alignment_result_dirs = alignment_result_dirs.mix(ALIGN_MINIMAP2_ASM10.out.asm10_result_dirs)
-    }
-
-    if (SELECTED_ALIGNMENT_STRATEGIES.contains('minimap2_asm20')) {
-        ALIGN_MINIMAP2_ASM20(alignment_inputs, minimap2_script)
-        alignment_result_dirs = alignment_result_dirs.mix(ALIGN_MINIMAP2_ASM20.out.asm20_result_dirs)
+    if (!SELECTED_MINIMAP2_STRATEGIES.isEmpty()) {
+        ALIGN_MINIMAP2(minimap2_inputs, minimap2_script)
+        alignment_result_dirs = alignment_result_dirs.mix(ALIGN_MINIMAP2.out.result_dirs)
     }
 
     if (SELECTED_ALIGNMENT_STRATEGIES.contains('nucmer')) {
@@ -343,8 +349,8 @@ workflow ALIGNMENT_STAGE {
         alignment_result_dirs = alignment_result_dirs.mix(ALIGN_BWA_PSEUDOREADS.out.bwa_result_dirs)
     }
 
-    if (SELECTED_ALIGNMENT_STRATEGIES.contains('precomputed_ensembl_92_mammals_epo_extended')) {
-        default_maf_manifest = file("${projectDir}/assets/reference/ensembl/compara/release-${params.ensembl_compara_maf_release}/${params.ensembl_compara_maf_species_set}/ensembl_compara_maf_manifest.tsv.gz")
+    if (SELECTED_ALIGNMENT_STRATEGIES.contains(ENSEMBL_COMPARA_STRATEGY)) {
+        default_maf_manifest = file("${projectDir}/assets/reference/ensembl/compara/release-116/92_mammals.epo_extended/ensembl_compara_maf_manifest.tsv.gz")
         configured_maf_manifest = params.ensembl_compara_maf_manifest ? file(params.ensembl_compara_maf_manifest) : null
         if (configured_maf_manifest && !configured_maf_manifest.exists()) {
             error "Configured Ensembl Compara MAF manifest not found: ${params.ensembl_compara_maf_manifest}"

@@ -15,14 +15,6 @@ process ALIGN_ENSEMBL_COMPARA_MAF_CHUNK {
     export PYTHONPATH="${projectDir}/bin:\${PYTHONPATH:-}"
     python3 "${align_script}" \\
         --chunk-task-dir "${chunk_task_dir}" \\
-        --outdir "${resultDir}" \\
-        --strategy precomputed_ensembl_92_mammals_epo_extended \\
-        --release "${params.ensembl_compara_maf_release}" \\
-        --species-set "${params.ensembl_compara_maf_species_set}" \\
-        --method "${params.ensembl_compara_maf_method}" \\
-        --timeout "${params.ensembl_compara_maf_timeout_seconds}" \\
-        --retries "${params.ensembl_compara_maf_retries}" \\
-        --retry-base-seconds "${params.ensembl_compara_maf_retry_base_seconds}" \\
-        --retry-max-seconds "${params.ensembl_compara_maf_retry_max_seconds}"
+        --outdir "${resultDir}"
     """
 }

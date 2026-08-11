@@ -15,6 +15,32 @@ import run_bwa_pseudoreads as bwa_runner  # noqa: E402
 from run_bwa_pseudoreads import generate_pseudoreads  # noqa: E402
 
 
+def test_bwa_cli_uses_fixed_pseudoread_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "run_bwa_pseudoreads.py",
+            "--task-dir",
+            "task",
+            "--source-target-fasta",
+            "target.fa.gz",
+            "--source-ortholog-fasta",
+            "ortholog.fa.gz",
+            "--outdir",
+            "out",
+        ],
+    )
+
+    args = bwa_runner.parse_args()
+
+    assert (
+        args.pseudoread_len,
+        args.pseudoread_step,
+        args.pseudoread_phred,
+    ) == (150, 75, 30)
+
+
 def test_pseudoread_starts_include_final_window() -> None:
     assert pseudoread_starts(224, read_len=150, step=75) == [0, 74]
     assert pseudoread_starts(225, read_len=150, step=75) == [0, 75]

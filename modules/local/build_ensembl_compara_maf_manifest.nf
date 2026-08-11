@@ -12,11 +12,9 @@ process BUILD_ENSEMBL_COMPARA_MAF_MANIFEST {
 
     script:
     """
+    export PYTHONPATH="${projectDir}/bin:\${PYTHONPATH:-}"
     python3 "${manifest_script}" \\
         --genes-tsv "${genes}" \\
-        --outdir . \\
-        --release "${params.ensembl_compara_maf_release}" \\
-        --species-set "${params.ensembl_compara_maf_species_set}" \\
-        --base-url "${params.ensembl_compara_maf_base_url}"
+        --outdir .
     """
 }
