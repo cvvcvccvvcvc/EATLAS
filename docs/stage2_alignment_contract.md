@@ -286,11 +286,10 @@ explicit Nextflow inputs and materialize uncompressed aligner input FASTA files
 inside their scratch workspace.
 
 Task preparation receives the Stage 1 sequence directory as one staged input,
-not one command-line argument per FASTA. For current Stage 1 outputs it streams
-the `query_gene_id`-grouped ortholog table and keeps only one gene's metadata in
-memory. Older ungrouped fetch outputs remain supported through a compatibility
-path that loads that legacy table in memory; regenerate large legacy fetch
-datasets before cluster-scale alignment.
+not one command-line argument per FASTA. It streams the required
+`query_gene_id`-grouped ortholog table and keeps only one gene's metadata in
+memory. A repeated, non-contiguous `query_gene_id` is a contract error; old
+ungrouped fetch outputs must be regenerated.
 
 The same preparation step partitions `target_features.tsv.gz` into one compact
 `target_features.tsv.gz` inside each ready gene task. Alignment jobs read only

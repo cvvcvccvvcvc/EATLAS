@@ -21,9 +21,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--genes-tsv", required=True, type=Path)
     parser.add_argument("--orthologs-tsv", required=True, type=Path)
-    parser.add_argument("--fetch-manifest", required=True, type=Path)
     parser.add_argument("--target-features", required=True, type=Path)
-    parser.add_argument("--taxonomy-presets", required=True, type=Path)
     parser.add_argument("--outdir", required=True, type=Path)
     parser.add_argument("--sequences-dir", required=True, type=Path)
     parser.add_argument("--partition-size", required=True, type=int)
@@ -59,11 +57,6 @@ def read_tsv_gz(path: Path) -> list[dict[str, str]]:
         return [dict(row) for row in csv.DictReader(handle, delimiter="\t")]
 
 
-def iter_tsv_gz(path: Path) -> Iterable[dict[str, str]]:
-    with gzip.open(path, "rt", newline="") as handle:
-        yield from csv.DictReader(handle, delimiter="\t")
-
-
 def gene_id_from_fasta_path(path: Path) -> str:
     name = path.name
     if name.endswith(".fa.gz"):
@@ -75,11 +68,6 @@ def gene_id_from_fasta_path(path: Path) -> str:
     if name.endswith(".fasta"):
         return name[:-6]
     return path.stem
-
-
-def load_taxonomy(path: Path) -> dict[str, dict[str, str]]:
-    rows = read_tsv_gz(path)
-    return {row.get("tax_id", ""): row for row in rows if row.get("tax_id")}
 
 
 def fasta_paths_by_gene(directory: Path) -> dict[str, Path]:
@@ -112,37 +100,40 @@ def partition_target_features(path: Path, output_dir: Path) -> dict[str, Path]:
     return partitions
 
 
-def iter_ortholog_groups(
-    path: Path,
-    grouped_by_gene: bool,
-) -> Iterable[tuple[str, list[dict[str, str]]]]:
-    rows = iter_tsv_gz(path)
-    if grouped_by_gene:
-        for gene_id, group in groupby(rows, key=lambda row: row["query_gene_id"]):
+def iter_ortholog_groups(path: Path) -> Iterable[tuple[str, list[dict[str, str]]]]:
+    required = {
+        "query_gene_id",
+        "ortholog_gene_id",
+        "tax_id",
+        "taxname",
+        "sequence_length",
+    }
+    seen: set[str] = set()
+    with gzip.open(path, "rt", newline="") as handle:
+        reader = csv.DictReader(handle, delimiter="\t")
+        missing = required - set(reader.fieldnames or [])
+        if missing:
+            raise ValueError(
+                f"Ortholog table {path} missing required columns: "
+                + ", ".join(sorted(missing))
+            )
+        for gene_id, group in groupby(reader, key=lambda row: row["query_gene_id"]):
+            if not gene_id:
+                raise ValueError(f"Ortholog table {path} contains an empty query_gene_id")
+            if gene_id in seen:
+                raise ValueError(
+                    f"Ortholog table {path} is not grouped by query_gene_id: {gene_id}"
+                )
+            seen.add(gene_id)
             yield gene_id, list(group)
-        return
-
-    print(
-        f"Compatibility mode: loading legacy ungrouped ortholog table into memory: {path}",
-        flush=True,
-    )
-    orthologs_by_gene: dict[str, list[dict[str, str]]] = defaultdict(list)
-    for row in rows:
-        orthologs_by_gene[row["query_gene_id"]].append(row)
-    yield from orthologs_by_gene.items()
 
 
-def target_metadata(gene_id: str, gene: dict[str, str], target_id: str) -> dict[str, object]:
+def target_metadata(gene: dict[str, str], target_id: str) -> dict[str, object]:
     return {
-        "gene_id": gene_id,
         "sequence_id": target_id,
         "genomic_accession": gene.get("genomic_accession", ""),
         "genomic_begin": gene.get("begin", ""),
-        "genomic_end": gene.get("end", ""),
-        "orientation": gene.get("orientation", ""),
-        "sequence_orientation": gene.get("sequence_orientation", ""),
         "sequence_length": gene.get("sequence_length", ""),
-        "sequence_sha256": gene.get("sequence_sha256", ""),
     }
 
 
@@ -193,38 +184,14 @@ def write_partition_genes(
         write_tsv_gz(output_dir / f"{partition_id}.tsv.gz", fields, rows)
 
 
-def reconstructed_ortholog_header(row: dict[str, str]) -> str:
-    taxname = row.get("taxname", "").replace(" ", "_")
-    return (
-        f"query_{row.get('query_gene_id', '')}|ortholog_gene_{row.get('ortholog_gene_id', '')}|"
-        f"symbol={row.get('symbol', '')}|tax_id={row.get('tax_id', '')}|taxname={taxname}|"
-        f"accession={row.get('accession', '')}|range={row.get('range_text', '')}|"
-        f"orientation={row.get('orientation', '')}"
-    )
-
-
-def ortholog_metadata_row(gene_id: str, source_meta: dict[str, str], taxonomy: dict[str, dict[str, str]]) -> dict[str, object]:
+def ortholog_metadata_row(source_meta: dict[str, str]) -> dict[str, object]:
     ortholog_gene_id = source_meta["ortholog_gene_id"]
-    tax = taxonomy.get(source_meta.get("tax_id", ""), {})
     return {
-        "gene_id": gene_id,
         "sequence_id": f"ortholog_{ortholog_gene_id}",
         "ortholog_gene_id": ortholog_gene_id,
         "tax_id": source_meta.get("tax_id", ""),
         "taxname": source_meta.get("taxname", ""),
-        "symbol": source_meta.get("symbol", ""),
-        "gene_type": source_meta.get("gene_type", ""),
-        "accession": source_meta.get("accession", ""),
-        "chromosome": source_meta.get("chromosome", ""),
-        "begin": source_meta.get("begin", ""),
-        "end": source_meta.get("end", ""),
-        "orientation": source_meta.get("orientation", ""),
-        "source_complement": source_meta.get("source_complement", ""),
         "sequence_length": source_meta.get("sequence_length", ""),
-        "sequence_sha256": source_meta.get("sequence_sha256", ""),
-        "taxonomy_group": tax.get("preset_group", "other_or_unknown"),
-        "minimap2_preset": tax.get("minimap2_preset", "asm20"),
-        "original_header": reconstructed_ortholog_header(source_meta),
     }
 
 
@@ -233,23 +200,38 @@ def prepare_gene_task(
     gene_id: str,
     gene: dict[str, str],
     source_orthologs: list[dict[str, str]],
-    taxonomy: dict[str, dict[str, str]],
     target_path: Path | None,
     ortholog_path: Path | None,
     target_features_path: Path | None,
     partition_id: str,
 ) -> dict[str, object]:
+    ortholog_ids = [row["ortholog_gene_id"] for row in source_orthologs]
+    if any(not value for value in ortholog_ids):
+        raise ValueError(f"Ortholog metadata for gene {gene_id} contains an empty ortholog_gene_id")
+    if len(ortholog_ids) != len(set(ortholog_ids)):
+        raise ValueError(
+            f"Ortholog metadata for gene {gene_id} contains duplicate ortholog_gene_id values"
+        )
+    for row in source_orthologs:
+        ortholog_id = row["ortholog_gene_id"]
+        if not row.get("tax_id"):
+            raise ValueError(f"Ortholog {ortholog_id} for gene {gene_id} has no tax_id")
+        try:
+            sequence_length = int(row["sequence_length"])
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                f"Ortholog {ortholog_id} for gene {gene_id} has invalid sequence_length"
+            ) from exc
+        if sequence_length <= 0:
+            raise ValueError(
+                f"Ortholog {ortholog_id} for gene {gene_id} has invalid sequence_length"
+            )
     ortholog_meta_by_id = {row["ortholog_gene_id"]: row for row in source_orthologs}
     target_ready = target_path is not None and target_features_path is not None
     ortholog_ready = target_ready and ortholog_path is not None and bool(ortholog_meta_by_id)
     task_row = {
         "gene_id": gene_id,
         "partition_id": partition_id,
-        "symbol": gene.get("symbol", ""),
-        "target_fasta": str(target_path or ""),
-        "ortholog_fasta": str(ortholog_path or ""),
-        "ortholog_count": len(ortholog_meta_by_id),
-        "target_length": gene.get("sequence_length", ""),
         "target_ready": str(target_ready).lower(),
         "ortholog_ready": str(ortholog_ready).lower(),
         "status": "ready",
@@ -270,54 +252,20 @@ def prepare_gene_task(
     task_dir.mkdir(parents=True, exist_ok=True)
     shutil.copy2(target_features_path, task_dir / "target_features.tsv.gz")
     target_id = f"target_{gene_id}"
-    ortholog_meta_rows = [
-        ortholog_metadata_row(gene_id, source_meta, taxonomy)
-        for source_meta in source_orthologs
-    ]
+    ortholog_meta_rows = [ortholog_metadata_row(source_meta) for source_meta in source_orthologs]
     ortholog_fields = [
-        "gene_id",
         "sequence_id",
         "ortholog_gene_id",
         "tax_id",
         "taxname",
-        "symbol",
-        "gene_type",
-        "accession",
-        "chromosome",
-        "begin",
-        "end",
-        "orientation",
-        "source_complement",
         "sequence_length",
-        "sequence_sha256",
-        "taxonomy_group",
-        "minimap2_preset",
-        "original_header",
     ]
     write_tsv(task_dir / "orthologs.metadata.tsv", ortholog_fields, ortholog_meta_rows)
     manifest = {
         "gene_id": gene_id,
-        "partition_id": partition_id,
-        "symbol": gene.get("symbol", ""),
-        "target_id": target_id,
-        "target_length": gene.get("sequence_length", ""),
-        "target": target_metadata(gene_id, gene, target_id),
-        "ortholog_count": len(ortholog_meta_rows),
-        "ortholog_metadata": "orthologs.metadata.tsv",
-        "target_features": "target_features.tsv.gz",
+        "target": target_metadata(gene, target_id),
     }
     (task_dir / "task.json").write_text(json.dumps(manifest, indent=2) + "\n")
-    task_row.update(
-        {
-            "target_fasta": str(Path("sequences") / "targets" / target_path.name),
-            "ortholog_fasta": (
-                str(Path("sequences") / "orthologs" / ortholog_path.name)
-                if ortholog_path is not None
-                else ""
-            ),
-            "ortholog_count": len(ortholog_meta_rows),
-        }
-    )
     return task_row
 
 
@@ -329,25 +277,32 @@ def main() -> None:
 
     genes = {row["gene_id"]: row for row in read_tsv_gz(args.genes_tsv)}
     gene_partitions = partition_ids(genes, args.partition_size)
-    fetch_manifest = json.loads(args.fetch_manifest.read_text())
-    grouped_orthologs = fetch_manifest.get("orthologs_selected_grouped_by_query_gene_id") is True
-    taxonomy = load_taxonomy(args.taxonomy_presets)
     target_fastas = fasta_paths_by_gene(args.sequences_dir / "targets")
     ortholog_fastas = fasta_paths_by_gene(args.sequences_dir / "orthologs")
     target_features = partition_target_features(args.target_features, args.outdir / "target_feature_parts")
+    for label, observed in (
+        ("target FASTA", set(target_fastas)),
+        ("ortholog FASTA", set(ortholog_fastas)),
+        ("target features", set(target_features)),
+    ):
+        unexpected = observed - set(genes)
+        if unexpected:
+            raise ValueError(
+                f"{label} inputs contain unknown gene_id values: "
+                + ", ".join(sorted(unexpected))
+            )
 
     task_rows: list[dict[str, object]] = []
     processed_gene_ids: set[str] = set()
-    for gene_id, source_orthologs in iter_ortholog_groups(args.orthologs_tsv, grouped_orthologs):
+    for gene_id, source_orthologs in iter_ortholog_groups(args.orthologs_tsv):
         if gene_id not in genes:
-            continue
+            raise ValueError(f"Ortholog table contains unknown query_gene_id: {gene_id}")
         task_rows.append(
             prepare_gene_task(
                 tasks_dir,
                 gene_id,
                 genes[gene_id],
                 source_orthologs,
-                taxonomy,
                 target_fastas.get(gene_id),
                 ortholog_fastas.get(gene_id),
                 target_features.get(gene_id),
@@ -363,7 +318,6 @@ def main() -> None:
                 gene_id,
                 genes[gene_id],
                 [],
-                taxonomy,
                 target_fastas.get(gene_id),
                 ortholog_fastas.get(gene_id),
                 target_features.get(gene_id),
@@ -402,11 +356,6 @@ def main() -> None:
     task_fields = [
         "gene_id",
         "partition_id",
-        "symbol",
-        "target_fasta",
-        "ortholog_fasta",
-        "ortholog_count",
-        "target_length",
         "target_ready",
         "ortholog_ready",
         "status",

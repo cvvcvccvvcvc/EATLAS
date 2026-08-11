@@ -612,7 +612,7 @@ def main() -> None:
 
     manifest, target_meta, ortholog_meta = load_task_context(task_dir)
     gene_id = manifest["gene_id"]
-    target_id = manifest.get("target_id", f"target_{gene_id}")
+    target_id = target_meta["sequence_id"]
     ortholog_meta_by_id = {row["ortholog_gene_id"]: row for row in ortholog_meta}
     target_acc = target_meta.get("genomic_accession", "")
 

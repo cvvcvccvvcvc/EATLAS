@@ -179,7 +179,7 @@ def main() -> None:
     task = json.loads((args.task_dir / "task.json").read_text())
     if str(task.get("gene_id") or "") != args.gene_id:
         raise ValueError(f"Task directory gene does not match --gene-id {args.gene_id}")
-    target_length = int(task.get("target_length") or 0)
+    target_length = int(task["target"]["sequence_length"])
 
     segments_path = args.outdir / "alignment_segments.tsv.gz"
     events_path = args.outdir / "alignment_events.tsv.gz"
@@ -201,7 +201,7 @@ def main() -> None:
     summary_rows = consolidate_summaries(fragments, segments_path, events_path, target_length)
     write_tsv_gz(args.outdir / "ortholog_alignment_summary.tsv.gz", SUMMARY_FIELDS, summary_rows)
     feature_coverage_count = summarize_feature_coverage(
-        args.task_dir / str(task.get("target_features", "target_features.tsv.gz")),
+        args.task_dir / "target_features.tsv.gz",
         args.outdir / "ortholog_alignment_summary.tsv.gz",
         segments_path,
         args.outdir / "feature_coverage.tsv.gz",

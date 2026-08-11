@@ -534,7 +534,7 @@ def main() -> None:
     task, target_meta, ortholog_meta = load_task_context(args.task_dir)
     gene_id = task["gene_id"]
     meta_by_sequence = {row["sequence_id"]: row for row in ortholog_meta}
-    target_length = int(target_meta.get("sequence_length") or task.get("target_length") or 0)
+    target_length = int(target_meta["sequence_length"])
     summaries = {
         sequence_id: empty_summary(gene_id, meta, target_length)
         for sequence_id, meta in meta_by_sequence.items()

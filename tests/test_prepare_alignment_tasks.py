@@ -2,14 +2,19 @@ from __future__ import annotations
 
 import csv
 import gzip
-import json
 import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 
 PROJECT_DIR = Path(__file__).resolve().parents[1]
 PREPARE_SCRIPT = PROJECT_DIR / "bin" / "prepare_alignment_tasks.py"
+sys.path.insert(0, str(PROJECT_DIR / "bin"))
+
+from alignment_task_io import load_task_context, materialize_task_fastas  # noqa: E402
+from prepare_alignment_tasks import iter_ortholog_groups  # noqa: E402
 
 
 def write_tsv_gz(path: Path, fields: list[str], rows: list[dict[str, str]]) -> None:
@@ -85,6 +90,8 @@ def test_partition_genes_contains_only_ready_alignment_tasks(tmp_path: Path) -> 
                 "query_gene_id": gene_id,
                 "ortholog_gene_id": f"10{gene_id}",
                 "tax_id": "10090",
+                "taxname": "Mus musculus",
+                "sequence_length": "4",
             }
             for gene_id in ("1", "2")
         ],
@@ -104,19 +111,18 @@ def test_partition_genes_contains_only_ready_alignment_tasks(tmp_path: Path) -> 
             for gene_id in ("1", "2")
         ],
     )
-    taxonomy = tmp_path / "taxonomy.tsv.gz"
-    write_tsv_gz(taxonomy, ["tax_id", "preset_group", "minimap2_preset"], [])
-    manifest = tmp_path / "manifest.json"
-    manifest.write_text(
-        json.dumps({"orthologs_selected_grouped_by_query_gene_id": True}) + "\n"
-    )
-
     sequences = tmp_path / "sequences"
     for directory, gene_ids in (("targets", ("1", "2")), ("orthologs", ("1",))):
         output_dir = sequences / directory
         output_dir.mkdir(parents=True)
         for gene_id in gene_ids:
-            (output_dir / f"{gene_id}.fa.gz").write_text(">sequence\nACGT\n")
+            header = (
+                f"target_{gene_id}"
+                if directory == "targets"
+                else f"query_{gene_id}|ortholog_gene_10{gene_id}|tax_id=10090"
+            )
+            with gzip.open(output_dir / f"{gene_id}.fa.gz", "wt") as handle:
+                handle.write(f">{header}\nACGT\n")
 
     outdir = tmp_path / "out"
     result = subprocess.run(
@@ -127,12 +133,8 @@ def test_partition_genes_contains_only_ready_alignment_tasks(tmp_path: Path) -> 
             str(genes),
             "--orthologs-tsv",
             str(orthologs),
-            "--fetch-manifest",
-            str(manifest),
             "--target-features",
             str(target_features),
-            "--taxonomy-presets",
-            str(taxonomy),
             "--outdir",
             str(outdir),
             "--sequences-dir",
@@ -170,3 +172,73 @@ def test_partition_genes_contains_only_ready_alignment_tasks(tmp_path: Path) -> 
     )
     assert [row["gene_id"] for row in target_partition_rows] == ["1", "2"]
     assert (outdir / "tasks" / "task_2" / "task.json").exists()
+
+    task_dir = outdir / "tasks" / "task_1"
+    manifest, target, ortholog_metadata = load_task_context(task_dir)
+    assert manifest == {
+        "gene_id": "1",
+        "target": {
+            "sequence_id": "target_1",
+            "genomic_accession": "NC_000001.11",
+            "genomic_begin": "100",
+            "sequence_length": "4",
+        },
+    }
+    assert ortholog_metadata == [
+        {
+            "sequence_id": "ortholog_101",
+            "ortholog_gene_id": "101",
+            "tax_id": "10090",
+            "taxname": "Mus musculus",
+            "sequence_length": "4",
+        }
+    ]
+    with (task_dir / "orthologs.metadata.tsv").open(newline="") as handle:
+        assert next(csv.reader(handle, delimiter="\t")) == [
+            "sequence_id",
+            "ortholog_gene_id",
+            "tax_id",
+            "taxname",
+            "sequence_length",
+        ]
+    with gzip.open(outdir / "alignment_tasks.tsv.gz", "rt", newline="") as handle:
+        assert next(csv.reader(handle, delimiter="\t")) == [
+            "gene_id",
+            "partition_id",
+            "target_ready",
+            "ortholog_ready",
+            "status",
+            "message",
+        ]
+    target_fasta, ortholog_fasta = materialize_task_fastas(
+        sequences / "targets" / "1.fa.gz",
+        sequences / "orthologs" / "1.fa.gz",
+        manifest,
+        ortholog_metadata,
+        tmp_path / "materialized",
+    )
+    assert target_fasta.read_text() == ">target_1\nACGT\n"
+    assert ortholog_fasta.read_text() == ">ortholog_101\nACGT\n"
+
+
+def test_ortholog_groups_reject_noncontiguous_gene_rows(tmp_path: Path) -> None:
+    path = tmp_path / "orthologs.tsv.gz"
+    fields = [
+        "query_gene_id",
+        "ortholog_gene_id",
+        "tax_id",
+        "taxname",
+        "sequence_length",
+    ]
+    write_tsv_gz(
+        path,
+        fields,
+        [
+            {"query_gene_id": "1", "ortholog_gene_id": "101"},
+            {"query_gene_id": "2", "ortholog_gene_id": "201"},
+            {"query_gene_id": "1", "ortholog_gene_id": "102"},
+        ],
+    )
+
+    with pytest.raises(ValueError, match="not grouped by query_gene_id: 1"):
+        list(iter_ortholog_groups(path))

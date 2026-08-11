@@ -11,11 +11,27 @@ from pathlib import Path
 
 ORTHOLOG_GENE_RE = re.compile(r"(?:^|\|)ortholog_gene_(\d+)(?:\||$)|^ortholog_(\d+)(?:\s|$)")
 FASTA_WIDTH = 80
+TASK_FIELDS = {"gene_id", "target"}
+TARGET_FIELDS = {"sequence_id", "genomic_accession", "genomic_begin", "sequence_length"}
+ORTHOLOG_FIELDS = {
+    "sequence_id",
+    "ortholog_gene_id",
+    "tax_id",
+    "taxname",
+    "sequence_length",
+}
 
 
-def read_tsv(path: Path) -> list[dict[str, str]]:
+def read_tsv(path: Path, required_fields: set[str]) -> list[dict[str, str]]:
     with path.open(newline="") as handle:
-        return [dict(row) for row in csv.DictReader(handle, delimiter="\t")]
+        reader = csv.DictReader(handle, delimiter="\t")
+        missing = required_fields - set(reader.fieldnames or [])
+        if missing:
+            raise ValueError(
+                f"Task table {path} missing required columns: "
+                + ", ".join(sorted(missing))
+            )
+        return [dict(row) for row in reader]
 
 
 def iter_fasta(path: Path):
@@ -53,9 +69,31 @@ def load_task_context(task_dir: Path) -> tuple[dict[str, object], dict[str, str]
     """Load the metadata-only task manifest used by alignment strategies."""
 
     manifest = json.loads((task_dir / "task.json").read_text())
+    missing = TASK_FIELDS - set(manifest)
+    if missing:
+        raise ValueError(
+            f"Task manifest {task_dir / 'task.json'} missing fields: "
+            + ", ".join(sorted(missing))
+        )
+    if not manifest["gene_id"]:
+        raise ValueError(f"Task manifest {task_dir / 'task.json'} has an empty gene_id")
+    if not isinstance(manifest["target"], dict):
+        raise ValueError(f"Task manifest {task_dir / 'task.json'} target must be an object")
     target_meta = dict(manifest["target"])
-    ortholog_metadata_path = task_dir / str(manifest.get("ortholog_metadata", "orthologs.metadata.tsv"))
-    return manifest, target_meta, read_tsv(ortholog_metadata_path)
+    missing_target = TARGET_FIELDS - set(target_meta)
+    if missing_target:
+        raise ValueError(
+            f"Task manifest {task_dir / 'task.json'} target missing fields: "
+            + ", ".join(sorted(missing_target))
+        )
+    ortholog_meta = read_tsv(task_dir / "orthologs.metadata.tsv", ORTHOLOG_FIELDS)
+    ortholog_ids = [row["ortholog_gene_id"] for row in ortholog_meta]
+    sequence_ids = [row["sequence_id"] for row in ortholog_meta]
+    if len(ortholog_ids) != len(set(ortholog_ids)):
+        raise ValueError(f"Task {task_dir} contains duplicate ortholog_gene_id values")
+    if len(sequence_ids) != len(set(sequence_ids)):
+        raise ValueError(f"Task {task_dir} contains duplicate sequence_id values")
+    return manifest, target_meta, ortholog_meta
 
 
 def materialize_task_fastas(
@@ -74,7 +112,14 @@ def materialize_task_fastas(
     target_records = list(iter_fasta(source_target_fasta))
     if len(target_records) != 1:
         raise ValueError(f"Expected one target FASTA record in {source_target_fasta}, found {len(target_records)}")
-    target_id = str(manifest.get("target_id") or f"target_{manifest['gene_id']}")
+    target_meta = manifest["target"]
+    target_id = str(target_meta["sequence_id"])
+    expected_target_length = int(target_meta["sequence_length"])
+    if expected_target_length != len(target_records[0][1]):
+        raise ValueError(
+            f"Target length mismatch in {source_target_fasta}: "
+            f"metadata={expected_target_length}, fasta={len(target_records[0][1])}"
+        )
     with target_fasta.open("w") as handle:
         write_fasta_record(handle, target_id, target_records[0][1])
 
@@ -86,9 +131,9 @@ def materialize_task_fastas(
             row = expected_by_ortholog.get(ortholog_gene_id)
             if row is None:
                 continue
-            sequence_id = row.get("sequence_id") or f"ortholog_{ortholog_gene_id}"
-            expected_length = row.get("sequence_length")
-            if expected_length and int(expected_length) != len(seq):
+            sequence_id = row["sequence_id"]
+            expected_length = int(row["sequence_length"])
+            if expected_length != len(seq):
                 raise ValueError(
                     f"Ortholog {ortholog_gene_id} length mismatch in {source_ortholog_fasta}: "
                     f"metadata={expected_length}, fasta={len(seq)}"
