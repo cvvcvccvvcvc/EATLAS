@@ -1032,15 +1032,3 @@ def load_snv_site_depth(path: Path) -> dict[tuple[str, str, int], int]:
             raise ValueError(f"SNV site depth must be positive for {key}: {depth}")
         depths[key] = depth
     return depths
-
-
-def site_aligned_ortholog_counts(
-    segments_path: Path,
-    site_rows: Iterable[dict[str, object]],
-    temp_parent: Path,
-) -> dict[tuple[str, str, int], int]:
-    """Count distinct ortholog intervals covering each variant-strategy SNV site."""
-    with tempfile.TemporaryDirectory(prefix=".site_ortholog_depth_", dir=temp_parent) as temp_name:
-        output = Path(temp_name) / "snv_site_depth.tsv.gz"
-        write_snv_site_depth([segments_path], site_rows, output, Path(temp_name))
-        return load_snv_site_depth(output)

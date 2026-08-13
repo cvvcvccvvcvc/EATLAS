@@ -98,6 +98,84 @@ def resolveClinvarInputs() {
     return [vcf: file(selectedVcf), tbi: file(selectedTbi), path: selectedVcf]
 }
 
+def sha256File(path) {
+    def digest = java.security.MessageDigest.getInstance('SHA-256')
+    path.toFile().withInputStream { stream ->
+        byte[] buffer = new byte[1024 * 1024]
+        int count
+        while ((count = stream.read(buffer)) != -1) {
+            digest.update(buffer, 0, count)
+        }
+    }
+    return digest.digest().encodeHex().toString()
+}
+
+def resolveStandaloneAlignmentInputs(fetchDir) {
+    def alignmentDir = file(params.alignment_dir)
+    if (!alignmentDir.exists()) {
+        error "Alignment directory not found: ${alignmentDir}"
+    }
+    if (!java.nio.file.Files.isDirectory(alignmentDir)) {
+        error "Alignment input is not a directory: ${alignmentDir}"
+    }
+
+    def requiredFiles = [
+        'manifest.json',
+        'alignment_events.tsv.gz',
+        'event_ortholog_support.tsv.gz',
+        'snv_site_depth.tsv.gz',
+        'snv_taxonomic_depth.tsv.gz',
+        'snv_alt_taxonomic_support.tsv.gz',
+    ]
+    def missingFiles = requiredFiles.findAll { !alignmentDir.resolve(it).exists() }
+    if (missingFiles) {
+        error "Alignment directory is missing annotation input(s): ${missingFiles.join(', ')}"
+    }
+
+    def manifest = new JsonSlurper().parse(alignmentDir.resolve('manifest.json').toFile())
+    if (manifest.stage != 'alignment') {
+        error "Alignment manifest has invalid stage: ${manifest.stage}"
+    }
+    if (manifest.output_profile != 'full') {
+        error "Standalone annotation requires a full alignment result, observed output_profile=${manifest.output_profile}"
+    }
+    if (manifest.alignment_event_mode != 'compact_support') {
+        error "Standalone annotation requires compact_support events, observed alignment_event_mode=${manifest.alignment_event_mode}"
+    }
+    if (manifest.event_ortholog_support_format != 'event_group_id_v1') {
+        error "Alignment manifest has unsupported event ortholog support format: ${manifest.event_ortholog_support_format}"
+    }
+
+    def sourceContext = manifest.source_target_context
+    if (!(sourceContext instanceof Map)) {
+        error "Alignment manifest is missing source_target_context"
+    }
+    def genesPath = fetchDir.resolve('genes.tsv.gz')
+    def targetFeaturesPath = fetchDir.resolve('target_features.tsv.gz')
+    [genesPath, targetFeaturesPath].each { path ->
+        if (!path.exists()) {
+            error "Fetch directory is missing target context input: ${path}"
+        }
+    }
+    def observedGenesSha256 = sha256File(genesPath)
+    def observedTargetFeaturesSha256 = sha256File(targetFeaturesPath)
+    if (sourceContext.genes_sha256 != observedGenesSha256) {
+        error "Alignment and fetch directories have different genes.tsv.gz inputs"
+    }
+    if (sourceContext.target_features_sha256 != observedTargetFeaturesSha256) {
+        error "Alignment and fetch directories have different target_features.tsv.gz inputs"
+    }
+
+    return [
+        manifest: alignmentDir.resolve('manifest.json'),
+        events: alignmentDir.resolve('alignment_events.tsv.gz'),
+        eventOrthologSupport: alignmentDir.resolve('event_ortholog_support.tsv.gz'),
+        snvSiteDepth: alignmentDir.resolve('snv_site_depth.tsv.gz'),
+        snvTaxonomicDepth: alignmentDir.resolve('snv_taxonomic_depth.tsv.gz'),
+        snvAltTaxonomicSupport: alignmentDir.resolve('snv_alt_taxonomic_support.tsv.gz'),
+    ]
+}
+
 // Print help message
 if (params.help) {
     log.info paramsHelp("gaph_v2")
@@ -119,20 +197,8 @@ if (params.stage == 'align' && !params.fetch_dir) {
     error "Missing required parameter for --stage align: --fetch_dir"
 }
 
-if (params.stage == 'annotate' && !params.events_tsv) {
-    error "Missing required parameter for --stage annotate: --events_tsv"
-}
-
-if (params.stage == 'annotate' && !params.segments_tsv) {
-    error "Missing required parameter for --stage annotate: --segments_tsv"
-}
-
-if (params.stage == 'annotate' && !params.event_ortholog_support_tsv) {
-    error "Missing required parameter for --stage annotate: --event_ortholog_support_tsv"
-}
-
-if (params.stage == 'annotate' && !file(params.event_ortholog_support_tsv).exists()) {
-    error "Event ortholog support TSV not found: ${params.event_ortholog_support_tsv}"
+if (params.stage == 'annotate' && !params.alignment_dir) {
+    error "Missing required parameter for --stage annotate: --alignment_dir"
 }
 
 if (params.stage == 'annotate' && !params.fetch_dir) {
@@ -449,6 +515,8 @@ workflow ALIGNMENT_STAGE {
         FETCH_TAXONOMY.out.taxonomy,
         FETCH_TAXONOMY.out.taxonomy_failures,
         FETCH_TAXONOMY.out.taxonomy_summary,
+        genes,
+        target_features,
         MERGE_ALIGNMENT_PARTITION.out.partition_dirs.map { meta, dir -> dir }.collect(),
         SELECTED_ALIGNMENT_STRATEGIES.join(','),
         merge_script
@@ -495,11 +563,15 @@ workflow ALIGNMENT_STAGE_FROM_DIR {
 
 workflow ANNOTATION_STAGE {
     take:
+    alignment_manifest
     events_tsv
     event_ortholog_support_tsv
-    segments_tsv
+    snv_site_depth_tsv
+    snv_taxonomic_depth_tsv
+    snv_alt_taxonomic_support_tsv
     genes_tsv
-    sequences_dir
+    target_features
+    target_sequences_dir
     clinvar_vcf
     clinvar_vcf_tbi
     gnomad_cache_dir
@@ -519,11 +591,15 @@ workflow ANNOTATION_STAGE {
         file("${projectDir}/genomics/variants.py"),
     ]
     ANNOTATE_EVENTS(
+        alignment_manifest,
         events_tsv,
         event_ortholog_support_tsv,
-        segments_tsv,
+        snv_site_depth_tsv,
+        snv_taxonomic_depth_tsv,
+        snv_alt_taxonomic_support_tsv,
         genes_tsv,
-        sequences_dir,
+        target_features,
+        target_sequences_dir,
         annotate_script,
         annotation_helpers,
         genomics_sources,
@@ -536,6 +612,7 @@ workflow ANNOTATION_STAGE {
     variant_annotations = ANNOTATE_EVENTS.out.variant_annotations
     variant_strategy_support = ANNOTATE_EVENTS.out.variant_strategy_support
     variant_ortholog_support = ANNOTATE_EVENTS.out.variant_ortholog_support
+    ortholog_evidence_summary = ANNOTATE_EVENTS.out.ortholog_evidence_summary
     manifest = ANNOTATE_EVENTS.out.manifest
     failures = ANNOTATE_EVENTS.out.failures
 }
@@ -657,12 +734,17 @@ workflow {
         clinvar_inputs = resolveClinvarInputs()
         log.info "Using ClinVar VCF: ${clinvar_inputs.path}"
         fetch_dir = file(params.fetch_dir)
+        alignment_inputs = resolveStandaloneAlignmentInputs(fetch_dir)
         ANNOTATION_STAGE(
-            file(params.events_tsv),
-            file(params.event_ortholog_support_tsv),
-            file(params.segments_tsv),
+            alignment_inputs.manifest,
+            alignment_inputs.events,
+            alignment_inputs.eventOrthologSupport,
+            alignment_inputs.snvSiteDepth,
+            alignment_inputs.snvTaxonomicDepth,
+            alignment_inputs.snvAltTaxonomicSupport,
             file("${fetch_dir}/genes.tsv.gz"),
-            file("${fetch_dir}/sequences"),
+            file("${fetch_dir}/target_features.tsv.gz"),
+            file("${fetch_dir}/sequences/targets"),
             clinvar_inputs.vcf,
             clinvar_inputs.tbi,
             params.gnomad_cache_dir ?: ''

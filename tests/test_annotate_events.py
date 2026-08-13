@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import gzip
+import json
 import subprocess
 import sys
 from pathlib import Path
@@ -22,6 +23,8 @@ from annotate_events import (  # noqa: E402
     build_variant_strategy_support,
     event_vcf_key,
     iter_variant_strategy_snv_sites,
+    load_alignment_manifest,
+    resolve_target_feature_paths,
     variant_aggregate_key,
     write_tsv_gz,
 )
@@ -51,6 +54,44 @@ def canonical_partition_manifest(partition_id: str) -> dict:
         "gnomad_api_url": "https://gnomad.example/api",
         "gnomad_dataset": "gnomad_r4",
     }
+
+
+def canonical_alignment_manifest(partition_id: str = "") -> dict:
+    return {
+        "stage": "alignment",
+        "partition_id": partition_id,
+        "output_profile": "annotation-input" if partition_id else "full",
+        "alignment_event_mode": "compact_support",
+        "event_ortholog_support_format": "event_group_id_v1",
+        "alignment_event_count": 0,
+        "event_ortholog_support_count": 0,
+        "snv_site_depth_count": 0,
+        "snv_taxonomic_depth_count": 0,
+        "snv_alt_taxonomic_support_count": 0,
+    }
+
+
+def test_alignment_manifest_is_required_and_partition_bound(tmp_path: Path) -> None:
+    path = tmp_path / "manifest.json"
+    path.write_text(json.dumps(canonical_alignment_manifest("partition_000001")) + "\n")
+
+    assert load_alignment_manifest(path, "partition_000001")["alignment_event_count"] == 0
+    with pytest.raises(ValueError, match="partition mismatch"):
+        load_alignment_manifest(path, "partition_000002")
+
+
+def test_target_features_accept_one_canonical_table_or_partition_directory(
+    tmp_path: Path,
+) -> None:
+    table = tmp_path / "target_features.tsv.gz"
+    table.write_bytes(b"")
+    assert resolve_target_feature_paths(table) == [table]
+
+    directory = tmp_path / "target_features"
+    directory.mkdir()
+    partition = directory / "1.tsv.gz"
+    partition.write_bytes(b"")
+    assert resolve_target_feature_paths(directory) == [partition]
 
 
 def test_variant_annotation_schema_is_analysis_ready() -> None:

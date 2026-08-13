@@ -18,7 +18,7 @@
                     "type": "string",
                     "default": "all",
                     "enum": ["all", "fetch", "align", "annotate"],
-                    "description": "Pipeline stage to run. 'all' runs fetch, alignment, and annotation; 'align' runs alignment only from an existing fetch directory."
+                    "description": "Pipeline stage to run. 'all' runs fetch, alignment, and annotation; 'align' consumes fetch_dir; 'annotate' consumes matching alignment_dir and fetch_dir results."
                 },
                 "ids_file": {
                     "type": "string",
@@ -28,17 +28,9 @@
                     "type": "string",
                     "description": "Directory containing fetched sequences and target context. Required if stage is 'align' or 'annotate'."
                 },
-                "events_tsv": {
+                "alignment_dir": {
                     "type": "string",
-                    "description": "Path to events TSV for annotation stage"
-                },
-                "event_ortholog_support_tsv": {
-                    "type": "string",
-                    "description": "Path to the event_group_id-keyed event_ortholog_support.tsv.gz companion required with alignment_events.tsv.gz for standalone annotation."
-                },
-                "segments_tsv": {
-                    "type": "string",
-                    "description": "Path to alignment segments TSV for annotation-stage site depth"
+                    "description": "Directory containing the complete standalone Stage 2 alignment handoff. Required if stage is 'annotate'."
                 },
                 "outdir": {
                     "type": "string",

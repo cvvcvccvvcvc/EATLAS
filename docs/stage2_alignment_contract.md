@@ -186,13 +186,21 @@ Standalone `--stage align` publishes the full handoff contract:
 | `strategy_summary.tsv.gz` | Small canonical per-strategy aggregate derived from `ortholog_alignment_summary.tsv.gz` for reports and run inspection. |
 | `alignment_segments.tsv.gz` | Normalized alignment intervals. |
 | `snv_site_depth.tsv.gz` | Distinct aligned-ortholog depth for each observed concrete SNV position and strategy. |
+| `snv_taxonomic_depth.tsv.gz` | Taxonomy-aware aligned depth for each observed concrete SNV position and strategy. |
+| `snv_alt_taxonomic_support.tsv.gz` | Taxonomy-aware exact-ALT support for each observed concrete SNV and strategy. |
 | `feature_coverage.tsv.gz` | Per-gene, per-strategy coverage and depth over target structural intervals. |
 | `alignment_events.tsv.gz` | One compact row per unique target-coordinate event and strategy, keyed by consecutive `event_group_id`. |
-| `event_ortholog_support.tsv.gz` | Exact positive ortholog identities keyed by `event_group_id`; pass this file together with the compact event table to a later standalone annotation run. |
+| `event_ortholog_support.tsv.gz` | Exact positive ortholog identities keyed by `event_group_id`. |
 | `failures.tsv.gz` | Alignment-stage failures. |
 | `native/` | Optional raw PAF/SAM files when enabled. |
 
 Native outputs are disabled by default.
+
+The standalone directory is an indivisible Stage 3 handoff. Annotation accepts
+the directory through `--alignment_dir`, validates its manifest and table
+counts, and verifies that its target-context fingerprints match the supplied
+`--fetch_dir`. Individual tables are not accepted as independent pipeline
+parameters.
 
 Every per-gene result and partition uses the same manifest keys: plural
 `gene_ids` and `strategies`, nested `strategy_parameters`, canonical output
@@ -242,8 +250,8 @@ files from `reports/`.
 `alignment_events.tsv.gz` records observed differences. It does not record where
 an ortholog matches the human target.
 
-`alignment_segments.tsv.gz` records coverage intervals. It is required for the
-next stage to distinguish:
+`alignment_segments.tsv.gz` records coverage intervals. Stage 2 reduces those
+intervals to site-depth tables so Stage 3 can distinguish:
 
 ```text
 event present at position       -> ortholog supports observed alternative
@@ -252,10 +260,12 @@ position not covered            -> no-call
 bad/ambiguous alignment         -> filtered/no-call
 ```
 
-This is why standalone Stage 2 stores both interval evidence and event evidence.
-End-to-end runs reduce the intervals to `snv_site_depth.tsv.gz` at each
-alignment partition boundary; rows are keyed by gene, strategy, and target
-position, so different ALT alleles at one site share the same denominator.
+Standalone Stage 2 keeps segments as alignment evidence, but Stage 3 consumes
+the already reduced `snv_site_depth.tsv.gz`; it never recomputes depth from a
+separately supplied segments file. Both standalone and end-to-end runs derive
+the depth at each alignment partition boundary. Rows are keyed by gene,
+strategy, and target position, so different ALT alleles at one site share the
+same denominator.
 For taxonomy-aware reporting, the same boundary also counts distinct aligned
 ortholog, species, genus, family, and order units within supported taxonomic
 scopes. Exact-ALT counts use the same unit definitions, so multiple orthologs

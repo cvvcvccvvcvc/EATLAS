@@ -22,6 +22,7 @@ process ANNOTATE_EVENTS_PARTITION {
     GAPH_ANNOTATION_DUCKDB_MEMORY_LIMIT="${duckdbMemoryGb}GB" \\
     GAPH_ANNOTATION_DUCKDB_THREADS="${task.cpus}" \\
     python3 "${annotate_script}" \\
+        --alignment-manifest "${alignment_partition}/manifest.json" \\
         --events-tsv "${alignment_partition}/alignment_events.tsv.gz" \\
         --event-ortholog-support-tsv "${alignment_partition}/event_ortholog_support.tsv.gz" \\
         --snv-site-depth-tsv "${alignment_partition}/snv_site_depth.tsv.gz" \\
@@ -29,7 +30,7 @@ process ANNOTATE_EVENTS_PARTITION {
         --snv-alt-taxonomic-support-tsv "${alignment_partition}/snv_alt_taxonomic_support.tsv.gz" \\
         --genes-tsv "${genes_tsv}" \\
         --target-sequences-dir targets \\
-        --target-features-dir target_features \\
+        --target-features target_features \\
         --outdir "${resultDir}" \\
         --partition-id "${meta.partition_id}" \\
         --clinvar-vcf "${clinvar_vcf}"

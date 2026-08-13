@@ -6,17 +6,22 @@ from __future__ import annotations
 import argparse
 import csv
 import gzip
+import hashlib
 import json
 import logging
+import os
 import shutil
 import sqlite3
+import subprocess
 import sys
+import tempfile
 import time
 from datetime import datetime, timezone
 from itertools import groupby
 from pathlib import Path
 
 from feature_coverage import (
+    SNV_TAXONOMIC_DEPTH_FIELDS,
     iter_snv_event_sites,
     write_snv_site_depth,
     write_snv_taxonomic_depth,
@@ -36,6 +41,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--taxonomy", type=Path)
     parser.add_argument("--taxonomy-failures", type=Path)
     parser.add_argument("--taxonomy-summary", type=Path)
+    parser.add_argument("--source-genes", type=Path)
+    parser.add_argument("--source-target-features", type=Path)
     parser.add_argument("--outdir", required=True, type=Path)
     parser.add_argument("--result-dir", action="append", default=[], type=Path)
     parser.add_argument("--result-root", type=Path)
@@ -49,6 +56,14 @@ def parse_args() -> argparse.Namespace:
         help="Select full outputs, partitioned annotation inputs, or final report inputs.",
     )
     return parser.parse_args()
+
+
+def sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 COMPACT_EVENT_FIELDS = [
@@ -311,6 +326,61 @@ def merge_tsv_gz(paths: list[Path], output: Path) -> int:
     if not header_written:
         with gzip.open(output, "wt", newline="") as out_handle:
             out_handle.write("")
+    return count
+
+
+def merge_sorted_tsv_gz(
+    paths: list[Path],
+    output: Path,
+    fields: list[str],
+    sort_keys: list[str],
+) -> int:
+    """Merge bounded partitions into one globally sorted compressed table."""
+    output.parent.mkdir(parents=True, exist_ok=True)
+    count = 0
+    with tempfile.TemporaryDirectory(prefix=f".{output.stem}.", dir=output.parent) as temp_name:
+        temp_dir = Path(temp_name)
+        unsorted_path = temp_dir / "rows.tsv"
+        sorted_path = temp_dir / "rows.sorted.tsv"
+        with unsorted_path.open("w", newline="") as out_handle:
+            writer = csv.writer(out_handle, delimiter="\t", lineterminator="\n")
+            for path in paths:
+                if not path.exists():
+                    raise FileNotFoundError(f"Missing required alignment table: {path}")
+                with gzip.open(path, "rt", newline="") as in_handle:
+                    reader = csv.reader(in_handle, delimiter="\t")
+                    header = next(reader, None)
+                    if header != fields:
+                        raise ValueError(
+                            f"Header mismatch while merging {path}: expected {fields}, observed {header}"
+                        )
+                    for row in reader:
+                        writer.writerow(row)
+                        count += 1
+
+        env = os.environ.copy()
+        env.update({"LC_ALL": "C", "TMPDIR": str(temp_dir)})
+        subprocess.run(
+            [
+                "sort",
+                "-S",
+                "128M",
+                *sort_keys,
+                "-T",
+                str(temp_dir),
+                "-o",
+                str(sorted_path),
+                str(unsorted_path),
+            ],
+            check=True,
+            env=env,
+        )
+        with gzip.open(output, "wt", newline="") as out_handle:
+            writer = csv.writer(out_handle, delimiter="\t", lineterminator="\n")
+            writer.writerow(fields)
+            if sorted_path.exists():
+                with sorted_path.open() as sorted_handle:
+                    shutil.copyfileobj(sorted_handle, out_handle)
     return count
 
 
@@ -1172,6 +1242,14 @@ def main() -> None:
         raise ValueError(
             "Final alignment merge requires --taxonomy and --taxonomy-failures"
         )
+    source_context_inputs = [args.source_genes, args.source_target_features]
+    if not args.partition_id and any(path is None for path in source_context_inputs):
+        raise ValueError(
+            "Final alignment merge requires --source-genes and --source-target-features"
+        )
+    for path in source_context_inputs:
+        if path is not None and not path.exists():
+            raise FileNotFoundError(f"Missing source target context: {path}")
 
     manifests = load_manifests(result_dirs)
     validate_alignment_manifests(manifests)
@@ -1343,10 +1421,37 @@ def main() -> None:
             [path / "snv_site_depth.tsv.gz" for path in result_dirs],
             args.outdir / "snv_site_depth.tsv.gz",
         )
-        snv_taxonomic_depth_count = sum_manifest_count(
+        snv_taxonomic_depth_count = merge_sorted_tsv_gz(
+            [path / "snv_taxonomic_depth.tsv.gz" for path in result_dirs],
+            args.outdir / "snv_taxonomic_depth.tsv.gz",
+            SNV_TAXONOMIC_DEPTH_FIELDS,
+            ["-k1,1", "-k2,2", "-k3,3n"],
+        )
+        expected_taxonomic_depth_count = sum_manifest_count(
             manifests,
             "snv_taxonomic_depth_count",
         )
+        if snv_taxonomic_depth_count != expected_taxonomic_depth_count:
+            raise ValueError(
+                "SNV taxonomic depth row count does not match partition manifests: "
+                f"rows={snv_taxonomic_depth_count}, manifests={expected_taxonomic_depth_count}"
+            )
+        taxonomic_alt_support_count = merge_sorted_tsv_gz(
+            [path / "snv_alt_taxonomic_support.tsv.gz" for path in result_dirs],
+            args.outdir / "snv_alt_taxonomic_support.tsv.gz",
+            SNV_ALT_TAXONOMIC_SUPPORT_FIELDS,
+            ["-k1,1", "-k2,2", "-k3,3n", "-k4,4", "-k5,5"],
+        )
+        expected_taxonomic_alt_support_count = sum_manifest_count(
+            manifests,
+            "snv_alt_taxonomic_support_count",
+        )
+        if taxonomic_alt_support_count != expected_taxonomic_alt_support_count:
+            raise ValueError(
+                "SNV ALT taxonomic support row count does not match partition manifests: "
+                f"rows={taxonomic_alt_support_count}, "
+                f"manifests={expected_taxonomic_alt_support_count}"
+            )
     else:
         snv_site_depth_count = sum_manifest_count(manifests, "snv_site_depth_count")
         snv_taxonomic_depth_count = sum_manifest_count(
@@ -1394,6 +1499,11 @@ def main() -> None:
         "failure_count": failure_count,
         "native_file_count": native_file_count,
     }
+    if not args.partition_id:
+        manifest["source_target_context"] = {
+            "genes_sha256": sha256_file(args.source_genes),
+            "target_features_sha256": sha256_file(args.source_target_features),
+        }
     if timings_seconds:
         manifest["timings_seconds"] = timings_seconds
     partition_timings = collect_partition_timings(manifests)

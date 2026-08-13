@@ -15,7 +15,6 @@ process MERGE_ALIGNMENT_PARTITION {
 
     script:
     def outputProfile = params.stage == 'all' ? "annotation-input" : "full"
-    def taxonomyArg = outputProfile == 'annotation-input' ? "--taxonomy \"${taxonomy}\"" : ""
     """
     export PYTHONPATH="\$PWD:\${PYTHONPATH:-}"
     python3 "${merge_script}" \\
@@ -26,6 +25,6 @@ process MERGE_ALIGNMENT_PARTITION {
         --expected-strategies "${expected_strategies}" \\
         --output-profile "${outputProfile}" \\
         --outdir "${meta.partition_id}" \\
-        ${taxonomyArg}
+        --taxonomy "${taxonomy}"
     """
 }

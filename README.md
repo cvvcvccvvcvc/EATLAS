@@ -84,23 +84,20 @@ nextflow run . \
   -resume
 ```
 
-Annotation-only debug mode can reuse an existing alignment event table:
+Annotation-only debug mode consumes one complete standalone alignment result:
 
 ```bash
 nextflow run . \
   --stage annotate \
-  --events_tsv results/align_debug/alignment_events.tsv.gz \
-  --event_ortholog_support_tsv results/align_debug/event_ortholog_support.tsv.gz \
-  --segments_tsv results/align_debug/alignment_segments.tsv.gz \
+  --alignment_dir results/align_debug \
   --fetch_dir results/run_test/fetch \
   --outdir results/annotate_debug \
   -resume
 ```
 
-`alignment_events.tsv.gz` and `event_ortholog_support.tsv.gz` form one handoff.
-The compact event table contains one row per target event and strategy; the
-sidecar retains its exact supporting orthologs and joins through
-`event_group_id`. Standalone annotation requires both files.
+The alignment directory is one versioned handoff. It contains compact events,
+exact ortholog support, site depth, taxonomy-aware depth and ALT support, plus a
+manifest that binds those tables to the matching fetch target context.
 
 By default, `--alignment_strategies all` runs `minimap2_asm10`,
 `minimap2_asm20`, `nucmer`, and `bwa_pseudoreads`. The precomputed Ensembl

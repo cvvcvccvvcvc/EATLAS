@@ -13,9 +13,10 @@ BIN_DIR = Path(__file__).resolve().parents[1] / "bin"
 sys.path.insert(0, str(BIN_DIR))
 
 from feature_coverage import (  # noqa: E402
-    site_aligned_ortholog_counts,
+    load_snv_site_depth,
     summarize_feature_coverage,
     summarize_feature_coverage_rows,
+    write_snv_site_depth,
     write_snv_taxonomic_depth,
 )
 from taxonomic_evidence import COUNT_KEYS  # noqa: E402
@@ -227,8 +228,9 @@ def test_site_depth_counts_distinct_orthologs_across_segments(tmp_path: Path) ->
         ],
     )
 
-    counts = site_aligned_ortholog_counts(
-        segments_path,
+    output = tmp_path / "snv_site_depth.tsv.gz"
+    write_snv_site_depth(
+        [segments_path],
         [
             {
                 "gene_id": "1",
@@ -241,8 +243,10 @@ def test_site_depth_counts_distinct_orthologs_across_segments(tmp_path: Path) ->
                 "target_start0": "5",
             },
         ],
+        output,
         tmp_path,
     )
+    counts = load_snv_site_depth(output)
 
     assert counts == {
         ("1", "test", 4): 2,

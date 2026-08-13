@@ -206,6 +206,9 @@ Standalone `--stage align` expected properties:
   are gzip TSV files with stable headers.
 - `alignment/snv_site_depth.tsv.gz` contains one row per observed concrete SNV
   position and strategy, with positive distinct-ortholog depth.
+- `alignment/snv_taxonomic_depth.tsv.gz` and
+  `alignment/snv_alt_taxonomic_support.tsv.gz` contain the matching compact
+  taxonomy-aware denominator and ALT-support tables.
 - `alignment/feature_coverage.tsv.gz` has rows for each aligned gene, enabled
   strategy, and target structural feature.
 - `alignment/native/` is absent unless `--keep_native_alignments true` was used.
@@ -314,17 +317,15 @@ nextflow run . \
 
 ## Annotation-Only Debug
 
-Annotation-only mode reuses an existing alignment events table and the matching
-fetch directory. The fetch directory is required because ClinVar and gnomAD
-lookup normalizes events to VCF keys using `genes.tsv.gz` and
-`sequences/targets/*.fa.gz`.
+Annotation-only mode reuses a complete standalone alignment directory and its
+matching fetch directory. The alignment manifest binds the compact handoff to
+`genes.tsv.gz` and `target_features.tsv.gz`; mismatched directories fail before
+annotation. Target sequences remain required for VCF normalization.
 
 ```bash
 nextflow run . \
   --stage annotate \
-  --events_tsv /path/to/alignment_events.tsv.gz \
-  --event_ortholog_support_tsv /path/to/event_ortholog_support.tsv.gz \
-  --segments_tsv /path/to/alignment_segments.tsv.gz \
+  --alignment_dir /path/to/alignment \
   --fetch_dir /path/to/fetch \
   --outdir /tmp/gaph_v2_annotate_debug \
   -work-dir /tmp/gaph_v2_annotate_debug_work \

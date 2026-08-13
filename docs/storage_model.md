@@ -77,6 +77,12 @@ large handoff artifacts are removed with that run's task work:
 - alignment segments
 - per-ortholog alignment summaries
 
+Standalone `--stage align` intentionally publishes the compact site-depth and
+taxonomy-aware handoff tables because a later `--stage annotate` run cannot
+depend on disposable `work/` state. It does not publish duplicate partition
+directories; the bounded partition outputs are merged once into the canonical
+alignment directory.
+
 The durable `variant_annotations.tsv.gz` and
 `variant_strategy_support.tsv.gz` files retain their public TSV/gzip contract,
 but their internal partition gzip members are copied into the final files

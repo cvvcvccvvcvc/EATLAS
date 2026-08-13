@@ -24,7 +24,7 @@ if __package__ in {None, ""}:
         runtime_root = Path(__file__).resolve().parents[1]
     sys.path.insert(0, str(runtime_root))
 
-from feature_coverage import load_snv_site_depth, site_aligned_ortholog_counts
+from feature_coverage import load_snv_site_depth
 from genomics.clinvar import review_stars as clinvar_review_stars
 from genomics.gnomad import GNOMAD_API_URL, fetch_region_variants_recursive, select_af_metrics
 from genomics.gnomad_cache import GnomadRegionCache
@@ -127,16 +127,15 @@ class StrategySupport:
 
 def parse_args():
     parser = argparse.ArgumentParser()
+    parser.add_argument("--alignment-manifest", required=True, type=Path)
     parser.add_argument("--events-tsv", required=True, type=Path)
     parser.add_argument("--event-ortholog-support-tsv", required=True, type=Path)
-    depth_input = parser.add_mutually_exclusive_group(required=True)
-    depth_input.add_argument("--segments-tsv", type=Path)
-    depth_input.add_argument("--snv-site-depth-tsv", type=Path)
-    parser.add_argument("--snv-taxonomic-depth-tsv", type=Path)
-    parser.add_argument("--snv-alt-taxonomic-support-tsv", type=Path)
-    parser.add_argument("--genes-tsv", required=False, type=Path)
-    parser.add_argument("--target-sequences-dir", required=False, type=Path)
-    parser.add_argument("--target-features-dir", type=Path)
+    parser.add_argument("--snv-site-depth-tsv", required=True, type=Path)
+    parser.add_argument("--snv-taxonomic-depth-tsv", required=True, type=Path)
+    parser.add_argument("--snv-alt-taxonomic-support-tsv", required=True, type=Path)
+    parser.add_argument("--genes-tsv", required=True, type=Path)
+    parser.add_argument("--target-sequences-dir", required=True, type=Path)
+    parser.add_argument("--target-features", required=True, type=Path)
     parser.add_argument("--clinvar-vcf", required=True, type=Path)
     parser.add_argument("--outdir", required=True, type=Path)
     parser.add_argument("--partition-id", default="")
@@ -161,6 +160,71 @@ def cluster_positions(positions: list[int], max_gap: int = 100000) -> list[tuple
         last = p
     clusters.append((start, last))
     return clusters
+
+
+def resolve_target_feature_paths(path: Path) -> list[Path]:
+    if path.is_file():
+        return [path]
+    if path.is_dir():
+        paths = sorted(path.glob("*.tsv.gz"))
+        if paths:
+            return paths
+        raise ValueError(f"No target feature tables found in {path}")
+    raise FileNotFoundError(f"Target features input not found: {path}")
+
+
+def manifest_count(manifest: dict, field: str) -> int:
+    value = manifest.get(field)
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise ValueError(f"Alignment manifest has invalid {field}: {value!r}")
+    return value
+
+
+def load_alignment_manifest(path: Path, partition_id: str) -> dict:
+    if not path.exists():
+        raise FileNotFoundError(f"Alignment manifest not found: {path}")
+    manifest = json.loads(path.read_text())
+    if manifest.get("stage") != "alignment":
+        raise ValueError(f"Alignment manifest has invalid stage: {manifest.get('stage')!r}")
+    if manifest.get("alignment_event_mode") != "compact_support":
+        raise ValueError(
+            "Annotation requires compact_support alignment events, observed "
+            f"{manifest.get('alignment_event_mode')!r}"
+        )
+    if manifest.get("event_ortholog_support_format") != "event_group_id_v1":
+        raise ValueError(
+            "Alignment manifest has unsupported event ortholog support format: "
+            f"{manifest.get('event_ortholog_support_format')!r}"
+        )
+    observed_partition_id = str(manifest.get("partition_id") or "")
+    if observed_partition_id != partition_id:
+        raise ValueError(
+            "Alignment manifest partition mismatch: "
+            f"expected {partition_id!r}, observed {observed_partition_id!r}"
+        )
+    expected_profile = "annotation-input" if partition_id else "full"
+    if manifest.get("output_profile") != expected_profile:
+        raise ValueError(
+            "Alignment manifest output profile mismatch: "
+            f"expected {expected_profile!r}, observed {manifest.get('output_profile')!r}"
+        )
+    for field in (
+        "alignment_event_count",
+        "event_ortholog_support_count",
+        "snv_site_depth_count",
+        "snv_taxonomic_depth_count",
+        "snv_alt_taxonomic_support_count",
+    ):
+        manifest_count(manifest, field)
+    return manifest
+
+
+def count_tsv_gz_rows(path: Path) -> int:
+    with gzip.open(path, "rt", newline="") as handle:
+        reader = csv.reader(handle, delimiter="\t")
+        if next(reader, None) is None:
+            raise ValueError(f"TSV has no header: {path}")
+        return sum(1 for _row in reader)
 
 
 def open_text(path: Path):
@@ -199,6 +263,7 @@ class EventOrthologSupportStream:
         self.handle = None
         self.reader: Iterator[dict[str, str]] | None = None
         self.current: dict[str, str] | None = None
+        self.row_count = 0
 
     def __enter__(self) -> "EventOrthologSupportStream":
         self.handle = open_text(self.path)
@@ -242,6 +307,7 @@ class EventOrthologSupportStream:
             return rows
         while self.current is not None and self.group_id(self.current) == expected_group_id:
             rows.append(self.current)
+            self.row_count += 1
             if self.reader is None:
                 raise RuntimeError("Event ortholog support stream is not open")
             self.current = next(self.reader, None)
@@ -900,6 +966,7 @@ def build_clinvar_cache(
 def main():
     logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
     args = parse_args()
+    alignment_manifest = load_alignment_manifest(args.alignment_manifest, args.partition_id)
     timings_seconds: dict[str, float] = {}
     args.outdir.mkdir(parents=True, exist_ok=True)
     out_tsv = args.outdir / "variant_annotations.tsv.gz"
@@ -908,28 +975,45 @@ def main():
     ortholog_evidence_tsv = args.outdir / "ortholog_evidence_summary.tsv.gz"
     failures_tsv = args.outdir / "failures.tsv.gz"
     manifest_json = args.outdir / "manifest.json"
-    if args.segments_tsv is not None and not args.segments_tsv.exists():
-        raise FileNotFoundError(f"Alignment segments TSV not found: {args.segments_tsv}")
-    if args.snv_site_depth_tsv is not None and not args.snv_site_depth_tsv.exists():
+    if not args.snv_site_depth_tsv.exists():
         raise FileNotFoundError(f"SNV site-depth TSV not found: {args.snv_site_depth_tsv}")
     if not args.event_ortholog_support_tsv.exists():
         raise FileNotFoundError(
             f"Event ortholog support TSV not found: {args.event_ortholog_support_tsv}"
         )
-    taxonomic_inputs = [
+    required_inputs = [
         args.snv_taxonomic_depth_tsv,
         args.snv_alt_taxonomic_support_tsv,
-        args.target_features_dir,
+        args.genes_tsv,
+        args.target_sequences_dir,
     ]
-    if any(path is not None for path in taxonomic_inputs) and not all(
-        path is not None for path in taxonomic_inputs
-    ):
+    for path in required_inputs:
+        if not path.exists():
+            raise FileNotFoundError(f"Required annotation input not found: {path}")
+    target_feature_paths = resolve_target_feature_paths(args.target_features)
+    observed_taxonomic_depth_count = count_tsv_gz_rows(args.snv_taxonomic_depth_tsv)
+    expected_taxonomic_depth_count = manifest_count(
+        alignment_manifest,
+        "snv_taxonomic_depth_count",
+    )
+    if observed_taxonomic_depth_count != expected_taxonomic_depth_count:
         raise ValueError(
-            "Taxonomic ortholog evidence requires site depth, ALT support, and target features"
+            "SNV taxonomic depth row count does not match alignment manifest: "
+            f"rows={observed_taxonomic_depth_count}, manifest={expected_taxonomic_depth_count}"
         )
-    for path in taxonomic_inputs:
-        if path is not None and not path.exists():
-            raise FileNotFoundError(f"Taxonomic ortholog evidence input not found: {path}")
+    observed_taxonomic_alt_support_count = count_tsv_gz_rows(
+        args.snv_alt_taxonomic_support_tsv
+    )
+    expected_taxonomic_alt_support_count = manifest_count(
+        alignment_manifest,
+        "snv_alt_taxonomic_support_count",
+    )
+    if observed_taxonomic_alt_support_count != expected_taxonomic_alt_support_count:
+        raise ValueError(
+            "SNV ALT taxonomic support row count does not match alignment manifest: "
+            f"rows={observed_taxonomic_alt_support_count}, "
+            f"manifest={expected_taxonomic_alt_support_count}"
+        )
     if not args.clinvar_vcf.exists():
         raise FileNotFoundError(f"ClinVar VCF not found: {args.clinvar_vcf}")
     clinvar_tbi = Path(f"{args.clinvar_vcf}.tbi")
@@ -938,14 +1022,8 @@ def main():
 
     failures: list[dict] = []
     phase_started = start_phase("load_target_context")
-    if bool(args.genes_tsv) != bool(args.target_sequences_dir):
-        raise ValueError("--genes-tsv and --target-sequences-dir must be provided together.")
-    if args.genes_tsv and args.target_sequences_dir:
-        contexts = load_target_contexts(args.genes_tsv, args.target_sequences_dir)
-        logger.info("Loaded target context for %s gene(s).", len(contexts))
-    else:
-        contexts = {}
-        logger.warning("No target context provided; ClinVar/gnomAD lookup will use raw event keys.")
+    contexts = load_target_contexts(args.genes_tsv, args.target_sequences_dir)
+    logger.info("Loaded target context for %s gene(s).", len(contexts))
     context_index = build_context_index(contexts)
     finish_phase(timings_seconds, "load_target_context", phase_started)
 
@@ -988,6 +1066,11 @@ def main():
                     raise ValueError(
                         "Compact event_group_id values must be consecutive from 1; "
                         f"expected {input_row_count}, observed {event_group_id}"
+                    )
+                gene_id = str(row.get("gene_id") or "")
+                if gene_id not in contexts:
+                    raise ValueError(
+                        f"Alignment event references gene {gene_id!r} outside the supplied target context"
                     )
                 exact_support_rows = support_stream.take(event_group_id)
 
@@ -1033,6 +1116,21 @@ def main():
                 add_strategy_support(aggregate, row)
                 exact_spool.add_group(aggregate, row, exact_support_rows)
         support_stream.finish()
+        expected_event_count = manifest_count(alignment_manifest, "alignment_event_count")
+        if input_row_count != expected_event_count:
+            raise ValueError(
+                "Alignment event row count does not match alignment manifest: "
+                f"rows={input_row_count}, manifest={expected_event_count}"
+            )
+        expected_support_count = manifest_count(
+            alignment_manifest,
+            "event_ortholog_support_count",
+        )
+        if support_stream.row_count != expected_support_count:
+            raise ValueError(
+                "Event ortholog support row count does not match alignment manifest: "
+                f"rows={support_stream.row_count}, manifest={expected_support_count}"
+            )
         collapse_complete = True
     finally:
         support_stream.__exit__(None, None, None)
@@ -1053,13 +1151,12 @@ def main():
     finish_phase(timings_seconds, "aggregate_ortholog_support", phase_started)
 
     phase_started = start_phase("load_site_depth")
-    if args.snv_site_depth_tsv is not None:
-        site_depths = load_snv_site_depth(args.snv_site_depth_tsv)
-    else:
-        site_depths = site_aligned_ortholog_counts(
-            args.segments_tsv,
-            iter_variant_strategy_snv_sites(variant_aggregates.values()),
-            args.outdir,
+    site_depths = load_snv_site_depth(args.snv_site_depth_tsv)
+    expected_site_depth_count = manifest_count(alignment_manifest, "snv_site_depth_count")
+    if len(site_depths) != expected_site_depth_count:
+        raise ValueError(
+            "SNV site-depth row count does not match alignment manifest: "
+            f"rows={len(site_depths)}, manifest={expected_site_depth_count}"
         )
     logger.info(f"Calculated site-aligned ortholog depth for {len(site_depths)} variant-strategy SNV(s).")
     finish_phase(timings_seconds, "load_site_depth", phase_started)
@@ -1198,18 +1295,13 @@ def main():
     finish_phase(timings_seconds, "write_support_tables", phase_started)
 
     phase_started = start_phase("write_ortholog_evidence")
-    ortholog_evidence_summary_count = 0
-    if args.snv_taxonomic_depth_tsv is not None:
-        target_feature_paths = sorted(args.target_features_dir.glob("*.tsv.gz"))
-        if not target_feature_paths:
-            raise ValueError(f"No target feature tables found in {args.target_features_dir}")
-        ortholog_evidence_summary_count = write_ortholog_evidence_summary(
-            args.snv_taxonomic_depth_tsv,
-            args.snv_alt_taxonomic_support_tsv,
-            target_feature_paths,
-            build_gnomad_statuses(variant_aggregates.values(), gnomad_cache, failures),
-            ortholog_evidence_tsv,
-        )
+    ortholog_evidence_summary_count = write_ortholog_evidence_summary(
+        args.snv_taxonomic_depth_tsv,
+        args.snv_alt_taxonomic_support_tsv,
+        target_feature_paths,
+        build_gnomad_statuses(variant_aggregates.values(), gnomad_cache, failures),
+        ortholog_evidence_tsv,
+    )
     finish_phase(timings_seconds, "write_ortholog_evidence", phase_started)
 
     phase_started = start_phase("write_failures")
