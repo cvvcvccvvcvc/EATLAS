@@ -64,6 +64,8 @@ CONSEQUENCE_GROUP_COLORS = {
 CONSEQUENCE_GROUP_TERMS = DISPLAY_CONSEQUENCE_GROUP_TERMS
 
 STRATEGY_LABELS = {
+    "bwa_pseudoreads_150_75": "BWA pseudo 150/75",
+    # Display-only compatibility for completed runs from before the strategy rename.
     "bwa_pseudoreads": "BWA pseudo",
     "minimap2_asm10": "minimap2 asm10",
     "minimap2_asm20": "minimap2 asm20",

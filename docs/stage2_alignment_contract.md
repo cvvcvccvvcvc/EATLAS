@@ -43,7 +43,7 @@ marked as default-enabled in that registry.
 | `minimap2_asm10` | minimap2 | Fixed baseline preset for every ortholog. |
 | `minimap2_asm20` | minimap2 | More permissive fixed minimap2 preset. |
 | `nucmer` | MUMmer/nucmer | Independent comparator using multi-query nucmer output. |
-| `bwa_pseudoreads` | BWA/samtools/pysam | Pseudoread comparator that maps generated ortholog pseudo-reads to the target and extracts BAM/CIGAR-supported events. |
+| `bwa_pseudoreads_150_75` | BWA/samtools/pysam | Pseudoread comparator using 150-base reads at a 75-base step. |
 | `precomputed_ensembl_92_mammals_epo_extended` | Ensembl Compara MAF | Uses release-pinned precomputed `92_mammals.epo_extended` whole-genome MSA blocks overlapping the human target gene interval. |
 
 The two minimap2 strategies, nucmer, and BWA pseudoreads are default-enabled.
@@ -59,7 +59,7 @@ Example selections:
 --alignment_strategies all
 --alignment_strategies minimap2_asm20
 --alignment_strategies minimap2_asm10,nucmer
---alignment_strategies bwa_pseudoreads
+--alignment_strategies bwa_pseudoreads_150_75
 --alignment_strategies minimap2_asm20,precomputed_ensembl_92_mammals_epo_extended
 ```
 
@@ -68,7 +68,7 @@ or report layers must treat cross-strategy-only sections as not applicable or
 empty rather than failing.
 
 `all` selects `minimap2_asm10`, `minimap2_asm20`, `nucmer`, and
-`bwa_pseudoreads`. The explicitly selected Ensembl strategy uses release 116,
+`bwa_pseudoreads_150_75`. The explicitly selected Ensembl strategy uses release 116,
 the `92_mammals.epo_extended` set, and at most three concurrent remote chunk
 tasks. These values are part of the strategy definition rather than separate
 user options.
@@ -124,9 +124,16 @@ collapsed within an ortholog. The parser adds `unfiltered_nucmer` QC flags.
 Events containing IUPAC ambiguity symbols are excluded and counted in the task
 manifest; the affected ortholog summary receives `ambiguous_event_allele`.
 
-The BWA comparator always uses 150-base pseudo-reads, a 75-base step, and
-synthetic PHRED 30. These values are part of the strategy definition rather
-than runtime tuning parameters.
+The BWA comparator `bwa_pseudoreads_150_75` uses 150-base pseudo-reads, a
+75-base step, and synthetic PHRED 30. These values live in the strategy
+registry and are passed explicitly to the shared BWA runner; they are not
+runtime tuning parameters or duplicated runner defaults.
+
+Mapped pseudo-reads are reduced by two mandatory rules: retain the dominant
+strand for each ortholog, then retain its monotonic LIS/LDS backbone in target
+coordinate order. Reads are not deduplicated merely because they share an
+alignment position. There are no mapped-fraction, filtered-fraction, retained-
+fraction, or whole-ortholog rejection thresholds.
 
 For Ensembl Compara MAF:
 

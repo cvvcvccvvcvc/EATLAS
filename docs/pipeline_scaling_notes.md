@@ -52,7 +52,7 @@ BWA, sorts and indexes BAM, and applies the LIS BAM filter.
 
 Current behavior:
 
-- `bwa_pseudoreads` extracts BAM/CIGAR-supported events with `pysam`;
+- `bwa_pseudoreads_150_75` extracts BAM/CIGAR-supported events with `pysam`;
 - `bwa mem` is streamed directly into `samtools sort`, avoiding durable SAM and
   unsorted BAM intermediates;
 - native BAM files are kept only with `--keep_native_alignments true`;

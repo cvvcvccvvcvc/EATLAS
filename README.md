@@ -100,7 +100,7 @@ exact ortholog support, site depth, taxonomy-aware depth and ALT support, plus a
 manifest that binds those tables to the matching fetch target context.
 
 By default, `--alignment_strategies all` runs `minimap2_asm10`,
-`minimap2_asm20`, `nucmer`, and `bwa_pseudoreads`. The precomputed Ensembl
+`minimap2_asm20`, `nucmer`, and `bwa_pseudoreads_150_75`. The precomputed Ensembl
 strategy remains available only when named explicitly. Use a comma-separated
 list to select a different set:
 

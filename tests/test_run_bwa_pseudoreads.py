@@ -10,12 +10,16 @@ import pytest
 BIN_DIR = Path(__file__).resolve().parents[1] / "bin"
 sys.path.insert(0, str(BIN_DIR))
 
-from bam_filtering_v1 import expected_pseudoreads, pseudoread_starts  # noqa: E402
+import bam_filtering_v1  # noqa: E402
 import run_bwa_pseudoreads as bwa_runner  # noqa: E402
-from run_bwa_pseudoreads import generate_pseudoreads  # noqa: E402
+from run_bwa_pseudoreads import (  # noqa: E402
+    expected_pseudoreads,
+    generate_pseudoreads,
+    pseudoread_starts,
+)
 
 
-def test_bwa_cli_uses_fixed_pseudoread_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_bwa_cli_accepts_strategy_registry_parameters(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         sys,
         "argv",
@@ -29,6 +33,14 @@ def test_bwa_cli_uses_fixed_pseudoread_defaults(monkeypatch: pytest.MonkeyPatch)
             "ortholog.fa.gz",
             "--outdir",
             "out",
+            "--strategy",
+            "bwa_pseudoreads_150_75",
+            "--pseudoread-len",
+            "150",
+            "--pseudoread-step",
+            "75",
+            "--pseudoread-phred",
+            "30",
             "--target-features",
             "target_features.tsv.gz",
         ],
@@ -36,6 +48,7 @@ def test_bwa_cli_uses_fixed_pseudoread_defaults(monkeypatch: pytest.MonkeyPatch)
 
     args = bwa_runner.parse_args()
 
+    assert args.strategy == "bwa_pseudoreads_150_75"
     assert (
         args.pseudoread_len,
         args.pseudoread_step,
@@ -71,7 +84,6 @@ def test_generate_pseudoreads_uses_endpoint_inclusive_starts(tmp_path: Path) -> 
     headers = fastq.read_text().splitlines()[::4]
     assert generation.total_reads == expected_pseudoreads(224, read_len=150, step=75)
     assert generation.query_lengths == {"1": 224}
-    assert generation.generated_counts == {"ortholog_1": 2}
     assert headers == [
         "@ortholog_1_pseudo_1_1-150",
         "@ortholog_1_pseudo_2_75-224",
@@ -179,6 +191,7 @@ def test_scan_bam_deduplicates_event_support_by_ortholog(tmp_path: Path) -> None
             "101": {"tax_id": "1"},
             "102": {"tax_id": "2"},
         },
+        strategy="bwa_pseudoreads_150_75",
     )
 
     assert sorted(support) == ["101", "102", "103"]
@@ -192,3 +205,64 @@ def test_scan_bam_deduplicates_event_support_by_ortholog(tmp_path: Path) -> None
         "102": "bwa_cigar_event",
         "103": "bwa_cigar_event,non_primary",
     }
+
+
+def test_bam_filter_keeps_same_position_reads_after_strand_filter(tmp_path: Path) -> None:
+    input_bam = tmp_path / "aln.sorted.bam"
+    header = {"HD": {"VN": "1.6", "SO": "coordinate"}, "SQ": [{"SN": "target", "LN": 100}]}
+
+    def make_read(name: str, *, reverse: bool = False) -> bwa_runner.pysam.AlignedSegment:
+        read = bwa_runner.pysam.AlignedSegment()
+        read.query_name = name
+        read.query_sequence = "A" * 20
+        read.flag = 16 if reverse else 0
+        read.reference_id = 0
+        read.reference_start = 10
+        read.mapping_quality = 60
+        read.cigar = ((0, 20),)
+        read.query_qualities = bwa_runner.pysam.qualitystring_to_array("I" * 20)
+        return read
+
+    with bwa_runner.pysam.AlignmentFile(input_bam, "wb", header=header) as bam:
+        bam.write(make_read("ortholog_101_pseudo_1_1-20"))
+        bam.write(make_read("ortholog_101_pseudo_2_11-30"))
+        bam.write(make_read("ortholog_101_pseudo_3_21-40", reverse=True))
+    bwa_runner.pysam.index(str(input_bam))
+
+    result = bam_filtering_v1.filter_bam_for_gene(tmp_path)
+
+    with bwa_runner.pysam.AlignmentFile(result.output_bam, "rb") as bam:
+        retained_names = [read.query_name for read in bam.fetch()]
+    assert retained_names == [
+        "ortholog_101_pseudo_1_1-20",
+        "ortholog_101_pseudo_2_11-30",
+    ]
+    assert result.filtering_stats["ortholog_101"]["filtered_by_strand"] == 1
+    assert result.filtering_stats["ortholog_101"]["filtered_by_order"] == 0
+    assert "filtered_by_overlap" not in result.filtering_stats["ortholog_101"]
+
+
+def test_bam_filter_keeps_only_monotonic_pseudoread_order() -> None:
+    reads = [
+        {"read_key": ("first",), "actual_read_num": 1, "alignment_pos": 10, "is_reverse": False},
+        {"read_key": ("out_of_order",), "actual_read_num": 3, "alignment_pos": 20, "is_reverse": False},
+        {"read_key": ("last",), "actual_read_num": 2, "alignment_pos": 30, "is_reverse": False},
+    ]
+
+    retained, stats = bam_filtering_v1._filter_homologue_reads(reads, "forward")
+
+    assert retained == {("first",), ("last",)}
+    assert stats["filtered_by_order"] == 1
+
+
+def test_bam_filter_uses_decreasing_order_on_reverse_strand() -> None:
+    reads = [
+        {"read_key": ("first",), "actual_read_num": 3, "alignment_pos": 10, "is_reverse": True},
+        {"read_key": ("out_of_order",), "actual_read_num": 1, "alignment_pos": 20, "is_reverse": True},
+        {"read_key": ("last",), "actual_read_num": 2, "alignment_pos": 30, "is_reverse": True},
+    ]
+
+    retained, stats = bam_filtering_v1._filter_homologue_reads(reads, "reverse")
+
+    assert retained == {("first",), ("last",)}
+    assert stats["filtered_by_order"] == 1

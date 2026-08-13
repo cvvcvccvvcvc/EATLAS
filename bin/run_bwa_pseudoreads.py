@@ -20,9 +20,6 @@ from alignment_task_io import load_task_context, materialize_task_fastas
 from feature_coverage import summarize_feature_coverage_rows
 import bam_filtering_v1
 
-
-BWA_STRATEGY = "bwa_pseudoreads"
-
 SEGMENT_FIELDS = [
     "gene_id",
     "ortholog_gene_id",
@@ -107,7 +104,6 @@ EventSupport = dict[EventKey, dict[str, dict[str, object]]]
 class PseudoreadGeneration:
     total_reads: int
     query_lengths: dict[str, int]
-    generated_counts: dict[str, int]
 
 
 def parse_args() -> argparse.Namespace:
@@ -116,12 +112,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--source-target-fasta", required=True, type=Path)
     parser.add_argument("--source-ortholog-fasta", required=True, type=Path)
     parser.add_argument("--outdir", required=True, type=Path)
+    parser.add_argument("--strategy", required=True)
     parser.add_argument("--bwa-bin", default="bwa")
     parser.add_argument("--samtools-bin", default="samtools")
     parser.add_argument("--threads", default=2, type=int)
-    parser.add_argument("--pseudoread-len", default=150, type=int)
-    parser.add_argument("--pseudoread-step", default=75, type=int)
-    parser.add_argument("--pseudoread-phred", default=30, type=int)
+    parser.add_argument("--pseudoread-len", required=True, type=int)
+    parser.add_argument("--pseudoread-step", required=True, type=int)
+    parser.add_argument("--pseudoread-phred", required=True, type=int)
     parser.add_argument("--target-features", required=True, type=Path)
     parser.add_argument("--keep-native", default="false")
     return parser.parse_args()
@@ -219,6 +216,32 @@ def write_tsv_gz(path: Path, headers: list[str], rows) -> int:
     return count
 
 
+def pseudoread_starts(
+    seq_len: int,
+    read_len: int,
+    step: int,
+    min_read_len: int = 20,
+) -> list[int]:
+    """Return sliding-window starts, including the sequence's final window."""
+    if step <= 0:
+        raise ValueError("Pseudoread step must be positive")
+    if seq_len < min_read_len or read_len < min_read_len:
+        return []
+    if seq_len <= read_len:
+        return [0]
+
+    final_start = seq_len - read_len
+    starts = list(range(0, final_start + 1, step))
+    if starts[-1] != final_start:
+        starts.append(final_start)
+    return starts
+
+
+def expected_pseudoreads(seq_len: int, read_len: int, step: int) -> int:
+    """Count pseudo-reads produced for one sequence."""
+    return len(pseudoread_starts(seq_len, read_len, step))
+
+
 def generate_pseudoreads(
     orthologs_fa: Path,
     out_fastq: Path,
@@ -226,24 +249,26 @@ def generate_pseudoreads(
     step: int,
     phred: int,
 ) -> PseudoreadGeneration:
+    if read_len < 20:
+        raise ValueError("Pseudoread length must be at least 20")
+    if not 0 <= phred <= 93:
+        raise ValueError("Pseudoread PHRED must be between 0 and 93")
     phred_char = chr(phred + 33)
     total_reads = 0
     query_lengths: dict[str, int] = {}
-    generated_counts: dict[str, int] = {}
     with out_fastq.open("w") as out:
         for header, seq in iter_fasta(orthologs_fa):
             ortholog_id = header.split()[0]
             query_lengths[ortholog_id.removeprefix("ortholog_")] = len(seq)
             read_index = 1
-            for start in bam_filtering_v1.pseudoread_starts(len(seq), read_len, step):
+            for start in pseudoread_starts(len(seq), read_len, step):
                 read_seq = seq[start : start + read_len]
                 qual = phred_char * len(read_seq)
                 end = start + len(read_seq)
                 out.write(f"@{ortholog_id}_pseudo_{read_index}_{start + 1}-{end}\n{read_seq}\n+\n{qual}\n")
                 read_index += 1
                 total_reads += 1
-            generated_counts[ortholog_id] = read_index - 1
-    return PseudoreadGeneration(total_reads, query_lengths, generated_counts)
+    return PseudoreadGeneration(total_reads, query_lengths)
 
 
 def read_ortholog_gene_id(read_name: str) -> str:
@@ -433,6 +458,7 @@ def make_segment_rows(
     gene_id: str,
     target_id: str,
     ortholog_meta_by_id: dict[str, dict[str, str]],
+    strategy: str,
 ) -> list[dict[str, object]]:
     rows: list[dict[str, object]] = []
     for segment in base_segments:
@@ -442,7 +468,7 @@ def make_segment_rows(
             "gene_id": gene_id,
             "tax_id": meta.get("tax_id", ""),
             "taxname": meta.get("taxname", ""),
-            "strategy": BWA_STRATEGY,
+            "strategy": strategy,
             "tool": "bwa",
             "preset": "pseudo",
             "target_id": target_id,
@@ -503,6 +529,7 @@ def make_bwa_event_rows(
     target_meta: dict[str, str],
     target_acc: str,
     ortholog_meta_by_id: dict[str, dict[str, str]],
+    strategy: str,
 ) -> list[dict[str, object]]:
     rows: list[dict[str, object]] = []
     for (event_type, start0, end0, ref, alt), support_by_ortholog in sorted(event_support.items()):
@@ -517,7 +544,7 @@ def make_bwa_event_rows(
                     target_meta=target_meta,
                     target_acc=target_acc,
                     ortholog_meta_by_id=ortholog_meta_by_id,
-                    strategy=BWA_STRATEGY,
+                    strategy=strategy,
                     event_type=event_type,
                     start0=start0,
                     end0=end0,
@@ -537,6 +564,7 @@ def make_summary_rows(
     query_lengths: dict[str, int],
     segment_rows: list[dict[str, object]],
     event_rows: list[dict[str, object]],
+    strategy: str,
 ) -> list[dict[str, object]]:
     segments_by_key: dict[tuple[str, str], list[dict[str, object]]] = defaultdict(list)
     for row in segment_rows:
@@ -548,7 +576,7 @@ def make_summary_rows(
     summaries: list[dict[str, object]] = []
     for meta in ortholog_meta:
         ortholog_id = meta["ortholog_gene_id"]
-        segments = segments_by_key.get((BWA_STRATEGY, ortholog_id), [])
+        segments = segments_by_key.get((strategy, ortholog_id), [])
         target_intervals = [(int(row["target_start0"]), int(row["target_end0"])) for row in segments]
         query_intervals = [(int(row["query_start0"]), int(row["query_end0"])) for row in segments]
         identities = [float(row["identity"]) for row in segments if row.get("identity") not in {"", None}]
@@ -557,14 +585,14 @@ def make_summary_rows(
         aligned_target_bp = interval_union_length(target_intervals)
         query_length = int(query_lengths.get(ortholog_id) or meta.get("sequence_length") or 0)
         aligned_query_bp = interval_union_length(query_intervals)
-        event_count = event_counts.get((BWA_STRATEGY, ortholog_id), 0)
+        event_count = event_counts.get((strategy, ortholog_id), 0)
         summaries.append(
             {
                 "gene_id": gene_id,
                 "ortholog_gene_id": ortholog_id,
                 "tax_id": meta.get("tax_id", ""),
                 "taxname": meta.get("taxname", ""),
-                "strategy": BWA_STRATEGY,
+                "strategy": strategy,
                 "tool": "bwa",
                 "preset": "pseudo",
                 "status": "aligned" if segments else "no_alignment",
@@ -616,7 +644,7 @@ def main() -> None:
     ortholog_meta_by_id = {row["ortholog_gene_id"]: row for row in ortholog_meta}
     target_acc = target_meta.get("genomic_accession", "")
 
-    with tempfile.TemporaryDirectory(prefix="bwa_pseudoreads_", dir=outdir) as tmp_name:
+    with tempfile.TemporaryDirectory(prefix=f"{args.strategy}_", dir=outdir) as tmp_name:
         work_dir = Path(tmp_name)
         local_target_fasta, local_orthologs_fasta = materialize_task_fastas(
             args.source_target_fasta,
@@ -637,7 +665,7 @@ def main() -> None:
         )
 
         sorted_bam = work_dir / "aln.sorted.bam"
-        bwa_threads = run_bwa_mem_pipeline(
+        run_bwa_mem_pipeline(
             args.bwa_bin,
             args.samtools_bin,
             local_target_fasta,
@@ -646,22 +674,7 @@ def main() -> None:
             args.threads,
         )
 
-        filter_cfg = {
-            "wrong_strand": True,
-            "lis": True,
-            "overlap": True,
-            "min_mapped_pct_of_generated": 0.0,
-            "max_pct_filtered": 100.0,
-            "min_kept_pct_of_reference": 0.0,
-        }
-        bam_filtering_v1.filter_bam_for_gene(
-            work_dir=work_dir,
-            filtering_cfg=filter_cfg,
-            read_len=args.pseudoread_len,
-            step=args.pseudoread_step,
-            generated_counts=pseudoreads.generated_counts,
-            generated_source="pseudoread_generator",
-        )
+        bam_filtering_v1.filter_bam_for_gene(work_dir)
         filtered_bam = work_dir / "aln.filtered.lis.bam"
 
         base_segments, event_support = scan_bam(filtered_bam, target_seq)
@@ -670,6 +683,7 @@ def main() -> None:
             gene_id,
             target_id,
             ortholog_meta_by_id,
+            args.strategy,
         )
 
         event_rows = make_bwa_event_rows(
@@ -678,6 +692,7 @@ def main() -> None:
             target_meta,
             target_acc,
             ortholog_meta_by_id,
+            args.strategy,
         )
 
         summary_rows = make_summary_rows(
@@ -687,6 +702,7 @@ def main() -> None:
             pseudoreads.query_lengths,
             segment_rows,
             event_rows,
+            args.strategy,
         )
 
         write_tsv_gz(outdir / "alignment_segments.tsv.gz", SEGMENT_FIELDS, segment_rows)
@@ -705,9 +721,9 @@ def main() -> None:
 
         manifest_out = {
             "gene_ids": [gene_id],
-            "strategies": [BWA_STRATEGY],
+            "strategies": [args.strategy],
             "strategy_parameters": {
-                BWA_STRATEGY: {
+                args.strategy: {
                     "pseudoread_len": args.pseudoread_len,
                     "pseudoread_step": args.pseudoread_step,
                     "pseudoread_phred": args.pseudoread_phred,

@@ -1017,8 +1017,8 @@ def test_bwa_parameters_survive_partition_and_final_merge(tmp_path: Path) -> Non
         "gene_1_bwa",
         {
             "gene_id": "1",
-            "strategy": "bwa_pseudoreads",
-            "strategy_parameters": {"bwa_pseudoreads": bwa_parameters},
+            "strategy": "bwa_pseudoreads_150_75",
+            "strategy_parameters": {"bwa_pseudoreads_150_75": bwa_parameters},
         },
     )
     partition_dir = tmp_path / "partition"
@@ -1028,14 +1028,14 @@ def test_bwa_parameters_survive_partition_and_final_merge(tmp_path: Path) -> Non
             [result_dir],
             partition_dir,
             gene_ids="1",
-            strategies="bwa_pseudoreads",
+            strategies="bwa_pseudoreads_150_75",
         )
     )
 
     assert partition.returncode == 0, partition.stderr
     partition_manifest = json.loads((partition_dir / "manifest.json").read_text())
     assert partition_manifest["strategy_parameters"] == {
-        "bwa_pseudoreads": bwa_parameters
+        "bwa_pseudoreads_150_75": bwa_parameters
     }
 
     inputs = write_final_inputs(tmp_path, [["1", "ready"]])
@@ -1045,14 +1045,14 @@ def test_bwa_parameters_survive_partition_and_final_merge(tmp_path: Path) -> Non
             [partition_dir],
             final_dir,
             inputs,
-            strategies="bwa_pseudoreads",
+            strategies="bwa_pseudoreads_150_75",
         )
     )
 
     assert final.returncode == 0, final.stderr
     final_manifest = json.loads((final_dir / "manifest.json").read_text())
     assert final_manifest["strategy_parameters"] == {
-        "bwa_pseudoreads": bwa_parameters
+        "bwa_pseudoreads_150_75": bwa_parameters
     }
 
 
@@ -1063,9 +1063,9 @@ def test_partition_merge_rejects_inconsistent_bwa_parameters(tmp_path: Path) -> 
             f"gene_{gene_id}_bwa",
             {
                 "gene_id": gene_id,
-                "strategy": "bwa_pseudoreads",
+                "strategy": "bwa_pseudoreads_150_75",
                 "strategy_parameters": {
-                    "bwa_pseudoreads": {
+                    "bwa_pseudoreads_150_75": {
                         "pseudoread_len": 150,
                         "pseudoread_step": step,
                         "pseudoread_phred": 30,
@@ -1081,9 +1081,9 @@ def test_partition_merge_rejects_inconsistent_bwa_parameters(tmp_path: Path) -> 
             result_dirs,
             tmp_path / "merged",
             gene_ids="1,2",
-            strategies="bwa_pseudoreads",
+            strategies="bwa_pseudoreads_150_75",
         )
     )
 
     assert completed.returncode != 0
-    assert "Inconsistent strategy parameters for bwa_pseudoreads" in completed.stderr
+    assert "Inconsistent strategy parameters for bwa_pseudoreads_150_75" in completed.stderr

@@ -10,7 +10,13 @@ ALIGNMENT_STRATEGY_REGISTRY = [
     [name: 'minimap2_asm10', default_enabled: true, minimap2_preset: 'asm10'],
     [name: 'minimap2_asm20', default_enabled: true, minimap2_preset: 'asm20'],
     [name: 'nucmer', default_enabled: true],
-    [name: 'bwa_pseudoreads', default_enabled: true],
+    [
+        name: 'bwa_pseudoreads_150_75',
+        default_enabled: true,
+        bwa_pseudoread_len: 150,
+        bwa_pseudoread_step: 75,
+        bwa_pseudoread_phred: 30,
+    ],
     [name: ENSEMBL_COMPARA_STRATEGY, default_enabled: false],
 ]
 AVAILABLE_ALIGNMENT_STRATEGIES = ALIGNMENT_STRATEGY_REGISTRY.collect { it.name }
@@ -212,6 +218,9 @@ SELECTED_ORTHOLOG_ALIGNMENT_STRATEGIES = SELECTED_ALIGNMENT_STRATEGIES.findAll {
 SELECTED_MINIMAP2_STRATEGIES = ALIGNMENT_STRATEGY_REGISTRY.findAll {
     it.minimap2_preset && SELECTED_ALIGNMENT_STRATEGIES.contains(it.name)
 }
+SELECTED_BWA_STRATEGIES = ALIGNMENT_STRATEGY_REGISTRY.findAll {
+    it.bwa_pseudoread_len && SELECTED_ALIGNMENT_STRATEGIES.contains(it.name)
+}
 
 include { VALIDATE_IDS } from './modules/local/validate_ids.nf'
 include { CHECK_RUNTIME } from './modules/local/check_runtime.nf'
@@ -398,6 +407,22 @@ workflow ALIGNMENT_STAGE {
                 )
             }
     }
+    bwa_inputs = alignment_inputs.flatMap {
+        meta, task_dir, source_target_fasta, source_ortholog_fasta ->
+            SELECTED_BWA_STRATEGIES.collect { strategy ->
+                tuple(
+                    meta + [
+                        strategy: strategy.name,
+                        pseudoread_len: strategy.bwa_pseudoread_len,
+                        pseudoread_step: strategy.bwa_pseudoread_step,
+                        pseudoread_phred: strategy.bwa_pseudoread_phred,
+                    ],
+                    task_dir,
+                    source_target_fasta,
+                    source_ortholog_fasta
+                )
+            }
+    }
     alignment_result_dirs = Channel.empty()
 
     if (!SELECTED_MINIMAP2_STRATEGIES.isEmpty()) {
@@ -410,8 +435,8 @@ workflow ALIGNMENT_STAGE {
         alignment_result_dirs = alignment_result_dirs.mix(ALIGN_NUCMER_COMPARATOR.out.nucmer_result_dirs)
     }
 
-    if (SELECTED_ALIGNMENT_STRATEGIES.contains('bwa_pseudoreads')) {
-        ALIGN_BWA_PSEUDOREADS(alignment_inputs, bwa_script, bam_filtering_script)
+    if (!SELECTED_BWA_STRATEGIES.isEmpty()) {
+        ALIGN_BWA_PSEUDOREADS(bwa_inputs, bwa_script, bam_filtering_script)
         alignment_result_dirs = alignment_result_dirs.mix(ALIGN_BWA_PSEUDOREADS.out.bwa_result_dirs)
     }
 
