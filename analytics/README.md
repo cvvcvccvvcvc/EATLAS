@@ -97,7 +97,15 @@ contracts.
 
 Full candidate annotation is a separate resumable precompute, not an implicit
 part of HTML generation. It is a required report input. Prepare deterministic
-input partitions once:
+input partitions once. On Slurm, use the complete launcher documented in
+`docs/report_generation.md`:
+
+```bash
+bash analytics/slurm/submit_vep_annotation.sh --run-dir "$RUN"
+```
+
+The commands below expose the individual stages for local use and targeted
+recovery:
 
 ```bash
 python -m analytics.vep_annotation prepare \

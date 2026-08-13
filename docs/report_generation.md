@@ -34,9 +34,37 @@ source "$HOME/.gaph_v2_cluster_env.sh"
 
 RUN="$GAPH_ROOT/results/slurm_panel590_all_20260720_221912"
 
+bash analytics/slurm/submit_vep_annotation.sh \
+  --run-dir "$RUN"
+
+# After bulk VEP has finalized:
 bash analytics/slurm/submit_strategy_report.sh \
   --run-dir "$RUN" \
   --report-name strategy_compare_new
+```
+
+Bulk VEP is a required, resumable precompute for every report. Its launcher
+submits `prepare -> bounded annotation array -> finalize`, pins the repository
+commit, and writes logs under
+`<run>/analytics/vep_consequences/slurm/`. The defaults are 250,000 rows per
+partition, 4 CPUs and 8 GB per annotation task, and at most 4 simultaneous
+tasks. Override them only after measuring a representative partition:
+
+```bash
+bash analytics/slurm/submit_vep_annotation.sh \
+  --run-dir "$RUN" \
+  --max-parallel 8 \
+  --slurm-memory 12G
+```
+
+Repeating the same command resumes at completed partition boundaries. The
+finalizer runs after the array stops and succeeds only when every declared
+partition is complete and matches one VEP configuration. Do not submit the
+HTML report until both files exist and are non-empty:
+
+```bash
+test -s "$RUN/analytics/vep_consequences/manifest.json"
+test -s "$RUN/analytics/vep_consequences/variant_annotations.vep.tsv.gz"
 ```
 
 The default command keeps `--target-space-null` disabled because that is the
@@ -55,6 +83,20 @@ bash analytics/slurm/submit_strategy_report.sh \
 Arguments after `--` are passed unchanged to `analytics.strategy_report`.
 
 ## Launcher Arguments
+
+### Bulk-VEP launcher
+
+| Argument | Default | Meaning |
+|---|---:|---|
+| `--run-dir PATH` | required | Absolute completed-run directory. |
+| `--partition-size N` | `250000` | Deterministic VEP input rows per array task. A resumed artifact must use the same value. |
+| `--max-parallel N` | `4` | Maximum simultaneous VEP array tasks. |
+| `--slurm-cpus N` | `4` | CPUs reserved per VEP array task. |
+| `--slurm-memory SIZE` | `8G` | Memory per VEP array task. |
+| `--slurm-time D-HH:MM:SS` | `01:00:00` | Time limit per VEP array task. |
+| `--slurm-partition NAME` | `main` | Slurm partition for every step. |
+
+### Report launcher
 
 | Argument | Default | Meaning |
 |---|---:|---|
@@ -108,8 +150,24 @@ completed gnomAD lookups (`found` or `not_found`).
 
 ## Monitoring And Completion
 
-The launcher prints the job ID and exact log paths. Confirm that the job starts
-and passes its initial preflight:
+The bulk-VEP preparation log prints the annotation-array and finalizer job IDs:
+
+```bash
+squeue -u "$USER"
+tail -n 30 "$RUN/analytics/vep_consequences/slurm/prepare.<job-id>.out"
+tail -n 30 "$RUN/analytics/vep_consequences/slurm/annotate.<array-id>_<task-id>.err"
+tail -n 30 "$RUN/analytics/vep_consequences/slurm/finalize.<job-id>.err"
+```
+
+The preparation job, every array task, and the finalizer must finish with
+Slurm state `COMPLETED` and exit code `0:0`. A failed array causes finalization
+to fail on the missing partition rather than publishing a partial artifact;
+rerun the launcher to retry only incomplete partitions.
+
+After bulk VEP is finalized, confirm that the report itself starts and passes
+its initial preflight:
+
+The report launcher prints the job ID and exact log paths:
 
 ```bash
 squeue -j "$JOB_ID"
