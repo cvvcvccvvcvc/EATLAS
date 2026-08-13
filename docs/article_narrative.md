@@ -13,6 +13,25 @@ The study asks whether this signal is associated with benign ClinVar
 classification and whether it adds information beyond site-level conservation.
 Ortholog observation alone does not prove clinical benignity or causality.
 
+## Analytical Cohort Construction
+
+Completed runs may be technical partitions of one pooled analytical cohort;
+they are not treated as holdout or replication datasets. Multi-run analysis
+requires the same current pipeline revision and scientific contracts, including
+target assembly/annotation, alignment strategies and parameters, ClinVar,
+gnomAD, and VEP. Accepted Gene IDs must be disjoint until durable per-gene
+summary contracts can support an explicit owner choice. Incompatible or
+overlapping runs fail before analysis rather than producing a partial cohort.
+
+All counts, denominators, association tests, conservation models, matched
+controls, and bootstrap summaries are recomputed over the full pooled cohort;
+run-level report aggregates are never summed. The same normalized allele in
+different genes is one global allele with multiple allele-gene memberships.
+Run-level taxonomy medians and distinct counts are not pooled because the
+current summary artifact is not additive. Every contributing run remains
+visible in report provenance. Only current completed runs are in scope; there
+is no legacy-run compatibility mode.
+
 ## Main Results Narrative
 
 ### 1. Define the signal

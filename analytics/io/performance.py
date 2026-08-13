@@ -75,12 +75,16 @@ class PerformanceProfile:
         report_path: Path,
         tracked_directory: Path | None = None,
         command: Sequence[str] | None = None,
+        cohort_id: str | None = None,
+        source_run_dirs: Sequence[Path] = (),
     ) -> None:
         self.path = path
         self.run_dir = run_dir
         self.report_path = report_path
         self.tracked_directory = tracked_directory
         self.command = list(command or sys.argv)
+        self.cohort_id = cohort_id
+        self.source_run_dirs = tuple(source_run_dirs)
         self.status = "running"
         self.started_at_utc = _utc_now()
         self.finished_at_utc: str | None = None
@@ -269,7 +273,7 @@ class PerformanceProfile:
         }
 
     def _payload(self) -> dict[str, object]:
-        return {
+        payload = {
             "schema_version": PROFILE_SCHEMA_VERSION,
             "status": self.status,
             "started_at_utc": self.started_at_utc,
@@ -285,6 +289,14 @@ class PerformanceProfile:
             "stages": self.stages,
             "artifacts": self._artifacts,
         }
+        if self.cohort_id is not None:
+            payload["cohort"] = {
+                "cohort_id": self.cohort_id,
+                "source_run_dirs": [
+                    str(path.resolve()) for path in self.source_run_dirs
+                ],
+            }
+        return payload
 
     def _flush(self) -> None:
         write_json_atomic(self.path, self._payload())

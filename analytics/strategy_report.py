@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build an HTML report for one completed GAPH run."""
+"""Build an HTML report for one completed GAPH run or a compatible run cohort."""
 
 from __future__ import annotations
 
@@ -31,6 +31,7 @@ from analytics.io.run_inputs import (
     resolve_run_inputs,
     validate_report_inputs,
 )
+from analytics.io.cohort_inputs import resolve_cohort_inputs
 from analytics.io.artifacts import write_text_atomic
 from analytics.io.performance import PerformanceProfile
 from analytics.reporting.components import strategy_label
@@ -50,7 +51,21 @@ from analytics.reporting.variant_profile import (
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--run-dir", required=True, type=Path, help="Completed GAPH run directory.")
+    source = parser.add_mutually_exclusive_group(required=True)
+    source.add_argument("--run-dir", type=Path, help="Completed GAPH run directory.")
+    source.add_argument(
+        "--cohort-manifest",
+        type=Path,
+        help="JSON manifest listing compatible completed GAPH runs.",
+    )
+    parser.add_argument(
+        "--cohort-root",
+        type=Path,
+        help=(
+            "Root for cohort outputs. Default: <cohort-manifest-dir>/cohorts. "
+            "Valid only with --cohort-manifest."
+        ),
+    )
     parser.add_argument(
         "--clinvar-vcf",
         type=Path,
@@ -60,11 +75,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--out-html",
         type=Path,
-        help="Output HTML path. Default: <run-dir>/reports/strategy_compare.html",
+        help="Output HTML path. Default: <analysis-root>/reports/strategy_compare.html",
     )
     parser.add_argument(
         "--report-name",
-        help="Short report file name inside <run-dir>/reports. '.html' is added if omitted.",
+        help="Short report file name inside <analysis-root>/reports. '.html' is added if omitted.",
     )
     parser.add_argument(
         "--target-space-null",
@@ -194,6 +209,9 @@ def _default_firth_workers() -> int:
 
 def main() -> None:
     args = parse_args()
+    if args.run_dir is not None and args.cohort_root is not None:
+        raise ValueError("--cohort-root can only be used with --cohort-manifest")
+    args.clinvar_vcf = args.clinvar_vcf.expanduser().resolve()
     if args.phylop_bigwig is not None:
         args.phylop_bigwig = args.phylop_bigwig.expanduser().resolve()
         if not args.phylop_bigwig.is_file():
@@ -210,8 +228,19 @@ def main() -> None:
         raise ValueError("--firth-workers must be >= 1")
     if args.vep_result_cache_tile_size_bp < 1:
         raise ValueError("--vep-result-cache-tile-size-bp must be >= 1")
-    inputs = resolve_run_inputs(args.run_dir)
-    validate_report_inputs(inputs)
+    if args.cohort_manifest is not None:
+        inputs = resolve_cohort_inputs(
+            args.cohort_manifest,
+            cohort_root=args.cohort_root,
+            clinvar_vcf=args.clinvar_vcf,
+        )
+        print(
+            f"Cohort {inputs.cohort_id}: {len(inputs.source_run_dirs)} runs, "
+            f"workspace {inputs.run_dir}"
+        )
+    else:
+        inputs = resolve_run_inputs(args.run_dir)
+        validate_report_inputs(inputs)
     candidate_vep_manifest = bulk_vep_manifest(inputs)
     artifact_release = bulk_vep_release(inputs)
     if args.vep_release and str(args.vep_release) != artifact_release:
@@ -230,6 +259,8 @@ def main() -> None:
         run_dir=inputs.run_dir,
         report_path=out_html,
         tracked_directory=analytics_dir,
+        cohort_id=inputs.cohort_id,
+        source_run_dirs=inputs.source_run_dirs,
     )
 
     with performance.stage("Firth runtime preflight") as timing:
@@ -319,7 +350,7 @@ def main() -> None:
             run_dir=inputs.run_dir,
             genes_tsv=inputs.genes_tsv,
             target_sequences_dir=inputs.target_sequences_dir,
-            clinvar_vcf=args.clinvar_vcf.expanduser().resolve(),
+            clinvar_vcf=args.clinvar_vcf,
             strategies=strategies,
             observed_store=observed_store,
             vep_backend=args.vep_backend,
@@ -354,7 +385,7 @@ def main() -> None:
                 target_features_tsv=inputs.target_features_tsv,
                 genes_tsv=inputs.genes_tsv,
                 target_sequences_dir=inputs.target_sequences_dir,
-                clinvar_vcf=args.clinvar_vcf.expanduser().resolve(),
+                clinvar_vcf=args.clinvar_vcf,
                 strategies=strategies,
                 observed_store=observed_store,
                 sample_size_per_strategy=args.target_space_null_sample_size,

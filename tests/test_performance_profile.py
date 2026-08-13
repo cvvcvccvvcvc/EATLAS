@@ -67,3 +67,22 @@ def test_performance_profile_flushes_failed_stage(tmp_path: Path) -> None:
     assert payload["finished_at_utc"]
     assert payload["stages"][0]["status"] == "failed"
     assert payload["stages"][0]["error_type"] == "ValueError"
+
+
+def test_performance_profile_records_cohort_provenance(tmp_path: Path) -> None:
+    source_runs = [tmp_path / "run-a", tmp_path / "run-b"]
+    profile_path = tmp_path / "analytics" / "performance.json"
+    profile = PerformanceProfile(
+        profile_path,
+        run_dir=tmp_path / "cohort",
+        report_path=tmp_path / "cohort" / "reports" / "report.html",
+        cohort_id="cohort-123",
+        source_run_dirs=source_runs,
+    )
+    profile.finish()
+
+    payload = json.loads(profile_path.read_text())
+    assert payload["cohort"] == {
+        "cohort_id": "cohort-123",
+        "source_run_dirs": [str(path.resolve()) for path in source_runs],
+    }

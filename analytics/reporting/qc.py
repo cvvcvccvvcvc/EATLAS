@@ -15,7 +15,7 @@ from analytics.annotation.consequences import (
     VALIDATION_CONSEQUENCE_OPTIONS as CONSEQUENCE_OPTIONS,
     VALIDATION_CONSEQUENCE_TERMS as CONSEQUENCE_TERMS,
 )
-from analytics.io.run_inputs import RunInputs, file_size_label
+from analytics.io.run_inputs import RunInputs, file_size_label, read_json
 from .components import format_int, metric_cards, table_html
 from .config import (
     CONSEQUENCE_GROUP_ORDER,
@@ -431,7 +431,7 @@ def build_methods_sections(
     candidate_vep_manifest: dict | None = None,
 ) -> list[str]:
     files = [
-        ("Run Dir", inputs.run_dir),
+        ("Analysis Root", inputs.run_dir),
         ("Fetch Manifest", inputs.fetch_manifest_json),
         ("Variant Annotations", inputs.variant_annotations_tsv),
         ("Variant Strategy Support", inputs.variant_strategy_support_tsv),
@@ -450,6 +450,8 @@ def build_methods_sections(
         ),
         ("Output HTML", out_html),
     ]
+    if inputs.cohort_manifest_json is not None:
+        files.insert(1, ("Resolved Cohort Manifest", inputs.cohort_manifest_json))
     if validation is not None:
         files.extend(
             [
@@ -492,12 +494,48 @@ def build_methods_sections(
                 ("Missing left anchor", format_int(missing_left_anchor)),
                 ("gnomAD regions failed", format_int(annotation_manifest.get("gnomad_region_failure_count", 0))),
                 ("Candidate contexts excluded from gnomAD", format_int(variant_summary.gnomad_lookup_failed)),
-                ("ClinVar cached variants", format_int(annotation_manifest.get("clinvar_cached_variant_count", 0))),
-                ("gnomAD cached variants", format_int(annotation_manifest.get("gnomad_cached_variant_count", 0))),
+                (
+                    "ClinVar cached variants",
+                    "Not pooled"
+                    if inputs.is_cohort
+                    else format_int(annotation_manifest.get("clinvar_cached_variant_count", 0)),
+                ),
+                (
+                    "gnomAD cached variants",
+                    "Not pooled"
+                    if inputs.is_cohort
+                    else format_int(annotation_manifest.get("gnomad_cached_variant_count", 0)),
+                ),
                 ("Feature coverage rows", format_int(len(cov))),
             ]
         ),
     ]
+    if inputs.is_cohort and inputs.cohort_manifest_json is not None:
+        resolved_cohort = read_json(inputs.cohort_manifest_json)
+        provenance_rows = [
+            {
+                "Run": str(member.get("label", "")),
+                "Run directory": str(member.get("run_dir", "")),
+                "Scientific fingerprint": str(member.get("fingerprint", "")),
+                "Accepted genes": int(member.get("requested_gene_count", 0)),
+                "Target genes": int(member.get("target_gene_count", 0)),
+            }
+            for member in resolved_cohort.get("members", [])
+            if isinstance(member, dict)
+        ]
+        sections.extend(
+            [
+                "<details open><summary>Cohort provenance</summary>",
+                "<p class=\"lead\">All listed completed runs were validated before "
+                "pooling. Accepted gene IDs are disjoint; scientific statistics are "
+                "recomputed over their union.</p>",
+                table_html(
+                    pd.DataFrame(provenance_rows),
+                    classes="table table-sm table-striped",
+                ),
+                "</details>",
+            ]
+        )
     sections.append("<details><summary>VEP annotation coverage</summary>")
     sections.append(
         "<p class=\"lead\">Candidate and ClinVar consequence analyses use release-pinned "

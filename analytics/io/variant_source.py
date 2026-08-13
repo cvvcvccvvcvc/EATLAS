@@ -11,6 +11,10 @@ from pathlib import Path
 from analytics.io.artifacts import file_identity, path_metadata
 
 
+COHORT_VARIANT_SOURCE_KIND = "gaph_cohort_variant_source"
+COHORT_VARIANT_SOURCE_SCHEMA_VERSION = 1
+
+
 @dataclass(frozen=True)
 class VariantTableSource:
     paths: tuple[Path, ...]
@@ -29,6 +33,34 @@ def resolve_pre_vep_variant_source(
     """Prefer validated VEP input partitions over the enriched merged table."""
 
     path = path.resolve()
+    cohort_paths = cohort_variant_paths(path)
+    if cohort_paths is not None:
+        sources = [
+            resolve_pre_vep_variant_source(member, required_columns=required_columns)
+            for member in cohort_paths
+        ]
+        columns = sources[0].columns
+        if any(source.columns != columns for source in sources[1:]):
+            raise ValueError("Cohort VEP inputs have different table columns")
+        mode = sources[0].mode
+        if any(source.mode != mode for source in sources[1:]):
+            raise ValueError("Cohort VEP inputs mix partitioned and merged source modes")
+        row_count = (
+            sum(int(source.row_count) for source in sources)
+            if all(source.row_count is not None for source in sources)
+            else None
+        )
+        return VariantTableSource(
+            paths=tuple(item for source in sources for item in source.paths),
+            columns=columns,
+            row_count=row_count,
+            header=True,
+            mode="cohort_" + mode,
+            identity={
+                "cohort_descriptor": path_metadata(path),
+                "members": [source.identity for source in sources],
+            },
+        )
     plan_path = path.parent / "plan.json"
     if path.name == "variant_annotations.vep.tsv.gz" and plan_path.exists():
         manifest_path = path.parent / "manifest.json"
@@ -102,6 +134,32 @@ def variant_source_sql(source: VariantTableSource) -> str:
 
 def sql_string(value: object) -> str:
     return "'" + str(value).replace("'", "''") + "'"
+
+
+def cohort_variant_paths(path: Path) -> tuple[Path, ...] | None:
+    """Resolve the small descriptor used to union finalized run-level VEP sources."""
+
+    if path.suffix != ".json" or not path.is_file():
+        return None
+    payload = _read_json(path)
+    if payload.get("kind") != COHORT_VARIANT_SOURCE_KIND:
+        return None
+    if payload.get("schema_version") != COHORT_VARIANT_SOURCE_SCHEMA_VERSION:
+        raise ValueError(f"Unsupported cohort variant source schema: {path}")
+    raw_members = payload.get("members")
+    if not isinstance(raw_members, list) or not raw_members:
+        raise ValueError(f"Cohort variant source has no members: {path}")
+    members = []
+    for raw in raw_members:
+        if not isinstance(raw, dict) or not str(raw.get("path") or "").strip():
+            raise ValueError(f"Invalid cohort variant source member: {path}")
+        member = Path(str(raw["path"])).expanduser()
+        if not member.is_absolute():
+            member = path.parent / member
+        members.append(member.resolve())
+    if len(set(members)) != len(members):
+        raise ValueError(f"Cohort variant source repeats a member: {path}")
+    return tuple(members)
 
 
 def _read_header(path: Path) -> list[str]:

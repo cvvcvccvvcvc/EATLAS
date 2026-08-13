@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import tempfile
@@ -9,6 +10,30 @@ from pathlib import Path
 from typing import Any
 
 import pandas as pd
+
+
+def sha256_file(path: Path, *, chunk_size: int = 16 * 1024 * 1024) -> str:
+    """Return a content identity suitable for reproducible cohort inputs."""
+
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(chunk_size), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def content_identity(path: Path) -> dict[str, object]:
+    if not path.is_file():
+        raise FileNotFoundError(path)
+    before = path.stat()
+    sha256 = sha256_file(path)
+    after = path.stat()
+    if (before.st_size, before.st_mtime_ns) != (after.st_size, after.st_mtime_ns):
+        raise ValueError(f"File changed while hashing: {path}")
+    return {
+        "size_bytes": before.st_size,
+        "sha256": sha256,
+    }
 
 
 def file_identity(path: Path) -> dict[str, int]:

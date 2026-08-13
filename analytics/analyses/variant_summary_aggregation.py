@@ -17,6 +17,7 @@ import pandas as pd
 from analytics.analyses.target_context import read_disjoint_contexts
 from analytics.annotation.consequences import UNANNOTATED_CONSEQUENCE
 from analytics.io.artifacts import file_identity, path_metadata
+from analytics.io.variant_source import cohort_variant_paths
 from genomics.variants import read_failed_regions
 
 
@@ -195,6 +196,30 @@ def resolve_variant_aggregation_source(path: Path) -> VariantAggregationSource:
     """Resolve a validated finalized VEP artifact."""
 
     path = path.resolve()
+    cohort_paths = cohort_variant_paths(path)
+    if cohort_paths is not None:
+        sources = [resolve_variant_aggregation_source(member) for member in cohort_paths]
+        columns = sources[0].columns
+        if any(source.columns != columns for source in sources[1:]):
+            raise ValueError("Cohort VEP outputs have different table columns")
+        partitioned = sources[0].partitioned
+        if any(source.partitioned != partitioned for source in sources[1:]):
+            raise ValueError("Cohort VEP outputs mix partitioned and merged source modes")
+        row_count = (
+            sum(int(source.row_count) for source in sources)
+            if all(source.row_count is not None for source in sources)
+            else None
+        )
+        return VariantAggregationSource(
+            paths=tuple(item for source in sources for item in source.paths),
+            columns=columns,
+            row_count=row_count,
+            partitioned=partitioned,
+            identity={
+                "cohort_descriptor": path_metadata(path),
+                "members": [source.identity for source in sources],
+            },
+        )
     artifact_dir = path.parent
     plan_path = artifact_dir / "plan.json"
     manifest_path = artifact_dir / "manifest.json"

@@ -43,6 +43,20 @@ micromamba run -n gaph-v2-analytics python -m analytics.strategy_report \
   --run-dir "$RUN"
 ```
 
+Compatible completed runs can be pooled as one analytical cohort with a
+versioned JSON manifest. The same report orchestration is used; all statistics
+are recomputed over the union, while the source VEP partitions stay in their
+original run directories:
+
+```bash
+micromamba run -n gaph-v2-analytics python -m analytics.strategy_report \
+  --cohort-manifest /absolute/path/to/cohort.json \
+  --cohort-root /absolute/path/to/cohort_reports
+```
+
+The manifest contract, compatibility rules, gene-overlap behavior, and Slurm
+launcher example are documented in `docs/report_generation.md`.
+
 The report presents unadjusted, fixed-band, and continuous phyloP100way ClinVar
 association modes in one view. The consequence-matched target-space null is
 an explicit opt-in because it uses Ensembl VEP and the gnomAD GraphQL API and

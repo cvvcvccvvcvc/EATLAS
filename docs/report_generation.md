@@ -1,15 +1,16 @@
 # Report Generation
 
-Use this runbook when the user asks to generate an analytics report for a
-completed GAPH run. It is the complete operational path; do not read the wider
-cluster or analytics documentation unless this path fails with a concrete
-error.
+Use this runbook when the user asks to generate an analytics report for one
+completed GAPH run or a compatible cohort of completed runs. It is the
+complete operational path; do not read the wider cluster or analytics
+documentation unless this path fails with a concrete error.
 
 ## Required User Inputs
 
-The launcher requires:
+The launcher requires exactly one input selector:
 
-- the absolute completed-run directory;
+- the absolute completed-run directory; or
+- an absolute cohort-manifest path;
 - a new report name containing only letters, digits, `.`, `_`, or `-`.
 
 Pass every report option stated by the user unchanged. When the user does not
@@ -82,6 +83,56 @@ bash analytics/slurm/submit_strategy_report.sh \
 
 Arguments after `--` are passed unchanged to `analytics.strategy_report`.
 
+## Multi-run Cohort
+
+A cohort manifest makes any positive number of completed runs one analytical
+cohort. A one-member cohort is valid. Paths may be absolute or relative to the
+manifest:
+
+```json
+{
+  "schema_version": 1,
+  "runs": [
+    {"label": "panel-a", "run_dir": "/archive/gaph/run-a"},
+    {"label": "panel-b", "run_dir": "/archive/gaph/run-b"}
+  ]
+}
+```
+
+Every member must be a successful, clean, current `--stage all` run with a
+finalized bulk-VEP artifact. Before creating analytics artifacts, the report
+requires the same pipeline revision, target assembly and GFF contract,
+strategy set and parameters, event/support contracts, ClinVar contents,
+gnomAD dataset/API contract, and VEP release/backend/columns. Accepted gene IDs
+must be disjoint. An overlap is reported with the conflicting genes and run
+labels; it is not silently deduplicated because current durable run summaries
+cannot subtract one gene correctly.
+
+The large VEP partitions remain in their source runs and are scanned as one
+virtual DuckDB input. Compact tables and target-sequence links are assembled
+under `<cohort-root>/<cohort-id>/inputs/`; every scientific statistic is then
+recomputed over the union. Run-level taxonomy medians and distinct counts are
+not pooled because they are not additive. The resolved manifest records every
+member fingerprint and appears in report QC.
+
+```bash
+COHORT_MANIFEST="$GAPH_ROOT/cohorts/panel590.json"
+COHORT_ROOT="$GAPH_ROOT/cohort_reports"
+
+bash analytics/slurm/submit_strategy_report.sh \
+  --cohort-manifest "$COHORT_MANIFEST" \
+  --cohort-root "$COHORT_ROOT" \
+  --report-name strategy_compare
+```
+
+The default root is `<cohort-manifest-dir>/cohorts`. Reports, cohort caches,
+performance profiles, and temporary spill data stay under the stable cohort ID;
+source runs are read-only.
+
+GAPH Browser cumulative releases are dissemination catalogs, not scientific
+report inputs. A cohort manifest may describe the same membership, but every
+analysis source must resolve to the completed `gaph_v2` run artifacts above.
+
 ## Launcher Arguments
 
 ### Bulk-VEP launcher
@@ -100,8 +151,10 @@ Arguments after `--` are passed unchanged to `analytics.strategy_report`.
 
 | Argument | Default | Meaning |
 |---|---:|---|
-| `--run-dir PATH` | required | Absolute completed-run directory visible on compute nodes. |
-| `--report-name NAME` | required | HTML stem and Slurm log stem. The HTML is written under `<run>/reports/`. |
+| `--run-dir PATH` | mutually exclusive | Absolute completed-run directory visible on compute nodes. |
+| `--cohort-manifest PATH` | mutually exclusive | Absolute JSON manifest containing the cohort runs. |
+| `--cohort-root PATH` | `<manifest-dir>/cohorts` | Root containing stable cohort-ID output directories. Valid only with `--cohort-manifest`. |
+| `--report-name NAME` | required | HTML stem and Slurm log stem. The HTML is written under the selected analysis root. |
 | `--slurm-cpus N` | `8` | CPUs reserved for the report job. |
 | `--slurm-memory SIZE` | `128G` | Slurm memory reservation. The 590-gene aggregation exceeded the effective DuckDB budget of a 32 GB job and used about 65 GB RSS with the larger allocation. |
 | `--slurm-time D-HH:MM:SS` | `06:00:00` | Slurm wall-time limit. |
@@ -115,7 +168,7 @@ batch job.
 
 ## Report CLI Arguments
 
-`--run-dir` and `--report-name` are supplied by the launcher. Put every other
+The input selector and `--report-name` are supplied by the launcher. Put every other
 report argument after `--`.
 
 | Argument | Default and allowed values | Meaning |

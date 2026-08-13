@@ -30,6 +30,13 @@ class RunInputs:
     alignment_manifest_json: Path
     strategy_summary_tsv: Path
     taxonomy_summary_tsv: Path
+    cohort_manifest_json: Path | None = None
+    source_run_dirs: tuple[Path, ...] = ()
+    cohort_id: str | None = None
+
+    @property
+    def is_cohort(self) -> bool:
+        return self.cohort_id is not None
 
 
 def safe_report_name(name: str) -> str:
@@ -112,6 +119,13 @@ def resolve_vep_variant_annotations(run_dir: Path, source: Path) -> Path:
 
 
 def bulk_vep_manifest(inputs: RunInputs) -> dict:
+    if inputs.is_cohort:
+        manifest = read_json(
+            inputs.run_dir / "analytics" / "vep_consequences" / "manifest.json"
+        )
+        if manifest.get("status") != "complete" or manifest.get("cohort") is not True:
+            raise ValueError("Cohort bulk VEP manifest is incomplete")
+        return manifest
     expected = inputs.run_dir / "analytics" / "vep_consequences" / "variant_annotations.vep.tsv.gz"
     if inputs.variant_annotations_tsv != expected:
         raise ValueError("Report inputs do not use the finalized bulk VEP artifact")
@@ -174,8 +188,15 @@ def validate_report_inputs(inputs: RunInputs) -> None:
     for path, required in contracts.items():
         if not path.exists():
             raise FileNotFoundError(f"Missing report input: {path}")
-        compression = "gzip" if path.suffix == ".gz" else None
-        header = set(pd.read_csv(path, sep="\t", compression=compression, nrows=0).columns)
+        if path == inputs.variant_annotations_tsv and path.suffix == ".json":
+            from analytics.analyses.variant_summary_aggregation import (
+                resolve_variant_aggregation_source,
+            )
+
+            header = set(resolve_variant_aggregation_source(path).columns)
+        else:
+            compression = "gzip" if path.suffix == ".gz" else None
+            header = set(pd.read_csv(path, sep="\t", compression=compression, nrows=0).columns)
         missing = required - header
         if missing:
             raise ValueError(
