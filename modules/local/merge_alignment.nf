@@ -11,6 +11,7 @@ process MERGE_ALIGNMENT {
     path result_dirs, stageAs: 'partitions/*'
     val expected_strategies
     path merge_script
+    path alignment_table_schema
 
     output:
     path "manifest.json", emit: manifest

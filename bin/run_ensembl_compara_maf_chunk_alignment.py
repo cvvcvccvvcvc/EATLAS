@@ -14,20 +14,22 @@ from collections import OrderedDict, defaultdict
 from dataclasses import dataclass
 from pathlib import Path
 
-from ensembl_compara_maf import (
-    DOWNLOAD_ATTEMPTS,
+from alignment_table_schema import (
     EVENT_FIELDS,
     FAILURE_FIELDS,
+    SEGMENT_FIELDS,
+    SUMMARY_FIELDS,
+)
+from ensembl_compara_maf import (
+    DOWNLOAD_ATTEMPTS,
     METHOD,
     OUTPUT_GZIP_COMPRESSLEVEL,
     RELEASE,
     REQUEST_TIMEOUT_SECONDS,
     RETRY_BASE_SECONDS,
     RETRY_MAX_SECONDS,
-    SEGMENT_FIELDS,
     SPECIES_SET,
     STRATEGY_NAME,
-    SUMMARY_FIELDS,
     TOOL_NAME,
     convert_pair,
     empty_summary,

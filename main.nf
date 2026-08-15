@@ -311,6 +311,7 @@ workflow ALIGNMENT_STAGE {
     merge_script = file("${projectDir}/bin/merge_alignment_results.py")
     feature_coverage_script = file("${projectDir}/bin/feature_coverage.py")
     taxonomic_evidence_script = file("${projectDir}/bin/taxonomic_evidence.py")
+    alignment_table_schema = file("${projectDir}/bin/alignment_table_schema.py")
 
     FETCH_TAXONOMY(orthologs_selected, taxonomy_script)
     BUILD_ALIGNMENT_TASKS(
@@ -426,17 +427,22 @@ workflow ALIGNMENT_STAGE {
     alignment_result_dirs = Channel.empty()
 
     if (!SELECTED_MINIMAP2_STRATEGIES.isEmpty()) {
-        ALIGN_MINIMAP2(minimap2_inputs, minimap2_script)
+        ALIGN_MINIMAP2(minimap2_inputs, minimap2_script, alignment_table_schema)
         alignment_result_dirs = alignment_result_dirs.mix(ALIGN_MINIMAP2.out.result_dirs)
     }
 
     if (SELECTED_ALIGNMENT_STRATEGIES.contains('nucmer')) {
-        ALIGN_NUCMER_COMPARATOR(alignment_inputs, nucmer_script)
+        ALIGN_NUCMER_COMPARATOR(alignment_inputs, nucmer_script, alignment_table_schema)
         alignment_result_dirs = alignment_result_dirs.mix(ALIGN_NUCMER_COMPARATOR.out.nucmer_result_dirs)
     }
 
     if (!SELECTED_BWA_STRATEGIES.isEmpty()) {
-        ALIGN_BWA_PSEUDOREADS(bwa_inputs, bwa_script, bam_filtering_script)
+        ALIGN_BWA_PSEUDOREADS(
+            bwa_inputs,
+            bwa_script,
+            bam_filtering_script,
+            alignment_table_schema
+        )
         alignment_result_dirs = alignment_result_dirs.mix(ALIGN_BWA_PSEUDOREADS.out.bwa_result_dirs)
     }
 
@@ -464,7 +470,8 @@ workflow ALIGNMENT_STAGE {
         }
         ALIGN_ENSEMBL_COMPARA_MAF_CHUNK(
             maf_chunk_task_dirs,
-            ensembl_compara_maf_chunk_script
+            ensembl_compara_maf_chunk_script,
+            alignment_table_schema
         )
         maf_fragments_by_gene = ALIGN_ENSEMBL_COMPARA_MAF_CHUNK.out.ensembl_compara_maf_gene_fragments
             .flatMap { meta, dirs ->
@@ -484,7 +491,11 @@ workflow ALIGNMENT_STAGE {
                     fragment_dirs
                 )
             }
-        MERGE_ENSEMBL_COMPARA_MAF_GENE(maf_gene_merge_inputs, ensembl_compara_maf_gene_merge_script)
+        MERGE_ENSEMBL_COMPARA_MAF_GENE(
+            maf_gene_merge_inputs,
+            ensembl_compara_maf_gene_merge_script,
+            alignment_table_schema
+        )
         alignment_result_dirs = alignment_result_dirs.mix(
             MERGE_ENSEMBL_COMPARA_MAF_GENE.out.gene_result_dirs
         )
@@ -532,7 +543,8 @@ workflow ALIGNMENT_STAGE {
         FETCH_TAXONOMY.out.taxonomy,
         merge_script,
         feature_coverage_script,
-        taxonomic_evidence_script
+        taxonomic_evidence_script,
+        alignment_table_schema
     )
 
     MERGE_ALIGNMENT(
@@ -544,7 +556,8 @@ workflow ALIGNMENT_STAGE {
         target_features,
         MERGE_ALIGNMENT_PARTITION.out.partition_dirs.map { meta, dir -> dir }.collect(),
         SELECTED_ALIGNMENT_STRATEGIES.join(','),
-        merge_script
+        merge_script,
+        alignment_table_schema
     )
 
     emit:

@@ -6,6 +6,7 @@ process ALIGN_BWA_PSEUDOREADS {
     tuple val(meta), path(task_dir), path(source_target_fasta, stageAs: 'source_target.fa.gz'), path(source_ortholog_fasta, stageAs: 'source_ortholog.fa.gz')
     path bwa_script
     path bam_filtering_script
+    path alignment_table_schema
 
     output:
     tuple val(meta), path("align_${meta.strategy}_${meta.id}"), emit: bwa_result_dirs

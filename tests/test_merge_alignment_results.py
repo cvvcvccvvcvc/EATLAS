@@ -7,21 +7,23 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 
 PROJECT_DIR = Path(__file__).resolve().parents[1]
 MERGE_SCRIPT = PROJECT_DIR / "bin" / "merge_alignment_results.py"
 sys.path.insert(0, str(PROJECT_DIR / "bin"))
 
+from alignment_table_schema import (  # noqa: E402
+    EVENT_FIELDS,
+    FAILURE_FIELDS,
+    SEGMENT_FIELDS,
+    SUMMARY_FIELDS,
+)
 from taxonomic_evidence import COUNT_KEYS  # noqa: E402
 
 TABLE_HEADERS = {
-    "ortholog_alignment_summary.tsv.gz": [
-        "gene_id",
-        "strategy",
-        "status",
-        "event_count",
-        "aligned_target_bp",
-    ],
+    "ortholog_alignment_summary.tsv.gz": SUMMARY_FIELDS,
     "strategy_summary.tsv.gz": [
         "strategy",
         "summary_row_count",
@@ -30,40 +32,16 @@ TABLE_HEADERS = {
         "event_count",
         "aligned_target_bp",
     ],
-    "alignment_segments.tsv.gz": [
-        "gene_id",
-        "strategy",
-        "ortholog_gene_id",
-        "tax_id",
-        "target_start0",
-        "target_end0",
-    ],
+    "alignment_segments.tsv.gz": SEGMENT_FIELDS,
     "feature_coverage.tsv.gz": ["gene_id"],
-    "alignment_events.tsv.gz": [
-        "gene_id",
-        "event_type",
-        "target_start0",
-        "target_end0",
-        "genomic_accession",
-        "genomic_start1",
-        "genomic_end1",
-        "ref",
-        "alt",
-        "ortholog_gene_id",
-        "strategy",
-        "tool",
-        "preset",
-        "tax_id",
-        "taxname",
-        "qc_flags",
-    ],
+    "alignment_events.tsv.gz": EVENT_FIELDS,
     "snv_site_depth.tsv.gz": [
         "gene_id",
         "strategy",
         "target_start0",
         "site_aligned_ortholog_count",
     ],
-    "failures.tsv.gz": ["gene_id"],
+    "failures.tsv.gz": FAILURE_FIELDS,
 }
 EVENT_ORTHOLOG_SUPPORT_HEADER = [
     "event_group_id",
@@ -111,6 +89,10 @@ def write_tsv_gz(path: Path, header: list[str], rows: list[list[str]] | None = N
         writer.writerows(rows or [])
 
 
+def schema_row(fields: list[str], **values: object) -> list[str]:
+    return [str(values.get(field, "")) for field in fields]
+
+
 def write_result_dir(
     root: Path,
     name: str,
@@ -151,7 +133,14 @@ def write_result_dir(
     (result_dir / "manifest.json").write_text(json.dumps(manifest) + "\n")
 
     summary_rows = [
-        [gene_id, strategy, "aligned", "0", "1"]
+        schema_row(
+            SUMMARY_FIELDS,
+            gene_id=gene_id,
+            strategy=strategy,
+            status="aligned",
+            event_count=0,
+            aligned_target_bp=1,
+        )
         for gene_id in gene_ids
         for strategy in strategies
     ]
@@ -470,16 +459,62 @@ def test_partition_annotation_input_keeps_compact_annotation_tables(tmp_path: Pa
         result_dir / "alignment_segments.tsv.gz",
         TABLE_HEADERS["alignment_segments.tsv.gz"],
         [
-            ["1", "s1", "101", "", "0", "10"],
-            ["1", "s1", "102", "", "0", "10"],
+            schema_row(
+                SEGMENT_FIELDS,
+                gene_id="1",
+                strategy="s1",
+                ortholog_gene_id="101",
+                target_start0=0,
+                target_end0=10,
+            ),
+            schema_row(
+                SEGMENT_FIELDS,
+                gene_id="1",
+                strategy="s1",
+                ortholog_gene_id="102",
+                target_start0=0,
+                target_end0=10,
+            ),
         ],
     )
     write_tsv_gz(
         result_dir / "alignment_events.tsv.gz",
         TABLE_HEADERS["alignment_events.tsv.gz"],
         [
-            ["1", "snv", "4", "5", "NC_1", "5", "5", "A", "G", "101", "s1", "tool", "", "1", "species", ""],
-            ["1", "snv", "4", "5", "NC_1", "5", "5", "A", "T", "102", "s1", "tool", "", "2", "species", ""],
+            schema_row(
+                EVENT_FIELDS,
+                gene_id="1",
+                ortholog_gene_id="101",
+                tax_id="1",
+                taxname="species",
+                strategy="s1",
+                tool="tool",
+                event_type="snv",
+                target_start0=4,
+                target_end0=5,
+                genomic_accession="NC_1",
+                genomic_start1=5,
+                genomic_end1=5,
+                ref="A",
+                alt="G",
+            ),
+            schema_row(
+                EVENT_FIELDS,
+                gene_id="1",
+                ortholog_gene_id="102",
+                tax_id="2",
+                taxname="species",
+                strategy="s1",
+                tool="tool",
+                event_type="snv",
+                target_start0=4,
+                target_end0=5,
+                genomic_accession="NC_1",
+                genomic_start1=5,
+                genomic_end1=5,
+                ref="A",
+                alt="T",
+            ),
         ],
     )
     arguments = partition_arguments(
@@ -538,12 +573,39 @@ def test_compact_events_preserve_strategy_specific_support(tmp_path: Path) -> No
         write_tsv_gz(
             result_dir / "alignment_segments.tsv.gz",
             TABLE_HEADERS["alignment_segments.tsv.gz"],
-            [["1", strategy, "101", "", "0", "1"]],
+            [
+                schema_row(
+                    SEGMENT_FIELDS,
+                    gene_id="1",
+                    strategy=strategy,
+                    ortholog_gene_id="101",
+                    target_start0=0,
+                    target_end0=1,
+                )
+            ],
         )
         write_tsv_gz(
             result_dir / "alignment_events.tsv.gz",
             event_header,
-            [["1", "snv", "0", "1", "NC_1", "1", "1", "A", "G", "101", strategy, "tool", "", "1", "species", ""]],
+            [
+                schema_row(
+                    EVENT_FIELDS,
+                    gene_id="1",
+                    ortholog_gene_id="101",
+                    tax_id="1",
+                    taxname="species",
+                    strategy=strategy,
+                    tool="tool",
+                    event_type="snv",
+                    target_start0=0,
+                    target_end0=1,
+                    genomic_accession="NC_1",
+                    genomic_start1=1,
+                    genomic_end1=1,
+                    ref="A",
+                    alt="G",
+                )
+            ],
         )
 
     arguments = partition_arguments(
@@ -595,24 +657,22 @@ def test_compact_events_accept_large_allele_fields(tmp_path: Path) -> None:
         result_dir / "alignment_events.tsv.gz",
         TABLE_HEADERS["alignment_events.tsv.gz"],
         [
-            [
-                "3492",
-                "ins",
-                "431282",
-                "431282",
-                "NC_000014.9",
-                "106017719",
-                "106017719",
-                "",
-                large_alt,
-                "pongo_abelii",
-                strategy,
-                "ensembl_compara",
-                "",
-                "9601",
-                "Pongo abelii",
-                "",
-            ]
+            schema_row(
+                EVENT_FIELDS,
+                gene_id="3492",
+                ortholog_gene_id="pongo_abelii",
+                tax_id="9601",
+                taxname="Pongo abelii",
+                strategy=strategy,
+                tool="ensembl_compara",
+                event_type="ins",
+                target_start0=431282,
+                target_end0=431282,
+                genomic_accession="NC_000014.9",
+                genomic_start1=106017719,
+                genomic_end1=106017719,
+                alt=large_alt,
+            )
         ],
     )
 
@@ -675,6 +735,142 @@ def test_partition_merge_rejects_missing_required_table(tmp_path: Path) -> None:
     assert completed.returncode != 0
     assert "Missing required alignment table" in completed.stderr
     assert "alignment_events.tsv.gz" in completed.stderr
+
+
+@pytest.mark.parametrize(
+    ("filename", "invalid_header", "expected_fragment"),
+    [
+        pytest.param(
+            "alignment_events.tsv.gz",
+            [field for field in EVENT_FIELDS if field != "ortholog_gene_id"],
+            "ortholog_gene_id",
+            id="events-missing-ortholog-gene-id",
+        ),
+        pytest.param(
+            "alignment_events.tsv.gz",
+            [field for field in EVENT_FIELDS if field != "tax_id"],
+            "tax_id",
+            id="events-missing-tax-id",
+        ),
+        pytest.param(
+            "alignment_events.tsv.gz",
+            [field for field in EVENT_FIELDS if field != "strategy"],
+            "strategy",
+            id="events-missing-strategy",
+        ),
+        pytest.param(
+            "alignment_segments.tsv.gz",
+            [SEGMENT_FIELDS[1], SEGMENT_FIELDS[0], *SEGMENT_FIELDS[2:]],
+            "observed",
+            id="segments-reordered",
+        ),
+        pytest.param(
+            "ortholog_alignment_summary.tsv.gz",
+            [*SUMMARY_FIELDS, "unexpected"],
+            "unexpected",
+            id="summary-extra-field",
+        ),
+        pytest.param(
+            "failures.tsv.gz",
+            [field for field in FAILURE_FIELDS if field != "message"],
+            "message",
+            id="failures-missing-message",
+        ),
+    ],
+)
+def test_partition_merge_rejects_noncanonical_aligner_header(
+    tmp_path: Path,
+    filename: str,
+    invalid_header: list[str],
+    expected_fragment: str,
+) -> None:
+    result_dir = write_result_dir(
+        tmp_path,
+        "gene_1_s1",
+        {"gene_id": "1", "strategy": "s1"},
+    )
+    write_tsv_gz(result_dir / filename, invalid_header)
+
+    completed = run_merge(
+        partition_arguments(
+            [result_dir],
+            tmp_path / "merged",
+            gene_ids="1",
+            strategies="s1",
+        )
+    )
+
+    assert completed.returncode != 0
+    assert (
+        f"Alignment table {result_dir / filename} has invalid header"
+        in completed.stderr
+    )
+    assert "expected" in completed.stderr
+    assert "observed" in completed.stderr
+    assert expected_fragment in completed.stderr
+
+
+@pytest.mark.parametrize(
+    ("filename", "invalid_header", "expected_fragment"),
+    [
+        pytest.param(
+            "alignment_events.tsv.gz",
+            [
+                COMPACT_EVENT_HEADER[1],
+                COMPACT_EVENT_HEADER[0],
+                *COMPACT_EVENT_HEADER[2:],
+            ],
+            "event_group_id",
+            id="compact-events-reordered",
+        ),
+        pytest.param(
+            "event_ortholog_support.tsv.gz",
+            [
+                field
+                for field in EVENT_ORTHOLOG_SUPPORT_HEADER
+                if field != "ortholog_gene_id"
+            ],
+            "ortholog_gene_id",
+            id="compact-support-missing-ortholog-gene-id",
+        ),
+    ],
+)
+def test_final_merge_rejects_noncanonical_compact_event_header(
+    tmp_path: Path,
+    filename: str,
+    invalid_header: list[str],
+    expected_fragment: str,
+) -> None:
+    partition = write_compact_result_dir(
+        tmp_path,
+        "partition_000001",
+        {
+            "partition_id": "partition_000001",
+            "gene_count": 1,
+            "gene_ids": ["1"],
+            "strategies": ["s1"],
+        },
+    )
+    write_tsv_gz(partition / filename, invalid_header)
+    inputs = write_final_inputs(tmp_path, [["1", "ready"]])
+
+    completed = run_merge(
+        final_arguments(
+            [partition],
+            tmp_path / "merged",
+            inputs,
+            strategies="s1",
+        )
+    )
+
+    assert completed.returncode != 0
+    assert (
+        f"Alignment table {partition / filename} has invalid header"
+        in completed.stderr
+    )
+    assert "expected" in completed.stderr
+    assert "observed" in completed.stderr
+    assert expected_fragment in completed.stderr
 
 
 def test_final_merge_writes_exact_gene_manifest(tmp_path: Path) -> None:

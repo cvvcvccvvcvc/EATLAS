@@ -20,6 +20,7 @@ from datetime import datetime, timezone
 from itertools import groupby
 from pathlib import Path
 
+from alignment_table_schema import ALIGNER_OUTPUT_SCHEMAS
 from feature_coverage import (
     SNV_TAXONOMIC_DEPTH_FIELDS,
     iter_snv_event_sites,
@@ -172,6 +173,27 @@ def count_tsv_gz_rows(path: Path) -> int:
     with gzip.open(path, "rt", newline="") as handle:
         next(handle, None)
         return sum(1 for _ in handle)
+
+
+def require_exact_header(
+    path: Path,
+    observed: list[str] | None,
+    expected: list[str],
+) -> None:
+    observed = observed or []
+    if observed != expected:
+        raise ValueError(
+            f"Alignment table {path} has invalid header: "
+            f"expected {expected}, observed {observed}"
+        )
+
+
+def require_exact_tsv_gz_header(path: Path, expected: list[str]) -> None:
+    if not path.exists():
+        raise FileNotFoundError(f"Missing required alignment table: {path}")
+    with gzip.open(path, "rt", newline="") as handle:
+        reader = csv.reader(handle, delimiter="\t")
+        require_exact_header(path, next(reader, None), expected)
 
 
 def gene_sort_key(value: str) -> tuple[int, int | str]:
@@ -420,20 +442,6 @@ def merge_compact_event_handoffs(
             ):
                 event_reader = csv.DictReader(partition_event_handle, delimiter="\t")
                 support_reader = csv.DictReader(partition_support_handle, delimiter="\t")
-                event_missing = set(COMPACT_EVENT_FIELDS) - set(event_reader.fieldnames or [])
-                support_missing = set(EVENT_ORTHOLOG_SUPPORT_FIELDS) - set(
-                    support_reader.fieldnames or []
-                )
-                if event_missing:
-                    raise ValueError(
-                        f"Compact events {events_path} missing columns: "
-                        + ", ".join(sorted(event_missing))
-                    )
-                if support_missing:
-                    raise ValueError(
-                        f"Event ortholog support {support_path} missing columns: "
-                        + ", ".join(sorted(support_missing))
-                    )
                 current_support = next(support_reader, None)
                 local_event_count = 0
                 for event_row in event_reader:
@@ -623,16 +631,12 @@ def insert_event_rows(conn: sqlite3.Connection, path: Path, batch_size: int = 10
         "taxname",
         "qc_flags",
     ]
-    required = set(fields[:9])
     count = 0
     batch: list[tuple[str, ...]] = []
     with gzip.open(path, "rt", newline="") as handle:
         reader = csv.DictReader(handle, delimiter="\t")
-        missing = required - set(reader.fieldnames or [])
-        if missing:
-            raise ValueError(f"Events table {path} missing required columns: {', '.join(sorted(missing))}")
         for row in reader:
-            batch.append(tuple(row.get(field, "") for field in fields))
+            batch.append(tuple(row[field] for field in fields))
             count += 1
             if len(batch) >= batch_size:
                 conn.executemany(
@@ -1021,6 +1025,39 @@ def require_alignment_tables(
         raise FileNotFoundError("Missing required alignment table(s): " + ", ".join(missing))
 
 
+def validate_alignment_table_schemas(
+    result_dirs: list[Path],
+    output_profile: str,
+    input_event_mode: str,
+) -> None:
+    filenames = ["failures.tsv.gz"]
+    if output_profile != "report-input":
+        filenames.extend(
+            [
+                "ortholog_alignment_summary.tsv.gz",
+                "alignment_segments.tsv.gz",
+            ]
+        )
+        if input_event_mode == "raw":
+            filenames.append("alignment_events.tsv.gz")
+
+    for result_dir in result_dirs:
+        for filename in filenames:
+            require_exact_tsv_gz_header(
+                result_dir / filename,
+                ALIGNER_OUTPUT_SCHEMAS[filename],
+            )
+        if output_profile != "report-input" and input_event_mode == "compact_support":
+            require_exact_tsv_gz_header(
+                result_dir / "alignment_events.tsv.gz",
+                COMPACT_EVENT_FIELDS,
+            )
+            require_exact_tsv_gz_header(
+                result_dir / "event_ortholog_support.tsv.gz",
+                EVENT_ORTHOLOG_SUPPORT_FIELDS,
+            )
+
+
 def preview_pairs(pairs: set[tuple[str, str]], limit: int = 10) -> str:
     values = [f"{gene_id}:{strategy}" for gene_id, strategy in sorted(pairs)]
     if len(values) > limit:
@@ -1254,9 +1291,15 @@ def main() -> None:
     manifests = load_manifests(result_dirs)
     validate_alignment_manifests(manifests)
     strategy_parameters = merge_strategy_parameters(manifests)
+    input_event_mode = merged_event_mode(manifests)
     require_alignment_tables(
         result_dirs,
         output_profile=args.output_profile,
+    )
+    validate_alignment_table_schemas(
+        result_dirs,
+        output_profile=args.output_profile,
+        input_event_mode=input_event_mode,
     )
     if args.partition_id:
         expected_gene_ids = parse_expected_values(args.expected_gene_ids, "--expected-gene-ids")
@@ -1305,7 +1348,6 @@ def main() -> None:
             copy_or_keep(args.taxonomy_summary, args.outdir / "taxonomy_summary.tsv.gz")
     gene_count = len(gene_ids)
 
-    input_event_mode = merged_event_mode(manifests)
     expected_event_mode = "raw" if args.partition_id else "compact_support"
     if input_event_mode != expected_event_mode:
         merge_level = "Partition" if args.partition_id else "Final"

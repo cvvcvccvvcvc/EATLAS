@@ -5,6 +5,7 @@ process ALIGN_ENSEMBL_COMPARA_MAF_CHUNK {
     input:
     tuple val(meta), path(chunk_task_dir)
     path align_script
+    path alignment_table_schema
 
     output:
     tuple val(meta), path("align_ensembl_compara_maf_${meta.id}/gene_results/gene_*"), emit: ensembl_compara_maf_gene_fragments

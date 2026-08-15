@@ -16,85 +16,15 @@ from pathlib import Path
 
 import pysam
 
+from alignment_table_schema import (
+    EVENT_FIELDS,
+    FAILURE_FIELDS,
+    SEGMENT_FIELDS,
+    SUMMARY_FIELDS,
+)
 from alignment_task_io import load_task_context, materialize_task_fastas
 from feature_coverage import summarize_feature_coverage_rows
 import bam_filtering_v1
-
-SEGMENT_FIELDS = [
-    "gene_id",
-    "ortholog_gene_id",
-    "tax_id",
-    "taxname",
-    "strategy",
-    "tool",
-    "preset",
-    "sequence_id",
-    "target_id",
-    "query_id",
-    "target_start0",
-    "target_end0",
-    "query_start0",
-    "query_end0",
-    "strand",
-    "matches",
-    "block_length",
-    "identity",
-    "mapq",
-    "is_primary",
-    "divergence",
-    "gap_compressed_divergence",
-    "native_record_id",
-    "qc_flags",
-]
-
-EVENT_FIELDS = [
-    "gene_id",
-    "ortholog_gene_id",
-    "tax_id",
-    "taxname",
-    "strategy",
-    "tool",
-    "preset",
-    "event_id",
-    "event_type",
-    "target_start0",
-    "target_end0",
-    "genomic_accession",
-    "genomic_start1",
-    "genomic_end1",
-    "ref",
-    "alt",
-    "query_id",
-    "strand",
-    "native_record_id",
-    "qc_flags",
-]
-
-SUMMARY_FIELDS = [
-    "gene_id",
-    "ortholog_gene_id",
-    "tax_id",
-    "taxname",
-    "strategy",
-    "tool",
-    "preset",
-    "status",
-    "target_length",
-    "query_length",
-    "segment_count",
-    "primary_segment_count",
-    "secondary_segment_count",
-    "aligned_target_bp",
-    "aligned_query_bp",
-    "target_coverage",
-    "query_coverage",
-    "best_identity",
-    "mean_identity",
-    "event_count",
-    "qc_flags",
-]
-
-FAILURE_FIELDS = ["gene_id", "ortholog_gene_id", "strategy", "tool", "failure_type", "message"]
 
 EventKey = tuple[str, int, int, str, str]
 EventSupport = dict[EventKey, dict[str, dict[str, object]]]

@@ -215,6 +215,15 @@ counts, and an explicit `alignment_event_mode`. Merge rejects missing or legacy
 singular fields. `feature_coverage.tsv.gz` is mandatory for every alignment
 result and is never reconstructed by a later fallback.
 
+The four normalized per-aligner tables have one exact ordered schema, defined
+in `bin/alignment_table_schema.py`: summaries, segments, raw events, and
+failures. Partition merge validates their full headers before reading evidence
+and rejects missing, extra, or reordered fields. In particular,
+`ortholog_gene_id`, `tax_id`, and `strategy` cannot disappear from raw event
+input and be replaced with empty values. Final merge applies the same exact
+check to compact events and their `event_group_id`-linked ortholog-support
+sidecar. This validation does not change the valid Stage 2 output format.
+
 In an end-to-end `--stage all` run, Stage 3 consumes partitioned events directly
 from Nextflow `work/`. Before the per-aligner evidence is discarded, the
 partition merge derives SNV-only site depth, positive per-ortholog support, and

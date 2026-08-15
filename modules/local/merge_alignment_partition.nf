@@ -9,6 +9,7 @@ process MERGE_ALIGNMENT_PARTITION {
     path merge_script
     path feature_coverage_script
     path taxonomic_evidence_script
+    path alignment_table_schema
 
     output:
     tuple val(meta), path("${meta.partition_id}"), emit: partition_dirs

@@ -12,13 +12,15 @@ import sys
 from collections import defaultdict
 from pathlib import Path
 
-from feature_coverage import summarize_feature_coverage
-from ensembl_compara_maf import (
+from alignment_table_schema import (
     EVENT_FIELDS,
     FAILURE_FIELDS,
-    OUTPUT_GZIP_COMPRESSLEVEL,
     SEGMENT_FIELDS,
     SUMMARY_FIELDS,
+)
+from feature_coverage import summarize_feature_coverage
+from ensembl_compara_maf import (
+    OUTPUT_GZIP_COMPRESSLEVEL,
     interval_union_length,
     write_tsv_gz,
 )

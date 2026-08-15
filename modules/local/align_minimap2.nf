@@ -5,6 +5,7 @@ process ALIGN_MINIMAP2 {
     input:
     tuple val(meta), path(task_dir), path(source_target_fasta, stageAs: 'source_target.fa.gz'), path(source_ortholog_fasta, stageAs: 'source_ortholog.fa.gz')
     path minimap2_script
+    path alignment_table_schema
 
     output:
     tuple val(meta), path("align_${meta.strategy}_${meta.id}"), emit: result_dirs

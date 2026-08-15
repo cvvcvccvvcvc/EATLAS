@@ -14,6 +14,13 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Iterable, TextIO
 
+from alignment_table_schema import (
+    EVENT_FIELDS,
+    FAILURE_FIELDS,
+    SEGMENT_FIELDS,
+    SUMMARY_FIELDS,
+)
+
 STRATEGY_NAME = "precomputed_ensembl_92_mammals_epo_extended"
 RELEASE = "116"
 SPECIES_SET = "92_mammals.epo_extended"
@@ -26,82 +33,6 @@ REQUEST_TIMEOUT_SECONDS = 120.0
 DOWNLOAD_ATTEMPTS = 8
 RETRY_BASE_SECONDS = 5.0
 RETRY_MAX_SECONDS = 300.0
-
-SEGMENT_FIELDS = [
-    "gene_id",
-    "ortholog_gene_id",
-    "tax_id",
-    "taxname",
-    "strategy",
-    "tool",
-    "preset",
-    "sequence_id",
-    "target_id",
-    "query_id",
-    "target_start0",
-    "target_end0",
-    "query_start0",
-    "query_end0",
-    "strand",
-    "matches",
-    "block_length",
-    "identity",
-    "mapq",
-    "is_primary",
-    "divergence",
-    "gap_compressed_divergence",
-    "native_record_id",
-    "qc_flags",
-]
-
-EVENT_FIELDS = [
-    "gene_id",
-    "ortholog_gene_id",
-    "tax_id",
-    "taxname",
-    "strategy",
-    "tool",
-    "preset",
-    "event_id",
-    "event_type",
-    "target_start0",
-    "target_end0",
-    "genomic_accession",
-    "genomic_start1",
-    "genomic_end1",
-    "ref",
-    "alt",
-    "query_id",
-    "strand",
-    "native_record_id",
-    "qc_flags",
-]
-
-SUMMARY_FIELDS = [
-    "gene_id",
-    "ortholog_gene_id",
-    "tax_id",
-    "taxname",
-    "strategy",
-    "tool",
-    "preset",
-    "status",
-    "target_length",
-    "query_length",
-    "segment_count",
-    "primary_segment_count",
-    "secondary_segment_count",
-    "aligned_target_bp",
-    "aligned_query_bp",
-    "target_coverage",
-    "query_coverage",
-    "best_identity",
-    "mean_identity",
-    "event_count",
-    "qc_flags",
-]
-
-FAILURE_FIELDS = ["gene_id", "ortholog_gene_id", "strategy", "tool", "failure_type", "message"]
 
 DNA_BASES = {"A", "C", "G", "T"}
 COMPLEMENT = str.maketrans("ACGTNacgtn", "TGCANtgcan")
