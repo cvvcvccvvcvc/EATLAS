@@ -170,11 +170,14 @@ The current alignment strategies are method-development candidates, not final
 algorithms. The default development set is minimap2 asm10, minimap2 asm20,
 nucmer, and BWA pseudoreads. The precomputed Ensembl Compara strategy remains
 an explicit opt-in comparator because it uses a different source and support
-unit. The taxonomy-adaptive minimap2 strategy has been retired. Report every
-strategy included in a comparison, but do not choose a winner from p-values
-alone. The final method should use the smallest strategy set that provides
-stable alignment completeness, nonredundant allele evidence, acceptable
-runtime, and reproducible validation.
+unit. The error-free 30 kb/15 kb minimap2 `map-ont` pseudoread strategy is also
+opt-in while its ability to resolve repeat-spanning evidence is evaluated; it
+models long-read alignment geometry, not ONT sequencing error. The
+taxonomy-adaptive minimap2 strategy has been retired. Report every strategy
+included in a comparison, but do not choose a winner from p-values alone. The
+final method should use the smallest strategy set that provides stable
+alignment completeness, nonredundant allele evidence, acceptable runtime, and
+reproducible validation.
 
 If ClinVar results influence strategy selection, the selected strategy must be
 confirmed on data not used for that selection.

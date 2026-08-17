@@ -27,6 +27,7 @@ from alignment_table_schema import (  # noqa: E402
 STRATEGY_PRODUCERS = {
     "minimap2_asm10": run_minimap2_alignment,
     "minimap2_asm20": run_minimap2_alignment,
+    "minimap2_map_ont_pseudoreads_30000_15000": run_minimap2_alignment,
     "nucmer": run_nucmer_alignment,
     "bwa_pseudoreads_150_75": run_bwa_pseudoreads,
     "precomputed_ensembl_92_mammals_epo_extended": ensembl_compara_maf,
@@ -55,6 +56,21 @@ def registered_strategy_names() -> set[str]:
 
 def test_contract_covers_every_registered_alignment_strategy() -> None:
     assert set(STRATEGY_PRODUCERS) == registered_strategy_names()
+
+
+def test_map_ont_long_pseudoread_strategy_is_fixed_and_opt_in() -> None:
+    workflow = (PROJECT_DIR / "main.nf").read_text()
+    strategy = re.search(
+        r"\[\s*name:\s*'minimap2_map_ont_pseudoreads_30000_15000',(.*?)\n\s*\]",
+        workflow,
+        re.DOTALL,
+    )
+    assert strategy is not None
+    strategy_body = strategy.group(1)
+    assert "default_enabled: false" in strategy_body
+    assert "minimap2_preset: 'map-ont'" in strategy_body
+    assert "minimap2_pseudoread_len: 30000" in strategy_body
+    assert "minimap2_pseudoread_step: 15000" in strategy_body
 
 
 @pytest.mark.parametrize(

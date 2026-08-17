@@ -42,12 +42,14 @@ marked as default-enabled in that registry.
 | --- | --- | --- |
 | `minimap2_asm10` | minimap2 | Fixed baseline preset for every ortholog. |
 | `minimap2_asm20` | minimap2 | More permissive fixed minimap2 preset. |
+| `minimap2_map_ont_pseudoreads_30000_15000` | minimap2 | Error-free 30 kb long pseudo-reads at a 15 kb step, aligned with `map-ont` and reduced to a dominant-strand monotonic backbone. |
 | `nucmer` | MUMmer/nucmer | Independent comparator using multi-query nucmer output. |
 | `bwa_pseudoreads_150_75` | BWA/samtools/pysam | Pseudoread comparator using 150-base reads at a 75-base step. |
 | `precomputed_ensembl_92_mammals_epo_extended` | Ensembl Compara MAF | Uses release-pinned precomputed `92_mammals.epo_extended` whole-genome MSA blocks overlapping the human target gene interval. |
 
-The two minimap2 strategies, nucmer, and BWA pseudoreads are default-enabled.
-The precomputed Ensembl strategy is runnable only when named explicitly.
+The two assembly-mode minimap2 strategies, nucmer, and BWA pseudoreads are
+default-enabled. The long-pseudoread and precomputed Ensembl strategies are
+runnable only when named explicitly.
 
 No LASTZ, consensus calling, or production variant filtering is part of Stage 2.
 Conservation scores such as GERP are not part of alignment; they belong to the
@@ -60,6 +62,7 @@ Example selections:
 --alignment_strategies minimap2_asm20
 --alignment_strategies minimap2_asm10,nucmer
 --alignment_strategies bwa_pseudoreads_150_75
+--alignment_strategies minimap2_map_ont_pseudoreads_30000_15000
 --alignment_strategies minimap2_asm20,precomputed_ensembl_92_mammals_epo_extended
 ```
 
@@ -103,9 +106,26 @@ reference and options: minimap2 maps each query independently against the target
 index. Multi-query execution avoids rebuilding the target index and avoids
 creating thousands of scheduler tasks.
 
-Both fixed presets run through one `ALIGN_MINIMAP2` process. Strategy metadata
-selects `asm10` or `asm20`; there are no duplicate workflow modules. Selected
-minimap2 presets share that process's `alignment_max_forks` budget.
+All minimap2 modes run through one `ALIGN_MINIMAP2` process. Strategy metadata
+selects `asm10`, `asm20`, or the opt-in `map-ont` long-pseudoread mode; there
+are no duplicate workflow modules. Selected minimap2 strategies share that
+process's `alignment_max_forks` budget.
+
+The long-pseudoread strategy cuts each ortholog deterministically into 30,000
+base windows at a 15,000 base step. An ortholog of at most 30,000 bases is
+aligned once at its full length. Longer sequences always receive a final window
+ending at the sequence boundary, so generation cannot leave a terminal gap.
+The generated sequence is copied exactly from the ortholog: no Nanopore error
+model is injected. `map-ont` supplies minimap2's long-read seeding and chaining
+policy; the strategy is therefore an alignment-geometry comparator, not a
+simulation of ONT sequencing accuracy.
+
+After mapping, all records for one source ortholog are reduced first to the
+dominant strand and then to a longest monotonic read-order backbone in target
+coordinate order. This keeps coherent long-range placements while permitting
+accepted secondary records. Coordinates are lifted back to the complete source
+ortholog, and repeated identical events from overlapping windows count as one
+support from that ortholog.
 
 For nucmer:
 
@@ -255,6 +275,13 @@ alignment records. Non-primary evidence is marked with `non_primary` in
 `qc_flags`. If primary and non-primary records from the same ortholog emit the
 same normalized event, one support row is kept and the primary record is
 preferred. Ensembl Compara MAF records are primary by construction.
+
+The `mapq` column contains the integer MAPQ reported by minimap2 or BWA for the
+native alignment record. Stage 2 applies no MAPQ cutoff and does not convert
+low-MAPQ records to no-calls. Nucmer SAM-long and Ensembl MAF rows leave `mapq`
+empty because those sources do not provide a directly comparable read-mapping
+MAPQ. Ambiguity is therefore preserved as data (`mapq`, `is_primary`, and
+`non_primary`) instead of being hidden behind a Stage 2 threshold.
 
 `strategy_summary.tsv.gz` contains `summary_row_count`, `gene_count`,
 `aligned_summary_row_count`, `event_count`, and `aligned_target_bp` for each

@@ -9,6 +9,13 @@ ENSEMBL_COMPARA_STRATEGY = 'precomputed_ensembl_92_mammals_epo_extended'
 ALIGNMENT_STRATEGY_REGISTRY = [
     [name: 'minimap2_asm10', default_enabled: true, minimap2_preset: 'asm10'],
     [name: 'minimap2_asm20', default_enabled: true, minimap2_preset: 'asm20'],
+    [
+        name: 'minimap2_map_ont_pseudoreads_30000_15000',
+        default_enabled: false,
+        minimap2_preset: 'map-ont',
+        minimap2_pseudoread_len: 30000,
+        minimap2_pseudoread_step: 15000,
+    ],
     [name: 'nucmer', default_enabled: true],
     [
         name: 'bwa_pseudoreads_150_75',
@@ -401,7 +408,12 @@ workflow ALIGNMENT_STAGE {
         meta, task_dir, source_target_fasta, source_ortholog_fasta ->
             SELECTED_MINIMAP2_STRATEGIES.collect { strategy ->
                 tuple(
-                    meta + [strategy: strategy.name, preset: strategy.minimap2_preset],
+                    meta + [
+                        strategy: strategy.name,
+                        preset: strategy.minimap2_preset,
+                        pseudoread_len: strategy.minimap2_pseudoread_len ?: 0,
+                        pseudoread_step: strategy.minimap2_pseudoread_step ?: 0,
+                    ],
                     task_dir,
                     source_target_fasta,
                     source_ortholog_fasta

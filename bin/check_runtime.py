@@ -50,7 +50,7 @@ def main() -> None:
 
     if args.stage in {"all", "align"}:
         require_executable("bedtools", "bedtools", errors)
-        if strategies & {"minimap2_asm10", "minimap2_asm20"}:
+        if any(strategy.startswith("minimap2_") for strategy in strategies):
             require_executable("minimap2", "minimap2", errors)
         if "nucmer" in strategies:
             require_python_module("pysam", errors)

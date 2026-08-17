@@ -12,7 +12,9 @@ import re
 import shutil
 import subprocess
 import tempfile
+from bisect import bisect_left
 from collections import defaultdict
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
 
@@ -22,12 +24,41 @@ from alignment_table_schema import (
     SEGMENT_FIELDS,
     SUMMARY_FIELDS,
 )
-from alignment_task_io import load_task_context, materialize_task_fastas
+from alignment_task_io import (
+    iter_fasta,
+    load_task_context,
+    materialize_task_fastas,
+    write_fasta_record,
+)
 from feature_coverage import summarize_feature_coverage_rows
 
 
 CS_OP_RE = re.compile(r"(:\d+|=[A-Za-z]+|\*[A-Za-z][A-Za-z]|[+\-][A-Za-z]+|~[A-Za-z]{2}\d+[A-Za-z]{2})")
 TSV_NULL = ""
+
+
+@dataclass(frozen=True)
+class QuerySlice:
+    source_sequence_id: str
+    source_start0: int
+    source_end0: int
+    source_length: int
+    read_index: int
+    is_pseudoread: bool
+
+
+@dataclass(frozen=True)
+class PseudoreadGeneration:
+    total_reads: int
+    query_slices: dict[str, QuerySlice]
+
+
+@dataclass(frozen=True)
+class BackboneSelection:
+    accepted_record_ids: frozenset[str]
+    input_alignment_count: int
+    after_strand_count: int
+    retained_alignment_count: int
 
 
 def parse_args() -> argparse.Namespace:
@@ -37,7 +68,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--source-ortholog-fasta", required=True, type=Path)
     parser.add_argument("--outdir", required=True, type=Path)
     parser.add_argument("--strategy", required=True)
-    parser.add_argument("--preset", choices=["asm10", "asm20"], required=True)
+    parser.add_argument("--preset", choices=["asm10", "asm20", "map-ont"], required=True)
+    parser.add_argument("--pseudoread-len", default=0, type=int)
+    parser.add_argument("--pseudoread-step", default=0, type=int)
     parser.add_argument("--minimap2-bin", default="minimap2")
     parser.add_argument("--threads", default=1, type=int)
     parser.add_argument("--target-features", required=True, type=Path)
@@ -47,6 +80,98 @@ def parse_args() -> argparse.Namespace:
 
 def truthy(value: str) -> bool:
     return str(value).lower() in {"1", "true", "yes", "y"}
+
+
+def validate_query_mode(preset: str, pseudoread_len: int, pseudoread_step: int) -> None:
+    if (pseudoread_len == 0) != (pseudoread_step == 0):
+        raise ValueError("--pseudoread-len and --pseudoread-step must be set together")
+    if pseudoread_len < 0 or pseudoread_step < 0:
+        raise ValueError("Pseudoread length and step must be non-negative")
+    if pseudoread_len and pseudoread_step > pseudoread_len:
+        raise ValueError("Pseudoread step must not exceed pseudoread length")
+    if preset == "map-ont" and not pseudoread_len:
+        raise ValueError("The map-ont strategy requires pseudoread generation parameters")
+    if pseudoread_len and preset != "map-ont":
+        raise ValueError("Pseudoread generation is supported only for the map-ont strategy")
+
+
+def pseudoread_starts(seq_len: int, read_len: int, step: int) -> list[int]:
+    """Return gap-free deterministic starts, including the final full window."""
+    if seq_len <= 0:
+        raise ValueError("Pseudoread source sequence must be non-empty")
+    if read_len <= 0 or step <= 0:
+        raise ValueError("Pseudoread length and step must be positive")
+    if step > read_len:
+        raise ValueError("Pseudoread step must not exceed pseudoread length")
+    if seq_len <= read_len:
+        return [0]
+
+    final_start = seq_len - read_len
+    starts = list(range(0, final_start + 1, step))
+    if starts[-1] != final_start:
+        starts.append(final_start)
+    return starts
+
+
+def full_query_slices(meta_by_sequence: dict[str, dict[str, str]]) -> dict[str, QuerySlice]:
+    return {
+        sequence_id: QuerySlice(
+            source_sequence_id=sequence_id,
+            source_start0=0,
+            source_end0=int(meta["sequence_length"]),
+            source_length=int(meta["sequence_length"]),
+            read_index=1,
+            is_pseudoread=False,
+        )
+        for sequence_id, meta in meta_by_sequence.items()
+    }
+
+
+def generate_long_pseudoreads(
+    orthologs_fasta: Path,
+    out_fasta: Path,
+    meta_by_sequence: dict[str, dict[str, str]],
+    read_len: int,
+    step: int,
+) -> PseudoreadGeneration:
+    query_slices: dict[str, QuerySlice] = {}
+    seen_sources: set[str] = set()
+
+    with out_fasta.open("w") as out:
+        for header, sequence in iter_fasta(orthologs_fasta):
+            source_id = header.split()[0]
+            meta = meta_by_sequence.get(source_id)
+            if meta is None:
+                raise ValueError(f"Pseudoread source is missing metadata: {source_id}")
+            source_length = int(meta["sequence_length"])
+            if len(sequence) != source_length:
+                raise ValueError(
+                    f"Pseudoread source length mismatch for {source_id}: "
+                    f"metadata={source_length}, fasta={len(sequence)}"
+                )
+            seen_sources.add(source_id)
+            for read_index, start0 in enumerate(
+                pseudoread_starts(source_length, read_len, step),
+                start=1,
+            ):
+                end0 = min(start0 + read_len, source_length)
+                query_name = f"{source_id}_long_{read_index}_{start0}-{end0}"
+                write_fasta_record(out, query_name, sequence[start0:end0])
+                query_slices[query_name] = QuerySlice(
+                    source_sequence_id=source_id,
+                    source_start0=start0,
+                    source_end0=end0,
+                    source_length=source_length,
+                    read_index=read_index,
+                    is_pseudoread=True,
+                )
+
+    missing = sorted(set(meta_by_sequence) - seen_sources)
+    if missing:
+        raise ValueError(
+            "Pseudoread input is missing source sequence(s): " + ", ".join(missing[:10])
+        )
+    return PseudoreadGeneration(len(query_slices), query_slices)
 
 
 def write_tsv_gz(path: Path, fields: list[str], rows: Iterable[dict[str, object]]) -> int:
@@ -107,6 +232,112 @@ def paf_record_digest(line: str) -> str:
 
 def stable_paf_record_id(record_digest: str, occurrence: int) -> str:
     return f"paf:{record_digest}:{occurrence}"
+
+
+def iter_paf_records(path: Path):
+    record_occurrences: dict[str, int] = defaultdict(int)
+    with path.open() as handle:
+        for line in handle:
+            line = line.rstrip("\n")
+            if not line:
+                continue
+            fields = line.split("\t")
+            if len(fields) < 12:
+                continue
+            native_record_id = ""
+            if fields[5] != "*" and fields[4] != "*":
+                record_digest = paf_record_digest(line)
+                record_occurrences[record_digest] += 1
+                native_record_id = stable_paf_record_id(
+                    record_digest,
+                    record_occurrences[record_digest],
+                )
+            yield fields, native_record_id
+
+
+def longest_increasing_indices(values: list[int]) -> set[int]:
+    if not values:
+        return set()
+
+    tails_values: list[int] = []
+    tails_indices: list[int] = []
+    previous = [-1] * len(values)
+    for index, value in enumerate(values):
+        position = bisect_left(tails_values, value)
+        if position == len(tails_values):
+            tails_values.append(value)
+            tails_indices.append(index)
+        else:
+            tails_values[position] = value
+            tails_indices[position] = index
+        if position > 0:
+            previous[index] = tails_indices[position - 1]
+
+    selected: set[int] = set()
+    current = tails_indices[-1]
+    while current != -1:
+        selected.add(current)
+        current = previous[current]
+    return selected
+
+
+def select_pseudoread_backbone(
+    paf_path: Path,
+    query_slices: dict[str, QuerySlice],
+) -> BackboneSelection:
+    records_by_source: dict[str, list[dict[str, object]]] = defaultdict(list)
+    for fields, native_record_id in iter_paf_records(paf_path):
+        if not native_record_id:
+            continue
+        query_slice = query_slices.get(fields[0])
+        if query_slice is None:
+            continue
+        records_by_source[query_slice.source_sequence_id].append(
+            {
+                "native_record_id": native_record_id,
+                "read_index": query_slice.read_index,
+                "target_start": int(fields[7]),
+                "is_reverse": fields[4] == "-",
+            }
+        )
+
+    accepted: set[str] = set()
+    input_count = 0
+    after_strand_count = 0
+    for source_id in sorted(records_by_source):
+        records = records_by_source[source_id]
+        input_count += len(records)
+        forward_count = sum(not bool(record["is_reverse"]) for record in records)
+        reverse_count = len(records) - forward_count
+        dominant_reverse = reverse_count > forward_count
+        strand_records = [
+            record
+            for record in records
+            if bool(record["is_reverse"]) == dominant_reverse
+        ]
+        strand_records.sort(
+            key=lambda record: (
+                int(record["target_start"]),
+                str(record["native_record_id"]),
+            )
+        )
+        after_strand_count += len(strand_records)
+        source_order = [int(record["read_index"]) for record in strand_records]
+        if dominant_reverse:
+            source_order = [-value for value in source_order]
+        backbone = longest_increasing_indices(source_order)
+        accepted.update(
+            str(record["native_record_id"])
+            for index, record in enumerate(strand_records)
+            if index in backbone
+        )
+
+    return BackboneSelection(
+        accepted_record_ids=frozenset(accepted),
+        input_alignment_count=input_count,
+        after_strand_count=after_strand_count,
+        retained_alignment_count=len(accepted),
+    )
 
 
 def cs_events(
@@ -226,54 +457,100 @@ def parse_paf(
     meta_by_sequence: dict[str, dict[str, str]],
     summaries: dict[str, dict[str, object]],
     event_start_index: int,
+    query_slices: dict[str, QuerySlice] | None = None,
+    accepted_record_ids: frozenset[str] | None = None,
 ) -> tuple[list[dict[str, object]], list[dict[str, object]], int]:
     segments: list[dict[str, object]] = []
     event_by_key: dict[tuple[object, ...], dict[str, object]] = {}
-    record_occurrences: dict[str, int] = defaultdict(int)
+    query_slices = query_slices or full_query_slices(meta_by_sequence)
 
-    with paf_path.open() as handle:
-        for line in handle:
-            line = line.rstrip("\n")
-            if not line:
-                continue
-            fields = line.split("\t")
-            if len(fields) < 12:
-                continue
-            qname = fields[0]
-            meta = meta_by_sequence.get(qname)
-            if meta is None:
-                continue
-            summary = summaries[qname]
+    for fields, native_record_id in iter_paf_records(paf_path):
+        qname = fields[0]
+        query_slice = query_slices.get(qname)
+        if query_slice is None:
+            continue
+        source_id = query_slice.source_sequence_id
+        meta = meta_by_sequence.get(source_id)
+        if meta is None:
+            continue
+        summary = summaries[source_id]
 
-            if fields[5] == "*" or fields[4] == "*":
+        if fields[5] == "*" or fields[4] == "*":
+            if query_slice.is_pseudoread:
+                summary["qc_flags"].add("has_unmapped_pseudoread")
+            else:
                 summary["status"] = "no_alignment"
                 summary["qc_flags"].add("no_alignment")
-                continue
+            continue
+        if accepted_record_ids is not None and native_record_id not in accepted_record_ids:
+            continue
 
-            qlen = int(fields[1])
-            qstart = int(fields[2])
-            qend = int(fields[3])
-            strand = fields[4]
-            target_id = fields[5]
-            target_length = int(fields[6])
-            target_start = int(fields[7])
-            target_end = int(fields[8])
-            matches = int(fields[9])
-            block_length = int(fields[10])
-            mapq = int(fields[11])
-            tags = parse_tags(fields)
-            primary = is_primary(tags)
-            record_digest = paf_record_digest(line)
-            record_occurrences[record_digest] += 1
-            native_record_id = stable_paf_record_id(record_digest, record_occurrences[record_digest])
-            identity = matches / block_length if block_length else 0.0
-            flags = []
-            if not primary:
-                flags.append("non_primary")
-            if mapq < 10:
-                flags.append("low_mapq")
+        qstart = query_slice.source_start0 + int(fields[2])
+        qend = query_slice.source_start0 + int(fields[3])
+        strand = fields[4]
+        target_id = fields[5]
+        target_length = int(fields[6])
+        target_start = int(fields[7])
+        target_end = int(fields[8])
+        matches = int(fields[9])
+        block_length = int(fields[10])
+        mapq = int(fields[11])
+        tags = parse_tags(fields)
+        primary = is_primary(tags)
+        identity = matches / block_length if block_length else 0.0
+        flags = []
+        if query_slice.is_pseudoread:
+            flags.append("filtered_pseudoread")
+        if not primary:
+            flags.append("non_primary")
 
-            segment = {
+        segment = {
+            "gene_id": gene_id,
+            "ortholog_gene_id": meta.get("ortholog_gene_id", ""),
+            "tax_id": meta.get("tax_id", ""),
+            "taxname": meta.get("taxname", ""),
+            "strategy": strategy,
+            "tool": "minimap2",
+            "preset": preset,
+            "sequence_id": source_id,
+            "target_id": target_id,
+            "query_id": source_id,
+            "target_start0": target_start,
+            "target_end0": target_end,
+            "query_start0": qstart,
+            "query_end0": qend,
+            "strand": strand,
+            "matches": matches,
+            "block_length": block_length,
+            "identity": f"{identity:.6f}",
+            "mapq": mapq,
+            "is_primary": str(primary).lower(),
+            "divergence": tags.get("dv", ""),
+            "gap_compressed_divergence": tags.get("de", ""),
+            "native_record_id": native_record_id,
+            "qc_flags": ",".join(flags),
+        }
+        segments.append(segment)
+
+        summary["status"] = "aligned"
+        summary["segment_count"] += 1
+        summary["target_length"] = target_length
+        summary["query_length"] = query_slice.source_length
+        summary["identities"].append(identity)
+        summary["best_identity"] = max(summary["best_identity"], identity)
+        if query_slice.is_pseudoread:
+            summary["qc_flags"].add("pseudoread_backbone")
+        if primary:
+            summary["primary_segment_count"] += 1
+            summary["target_intervals"].append((target_start, target_end))
+            summary["query_intervals"].append((qstart, qend))
+        else:
+            summary["secondary_segment_count"] += 1
+            summary["qc_flags"].add("has_secondary")
+
+        cs = tags.get("cs")
+        if cs:
+            event_record = {
                 "gene_id": gene_id,
                 "ortholog_gene_id": meta.get("ortholog_gene_id", ""),
                 "tax_id": meta.get("tax_id", ""),
@@ -281,80 +558,36 @@ def parse_paf(
                 "strategy": strategy,
                 "tool": "minimap2",
                 "preset": preset,
-                "sequence_id": qname,
-                "target_id": target_id,
-                "query_id": qname,
-                "target_start0": target_start,
-                "target_end0": target_end,
-                "query_start0": qstart,
-                "query_end0": qend,
+                "query_id": source_id,
                 "strand": strand,
-                "matches": matches,
-                "block_length": block_length,
-                "identity": f"{identity:.6f}",
-                "mapq": mapq,
-                "is_primary": str(primary).lower(),
-                "divergence": tags.get("dv", ""),
-                "gap_compressed_divergence": tags.get("de", ""),
                 "native_record_id": native_record_id,
                 "qc_flags": ",".join(flags),
             }
-            segments.append(segment)
-
-            summary["status"] = "aligned"
-            summary["segment_count"] += 1
-            summary["target_length"] = target_length
-            summary["query_length"] = qlen
-            summary["identities"].append(identity)
-            summary["best_identity"] = max(summary["best_identity"], identity)
-            if primary:
-                summary["primary_segment_count"] += 1
-                summary["target_intervals"].append((target_start, target_end))
-                summary["query_intervals"].append((qstart, qend))
-            else:
-                summary["secondary_segment_count"] += 1
-                summary["qc_flags"].add("has_secondary")
-
-            cs = tags.get("cs")
-            if cs:
-                event_record = {
-                    "gene_id": gene_id,
-                    "ortholog_gene_id": meta.get("ortholog_gene_id", ""),
-                    "tax_id": meta.get("tax_id", ""),
-                    "taxname": meta.get("taxname", ""),
-                    "strategy": strategy,
-                    "tool": "minimap2",
-                    "preset": preset,
-                    "query_id": qname,
-                    "strand": strand,
-                    "native_record_id": native_record_id,
-                    "qc_flags": ",".join(flags),
-                }
-                new_events = cs_events(
-                    cs,
-                    target_start,
-                    event_record,
-                    target_meta,
-                    f"{strategy}:{native_record_id}",
+            new_events = cs_events(
+                cs,
+                target_start,
+                event_record,
+                target_meta,
+                f"{strategy}:{native_record_id}",
+            )
+            for event in new_events:
+                event["_is_primary"] = primary
+                key = (
+                    event["query_id"],
+                    event["event_type"],
+                    event["target_start0"],
+                    event["target_end0"],
+                    event["ref"],
+                    event["alt"],
                 )
-                for event in new_events:
-                    event["_is_primary"] = primary
-                    key = (
-                        event["query_id"],
-                        event["event_type"],
-                        event["target_start0"],
-                        event["target_end0"],
-                        event["ref"],
-                        event["alt"],
-                    )
-                    current = event_by_key.get(key)
-                    candidate_rank = (not primary, str(event["native_record_id"]))
-                    current_rank = (
-                        not bool(current["_is_primary"]),
-                        str(current["native_record_id"]),
-                    ) if current is not None else None
-                    if current_rank is None or candidate_rank < current_rank:
-                        event_by_key[key] = event
+                current = event_by_key.get(key)
+                candidate_rank = (not primary, str(event["native_record_id"]))
+                current_rank = (
+                    not bool(current["_is_primary"]),
+                    str(current["native_record_id"]),
+                ) if current is not None else None
+                if current_rank is None or candidate_rank < current_rank:
+                    event_by_key[key] = event
 
     events = sorted(
         event_by_key.values(),
@@ -432,6 +665,7 @@ def main() -> None:
     args = parse_args()
     if args.threads < 1:
         raise ValueError("--threads must be at least 1")
+    validate_query_mode(args.preset, args.pseudoread_len, args.pseudoread_step)
     args.outdir.mkdir(parents=True, exist_ok=True)
     keep_native = truthy(args.keep_native)
 
@@ -466,17 +700,36 @@ def main() -> None:
             ortholog_meta,
             work_dir,
         )
-        paf_path = Path(f"{args.strategy}.{args.preset}.paf")
+        query_fasta = orthologs_fasta
+        query_slices = full_query_slices(meta_by_sequence)
+        pseudoreads: PseudoreadGeneration | None = None
+        backbone: BackboneSelection | None = None
+        if args.pseudoread_len:
+            query_fasta = work_dir / "long_pseudoreads.fa"
+            pseudoreads = generate_long_pseudoreads(
+                orthologs_fasta,
+                query_fasta,
+                meta_by_sequence,
+                args.pseudoread_len,
+                args.pseudoread_step,
+            )
+            query_slices = pseudoreads.query_slices
+
+        paf_path = work_dir / f"{args.strategy}.{args.preset}.paf"
         try:
             command = run_minimap2(
                 args.minimap2_bin,
                 args.preset,
                 target_fasta,
-                orthologs_fasta,
+                query_fasta,
                 paf_path,
                 args.threads,
             )
             commands.append(command)
+            accepted_record_ids: frozenset[str] | None = None
+            if pseudoreads is not None:
+                backbone = select_pseudoread_backbone(paf_path, query_slices)
+                accepted_record_ids = backbone.accepted_record_ids
             segments, events, event_index = parse_paf(
                 paf_path,
                 gene_id,
@@ -486,6 +739,8 @@ def main() -> None:
                 meta_by_sequence,
                 summaries,
                 event_index,
+                query_slices,
+                accepted_record_ids,
             )
             all_segments.extend(segments)
             all_events.extend(events)
@@ -494,6 +749,11 @@ def main() -> None:
                     paf_path,
                     args.outdir / "native" / f"{gene_id}.{args.preset}.paf.gz",
                 )
+                if pseudoreads is not None:
+                    gzip_copy(
+                        query_fasta,
+                        args.outdir / "native" / f"{gene_id}.long_pseudoreads.fa.gz",
+                    )
         except Exception as exc:
             failures.append(
                 {
@@ -521,10 +781,24 @@ def main() -> None:
         all_segments,
         args.outdir / "feature_coverage.tsv.gz",
     )
+    strategy_parameters: dict[str, object] = {
+        "preset": args.preset,
+        "mapq_policy": "aligner_reported_unfiltered",
+        "non_primary_policy": "retained_flagged",
+    }
+    if pseudoreads is not None:
+        strategy_parameters.update(
+            {
+                "pseudoread_len": args.pseudoread_len,
+                "pseudoread_step": args.pseudoread_step,
+                "sequencing_error_model": "none",
+                "backbone_policy": "dominant_strand_lis",
+            }
+        )
     manifest = {
         "gene_ids": [gene_id],
         "strategies": [args.strategy],
-        "strategy_parameters": {args.strategy: {"preset": args.preset}},
+        "strategy_parameters": {args.strategy: strategy_parameters},
         "tool": "minimap2",
         "commands": commands,
         "ortholog_alignment_summary_count": len(summary_rows),
@@ -537,6 +811,15 @@ def main() -> None:
         "ortholog_count": len(ortholog_meta),
         "keep_native": keep_native,
     }
+    if pseudoreads is not None and backbone is not None:
+        manifest.update(
+            {
+                "pseudoread_count": pseudoreads.total_reads,
+                "pseudoread_alignment_record_count": backbone.input_alignment_count,
+                "pseudoread_after_strand_count": backbone.after_strand_count,
+                "pseudoread_backbone_record_count": backbone.retained_alignment_count,
+            }
+        )
     (args.outdir / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
 
 

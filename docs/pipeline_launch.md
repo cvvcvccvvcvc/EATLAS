@@ -17,7 +17,8 @@ Obtain or identify:
 When an option is not specified, keep the Nextflow/config default. In
 particular, the default stage is `all` and the default strategy selection runs
 `minimap2_asm10`, `minimap2_asm20`, `nucmer`, and `bwa_pseudoreads_150_75`. The
-precomputed Ensembl strategy must be selected explicitly.
+long-pseudoread `minimap2_map_ont_pseudoreads_30000_15000` and precomputed
+Ensembl strategies must be selected explicitly.
 
 ## Connect And Update
 
@@ -73,6 +74,12 @@ example:
 --fetch_max_forks 2 \
 --alignment_max_forks 4 \
 --annotation_max_forks 4
+```
+
+For the fixed opt-in long-pseudoread strategy, use:
+
+```bash
+--alignment_strategies minimap2_map_ont_pseudoreads_30000_15000
 ```
 
 Detach without stopping Nextflow with `Ctrl-b d`. Reattach with:

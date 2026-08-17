@@ -100,9 +100,9 @@ exact ortholog support, site depth, taxonomy-aware depth and ALT support, plus a
 manifest that binds those tables to the matching fetch target context.
 
 By default, `--alignment_strategies all` runs `minimap2_asm10`,
-`minimap2_asm20`, `nucmer`, and `bwa_pseudoreads_150_75`. The precomputed Ensembl
-strategy remains available only when named explicitly. Use a comma-separated
-list to select a different set:
+`minimap2_asm20`, `nucmer`, and `bwa_pseudoreads_150_75`. Both the precomputed
+Ensembl strategy and `minimap2_map_ont_pseudoreads_30000_15000` remain available
+only when named explicitly. Use a comma-separated list to select a different set:
 
 ```bash
 nextflow run . \
@@ -111,6 +111,12 @@ nextflow run . \
   --outdir results/align_minimap2_asm20 \
   --alignment_strategies minimap2_asm20 \
   -resume
+```
+
+The long-pseudoread comparator is selected with:
+
+```bash
+--alignment_strategies minimap2_map_ont_pseudoreads_30000_15000
 ```
 
 ## Outputs
@@ -189,7 +195,7 @@ directory or home quota.
 | 3 | `BUILD_FETCH_DATASET` | Assemble chunk tables, selected per-gene FASTA files, and target structural features into the final fetch dataset. | `fetch/` |
 | 4 | `FETCH_TAXONOMY` | Build compact taxonomy metadata for downstream taxonomic evidence. | `alignment/taxonomy.tsv.gz` |
 | 5 | `BUILD_ALIGNMENT_TASKS` | Validate fetch outputs and create per-gene alignment inputs with stable sequence IDs. | `alignment/alignment_tasks.tsv.gz` |
-| 6 | `ALIGN_MINIMAP2` | Run the selected fixed asm10/asm20 minimap2 baselines. | Per-gene normalized evidence in `work/` |
+| 6 | `ALIGN_MINIMAP2` | Run the selected fixed asm10/asm20 baselines or opt-in map-ont long-pseudoread comparator. | Per-gene normalized evidence in `work/` |
 | 7 | `ALIGN_NUCMER_COMPARATOR` | Multi-query nucmer comparator without global one-to-one delta filtering. | Per-gene normalized evidence in `work/` |
 | 8 | `ALIGN_BWA_PSEUDOREADS` | Fixed pseudoread comparator evidence. | Per-gene normalized evidence in `work/` |
 | 9 | `BUILD_ENSEMBL_COMPARA_MAF_MANIFEST` | When selected, build a release-116 EPO Extended manifest covering target chromosomes. | Per-run manifest in `work/` |

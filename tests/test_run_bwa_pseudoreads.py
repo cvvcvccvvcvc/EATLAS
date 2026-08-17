@@ -166,7 +166,7 @@ def test_scan_bam_deduplicates_event_support_by_ortholog(tmp_path: Path) -> None
         read.flag = 256 if secondary else 0
         read.reference_id = 0
         read.reference_start = 0
-        read.mapping_quality = 60
+        read.mapping_quality = 0 if secondary else 60
         read.cigar = ((0, 30),)
         read.query_qualities = bwa_runner.pysam.qualitystring_to_array("I" * 30)
         read.set_tag("NM", 1)
@@ -180,7 +180,7 @@ def test_scan_bam_deduplicates_event_support_by_ortholog(tmp_path: Path) -> None
         bam.write(make_read("ortholog_103_pseudo_1_1-30", secondary=True))
     bwa_runner.pysam.index(str(bam_path))
 
-    _segments, event_support = bwa_runner.scan_bam(bam_path, "A" * 100)
+    segments, event_support = bwa_runner.scan_bam(bam_path, "A" * 100)
     support = event_support[("snv", 20, 21, "A", "G")]
     rows = bwa_runner.make_bwa_event_rows(
         event_support,
@@ -198,6 +198,11 @@ def test_scan_bam_deduplicates_event_support_by_ortholog(tmp_path: Path) -> None
     assert support["101"]["native_record_id"] == "ortholog_101_pseudo_1_1-30"
     assert support["101"]["is_primary"] is True
     assert support["103"]["is_primary"] is False
+    secondary_segment = next(
+        row for row in segments if row["ortholog_gene_id"] == "103"
+    )
+    assert secondary_segment["mapq"] == 0
+    assert secondary_segment["qc_flags"] == "filtered_pseudoread,non_primary"
     assert len(rows) == 3
     assert len({row["event_id"] for row in rows}) == 3
     assert {row["ortholog_gene_id"]: row["qc_flags"] for row in rows} == {

@@ -11,10 +11,16 @@ sys.path.insert(0, str(BIN_DIR))
 
 from run_minimap2_alignment import (  # noqa: E402
     EVENT_FIELDS,
+    QuerySlice,
     SEGMENT_FIELDS,
     empty_summary,
+    generate_long_pseudoreads,
+    iter_paf_records,
     parse_args,
     parse_paf,
+    pseudoread_starts,
+    select_pseudoread_backbone,
+    validate_query_mode,
 )
 
 
@@ -63,11 +69,58 @@ def test_cli_rejects_other_presets(monkeypatch: pytest.MonkeyPatch) -> None:
         parse_args()
 
 
+def test_map_ont_requires_complete_pseudoread_parameters(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    args = minimap2_cli_args("map-ont") + [
+        "--pseudoread-len",
+        "30000",
+        "--pseudoread-step",
+        "15000",
+    ]
+    monkeypatch.setattr(sys, "argv", args)
+
+    parsed = parse_args()
+    validate_query_mode(parsed.preset, parsed.pseudoread_len, parsed.pseudoread_step)
+
+    with pytest.raises(ValueError, match="requires pseudoread"):
+        validate_query_mode("map-ont", 0, 0)
+    with pytest.raises(ValueError, match="must not exceed"):
+        validate_query_mode("map-ont", 1000, 1001)
+
+
+def test_long_pseudoread_generation_is_gap_free_and_keeps_short_sequences(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "orthologs.fa"
+    output = tmp_path / "long.fa"
+    source.write_text(">short\n" + "A" * 5 + "\n>long\n" + "C" * 50 + "\n")
+    metadata = {
+        "short": {"sequence_length": "5"},
+        "long": {"sequence_length": "50"},
+    }
+
+    generation = generate_long_pseudoreads(source, output, metadata, read_len=30, step=15)
+
+    assert pseudoread_starts(5, 30, 15) == [0]
+    assert pseudoread_starts(50, 30, 15) == [0, 15, 20]
+    assert generation.total_reads == 4
+    assert [
+        (row.source_sequence_id, row.source_start0, row.source_end0)
+        for row in generation.query_slices.values()
+    ] == [
+        ("short", 0, 5),
+        ("long", 0, 30),
+        ("long", 15, 45),
+        ("long", 20, 50),
+    ]
+
+
 def parse_rows(path: Path, lines: list[str]):
     path.write_text("\n".join(lines) + "\n")
     metadata = {
-        "q1": {"ortholog_gene_id": "101", "tax_id": "1", "taxname": "species 1"},
-        "q2": {"ortholog_gene_id": "102", "tax_id": "2", "taxname": "species 2"},
+        "q1": {"ortholog_gene_id": "101", "tax_id": "1", "taxname": "species 1", "sequence_length": "10"},
+        "q2": {"ortholog_gene_id": "102", "tax_id": "2", "taxname": "species 2", "sequence_length": "10"},
     }
     summaries = {
         query_id: empty_summary("1", "minimap2_asm20", "asm20", meta, 10)
@@ -112,8 +165,8 @@ def test_paf_emits_non_primary_events_and_prefers_primary_duplicates(tmp_path: P
         + "\n"
     )
     metadata = {
-        "q1": {"ortholog_gene_id": "101", "tax_id": "1", "taxname": "species 1"},
-        "q2": {"ortholog_gene_id": "102", "tax_id": "2", "taxname": "species 2"},
+        "q1": {"ortholog_gene_id": "101", "tax_id": "1", "taxname": "species 1", "sequence_length": "10"},
+        "q2": {"ortholog_gene_id": "102", "tax_id": "2", "taxname": "species 2", "sequence_length": "10"},
     }
     summaries = {
         query_id: empty_summary("1", "minimap2_asm20", "asm20", meta, 10)
@@ -138,3 +191,173 @@ def test_paf_emits_non_primary_events_and_prefers_primary_duplicates(tmp_path: P
     assert by_query["q2"]["qc_flags"] == "non_primary"
     assert summaries["q1"]["event_count"] == 1
     assert summaries["q2"]["event_count"] == 1
+
+
+def test_paf_reports_actual_mapq_without_threshold_flag(tmp_path: Path) -> None:
+    path = tmp_path / "low_mapq.paf"
+    path.write_text(
+        "q1\t10\t0\t10\t+\ttarget_1\t10\t0\t10\t9\t10\t0\ttp:A:S\tcs:Z::4*ag:5\n"
+    )
+    metadata = {
+        "q1": {
+            "ortholog_gene_id": "101",
+            "tax_id": "1",
+            "taxname": "species 1",
+            "sequence_length": "10",
+        }
+    }
+    summaries = {"q1": empty_summary("1", "minimap2_asm20", "asm20", metadata["q1"], 10)}
+
+    segments, events, _ = parse_paf(
+        path,
+        "1",
+        "minimap2_asm20",
+        "asm20",
+        {"genomic_accession": "NC_1", "genomic_begin": "100"},
+        metadata,
+        summaries,
+        1,
+    )
+
+    assert segments[0]["mapq"] == 0
+    assert segments[0]["qc_flags"] == "non_primary"
+    assert events[0]["qc_flags"] == "non_primary"
+
+
+def test_long_pseudoread_coordinates_are_lifted_and_events_deduplicated(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "long.paf"
+    path.write_text(
+        "\n".join(
+            [
+                "read1\t30000\t100\t200\t+\ttarget_1\t50000\t10\t110\t99\t100\t60\ttp:A:P\tcs:Z::4*ag:95",
+                "read2\t30000\t200\t300\t+\ttarget_1\t50000\t10\t110\t99\t100\t40\ttp:A:S\tcs:Z::4*ag:95",
+            ]
+        )
+        + "\n"
+    )
+    metadata = {
+        "ortholog_101": {
+            "ortholog_gene_id": "101",
+            "tax_id": "1",
+            "taxname": "species 1",
+            "sequence_length": "45000",
+        }
+    }
+    query_slices = {
+        "read1": QuerySlice("ortholog_101", 0, 30000, 45000, 1, True),
+        "read2": QuerySlice("ortholog_101", 15000, 45000, 45000, 2, True),
+    }
+    summaries = {
+        "ortholog_101": empty_summary(
+            "1",
+            "minimap2_map_ont_pseudoreads_30000_15000",
+            "map-ont",
+            metadata["ortholog_101"],
+            50000,
+        )
+    }
+
+    segments, events, _ = parse_paf(
+        path,
+        "1",
+        "minimap2_map_ont_pseudoreads_30000_15000",
+        "map-ont",
+        {"genomic_accession": "NC_1", "genomic_begin": "100"},
+        metadata,
+        summaries,
+        1,
+        query_slices,
+    )
+
+    assert [(row["query_start0"], row["query_end0"]) for row in segments] == [
+        (100, 200),
+        (15200, 15300),
+    ]
+    assert all(row["query_id"] == "ortholog_101" for row in segments)
+    assert [row["mapq"] for row in segments] == [60, 40]
+    assert len(events) == 1
+    assert events[0]["qc_flags"] == "filtered_pseudoread"
+
+
+def test_long_secondary_backbone_record_keeps_flagged_alt_support(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "long_secondary.paf"
+    path.write_text(
+        "read1\t30000\t0\t100\t+\ttarget_1\t50000\t10\t110\t99\t100\t1"
+        "\ttp:A:S\tcs:Z::4*ag:95\n"
+    )
+    metadata = {
+        "ortholog_101": {
+            "ortholog_gene_id": "101",
+            "tax_id": "1",
+            "taxname": "species 1",
+            "sequence_length": "30000",
+        }
+    }
+    query_slices = {
+        "read1": QuerySlice("ortholog_101", 0, 30000, 30000, 1, True),
+    }
+    summaries = {
+        "ortholog_101": empty_summary(
+            "1",
+            "minimap2_map_ont_pseudoreads_30000_15000",
+            "map-ont",
+            metadata["ortholog_101"],
+            50000,
+        )
+    }
+    backbone = select_pseudoread_backbone(path, query_slices)
+
+    segments, events, _ = parse_paf(
+        path,
+        "1",
+        "minimap2_map_ont_pseudoreads_30000_15000",
+        "map-ont",
+        {"genomic_accession": "NC_1", "genomic_begin": "100"},
+        metadata,
+        summaries,
+        1,
+        query_slices,
+        backbone.accepted_record_ids,
+    )
+
+    assert segments[0]["mapq"] == 1
+    assert segments[0]["is_primary"] == "false"
+    assert segments[0]["qc_flags"] == "filtered_pseudoread,non_primary"
+    assert events[0]["qc_flags"] == "filtered_pseudoread,non_primary"
+
+
+def test_pseudoread_backbone_keeps_dominant_monotonic_order(tmp_path: Path) -> None:
+    path = tmp_path / "backbone.paf"
+    path.write_text(
+        "\n".join(
+            [
+                "read1\t30\t0\t30\t+\ttarget\t100\t10\t40\t30\t30\t60\ttp:A:P",
+                "read3\t30\t0\t30\t+\ttarget\t100\t20\t50\t30\t30\t60\ttp:A:P",
+                "read2\t30\t0\t30\t+\ttarget\t100\t30\t60\t30\t30\t60\ttp:A:P",
+                "reverse\t30\t0\t30\t-\ttarget\t100\t40\t70\t30\t30\t60\ttp:A:S",
+            ]
+        )
+        + "\n"
+    )
+    slices = {
+        "read1": QuerySlice("ortholog_101", 0, 30, 60, 1, True),
+        "read2": QuerySlice("ortholog_101", 15, 45, 60, 2, True),
+        "read3": QuerySlice("ortholog_101", 30, 60, 60, 3, True),
+        "reverse": QuerySlice("ortholog_101", 30, 60, 60, 3, True),
+    }
+
+    selected = select_pseudoread_backbone(path, slices)
+    retained_query_names = {
+        fields[0]
+        for fields, native_record_id in iter_paf_records(path)
+        if native_record_id in selected.accepted_record_ids
+    }
+
+    assert retained_query_names == {"read1", "read2"}
+    assert selected.input_alignment_count == 4
+    assert selected.after_strand_count == 3
+    assert selected.retained_alignment_count == 2
