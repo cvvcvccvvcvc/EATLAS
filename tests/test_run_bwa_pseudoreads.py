@@ -197,18 +197,35 @@ def test_scan_bam_deduplicates_event_support_by_ortholog(tmp_path: Path) -> None
     assert sorted(support) == ["101", "102", "103"]
     assert support["101"]["native_record_id"] == "ortholog_101_pseudo_1_1-30"
     assert support["101"]["is_primary"] is True
+    assert support["101"]["mapq"] == 60
+    assert support["101"]["native_alignment_type"] == "primary"
     assert support["103"]["is_primary"] is False
+    assert support["103"]["mapq"] == 0
+    assert support["103"]["native_alignment_type"] == "secondary"
     secondary_segment = next(
         row for row in segments if row["ortholog_gene_id"] == "103"
     )
     assert secondary_segment["mapq"] == 0
-    assert secondary_segment["qc_flags"] == "filtered_pseudoread,non_primary"
+    assert secondary_segment["qc_flags"] == "filtered_pseudoread"
     assert len(rows) == 3
     assert len({row["event_id"] for row in rows}) == 3
     assert {row["ortholog_gene_id"]: row["qc_flags"] for row in rows} == {
         "101": "bwa_cigar_event",
         "102": "bwa_cigar_event",
-        "103": "bwa_cigar_event,non_primary",
+        "103": "bwa_cigar_event",
+    }
+    assert {row["ortholog_gene_id"]: row["mapq"] for row in rows} == {
+        "101": 60,
+        "102": 60,
+        "103": 0,
+    }
+    native_types = {
+        row["ortholog_gene_id"]: row["native_alignment_type"] for row in rows
+    }
+    assert native_types == {
+        "101": "primary",
+        "102": "primary",
+        "103": "secondary",
     }
 
 

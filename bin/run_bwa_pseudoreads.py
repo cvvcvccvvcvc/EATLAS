@@ -260,18 +260,32 @@ def identity_from_read(read: pysam.AlignedSegment) -> tuple[int, int, str]:
     return matches, block_length, fmt_fraction(matches, block_length)
 
 
+def sam_alignment_type(read: pysam.AlignedSegment) -> str:
+    if read.is_secondary and read.is_supplementary:
+        return "secondary_supplementary"
+    if read.is_secondary:
+        return "secondary"
+    if read.is_supplementary:
+        return "supplementary"
+    return "primary"
+
+
 def add_event_support(
     event_support: EventSupport,
     key: EventKey,
     ortholog_id: str,
     strand: str,
     native_record_id: str,
+    mapq: int,
+    native_alignment_type: str,
     is_primary: bool,
 ) -> None:
     support = {
         "ortholog_gene_id": ortholog_id,
         "strand": strand,
         "native_record_id": native_record_id,
+        "mapq": mapq,
+        "native_alignment_type": native_alignment_type,
         "is_primary": is_primary,
     }
     current = event_support[key].get(ortholog_id)
@@ -301,6 +315,7 @@ def scan_bam(
             ortholog_id = read_ortholog_gene_id(read.query_name)
             strand = "-" if read.is_reverse else "+"
             primary = not read.is_secondary and not read.is_supplementary
+            native_alignment_type = sam_alignment_type(read)
             matches, block_length, identity = identity_from_read(read)
             segments.append(
                 {
@@ -318,7 +333,7 @@ def scan_bam(
                     "mapq": read.mapping_quality,
                     "is_primary": str(primary).lower(),
                     "native_record_id": read.query_name,
-                    "qc_flags": "filtered_pseudoread" if primary else "filtered_pseudoread,non_primary",
+                    "qc_flags": "filtered_pseudoread",
                 }
             )
 
@@ -347,6 +362,8 @@ def scan_bam(
                             ortholog_id,
                             strand,
                             read.query_name,
+                            read.mapping_quality,
+                            native_alignment_type,
                             primary,
                         )
                     r_pos += length
@@ -360,6 +377,8 @@ def scan_bam(
                         ortholog_id,
                         strand,
                         read.query_name,
+                        read.mapping_quality,
+                        native_alignment_type,
                         primary,
                     )
                     q_pos += length
@@ -373,6 +392,8 @@ def scan_bam(
                             ortholog_id,
                             strand,
                             read.query_name,
+                            read.mapping_quality,
+                            native_alignment_type,
                             primary,
                         )
                     r_pos += length
@@ -448,6 +469,8 @@ def make_event_row(
         "alt": alt,
         "query_id": f"ortholog_{ortholog_id}",
         "strand": support.get("strand", ""),
+        "mapq": support.get("mapq", ""),
+        "native_alignment_type": support.get("native_alignment_type", ""),
         "native_record_id": support.get("native_record_id", ""),
         "qc_flags": qc_flags,
     }
@@ -466,8 +489,6 @@ def make_bwa_event_rows(
         for ortholog_id in sorted(support_by_ortholog, key=int):
             support = support_by_ortholog[ortholog_id]
             flags = ["bwa_cigar_event"]
-            if not bool(support["is_primary"]):
-                flags.append("non_primary")
             rows.append(
                 make_event_row(
                     gene_id=gene_id,

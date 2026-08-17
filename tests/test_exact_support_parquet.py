@@ -44,11 +44,23 @@ def test_exact_support_collapses_normalized_event_collisions(tmp_path: Path) -> 
         "ortholog_gene_id": "101",
         "tax_id": "10090",
         "taxname": "Mus musculus",
+        "mapq": "60",
+        "native_alignment_type": "P",
         "support_row_count": "1",
     }
     spool = ExactSupportSpool(tmp_path)
     spool.add_group(aggregate, {"strategy": "s1"}, [edge])
-    spool.add_group(aggregate, {"strategy": "s1"}, [edge])
+    spool.add_group(
+        aggregate,
+        {"strategy": "s1"},
+        [
+            {
+                **edge,
+                "mapq": "20",
+                "native_alignment_type": "S",
+            }
+        ],
+    )
 
     row_count = aggregate_exact_support(
         spool,
@@ -61,7 +73,9 @@ def test_exact_support_collapses_normalized_event_collisions(tmp_path: Path) -> 
         [str(tmp_path / "variant_ortholog_support" / "*.parquet")],
     ).fetchall()
     assert row_count == 1
-    assert rows == [("1:100:AA>A", "1", "s1", "101", "10090", "Mus musculus", 2)]
+    assert rows == [
+        ("1:100:AA>A", "1", "s1", "101", "10090", "Mus musculus", 60, "P", 2)
+    ]
     support = aggregate["_support_by_strategy"]["s1"]
     assert (support.ortholog_count_hint, support.row_count) == (1, 2)
     assert aggregate["_exact_ortholog_count"] == 1
@@ -84,6 +98,8 @@ def test_compact_event_sidecar_uses_the_same_exact_spool(tmp_path: Path) -> None
         "ortholog_gene_id": "101",
         "tax_id": "10090",
         "taxname": "Mus musculus",
+        "mapq": "",
+        "native_alignment_type": "",
         "support_row_count": "1",
     }
     add_strategy_support(aggregate, event)
@@ -97,6 +113,10 @@ def test_compact_event_sidecar_uses_the_same_exact_spool(tmp_path: Path) -> None
     )
 
     assert row_count == 1
+    assert duckdb.connect().execute(
+        "SELECT mapq, native_alignment_type FROM read_parquet(?)",
+        [str(tmp_path / "variant_ortholog_support" / "*.parquet")],
+    ).fetchall() == [(None, None)]
     assert aggregate["_exact_ortholog_count"] == 1
 
 
@@ -112,6 +132,8 @@ def test_finalizer_copies_partition_parquet_without_row_rewrite(tmp_path: Path) 
             ortholog_gene_id VARCHAR,
             tax_id VARCHAR,
             taxname VARCHAR,
+            mapq USMALLINT,
+            native_alignment_type VARCHAR,
             support_row_count UBIGINT
         )
         """
@@ -126,7 +148,7 @@ def test_finalizer_copies_partition_parquet_without_row_rewrite(tmp_path: Path) 
         source = support_dir / "part-00000.parquet"
         connection.execute("DELETE FROM support")
         connection.execute(
-            "INSERT INTO support VALUES (?, ?, 's1', ?, '10090', 'Mus musculus', 1)",
+            "INSERT INTO support VALUES (?, ?, 's1', ?, '10090', 'Mus musculus', 60, 'P', 1)",
             [variant_key, gene_id, ortholog_gene_id],
         )
         connection.execute(

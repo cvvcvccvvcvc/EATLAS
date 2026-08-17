@@ -106,6 +106,8 @@ VARIANT_ORTHOLOG_SUPPORT_FIELDS = [
     "ortholog_gene_id",
     "tax_id",
     "taxname",
+    "mapq",
+    "native_alignment_type",
     "support_row_count",
 ]
 
@@ -255,6 +257,8 @@ class EventOrthologSupportStream:
         "ortholog_gene_id",
         "tax_id",
         "taxname",
+        "mapq",
+        "native_alignment_type",
         "support_row_count",
     }
 
@@ -403,10 +407,12 @@ class ExactSupportSpool:
             if support_row_count < 1:
                 raise ValueError("Ortholog support_row_count must be positive")
             ortholog_id = self.ortholog_id(gene_id, row)
-            self.handle.write(
-                f"{variant_context_id}\t{strategy_id}\t{ortholog_id}\t{support_row_count}\n"
-            )
             self.input_edge_count += 1
+            self.handle.write(
+                f"{variant_context_id}\t{strategy_id}\t{ortholog_id}\t{support_row_count}"
+                f"\t{row.get('mapq', '')}\t{row.get('native_alignment_type', '')}"
+                f"\t{self.input_edge_count}\n"
+            )
 
 
 def int_or_default(value, default: int = 0) -> int:
@@ -463,6 +469,8 @@ def write_empty_exact_support_parquet(connection, output: Path) -> None:
                 CAST(NULL AS VARCHAR) AS ortholog_gene_id,
                 CAST(NULL AS VARCHAR) AS tax_id,
                 CAST(NULL AS VARCHAR) AS taxname,
+                CAST(NULL AS USMALLINT) AS mapq,
+                CAST(NULL AS VARCHAR) AS native_alignment_type,
                 CAST(NULL AS UBIGINT) AS support_row_count
             WHERE FALSE
         ) TO {sql_string(output)} (
@@ -545,6 +553,8 @@ def aggregate_exact_support(
                 variant_context_id,
                 strategy_id,
                 ortholog_id,
+                arg_min(mapq, edge_order) AS mapq,
+                arg_min(native_alignment_type, edge_order) AS native_alignment_type,
                 CAST(SUM(support_row_count) AS UBIGINT) AS support_row_count
             FROM read_csv(
                 {sql_string(spool.path)},
@@ -554,7 +564,10 @@ def aggregate_exact_support(
                     'variant_context_id': 'UBIGINT',
                     'strategy_id': 'UINTEGER',
                     'ortholog_id': 'UBIGINT',
-                    'support_row_count': 'UBIGINT'
+                    'support_row_count': 'UBIGINT',
+                    'mapq': 'VARCHAR',
+                    'native_alignment_type': 'VARCHAR',
+                    'edge_order': 'UBIGINT'
                 }}
             )
             GROUP BY variant_context_id, strategy_id, ortholog_id
@@ -635,6 +648,8 @@ def aggregate_exact_support(
                     o.ortholog_gene_id,
                     o.tax_id,
                     o.taxname,
+                    CAST(NULLIF(e.mapq, '') AS USMALLINT) AS mapq,
+                    NULLIF(e.native_alignment_type, '') AS native_alignment_type,
                     CAST(e.support_row_count AS UBIGINT) AS support_row_count
                 FROM exact_support AS e
                 JOIN read_csv(

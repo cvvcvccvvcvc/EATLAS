@@ -15,6 +15,7 @@ from run_minimap2_alignment import (  # noqa: E402
     SEGMENT_FIELDS,
     empty_summary,
     generate_long_pseudoreads,
+    is_primary,
     iter_paf_records,
     parse_args,
     parse_paf,
@@ -152,7 +153,7 @@ def test_paf_identifiers_do_not_depend_on_record_order(tmp_path: Path) -> None:
     assert all(str(row[22]).startswith("paf:") for row in forward_segments)
 
 
-def test_paf_emits_non_primary_events_and_prefers_primary_duplicates(tmp_path: Path) -> None:
+def test_paf_preserves_native_type_and_prefers_primary_duplicates(tmp_path: Path) -> None:
     path = tmp_path / "records.paf"
     path.write_text(
         "\n".join(
@@ -188,7 +189,11 @@ def test_paf_emits_non_primary_events_and_prefers_primary_duplicates(tmp_path: P
     assert next_index == 3
     by_query = {row["query_id"]: row for row in events}
     assert by_query["q1"]["qc_flags"] == ""
-    assert by_query["q2"]["qc_flags"] == "non_primary"
+    assert by_query["q1"]["mapq"] == 60
+    assert by_query["q1"]["native_alignment_type"] == "P"
+    assert by_query["q2"]["qc_flags"] == ""
+    assert by_query["q2"]["mapq"] == 20
+    assert by_query["q2"]["native_alignment_type"] == "S"
     assert summaries["q1"]["event_count"] == 1
     assert summaries["q2"]["event_count"] == 1
 
@@ -220,8 +225,15 @@ def test_paf_reports_actual_mapq_without_threshold_flag(tmp_path: Path) -> None:
     )
 
     assert segments[0]["mapq"] == 0
-    assert segments[0]["qc_flags"] == "non_primary"
-    assert events[0]["qc_flags"] == "non_primary"
+    assert segments[0]["qc_flags"] == ""
+    assert events[0]["mapq"] == 0
+    assert events[0]["native_alignment_type"] == "S"
+    assert events[0]["qc_flags"] == ""
+
+
+def test_minimap_inversion_types_preserve_primary_semantics() -> None:
+    assert is_primary({"tp": "I"}) is True
+    assert is_primary({"tp": "i"}) is False
 
 
 def test_long_pseudoread_coordinates_are_lifted_and_events_deduplicated(
@@ -326,8 +338,10 @@ def test_long_secondary_backbone_record_keeps_flagged_alt_support(
 
     assert segments[0]["mapq"] == 1
     assert segments[0]["is_primary"] == "false"
-    assert segments[0]["qc_flags"] == "filtered_pseudoread,non_primary"
-    assert events[0]["qc_flags"] == "filtered_pseudoread,non_primary"
+    assert segments[0]["qc_flags"] == "filtered_pseudoread"
+    assert events[0]["mapq"] == 1
+    assert events[0]["native_alignment_type"] == "S"
+    assert events[0]["qc_flags"] == "filtered_pseudoread"
 
 
 def test_pseudoread_backbone_keeps_dominant_monotonic_order(tmp_path: Path) -> None:

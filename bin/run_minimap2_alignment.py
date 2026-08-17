@@ -196,7 +196,7 @@ def parse_tags(fields: list[str]) -> dict[str, str]:
 
 
 def is_primary(tags: dict[str, str]) -> bool:
-    return tags.get("tp", "P") == "P"
+    return tags.get("tp", "P") in {"P", "I"}
 
 
 def interval_union_length(intervals: list[tuple[int, int]]) -> int:
@@ -496,13 +496,12 @@ def parse_paf(
         block_length = int(fields[10])
         mapq = int(fields[11])
         tags = parse_tags(fields)
+        native_alignment_type = tags.get("tp", "")
         primary = is_primary(tags)
         identity = matches / block_length if block_length else 0.0
         flags = []
         if query_slice.is_pseudoread:
             flags.append("filtered_pseudoread")
-        if not primary:
-            flags.append("non_primary")
 
         segment = {
             "gene_id": gene_id,
@@ -560,6 +559,8 @@ def parse_paf(
                 "preset": preset,
                 "query_id": source_id,
                 "strand": strand,
+                "mapq": mapq,
+                "native_alignment_type": native_alignment_type,
                 "native_record_id": native_record_id,
                 "qc_flags": ",".join(flags),
             }
@@ -784,7 +785,7 @@ def main() -> None:
     strategy_parameters: dict[str, object] = {
         "preset": args.preset,
         "mapq_policy": "aligner_reported_unfiltered",
-        "non_primary_policy": "retained_flagged",
+        "non_primary_policy": "retained_native_type",
     }
     if pseudoreads is not None:
         strategy_parameters.update(

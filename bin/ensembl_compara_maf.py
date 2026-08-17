@@ -463,6 +463,8 @@ def append_event(
             "alt": alt,
             "query_id": query_row.query_id(),
             "strand": query_row.strand,
+            "mapq": "",
+            "native_alignment_type": "",
             "native_record_id": native_record_id,
             "qc_flags": ",".join(sorted(qc_flags)),
         }

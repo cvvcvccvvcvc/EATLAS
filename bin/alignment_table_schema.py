@@ -46,6 +46,8 @@ EVENT_FIELDS = [
     "alt",
     "query_id",
     "strand",
+    "mapq",
+    "native_alignment_type",
     "native_record_id",
     "qc_flags",
 ]

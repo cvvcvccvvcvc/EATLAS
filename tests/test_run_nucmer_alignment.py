@@ -9,7 +9,12 @@ import pysam
 BIN_DIR = Path(__file__).resolve().parents[1] / "bin"
 sys.path.insert(0, str(BIN_DIR))
 
-from run_nucmer_alignment import empty_summary, parse_sam, query_interval  # noqa: E402
+from run_nucmer_alignment import (  # noqa: E402
+    empty_summary,
+    parse_sam,
+    query_interval,
+    sam_alignment_type,
+)
 
 
 TARGET_SEQ = "AACCGGTTAACCGGTT"
@@ -84,7 +89,10 @@ def test_parse_sam_emits_contiguous_indels_and_deduplicates_alignments(tmp_path:
         ("snv", 12, 13, "G", "A"),
     ]
     assert all(row["native_record_id"] == 1 for row in events)
+    assert all(row["mapq"] == 10 for row in events)
+    assert all(row["native_alignment_type"] == "primary" for row in events)
     assert all(row["qc_flags"] == "unfiltered_nucmer" for row in events)
+    assert all(row["mapq"] == 10 for row in segments)
     assert summaries["query_1"]["event_count"] == 3
     assert summaries["query_1"]["primary_segment_count"] == 1
     assert summaries["query_1"]["secondary_segment_count"] == 1
@@ -94,6 +102,18 @@ def test_parse_sam_emits_contiguous_indels_and_deduplicates_alignments(tmp_path:
         "unfiltered_nucmer",
     }
     assert ambiguous_count == 1
+
+
+def test_sam_alignment_type_preserves_combined_flags() -> None:
+    read = pysam.AlignedSegment()
+    read.flag = 0
+    assert sam_alignment_type(read) == "primary"
+    read.flag = 256
+    assert sam_alignment_type(read) == "secondary"
+    read.flag = 2048
+    assert sam_alignment_type(read) == "supplementary"
+    read.flag = 256 | 2048
+    assert sam_alignment_type(read) == "secondary_supplementary"
 
 
 def test_query_interval_converts_reverse_hard_clipping_to_forward_coordinates() -> None:

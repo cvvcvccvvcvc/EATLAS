@@ -167,6 +167,16 @@ def query_interval(read: pysam.AlignedSegment) -> tuple[int, int, int]:
     return oriented_start, oriented_end, query_length
 
 
+def sam_alignment_type(read: pysam.AlignedSegment) -> str:
+    if read.is_secondary and read.is_supplementary:
+        return "secondary_supplementary"
+    if read.is_secondary:
+        return "secondary"
+    if read.is_supplementary:
+        return "supplementary"
+    return "primary"
+
+
 def append_event(
     event_by_key: dict[tuple[object, ...], dict[str, object]],
     *,
@@ -182,6 +192,8 @@ def append_event(
     target_end0: int,
     ref: str,
     alt: str,
+    mapq: int,
+    native_alignment_type: str,
     is_primary: bool,
 ) -> bool:
     ref = ref.upper()
@@ -190,9 +202,6 @@ def append_event(
         return False
 
     genomic_start, genomic_end = genomic_coords(target_meta, target_start0, target_end0)
-    flags = {"unfiltered_nucmer"}
-    if not is_primary:
-        flags.add("non_primary")
     event = {
         "gene_id": gene_id,
         "ortholog_gene_id": meta.get("ortholog_gene_id", ""),
@@ -212,8 +221,10 @@ def append_event(
         "alt": alt,
         "query_id": query_id,
         "strand": strand,
+        "mapq": mapq,
+        "native_alignment_type": native_alignment_type,
         "native_record_id": native_record_id,
-        "qc_flags": ",".join(sorted(flags)),
+        "qc_flags": "unfiltered_nucmer",
         "_is_primary": is_primary,
     }
     key = (
@@ -263,9 +274,7 @@ def parse_sam(
             matches = max(0, block_length - edit_distance)
             identity = matches / block_length if block_length else 0.0
             is_primary = not read.is_secondary and not read.is_supplementary
-            flags = {"unfiltered_nucmer"}
-            if not is_primary:
-                flags.add("non_primary")
+            native_alignment_type = sam_alignment_type(read)
 
             segment = {
                 "gene_id": gene_id,
@@ -286,12 +295,12 @@ def parse_sam(
                 "matches": matches,
                 "block_length": block_length,
                 "identity": f"{identity:.6f}",
-                "mapq": "",
+                "mapq": read.mapping_quality,
                 "is_primary": str(is_primary).lower(),
                 "divergence": "",
                 "gap_compressed_divergence": "",
                 "native_record_id": native_record_id,
-                "qc_flags": ",".join(sorted(flags)),
+                "qc_flags": "unfiltered_nucmer",
             }
             segments.append(segment)
 
@@ -347,6 +356,8 @@ def parse_sam(
                             target_end0=target_index + 1,
                             ref=ref,
                             alt=alt,
+                            mapq=read.mapping_quality,
+                            native_alignment_type=native_alignment_type,
                             is_primary=is_primary,
                         ):
                             summary["qc_flags"].add("ambiguous_event_allele")
@@ -372,6 +383,8 @@ def parse_sam(
                         target_end0=ref_pos,
                         ref="",
                         alt=alt,
+                        mapq=read.mapping_quality,
+                        native_alignment_type=native_alignment_type,
                         is_primary=is_primary,
                     ):
                         summary["qc_flags"].add("ambiguous_event_allele")
@@ -396,6 +409,8 @@ def parse_sam(
                         target_end0=ref_pos + length,
                         ref=ref,
                         alt="",
+                        mapq=read.mapping_quality,
+                        native_alignment_type=native_alignment_type,
                         is_primary=is_primary,
                     ):
                         summary["qc_flags"].add("ambiguous_event_allele")

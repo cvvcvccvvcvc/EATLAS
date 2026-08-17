@@ -92,6 +92,8 @@ EVENT_ORTHOLOG_SUPPORT_FIELDS = [
     "ortholog_gene_id",
     "tax_id",
     "taxname",
+    "mapq",
+    "native_alignment_type",
     "support_row_count",
 ]
 EVENT_KEY_FIELDS = [
@@ -113,6 +115,8 @@ EVENT_STREAM_FIELDS = [
     "preset",
     "tax_id",
     "taxname",
+    "mapq",
+    "native_alignment_type",
     "qc_flags",
 ]
 SNV_ALT_TAXONOMIC_SUPPORT_FIELDS = [
@@ -604,6 +608,8 @@ def create_compact_event_table(conn: sqlite3.Connection) -> None:
             preset TEXT,
             tax_id TEXT,
             taxname TEXT,
+            mapq TEXT,
+            native_alignment_type TEXT,
             qc_flags TEXT
         )
         """
@@ -629,6 +635,8 @@ def insert_event_rows(conn: sqlite3.Connection, path: Path, batch_size: int = 10
         "preset",
         "tax_id",
         "taxname",
+        "mapq",
+        "native_alignment_type",
         "qc_flags",
     ]
     count = 0
@@ -640,13 +648,13 @@ def insert_event_rows(conn: sqlite3.Connection, path: Path, batch_size: int = 10
             count += 1
             if len(batch) >= batch_size:
                 conn.executemany(
-                    "INSERT INTO events VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    "INSERT INTO events VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     batch,
                 )
                 batch.clear()
     if batch:
         conn.executemany(
-            "INSERT INTO events VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO events VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             batch,
         )
     return count
@@ -670,6 +678,8 @@ def merge_ortholog_metadata(
             "ortholog_gene_id": ortholog_gene_id,
             "tax_id": row["tax_id"],
             "taxname": row["taxname"],
+            "mapq": row["mapq"],
+            "native_alignment_type": row["native_alignment_type"],
             "support_row_count": 1,
         }
         return
@@ -684,6 +694,9 @@ def merge_ortholog_metadata(
             )
         if not current and observed:
             support[field] = observed
+    for field in ("mapq", "native_alignment_type"):
+        if not support[field] and row[field]:
+            support[field] = row[field]
     support["support_row_count"] = int(support["support_row_count"]) + 1
 
 
@@ -810,6 +823,8 @@ def write_compact_events(
                 preset,
                 tax_id,
                 taxname,
+                mapq,
+                native_alignment_type,
                 qc_flags
             FROM events INDEXED BY events_key_idx
             ORDER BY

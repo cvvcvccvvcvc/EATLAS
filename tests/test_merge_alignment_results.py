@@ -48,6 +48,8 @@ EVENT_ORTHOLOG_SUPPORT_HEADER = [
     "ortholog_gene_id",
     "tax_id",
     "taxname",
+    "mapq",
+    "native_alignment_type",
     "support_row_count",
 ]
 COMPACT_EVENT_HEADER = [
@@ -604,6 +606,8 @@ def test_compact_events_preserve_strategy_specific_support(tmp_path: Path) -> No
                     genomic_end1=1,
                     ref="A",
                     alt="G",
+                    mapq="20" if strategy == "s1" else "30",
+                    native_alignment_type="P" if strategy == "s1" else "primary",
                 )
             ],
         )
@@ -630,6 +634,8 @@ def test_compact_events_preserve_strategy_specific_support(tmp_path: Path) -> No
     assert [row["event_group_id"] for row in rows] == ["1", "2"]
     assert [row["event_group_id"] for row in ortholog_rows] == ["1", "2"]
     assert [row["ortholog_gene_id"] for row in ortholog_rows] == ["101", "101"]
+    assert [row["mapq"] for row in ortholog_rows] == ["20", "30"]
+    assert [row["native_alignment_type"] for row in ortholog_rows] == ["P", "primary"]
     assert [row["support_row_count"] for row in ortholog_rows] == ["1", "1"]
     manifest = json.loads((tmp_path / "merged" / "manifest.json").read_text())
     assert set(manifest["timings_seconds"]) >= {

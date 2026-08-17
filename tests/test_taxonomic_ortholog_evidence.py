@@ -150,6 +150,8 @@ def test_compact_events_write_taxonomic_alt_counts_in_sqlite(tmp_path: Path) -> 
         "preset",
         "tax_id",
         "taxname",
+        "mapq",
+        "native_alignment_type",
         "qc_flags",
     ]
     write_tsv_gz(
@@ -222,6 +224,8 @@ def test_compact_taxonomic_alt_counts_use_numeric_site_order(tmp_path: Path) -> 
         "preset",
         "tax_id",
         "taxname",
+        "mapq",
+        "native_alignment_type",
         "qc_flags",
     ]
     event_sites = [

@@ -295,6 +295,8 @@ def test_variant_ortholog_support_schema_is_database_ready() -> None:
         "ortholog_gene_id",
         "tax_id",
         "taxname",
+        "mapq",
+        "native_alignment_type",
         "support_row_count",
     ]
     assert "variant_ortholog_support_count" in COUNT_FIELDS
@@ -403,6 +405,8 @@ def test_event_ortholog_support_stream_reads_consecutive_compact_groups(
             "ortholog_gene_id",
             "tax_id",
             "taxname",
+            "mapq",
+            "native_alignment_type",
             "support_row_count",
         ],
         [
@@ -411,6 +415,8 @@ def test_event_ortholog_support_stream_reads_consecutive_compact_groups(
                 "ortholog_gene_id": "101",
                 "tax_id": "10090",
                 "taxname": "Mus musculus",
+                "mapq": "60",
+                "native_alignment_type": "P",
                 "support_row_count": "2",
             },
             {
@@ -418,6 +424,8 @@ def test_event_ortholog_support_stream_reads_consecutive_compact_groups(
                 "ortholog_gene_id": "201",
                 "tax_id": "10116",
                 "taxname": "Rattus norvegicus",
+                "mapq": "10",
+                "native_alignment_type": "supplementary",
                 "support_row_count": "1",
             },
         ],
@@ -438,6 +446,8 @@ def test_event_ortholog_support_stream_rejects_unmatched_group(tmp_path: Path) -
             "ortholog_gene_id",
             "tax_id",
             "taxname",
+            "mapq",
+            "native_alignment_type",
             "support_row_count",
         ],
         [
@@ -446,6 +456,8 @@ def test_event_ortholog_support_stream_rejects_unmatched_group(tmp_path: Path) -
                 "ortholog_gene_id": "201",
                 "tax_id": "10116",
                 "taxname": "Rattus norvegicus",
+                "mapq": "",
+                "native_alignment_type": "",
                 "support_row_count": "1",
             }
         ],

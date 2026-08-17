@@ -83,6 +83,8 @@ VARIANT_ORTHOLOG_SUPPORT_FIELDS = [
     "ortholog_gene_id",
     "tax_id",
     "taxname",
+    "mapq",
+    "native_alignment_type",
     "support_row_count",
 ]
 PARTITION_TSV_SHARD_FORMAT = "headerless_gzip_member_v1"

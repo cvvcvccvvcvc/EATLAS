@@ -271,17 +271,21 @@ identifiers therefore remain stable when Minimap2 emits identical records in a
 different order at another thread count.
 
 Minimap2, Nucmer, and BWA retain events from accepted primary and non-primary
-alignment records. Non-primary evidence is marked with `non_primary` in
-`qc_flags`. If primary and non-primary records from the same ortholog emit the
-same normalized event, one support row is kept and the primary record is
-preferred. Ensembl Compara MAF records are primary by construction.
+alignment records. Raw event rows and exact ortholog support carry nullable
+`mapq` and `native_alignment_type`; the compact event aggregate does not copy
+these record-level fields. Minimap2 preserves the literal PAF `tp` value (`P`,
+`S`, `I`, or `i`). Nucmer and BWA use the SAM flags to report `primary`,
+`secondary`, `supplementary`, or `secondary_supplementary`. Ensembl Compara MAF
+leaves both fields empty because it has no equivalent native record metadata.
 
-The `mapq` column contains the integer MAPQ reported by minimap2 or BWA for the
-native alignment record. Stage 2 applies no MAPQ cutoff and does not convert
-low-MAPQ records to no-calls. Nucmer SAM-long and Ensembl MAF rows leave `mapq`
-empty because those sources do not provide a directly comparable read-mapping
-MAPQ. Ambiguity is therefore preserved as data (`mapq`, `is_primary`, and
-`non_primary`) instead of being hidden behind a Stage 2 threshold.
+`mapq` is the integer reported by the strategy's aligner and is only
+interpretable within that strategy. Stage 2 applies no MAPQ cutoff and does not
+convert low-MAPQ records to no-calls. If primary and non-primary records from
+the same ortholog emit the same event, the existing representative-selection
+rule still prefers the primary record. If Stage 3 normalizes multiple raw
+representations to the same variant-support edge, it keeps the metadata from
+the first support record while summing `support_row_count`. Alignment role is
+not duplicated in `qc_flags`.
 
 `strategy_summary.tsv.gz` contains `summary_row_count`, `gene_count`,
 `aligned_summary_row_count`, `event_count`, and `aligned_target_bp` for each
