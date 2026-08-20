@@ -8,12 +8,14 @@ import os
 from pathlib import Path
 
 from analytics.analyses.clinvar_validation import build_validation
+from analytics.analyses.basic_filtering import build_basic_filtering_analysis
 from analytics.analyses.conservation_analysis import (
     alignment_gene_ids_by_strategy,
     build_conservation_analysis,
 )
 from analytics.analyses.conservation_validation import validate_firth_runtime
 from analytics.analyses.matched_control import build_target_space_null
+from analytics.analyses.minimap_concordance import build_minimap_concordance_analysis
 from analytics.analyses.observed_variant_store import (
     build_or_load_observed_variant_store,
 )
@@ -35,9 +37,11 @@ from analytics.io.cohort_inputs import resolve_cohort_inputs
 from analytics.io.artifacts import write_text_atomic
 from analytics.io.performance import PerformanceProfile
 from analytics.reporting.components import strategy_label
+from analytics.reporting.basic_filtering import build_basic_filtering_sections
 from analytics.reporting.conservation import build_clinvar_association_sections
 from analytics.reporting.document import render_html
 from analytics.reporting.matched_control import build_target_space_null_sections
+from analytics.reporting.minimap_concordance import build_minimap_concordance_sections
 from analytics.reporting.ortholog_evidence import build_ortholog_evidence_sections
 from analytics.reporting.overview import build_overview, merge_alignment_summary
 from analytics.reporting.qc import build_methods_sections
@@ -364,16 +368,52 @@ def main() -> None:
         )
 
     print("Computing conservation-adjusted ClinVar validation...")
+    eligible_gene_ids_by_strategy = alignment_gene_ids_by_strategy(cov)
     with performance.stage("Conservation-adjusted validation"):
         conservation_analysis = build_conservation_analysis(
             inputs=inputs,
             validation=validation,
             strategies=strategies,
-            eligible_gene_ids_by_strategy=alignment_gene_ids_by_strategy(cov),
+            eligible_gene_ids_by_strategy=eligible_gene_ids_by_strategy,
             firth_workers=args.firth_workers,
             performance_profile=performance,
             phylop_bigwig=args.phylop_bigwig,
         )
+
+    print("Computing basic support-filter curves...")
+    with performance.stage("Basic filtering") as timing:
+        basic_filtering = build_basic_filtering_analysis(
+            variant_annotations_tsv=inputs.variant_annotations_tsv,
+            variant_strategy_support_tsv=inputs.variant_strategy_support_tsv,
+            annotation_failures_tsv=inputs.annotation_failures_tsv,
+            analytics_dir=inputs.run_dir / "analytics",
+            cohort=conservation_analysis.validation.cohort,
+            strategies=strategies,
+            eligible_gene_ids_by_strategy=eligible_gene_ids_by_strategy,
+        )
+        timing["details"] = "cache hit" if basic_filtering.cache_hit else "cache miss"
+        timing["metrics"] = {
+            "candidate_curve_rows": int(len(basic_filtering.candidate_curves)),
+            "clinvar_curve_rows": int(len(basic_filtering.clinvar_curves)),
+        }
+
+    print("Computing minimap2 preset concordance...")
+    with performance.stage("Minimap2 concordance") as timing:
+        minimap_concordance = build_minimap_concordance_analysis(
+            score_path=basic_filtering.score_path,
+            observed_by_strategy_type=validation.observed_by_strategy_type,
+            base_validation=conservation_analysis.validation,
+            strategies=strategies,
+            eligible_gene_ids_by_strategy=eligible_gene_ids_by_strategy,
+            analytics_dir=inputs.run_dir / "analytics",
+            firth_workers=args.firth_workers,
+            performance_profile=performance,
+        )
+        timing["details"] = minimap_concordance.reason
+        timing["metrics"] = {
+            "available": minimap_concordance.available,
+            "candidate_rows": int(len(minimap_concordance.candidate_summary)),
+        }
 
     negative_controls = None
     if args.target_space_null:
@@ -427,6 +467,16 @@ def main() -> None:
                 ),
             ),
             ("candidates", "Candidate Profile", candidate_sections),
+            (
+                "basic-filtering",
+                "Basic Filtering",
+                build_basic_filtering_sections(basic_filtering),
+            ),
+            (
+                "minimap-concordance",
+                "Minimap2 Concordance",
+                build_minimap_concordance_sections(minimap_concordance),
+            ),
             (
                 "ortholog-evidence",
                 "Ortholog Evidence",

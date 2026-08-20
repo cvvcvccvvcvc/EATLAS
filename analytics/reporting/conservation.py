@@ -288,7 +288,13 @@ def build_clinvar_association_sections(analysis: ConservationAnalysis) -> list[s
     ]
 
 
-def clinvar_association_view(validation: ConservationValidation) -> str:
+def clinvar_association_view(
+    validation: ConservationValidation,
+    *,
+    view_id: str = "clinvar-association",
+    strategy_labels: dict[str, str] | None = None,
+) -> str:
+    display_labels = strategy_labels or {}
     primary_frames = []
     mode_specs = [
         ("unadjusted", validation.unadjusted, "odds_ratio", "fisher_p", "fisher_q"),
@@ -307,13 +313,19 @@ def clinvar_association_view(validation: ConservationValidation) -> str:
     primary = pd.concat(primary_frames, ignore_index=True) if primary_frames else pd.DataFrame()
     strategies = validation.unadjusted["strategy"].drop_duplicates().astype(str).tolist()
     payload = {
-        "viewId": "clinvar-association",
+        "viewId": view_id,
         "modes": [
             {"key": "unadjusted", "label": "Unadjusted"},
             {"key": "fixed", "label": "phyloP fixed bands"},
             {"key": "continuous", "label": "phyloP continuous"},
         ],
-        "strategies": [{"key": value, "label": strategy_label(value)} for value in strategies],
+        "strategies": [
+            {
+                "key": value,
+                "label": display_labels.get(value, strategy_label(value)),
+            }
+            for value in strategies
+        ],
         "variantTypes": [{"key": key, "label": label} for key, label in VARIANT_TYPE_OPTIONS],
         "targetContexts": [{"key": key, "label": label} for key, label in TARGET_CONTEXT_OPTIONS],
         "consequences": [{"key": key, "label": label} for key, label in CONSEQUENCE_OPTIONS],
@@ -323,20 +335,20 @@ def clinvar_association_view(validation: ConservationValidation) -> str:
     }
     payload_json = json.dumps(payload, separators=(",", ":"), allow_nan=False).replace("</", "<\\/")
     return f"""
-    <div class="analysis-controls" id="clinvar-association-controls">
+    <div class="analysis-controls" id="{view_id}-controls">
       <label>Analysis<select data-role="mode"></select></label>
       <label>Variant type<select data-role="variant-type"></select></label>
       <label>Target context<select data-role="target-context"></select></label>
       <label>Consequence subset<select data-role="consequence"></select></label>
     </div>
-    <div id="clinvar-association-status" class="analysis-note" hidden></div>
-    <div id="clinvar-association-forest" class="analysis-plot"></div>
-    <div id="clinvar-association-results"></div>
-    <div class="analysis-controls analysis-controls-single" id="clinvar-association-strategy-control">
+    <div id="{view_id}-status" class="analysis-note" hidden></div>
+    <div id="{view_id}-forest" class="analysis-plot"></div>
+    <div id="{view_id}-results"></div>
+    <div class="analysis-controls analysis-controls-single" id="{view_id}-strategy-control">
       <label>Inspect strategy<select data-role="strategy"></select></label>
     </div>
-    <div id="clinvar-association-detail-plot" class="analysis-plot"></div>
-    <div id="clinvar-association-detail-table"></div>
+    <div id="{view_id}-detail-plot" class="analysis-plot"></div>
+    <div id="{view_id}-detail-table"></div>
     <script>
     (() => {{
       const config = {payload_json};

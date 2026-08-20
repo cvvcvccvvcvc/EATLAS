@@ -8,10 +8,12 @@ import pandas as pd
 import pytest
 
 from analytics.analyses.candidate_conservation import CandidateConservation
+from analytics.analyses.basic_filtering import BasicFilteringAnalysis
 from analytics.analyses.matched_control import TargetSpaceNullAnalysis
 from analytics.annotation.consequences import UNANNOTATED_CONSEQUENCE
 from analytics.io.run_inputs import RunInputs, resolve_run_inputs, validate_report_inputs
 from analytics.reporting.components import dataframe_records, format_table_dataframe
+from analytics.reporting.basic_filtering import basic_filtering_view
 from analytics.reporting.config import CONSEQUENCE_GROUP_COLORS
 from analytics.reporting.conservation import (
     clinvar_association_view,
@@ -95,6 +97,7 @@ def test_report_preflight_accepts_compact_production_contract(tmp_path: Path) ->
             "strategy",
             "alt_support_row_count",
             "alt_support_ortholog_count",
+            "alt_support_genus_count",
         ],
     )
     targets = tmp_path / "targets"
@@ -755,6 +758,11 @@ def test_clinvar_association_serializes_sparse_results_and_has_all_controls() ->
         distributions=pd.DataFrame(),
     )
     html = clinvar_association_view(validation)
+    custom_html = clinvar_association_view(
+        validation,
+        view_id="custom-clinvar",
+        strategy_labels={"s1": "Synthetic group"},
+    )
 
     assert 'data-role="strategy"' in html
     assert 'data-role="mode"' in html
@@ -765,6 +773,68 @@ def test_clinvar_association_serializes_sparse_results_and_has_all_controls() ->
     assert "phyloP continuous" in html
     assert "Missense" in html
     assert "All target contexts" in html
+    assert "Infinity" not in html
+    assert "NaN" not in html
+    assert 'id="custom-clinvar-controls"' in custom_html
+    assert "Synthetic group" in custom_html
+
+
+def test_basic_filtering_view_has_linear_threshold_controls_and_safe_json(
+    tmp_path: Path,
+) -> None:
+    candidate = pd.DataFrame(
+        [
+            {
+                "strategy": "s1",
+                "variant_type": "snv",
+                "filter_key": "ortholog",
+                "threshold": 1,
+                "retained_variant_count": 10,
+                "total_variant_count": 10,
+                "retained_fraction": 1.0,
+                "gnomad_found_count": 5,
+                "gnomad_eligible_count": 10,
+                "gnomad_lookup_failed_count": 0,
+                "gnomad_found_fraction": 0.5,
+            }
+        ]
+    )
+    clinvar = pd.DataFrame(
+        [
+            {
+                "strategy": "s1",
+                "variant_type": "snv",
+                "filter_key": "ortholog",
+                "mode": "unadjusted",
+                "target_context": "all",
+                "consequence": "all",
+                "threshold": 1,
+                "result_or": float("inf"),
+                "ci_low": 0.5,
+                "ci_high": 10.0,
+                "result_p": float("nan"),
+                "result_q": float("nan"),
+                "usable_rows": 20,
+                "benign_observed": 5,
+                "pathogenic_observed": 1,
+                "status": "estimated",
+            }
+        ]
+    )
+    analysis = BasicFilteringAnalysis(
+        tmp_path / "scores.parquet",
+        tmp_path / "manifest.json",
+        candidate,
+        clinvar,
+    )
+
+    html = basic_filtering_view(analysis)
+
+    assert 'data-role="filter"' in html
+    assert 'data-role="strategy"' in html
+    assert 'data-role="target-context"' in html
+    assert "Independent genus support" in html
+    assert "type: 'linear'" in html
     assert "Infinity" not in html
     assert "NaN" not in html
 

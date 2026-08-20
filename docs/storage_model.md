@@ -87,6 +87,9 @@ The durable `variant_annotations.tsv.gz` and
 `variant_strategy_support.tsv.gz` files retain their public TSV/gzip contract,
 but their internal partition gzip members are copied into the final files
 without row parsing or recompression.
+For SNVs, the strategy-support table includes the exact-ALT genus count needed
+for allele-level basic filtering; this is derived before the temporary
+taxonomy-aware handoff tables are discarded.
 
 Standalone `--stage fetch` and `--stage align` runs still publish their full
 handoff datasets because a later invocation needs those files. The Stage 2

@@ -23,6 +23,7 @@ from annotate_events import (  # noqa: E402
     build_variant_strategy_support,
     event_vcf_key,
     iter_variant_strategy_snv_sites,
+    load_snv_alt_genus_support,
     load_alignment_manifest,
     resolve_target_feature_paths,
     variant_aggregate_key,
@@ -282,8 +283,9 @@ def test_partition_tsv_member_rejects_embedded_header(tmp_path: Path) -> None:
         )
 
 
-def test_variant_strategy_support_schema_includes_site_depth() -> None:
+def test_variant_strategy_support_schema_includes_genus_and_site_depth() -> None:
     assert VARIANT_STRATEGY_SUPPORT_FIELDS[-1] == "site_aligned_ortholog_count"
+    assert "alt_support_genus_count" in VARIANT_STRATEGY_SUPPORT_FIELDS
     assert "variant_strategy_site_depth_count" in COUNT_FIELDS
 
 
@@ -381,6 +383,7 @@ def test_variant_strategy_support_counts_distinct_orthologs() -> None:
             "strategy": "s1",
             "alt_support_row_count": 3,
             "alt_support_ortholog_count": 2,
+            "alt_support_genus_count": "",
             "site_aligned_ortholog_count": "",
         },
         {
@@ -389,9 +392,62 @@ def test_variant_strategy_support_counts_distinct_orthologs() -> None:
             "strategy": "s2",
             "alt_support_row_count": 1,
             "alt_support_ortholog_count": 1,
+            "alt_support_genus_count": "",
             "site_aligned_ortholog_count": "",
         },
     ]
+
+
+def test_variant_strategy_support_loads_exact_alt_genus_count(tmp_path: Path) -> None:
+    path = tmp_path / "snv_alt_taxonomic_support.tsv.gz"
+    with gzip.open(path, "wt", newline="") as handle:
+        writer = csv.DictWriter(
+            handle,
+            fieldnames=[
+                "gene_id",
+                "strategy",
+                "target_start0",
+                "ref",
+                "alt",
+                "all__genus",
+            ],
+            delimiter="\t",
+            lineterminator="\n",
+        )
+        writer.writeheader()
+        writer.writerow(
+            {
+                "gene_id": "1",
+                "strategy": "s1",
+                "target_start0": 4,
+                "ref": "a",
+                "alt": "g",
+                "all__genus": 2,
+            }
+        )
+    aggregate = {
+        "variant_key": "1:100:A>G",
+        "gene_id": "1",
+        "event_type": "snv",
+        "target_start0": 4,
+        "ref": "A",
+        "alt": "G",
+        "_support_by_strategy": {},
+    }
+    for ortholog in ("101", "102", "103"):
+        add_strategy_support(
+            aggregate,
+            {"strategy": "s1", "ortholog_gene_id": ortholog},
+        )
+
+    genus_supports = load_snv_alt_genus_support(path)
+    rows, _missing = build_variant_strategy_support(
+        [aggregate],
+        {("1", "s1", 4): 3},
+        genus_supports,
+    )
+
+    assert rows[0]["alt_support_genus_count"] == 2
 
 
 def test_event_ortholog_support_stream_reads_consecutive_compact_groups(

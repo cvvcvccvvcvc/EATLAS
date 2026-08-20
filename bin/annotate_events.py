@@ -96,8 +96,11 @@ VARIANT_STRATEGY_SUPPORT_FIELDS = [
     "strategy",
     "alt_support_row_count",
     "alt_support_ortholog_count",
+    "alt_support_genus_count",
     "site_aligned_ortholog_count",
 ]
+
+ALT_SUPPORT_GENUS_COLUMN = "all__genus"
 
 VARIANT_ORTHOLOG_SUPPORT_FIELDS = [
     "variant_key",
@@ -698,6 +701,7 @@ def aggregate_exact_support(
 def build_variant_strategy_support(
     aggregates: Iterable[dict],
     site_depths: dict[tuple[str, str, int], int] | None = None,
+    genus_supports: dict[tuple[str, str, int, str, str], int] | None = None,
 ) -> tuple[list[dict[str, object]], int]:
     site_depths = site_depths or {}
     rows: list[dict[str, object]] = []
@@ -714,6 +718,7 @@ def build_variant_strategy_support(
                 support.ortholog_count_hint,
             )
             site_depth: int | str = ""
+            genus_support: int | str = ""
             if aggregate.get("event_type") == "snv":
                 depth_key = (
                     str(aggregate.get("gene_id") or ""),
@@ -728,6 +733,24 @@ def build_variant_strategy_support(
                         "ALT-support ortholog count exceeds site-aligned ortholog count for "
                         f"{depth_key}: {alt_support_count} > {site_depth}"
                     )
+                if genus_supports is not None:
+                    genus_key = (
+                        str(aggregate.get("gene_id") or ""),
+                        strategy,
+                        int(aggregate.get("target_start0") or 0),
+                        str(aggregate.get("ref") or "").upper(),
+                        str(aggregate.get("alt") or "").upper(),
+                    )
+                    if genus_key not in genus_supports:
+                        raise ValueError(
+                            f"Missing genus ALT-support count for SNV {genus_key}"
+                        )
+                    genus_support = genus_supports[genus_key]
+                    if genus_support < 0 or genus_support > alt_support_count:
+                        raise ValueError(
+                            "Genus ALT-support count exceeds ortholog ALT-support count for "
+                            f"{genus_key}: {genus_support} > {alt_support_count}"
+                        )
             rows.append(
                 {
                     "variant_key": variant_key,
@@ -735,6 +758,7 @@ def build_variant_strategy_support(
                     "strategy": strategy,
                     "alt_support_row_count": support.row_count,
                     "alt_support_ortholog_count": alt_support_count,
+                    "alt_support_genus_count": genus_support,
                     "site_aligned_ortholog_count": site_depth,
                 }
             )
@@ -746,6 +770,47 @@ def build_variant_strategy_support(
         )
     )
     return rows, missing_key_count
+
+
+def load_snv_alt_genus_support(
+    path: Path,
+) -> dict[tuple[str, str, int, str, str], int]:
+    """Load exact-ALT genus counts keyed like the compact SNV support table."""
+
+    required = {
+        "gene_id",
+        "strategy",
+        "target_start0",
+        "ref",
+        "alt",
+        ALT_SUPPORT_GENUS_COLUMN,
+    }
+    counts: dict[tuple[str, str, int, str, str], int] = {}
+    with gzip.open(path, "rt", newline="") as handle:
+        reader = csv.DictReader(handle, delimiter="\t")
+        missing = required - set(reader.fieldnames or [])
+        if missing:
+            raise ValueError(
+                f"SNV ALT taxonomic support {path} missing columns: "
+                + ", ".join(sorted(missing))
+            )
+        for row in reader:
+            key = (
+                str(row["gene_id"]),
+                str(row["strategy"]),
+                int(row["target_start0"]),
+                str(row["ref"]).upper(),
+                str(row["alt"]).upper(),
+            )
+            if key in counts:
+                raise ValueError(f"Duplicate SNV ALT taxonomic support row: {key}")
+            value = int(row[ALT_SUPPORT_GENUS_COLUMN])
+            if value < 0:
+                raise ValueError(
+                    f"Negative SNV ALT genus support for {key}: {value}"
+                )
+            counts[key] = value
+    return counts
 
 
 def iter_variant_strategy_snv_sites(
@@ -1029,6 +1094,9 @@ def main():
             f"rows={observed_taxonomic_alt_support_count}, "
             f"manifest={expected_taxonomic_alt_support_count}"
         )
+    genus_supports = load_snv_alt_genus_support(
+        args.snv_alt_taxonomic_support_tsv
+    )
     if not args.clinvar_vcf.exists():
         raise FileNotFoundError(f"ClinVar VCF not found: {args.clinvar_vcf}")
     clinvar_tbi = Path(f"{args.clinvar_vcf}.tbi")
@@ -1300,6 +1368,7 @@ def main():
     strategy_support_rows, strategy_support_missing_key_count = build_variant_strategy_support(
         variant_aggregates.values(),
         site_depths,
+        genus_supports,
     )
     strategy_support_count = write_tsv_gz(
         support_tsv,

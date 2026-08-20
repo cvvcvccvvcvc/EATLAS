@@ -183,6 +183,7 @@ def validate_report_inputs(inputs: RunInputs) -> None:
             "strategy",
             "alt_support_row_count",
             "alt_support_ortholog_count",
+            "alt_support_genus_count",
         },
     }
     for path, required in contracts.items():

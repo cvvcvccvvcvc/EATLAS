@@ -201,6 +201,13 @@ submits a report job. Consequence plots retain those rows as a light-grey
 The gnomAD Stratification consequence view uses these same VEP groups and only
 completed gnomAD lookups (`found` or `not_found`).
 
+Basic-filter reports additionally require
+`annotation/variant_strategy_support.tsv.gz` to contain
+`alt_support_genus_count`. Runs produced before this contract must resume or
+rerun annotation before report generation; the report does not approximate
+per-allele genus support from the already aggregated ortholog-evidence
+histogram.
+
 ## Monitoring And Completion
 
 The bulk-VEP preparation log prints the annotation-array and finalizer job IDs:

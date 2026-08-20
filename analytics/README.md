@@ -238,6 +238,20 @@ not publish the compact table.
 The report requires the canonical `alignment/strategy_summary.tsv.gz`; it does
 not reconstruct that aggregate from a raw per-ortholog table.
 
+`Basic Filtering` evaluates three deliberately simple thresholds within a
+selected strategy: exact-ALT ortholog count, number of calling strategies, and
+exact-ALT genus count. Candidate retention and gnomAD curves use every integer
+threshold on a linear x-axis. ClinVar association uses at most 20 informative
+thresholds spanning the retention curve and provides unadjusted or fixed-band
+phyloP100way adjustment with the standard variant-type, target-context, and
+consequence selectors. Continuous Firth models are not multiplied across the
+threshold grid.
+
+`Minimap2 Concordance` compares asm10, asm20, their union and intersection,
+and the two preset-only call sets. Its bounded set of six groups supports all
+three ClinVar association modes, including the continuous phyloP100way model.
+The view is available only when both fixed minimap2 presets were run.
+
 The strategy report writes its ClinVar validation universe under:
 
 ```text

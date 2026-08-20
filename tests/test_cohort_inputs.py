@@ -215,6 +215,7 @@ def _make_run(
                 "strategy": strategy,
                 "alt_support_row_count": 2,
                 "alt_support_ortholog_count": 2,
+                "alt_support_genus_count": 1,
             }
             for strategy in strategies
         ],
@@ -224,6 +225,7 @@ def _make_run(
             "strategy",
             "alt_support_row_count",
             "alt_support_ortholog_count",
+            "alt_support_genus_count",
         ],
     )
     _write_gzip_table(

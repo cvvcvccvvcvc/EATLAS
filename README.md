@@ -155,7 +155,8 @@ Annotation outputs:
   with report-relevant ClinVar classification/review evidence and selected
   gnomAD AF/consequence fields.
 - `annotation/variant_strategy_support.tsv.gz` - compact per-strategy ALT-support
-  counts and, for SNVs, the distinct orthologs aligned at the variant site.
+  counts and, for SNVs, the distinct supporting genera plus the distinct
+  orthologs aligned at the variant site.
 - `annotation/variant_ortholog_support/*.parquet` - one row per normalized
   variant, strategy, and supporting ortholog, with tax ID, taxname, and
   observation count.

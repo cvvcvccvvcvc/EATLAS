@@ -222,7 +222,7 @@ the standalone handoff files.
 Annotation expected properties:
 - `annotation/variant_annotations.tsv.gz` exists for end-to-end runs.
 - `annotation/variant_strategy_support.tsv.gz` contains per-strategy ALT-support
-  counts and site-aligned ortholog depth for SNVs.
+  counts, exact-ALT genus support, and site-aligned ortholog depth for SNVs.
 - `annotation/variant_ortholog_support/*.parquet` contains one row per normalized
   variant, strategy, and supporting ortholog. Its distinct ortholog and summed
   row counts agree with `variant_strategy_support.tsv.gz`; the annotation
