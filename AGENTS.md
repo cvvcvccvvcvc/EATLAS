@@ -106,10 +106,11 @@ Agent workflow rules:
     each experiment's code, data, scratch files, reports, and generated outputs
     isolated inside that experiment directory unless an external scratch path is
     explicitly documented.
-19. Before changing scientific hypotheses, validation statistics, or analytics
-   report content, read `docs/article_narrative.md`. Keep the main argument,
-   supporting analyses, and unresolved design decisions consistent with it;
-   update the document when the research design changes materially.
+19. Keep first-article materials under `scientific_work/article_1/`. Treat
+   `article_narrative.md` as an optional source of ideas, not a binding
+   scientific contract. Once a structured manuscript document from the
+   scientific supervisor is present there, use it as the primary article guide
+   and refine the manuscript through maintainer feedback.
 20. Large annotation runs must reuse the shared gnomAD regional cache. On the
    ITMO cluster use `$GAPH_ROOT/cache/gnomad`; pass it explicitly with
    `--gnomad_cache_dir` or export `GAPH_GNOMAD_CACHE_DIR` before launch.
@@ -134,5 +135,7 @@ Read these only when relevant:
 - `docs/storage_model.md` - Nextflow cache, result layout, and disk-space policy.
 - `docs/itmo_cluster.md` - first-time ITMO setup, verified infrastructure facts,
   transfer, and smoke tests; not required for an ordinary launch.
-- `docs/article_narrative.md` - mandatory scientific narrative for validation
-  analyses and analytics report development.
+- `scientific_work/article_1/` - first-article workspace.
+  `article_narrative.md` is an optional idea source; the scientific
+  supervisor's structured manuscript document, once added, is the primary
+  article guide.
