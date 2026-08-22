@@ -583,6 +583,7 @@ workflow ALIGNMENT_STAGE {
 
     emit:
     manifest = MERGE_ALIGNMENT.out.manifest
+    evidence = MERGE_ALIGNMENT.out.evidence
     tasks = MERGE_ALIGNMENT.out.alignment_tasks
     taxonomy = MERGE_ALIGNMENT.out.taxonomy
     taxonomy_failures = MERGE_ALIGNMENT.out.taxonomy_failures

@@ -531,11 +531,13 @@ def test_partition_annotation_input_keeps_compact_annotation_tables(tmp_path: Pa
         path.name
         for path in outdir.iterdir()
     } == {
+        "alignment_segments.tsv.gz",
         "alignment_events.tsv.gz",
         "event_ortholog_support.tsv.gz",
         "failures.tsv.gz",
         "feature_coverage.tsv.gz",
         "manifest.json",
+        "ortholog_alignment_summary.tsv.gz",
         "snv_alt_taxonomic_support.tsv.gz",
         "snv_site_depth.tsv.gz",
         "snv_taxonomic_depth.tsv.gz",
@@ -1102,7 +1104,9 @@ def test_final_full_merge_rejects_taxonomic_handoff_count_mismatch(
     assert "taxonomic depth row count does not match" in completed.stderr
 
 
-def test_final_report_input_omits_handoff_tables(tmp_path: Path) -> None:
+def test_final_report_input_publishes_partitioned_normalized_evidence(
+    tmp_path: Path,
+) -> None:
     partition_dirs = [
         write_compact_result_dir(
             tmp_path,
@@ -1120,6 +1124,57 @@ def test_final_report_input_omits_handoff_tables(tmp_path: Path) -> None:
         )
         for index, gene_id in enumerate(["1", "2"], start=1)
     ]
+    for partition_dir, gene_id in zip(partition_dirs, ["1", "2"]):
+        write_tsv_gz(
+            partition_dir / "alignment_events.tsv.gz",
+            COMPACT_EVENT_HEADER,
+            [
+                [
+                    "1",
+                    gene_id,
+                    "snv",
+                    "4",
+                    "5",
+                    f"NC_{gene_id}",
+                    "5",
+                    "5",
+                    "A",
+                    "G",
+                    "s1",
+                    "1",
+                    "1",
+                    "",
+                ]
+            ],
+        )
+        write_tsv_gz(
+            partition_dir / "event_ortholog_support.tsv.gz",
+            EVENT_ORTHOLOG_SUPPORT_HEADER,
+            [
+                [
+                    "1",
+                    f"ortholog_{gene_id}",
+                    gene_id,
+                    f"species_{gene_id}",
+                    "60",
+                    "P",
+                    "1",
+                ]
+            ],
+        )
+    evidence_files = {
+        "manifest.json",
+        "ortholog_alignment_summary.tsv.gz",
+        "alignment_segments.tsv.gz",
+        "alignment_events.tsv.gz",
+        "event_ortholog_support.tsv.gz",
+    }
+    source_bytes = {
+        (partition_dir.name, path.name): path.read_bytes()
+        for partition_dir in partition_dirs
+        for path in partition_dir.iterdir()
+        if path.name in evidence_files
+    }
     inputs = write_final_inputs(tmp_path, [["1", "ready"], ["2", "ready"]])
     outdir = tmp_path / "merged"
     arguments = final_arguments(
@@ -1137,6 +1192,7 @@ def test_final_report_input_omits_handoff_tables(tmp_path: Path) -> None:
         path.name
         for path in outdir.iterdir()
     } == {
+        "evidence",
         "failures.tsv.gz",
         "feature_coverage.tsv.gz",
         "manifest.json",
@@ -1147,6 +1203,35 @@ def test_final_report_input_omits_handoff_tables(tmp_path: Path) -> None:
     assert manifest["ortholog_alignment_summary_count"] == 8
     assert manifest["alignment_segment_count"] == 10
     assert manifest["alignment_event_count"] == 12
+    assert manifest["normalized_evidence"] == {
+        "layout": "partitioned",
+        "format": "tsv_gzip_v1",
+        "path": "evidence/partitions",
+        "partition_count": 2,
+        "partition_files": [
+            "manifest.json",
+            "ortholog_alignment_summary.tsv.gz",
+            "alignment_segments.tsv.gz",
+            "alignment_events.tsv.gz",
+            "event_ortholog_support.tsv.gz",
+        ],
+        "event_group_id_scope": "partition",
+    }
+    evidence_partitions = outdir / "evidence" / "partitions"
+    assert {path.name for path in evidence_partitions.iterdir()} == {
+        "partition_000001",
+        "partition_000002",
+    }
+    for partition_dir in partition_dirs:
+        copied_dir = evidence_partitions / partition_dir.name
+        assert {path.name for path in copied_dir.iterdir()} == evidence_files
+        for copied_path in copied_dir.iterdir():
+            assert copied_path.read_bytes() == source_bytes[
+                (partition_dir.name, copied_path.name)
+            ]
+        with gzip.open(copied_dir / "alignment_events.tsv.gz", "rt", newline="") as handle:
+            rows = list(csv.DictReader(handle, delimiter="\t"))
+        assert [row["event_group_id"] for row in rows] == ["1"]
 
 
 def test_final_merge_rejects_raw_partition_results(tmp_path: Path) -> None:

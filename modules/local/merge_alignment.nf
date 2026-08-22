@@ -15,6 +15,7 @@ process MERGE_ALIGNMENT {
 
     output:
     path "manifest.json", emit: manifest
+    path "evidence", optional: true, emit: evidence
     path "alignment_tasks.tsv.gz", optional: true, emit: alignment_tasks
     path "taxonomy.tsv.gz", optional: true, emit: taxonomy
     path "taxonomy_failures.tsv.gz", optional: true, emit: taxonomy_failures

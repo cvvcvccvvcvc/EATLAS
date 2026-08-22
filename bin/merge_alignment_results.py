@@ -92,6 +92,13 @@ EVENT_ORTHOLOG_SUPPORT_FIELDS = [
     "native_alignment_type",
     "support_row_count",
 ]
+PARTITION_EVIDENCE_FILES = (
+    "manifest.json",
+    "ortholog_alignment_summary.tsv.gz",
+    "alignment_segments.tsv.gz",
+    "alignment_events.tsv.gz",
+    "event_ortholog_support.tsv.gz",
+)
 EVENT_KEY_FIELDS = [
     "gene_id",
     "strategy",
@@ -924,6 +931,18 @@ def copy_native(result_dirs: list[Path], outdir: Path) -> int:
     return copied
 
 
+def copy_partitioned_evidence(result_dirs: list[Path], outdir: Path) -> None:
+    partitions_root = outdir / "evidence" / "partitions"
+    for result_dir in result_dirs:
+        manifest = json.loads((result_dir / "manifest.json").read_text())
+        partition_id = str(manifest.get("partition_id") or "")
+        if not partition_id:
+            raise ValueError(f"Alignment partition {result_dir} does not declare partition_id")
+        partition_outdir = partitions_root / partition_id
+        for filename in PARTITION_EVIDENCE_FILES:
+            copy_or_keep(result_dir / filename, partition_outdir / filename)
+
+
 def load_manifests(result_dirs: list[Path]) -> list[dict]:
     return [json.loads((result_dir / "manifest.json").read_text()) for result_dir in result_dirs]
 
@@ -988,20 +1007,20 @@ def require_alignment_tables(
     result_dirs: list[Path],
     output_profile: str,
 ) -> None:
+    filenames = [
+        "ortholog_alignment_summary.tsv.gz",
+        "alignment_segments.tsv.gz",
+        "alignment_events.tsv.gz",
+        "feature_coverage.tsv.gz",
+        "failures.tsv.gz",
+    ]
     if output_profile == "report-input":
-        filenames = [
-            "strategy_summary.tsv.gz",
-            "feature_coverage.tsv.gz",
-            "failures.tsv.gz",
-        ]
-    else:
-        filenames = [
-            "ortholog_alignment_summary.tsv.gz",
-            "alignment_segments.tsv.gz",
-            "alignment_events.tsv.gz",
-            "feature_coverage.tsv.gz",
-            "failures.tsv.gz",
-        ]
+        filenames.extend(
+            [
+                "strategy_summary.tsv.gz",
+                "event_ortholog_support.tsv.gz",
+            ]
+        )
     missing = [
         str(result_dir / filename)
         for result_dir in result_dirs
@@ -1014,19 +1033,15 @@ def require_alignment_tables(
 
 def validate_alignment_table_schemas(
     result_dirs: list[Path],
-    output_profile: str,
     input_event_mode: str,
 ) -> None:
-    filenames = ["failures.tsv.gz"]
-    if output_profile != "report-input":
-        filenames.extend(
-            [
-                "ortholog_alignment_summary.tsv.gz",
-                "alignment_segments.tsv.gz",
-            ]
-        )
-        if input_event_mode == "raw":
-            filenames.append("alignment_events.tsv.gz")
+    filenames = [
+        "failures.tsv.gz",
+        "ortholog_alignment_summary.tsv.gz",
+        "alignment_segments.tsv.gz",
+    ]
+    if input_event_mode == "raw":
+        filenames.append("alignment_events.tsv.gz")
 
     for result_dir in result_dirs:
         for filename in filenames:
@@ -1034,7 +1049,7 @@ def validate_alignment_table_schemas(
                 result_dir / filename,
                 ALIGNER_OUTPUT_SCHEMAS[filename],
             )
-        if output_profile != "report-input" and input_event_mode == "compact_support":
+        if input_event_mode == "compact_support":
             require_exact_tsv_gz_header(
                 result_dir / "alignment_events.tsv.gz",
                 COMPACT_EVENT_FIELDS,
@@ -1285,7 +1300,6 @@ def main() -> None:
     )
     validate_alignment_table_schemas(
         result_dirs,
-        output_profile=args.output_profile,
         input_event_mode=input_event_mode,
     )
     if args.partition_id:
@@ -1343,6 +1357,8 @@ def main() -> None:
             f"observed {input_event_mode}"
         )
     if args.output_profile == "report-input":
+        copy_partitioned_evidence(result_dirs, args.outdir)
+    if args.output_profile == "report-input":
         summary_count = sum_manifest_count(manifests, "ortholog_alignment_summary_count")
         strategy_summary_count = merge_strategy_summaries(
             [path / "strategy_summary.tsv.gz" for path in result_dirs],
@@ -1355,29 +1371,19 @@ def main() -> None:
             path / "ortholog_alignment_summary.tsv.gz"
             for path in result_dirs
         ]
-        if args.output_profile == "full":
-            summary_count = merge_tsv_gz(
-                summary_inputs,
-                args.outdir / "ortholog_alignment_summary.tsv.gz",
-            )
-            _, strategy_summary_count = write_strategy_summary(
-                [args.outdir / "ortholog_alignment_summary.tsv.gz"],
-                args.outdir / "strategy_summary.tsv.gz",
-                strategies,
-            )
-        else:
-            summary_count, strategy_summary_count = write_strategy_summary(
-                summary_inputs,
-                args.outdir / "strategy_summary.tsv.gz",
-                strategies,
-            )
-        if args.output_profile == "full":
-            segment_count = merge_tsv_gz(
-                [path / "alignment_segments.tsv.gz" for path in result_dirs],
-                args.outdir / "alignment_segments.tsv.gz",
-            )
-        else:
-            segment_count = sum_manifest_count(manifests, "alignment_segment_count")
+        summary_count = merge_tsv_gz(
+            summary_inputs,
+            args.outdir / "ortholog_alignment_summary.tsv.gz",
+        )
+        _, strategy_summary_count = write_strategy_summary(
+            [args.outdir / "ortholog_alignment_summary.tsv.gz"],
+            args.outdir / "strategy_summary.tsv.gz",
+            strategies,
+        )
+        segment_count = merge_tsv_gz(
+            [path / "alignment_segments.tsv.gz" for path in result_dirs],
+            args.outdir / "alignment_segments.tsv.gz",
+        )
 
     feature_coverage_inputs = [path / "feature_coverage.tsv.gz" for path in result_dirs]
     feature_coverage_count = merge_tsv_gz(
@@ -1532,6 +1538,15 @@ def main() -> None:
         manifest["source_target_context"] = {
             "genes_sha256": sha256_file(args.source_genes),
             "target_features_sha256": sha256_file(args.source_target_features),
+        }
+    if args.output_profile == "report-input":
+        manifest["normalized_evidence"] = {
+            "layout": "partitioned",
+            "format": "tsv_gzip_v1",
+            "path": "evidence/partitions",
+            "partition_count": len(result_dirs),
+            "partition_files": list(PARTITION_EVIDENCE_FILES),
+            "event_group_id_scope": "partition",
         }
     if timings_seconds:
         manifest["timings_seconds"] = timings_seconds
