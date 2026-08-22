@@ -11,9 +11,26 @@ from pathlib import Path
 BASE = Path(__file__).resolve().parent
 FIXTURES = BASE / "fixtures"
 ROOT = BASE.parent
+sys.path.insert(0, str(ROOT / "src"))
+
+from cadd_validation.build_features import load_taxonomy_groups  # noqa: E402
 
 
 class BuildFeaturesTest(unittest.TestCase):
+    def test_legacy_taxonomy_membership_flags_remain_readable(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            taxonomy = Path(tmp) / "taxonomy.tsv"
+            taxonomy.write_text(
+                "tax_id\tis_primate\tis_mammal\tis_vertebrate\tparent_tax_ids\n"
+                "9598\ttrue\ttrue\ttrue\tnone\n"
+                "10090\tfalse\ttrue\ttrue\tnone\n"
+            )
+
+            groups = load_taxonomy_groups(taxonomy)
+
+        self.assertEqual(groups["9598"], "primates")
+        self.assertEqual(groups["10090"], "other_mammals")
+
     def test_counts_ref_alt_other_and_taxonomy_groups(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             out = Path(tmp) / "features.tsv"

@@ -9,7 +9,7 @@ from pathlib import Path
 PROJECT_DIR = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_DIR / "bin"))
 
-from fetch_taxonomy import fetch_taxonomy_records, taxonomy_row
+from fetch_taxonomy import TAXONOMY_FIELDS, fetch_taxonomy_records, taxonomy_row
 from finalize_annotation_partitions import merge_ortholog_evidence
 from merge_alignment_results import write_compact_events
 from ortholog_evidence_summary import write_ortholog_evidence_summary
@@ -30,7 +30,7 @@ def write_tsv_gz(path: Path, fields: list[str], rows: list[dict[str, object]]) -
 
 def taxonomy_fixture(tmp_path: Path) -> Path:
     path = tmp_path / "taxonomy.tsv.gz"
-    fields = ["tax_id", "species_id", "genus_id", "family_id", "order_id", "parent_tax_ids"]
+    fields = ["tax_id", "species_id", "genus_id", "family_id", "order_id", "lineage_tax_ids"]
     write_tsv_gz(
         path,
         fields,
@@ -41,7 +41,7 @@ def taxonomy_fixture(tmp_path: Path) -> Path:
                 "genus_id": "9596",
                 "family_id": "9604",
                 "order_id": "9443",
-                "parent_tax_ids": "2759,33208,7742,32523,32524,40674,9443,9598",
+                "lineage_tax_ids": "2759,33208,7742,32523,32524,40674,9443,9598",
             },
             {
                 "tax_id": "10090",
@@ -49,7 +49,7 @@ def taxonomy_fixture(tmp_path: Path) -> Path:
                 "genus_id": "10088",
                 "family_id": "10066",
                 "order_id": "9989",
-                "parent_tax_ids": "2759,33208,7742,32523,32524,40674,10090",
+                "lineage_tax_ids": "2759,33208,7742,32523,32524,40674,10090",
             },
         ],
     )
@@ -65,22 +65,70 @@ def test_taxonomy_row_reads_ncbi_taxonomy_lineage() -> None:
             "current_scientific_name": {"name": "Pan troglodytes"},
             "group_name": "primates",
             "classification": {
+                "domain": {"id": 2759, "name": "Eukaryota"},
+                "kingdom": {"id": 33208, "name": "Metazoa"},
+                "phylum": {"id": 7711, "name": "Chordata"},
                 "class": {"id": 40674, "name": "Mammalia"},
                 "order": {"id": 9443, "name": "Primates"},
                 "family": {"id": 9604, "name": "Hominidae"},
                 "genus": {"id": 9596, "name": "Pan"},
                 "species": {"id": 9598, "name": "Pan troglodytes"},
             },
-            "parents": [9443, 40674, 7742, 33208, 2759],
+            "parents": [1, 2759, 33208, 7711, 7742, 40674, 9443, 9443],
         },
     )
 
+    assert list(row) == TAXONOMY_FIELDS
+    assert row["taxonomy_status"] == "resolved"
     assert row["scientific_name"] == "Pan troglodytes"
+    assert row["domain_id"] == "2759"
+    assert row["kingdom_name"] == "Metazoa"
+    assert row["phylum_id"] == "7711"
     assert row["species_id"] == "9598"
     assert row["genus_id"] == "9596"
-    assert row["is_primate"] == "true"
-    assert row["is_mammal"] == "true"
-    assert row["is_vertebrate"] == "true"
+    assert row["lineage_tax_ids"] == "1,2759,33208,7711,7742,40674,9443,9598"
+    assert "is_primate" not in row
+    assert "parent_tax_ids" not in row
+
+
+def test_taxonomy_row_marks_missing_response_without_inventing_lineage() -> None:
+    row = taxonomy_row("12345", None)
+
+    assert list(row) == TAXONOMY_FIELDS
+    assert row["tax_id"] == "12345"
+    assert row["taxonomy_status"] == "not_returned"
+    assert row["scientific_name"] == ""
+    assert row["domain_id"] == ""
+    assert row["species_id"] == ""
+    assert row["lineage_tax_ids"] == ""
+
+
+def test_taxonomy_loader_reads_legacy_parent_tax_ids(tmp_path: Path) -> None:
+    path = tmp_path / "legacy.taxonomy.tsv.gz"
+    write_tsv_gz(
+        path,
+        [
+            "tax_id",
+            "species_id",
+            "genus_id",
+            "family_id",
+            "order_id",
+            "parent_tax_ids",
+        ],
+        [
+            {
+                "tax_id": "9598",
+                "species_id": "9598",
+                "genus_id": "9596",
+                "family_id": "9604",
+                "order_id": "9443",
+                "parent_tax_ids": "2759, 33208; 7742,9443",
+            }
+        ],
+    )
+
+    profile = load_taxonomy_profiles(path)["9598"]
+    assert profile.ancestor_ids == frozenset({"2759", "33208", "7742", "9443", "9598"})
 
 
 def test_taxonomy_batch_request_does_not_use_single_taxon_parents_flag(

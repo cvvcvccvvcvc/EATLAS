@@ -134,6 +134,23 @@ FASTA files.
 of the Stage 1 contract: Stage 2 can prepare one gene at a time without loading
 all ortholog metadata into memory.
 
+`taxonomy.tsv.gz` is one gzip-compressed wide table with one row per unique
+selected `tax_id`. Its stable columns are:
+
+| Columns | Meaning |
+| --- | --- |
+| `tax_id`, `taxonomy_status` | Requested taxon and whether NCBI returned it (`resolved` or `not_returned`). |
+| `scientific_name`, `rank`, `group_name` | Direct NCBI summary values for the requested taxon. |
+| `domain_id`, `domain_name` through `species_id`, `species_name` | Direct NCBI classification at domain, kingdom, phylum, class, order, family, genus, and species ranks. Missing ranks remain empty. |
+| `lineage_tax_ids` | Ordered, comma-separated NCBI lineage from root to the requested taxon, including the requested tax ID for resolved rows. It is empty when the response is absent. |
+
+This source contract deliberately does not store report-specific membership
+flags such as `is_primate` or a second long classification table. Membership
+and scope counts are inexpensive derivations from `lineage_tax_ids`; keeping a
+single wide row avoids duplicate taxonomy facts and repeated joins. Readers
+continue to accept legacy Stage 2 tables whose lineage column was named
+`parent_tax_ids`, but new Stage 1 outputs use only `lineage_tax_ids`.
+
 ## Strand Convention
 
 Target FASTA is written in plus genomic orientation. For genes annotated on the

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build compact taxonomy metadata for ortholog taxa."""
+"""Build canonical wide taxonomy metadata for ortholog taxa."""
 
 from __future__ import annotations
 
@@ -18,15 +18,31 @@ from taxonomic_evidence import (
 )
 
 
-ANCESTOR_IDS = {
-    "hominidae": "9604",
-    "primates": "9443",
-    "mammalia": "40674",
-    "vertebrata": "7742",
-}
-
-
 TSV_NULL = ""
+TAXONOMY_FIELDS = [
+    "tax_id",
+    "taxonomy_status",
+    "scientific_name",
+    "rank",
+    "group_name",
+    "domain_id",
+    "domain_name",
+    "kingdom_id",
+    "kingdom_name",
+    "phylum_id",
+    "phylum_name",
+    "class_id",
+    "class_name",
+    "order_id",
+    "order_name",
+    "family_id",
+    "family_name",
+    "genus_id",
+    "genus_name",
+    "species_id",
+    "species_name",
+    "lineage_tax_ids",
+]
 
 
 def parse_args() -> argparse.Namespace:
@@ -103,18 +119,20 @@ def fetch_taxonomy_records(
     return records
 
 
-def parent_ids(record: dict) -> list[str]:
-    values = []
+def lineage_tax_ids(record: dict) -> list[str]:
+    values: list[str] = []
+    seen: set[str] = set()
     for item in record.get("parents") or []:
         value = (
             item.get("taxId") or item.get("tax_id") or item.get("id")
             if isinstance(item, dict)
             else item
         )
-        if value is not None:
+        if value is not None and str(value) not in seen:
             values.append(str(value))
+            seen.add(str(value))
     tax_id = str(record.get("taxId") or record.get("tax_id") or "")
-    if tax_id and tax_id not in values:
+    if tax_id and tax_id not in seen:
         values.append(tax_id)
     return values
 
@@ -124,10 +142,11 @@ def classification_value(record: dict, rank: str, field: str) -> str:
 
 
 def taxonomy_row(tax_id: str, record: dict | None) -> dict[str, object]:
+    taxonomy_status = "resolved" if record is not None else "not_returned"
     record = record or {}
-    ancestors = set(parent_ids(record))
     return {
         "tax_id": tax_id,
+        "taxonomy_status": taxonomy_status,
         "scientific_name": (
             (record.get("currentScientificName") or {}).get("name")
             or (record.get("current_scientific_name") or {}).get("name")
@@ -135,6 +154,12 @@ def taxonomy_row(tax_id: str, record: dict | None) -> dict[str, object]:
         ),
         "rank": record.get("rank", ""),
         "group_name": record.get("groupName") or record.get("group_name") or "",
+        "domain_id": classification_value(record, "domain", "id"),
+        "domain_name": classification_value(record, "domain", "name"),
+        "kingdom_id": classification_value(record, "kingdom", "id"),
+        "kingdom_name": classification_value(record, "kingdom", "name"),
+        "phylum_id": classification_value(record, "phylum", "id"),
+        "phylum_name": classification_value(record, "phylum", "name"),
         "class_id": classification_value(record, "class", "id"),
         "class_name": classification_value(record, "class", "name"),
         "order_id": classification_value(record, "order", "id"),
@@ -145,11 +170,7 @@ def taxonomy_row(tax_id: str, record: dict | None) -> dict[str, object]:
         "genus_name": classification_value(record, "genus", "name"),
         "species_id": classification_value(record, "species", "id"),
         "species_name": classification_value(record, "species", "name"),
-        "is_hominidae": str(ANCESTOR_IDS["hominidae"] in ancestors).lower(),
-        "is_primate": str(ANCESTOR_IDS["primates"] in ancestors).lower(),
-        "is_mammal": str(ANCESTOR_IDS["mammalia"] in ancestors).lower(),
-        "is_vertebrate": str(ANCESTOR_IDS["vertebrata"] in ancestors).lower(),
-        "parent_tax_ids": ",".join(parent_ids(record)),
+        "lineage_tax_ids": ",".join(lineage_tax_ids(record)),
     }
 
 
@@ -157,27 +178,6 @@ def main() -> None:
     args = parse_args()
     args.outdir.mkdir(parents=True, exist_ok=True)
 
-    fields = [
-        "tax_id",
-        "scientific_name",
-        "rank",
-        "group_name",
-        "class_id",
-        "class_name",
-        "order_id",
-        "order_name",
-        "family_id",
-        "family_name",
-        "genus_id",
-        "genus_name",
-        "species_id",
-        "species_name",
-        "is_hominidae",
-        "is_primate",
-        "is_mammal",
-        "is_vertebrate",
-        "parent_tax_ids",
-    ]
     failure_fields = ["tax_id", "failure_type", "message"]
 
     tax_ids = read_unique_tax_ids(args.orthologs_tsv)
@@ -197,7 +197,7 @@ def main() -> None:
             )
         rows.append(taxonomy_row(tax_id, record))
 
-    write_tsv_gz(args.outdir / "taxonomy.tsv.gz", fields, rows)
+    write_tsv_gz(args.outdir / "taxonomy.tsv.gz", TAXONOMY_FIELDS, rows)
     write_tsv_gz(args.outdir / "taxonomy_failures.tsv.gz", failure_fields, failures)
     taxonomy_profiles_path = args.outdir / "taxonomy.tsv.gz"
     taxonomy_profiles = load_taxonomy_profiles(taxonomy_profiles_path)

@@ -31,15 +31,15 @@ columns.
 Only rows with resolvable target-local coordinates are emitted. Unresolved rows
 are counted in the JSON summary and skipped.
 
-## GAPH Stage 2 Inputs
+## GAPH Inputs
 
 `build_features` reads these published GAPH outputs:
 
+- optional Stage 1 `taxonomy.tsv.gz`
+- optional Stage 1 `target_features.tsv.gz`
 - `alignment_segments.tsv.gz`
 - `alignment_events.tsv.gz`
 - optional `ortholog_alignment_summary.tsv.gz`
-- optional `taxonomy.tsv.gz`
-- optional `target_features.tsv.gz`
 
 The feature builder accepts gzip or plain TSV files.
 

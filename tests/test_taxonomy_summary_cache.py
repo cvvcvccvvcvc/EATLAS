@@ -26,7 +26,7 @@ TAXONOMY_FIELDS = [
     "genus_id",
     "family_id",
     "order_id",
-    "parent_tax_ids",
+    "lineage_tax_ids",
 ]
 ORTHOLOG_FIELDS = ["query_gene_id", "ortholog_gene_id", "tax_id"]
 
@@ -57,7 +57,7 @@ def _write_taxonomy_inputs(fetch_dir: Path) -> tuple[Path, Path]:
                 "genus_id": "9596",
                 "family_id": "9604",
                 "order_id": "9443",
-                "parent_tax_ids": "2759,33208,7742,32523,32524,40674,9443,9598",
+                "lineage_tax_ids": "2759,33208,7742,32523,32524,40674,9443,9598",
             },
             {
                 "tax_id": "10090",
@@ -65,7 +65,7 @@ def _write_taxonomy_inputs(fetch_dir: Path) -> tuple[Path, Path]:
                 "genus_id": "10088",
                 "family_id": "10066",
                 "order_id": "9989",
-                "parent_tax_ids": "2759,33208,7742,32523,32524,40674,10090",
+                "lineage_tax_ids": "2759,33208,7742,32523,32524,40674,10090",
             },
         ],
     )

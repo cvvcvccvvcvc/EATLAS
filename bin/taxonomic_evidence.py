@@ -69,18 +69,28 @@ class TaxonomyProfile:
 
 
 def _split_ids(value: str) -> frozenset[str]:
-    return frozenset(item for item in value.replace(";", ",").split(",") if item)
+    return frozenset(
+        item.strip()
+        for item in value.replace(";", ",").split(",")
+        if item.strip()
+    )
 
 
 def load_taxonomy_profiles(path: Path) -> dict[str, TaxonomyProfile]:
     profiles: dict[str, TaxonomyProfile] = {}
     with gzip.open(path, "rt", newline="") as handle:
         reader = csv.DictReader(handle, delimiter="\t")
-        required = {"tax_id", "species_id", "genus_id", "family_id", "order_id", "parent_tax_ids"}
-        missing = required - set(reader.fieldnames or [])
+        fieldnames = set(reader.fieldnames or [])
+        required = {"tax_id", "species_id", "genus_id", "family_id", "order_id"}
+        missing = required - fieldnames
         if missing:
             raise ValueError(
                 f"Taxonomy table {path} missing required columns: {', '.join(sorted(missing))}"
+            )
+        if not {"lineage_tax_ids", "parent_tax_ids"} & fieldnames:
+            raise ValueError(
+                f"Taxonomy table {path} must contain lineage_tax_ids "
+                "(or legacy parent_tax_ids)"
             )
         for row in reader:
             tax_id = str(row.get("tax_id") or "")
@@ -88,10 +98,13 @@ def load_taxonomy_profiles(path: Path) -> dict[str, TaxonomyProfile]:
                 continue
             if tax_id in profiles:
                 raise ValueError(f"Duplicate taxonomy tax_id in {path}: {tax_id}")
+            lineage_value = str(
+                row.get("lineage_tax_ids") or row.get("parent_tax_ids") or ""
+            )
             profiles[tax_id] = TaxonomyProfile(
                 tax_id=tax_id,
                 ancestor_ids=frozenset(
-                    {*_split_ids(str(row.get("parent_tax_ids") or "")), tax_id}
+                    {*_split_ids(lineage_value), tax_id}
                 ),
                 species_id=str(row.get("species_id") or ""),
                 genus_id=str(row.get("genus_id") or ""),

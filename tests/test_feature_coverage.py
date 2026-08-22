@@ -265,7 +265,7 @@ def test_taxonomic_site_depth_collapses_members_by_rank(tmp_path: Path) -> None:
                 "genus_id": "10",
                 "family_id": "9",
                 "order_id": "8",
-                "parent_tax_ids": "2759,33208,7742,32523,32524,40674,11",
+                "lineage_tax_ids": "2759,33208,7742,32523,32524,40674,11",
             },
             {
                 "tax_id": "12",
@@ -273,7 +273,7 @@ def test_taxonomic_site_depth_collapses_members_by_rank(tmp_path: Path) -> None:
                 "genus_id": "10",
                 "family_id": "9",
                 "order_id": "8",
-                "parent_tax_ids": "2759,33208,7742,32523,32524,40674,12",
+                "lineage_tax_ids": "2759,33208,7742,32523,32524,40674,12",
             },
         ],
     )
@@ -325,7 +325,7 @@ def test_taxonomic_site_depth_sorts_gene_id_prefixes_by_output_columns(
                 "genus_id": "10",
                 "family_id": "9",
                 "order_id": "8",
-                "parent_tax_ids": "2759,33208,7742,32523,32524,40674,11",
+                "lineage_tax_ids": "2759,33208,7742,32523,32524,40674,11",
             }
         ],
     )

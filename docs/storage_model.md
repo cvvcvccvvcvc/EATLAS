@@ -48,8 +48,9 @@ For a default end-to-end `--stage all` run, `fetch/` contains:
 - input and target-gene metadata
 - compact target feature intervals
 - the compact selected-ortholog provenance table
-- canonical taxonomy metadata for selected ortholog tax IDs, its lookup
-  failures, and the current small compatibility summary
+- one canonical gzip wide taxonomy row per selected ortholog tax ID, its lookup
+  failures, and the current small compatibility summary; no duplicate long
+  classification table or raw NCBI response is published
 - fetch failures
 - `manifest.json`
 

@@ -298,11 +298,18 @@ def load_taxonomy_groups(path: Path | None) -> dict[str, str]:
         tax_id = row.get("tax_id", "")
         if not tax_id:
             continue
-        if truthy(row.get("is_primate", "")):
+        lineage = {
+            item.strip()
+            for item in (row.get("lineage_tax_ids") or row.get("parent_tax_ids") or "")
+            .replace(";", ",")
+            .split(",")
+            if item.strip()
+        }
+        if "9443" in lineage or truthy(row.get("is_primate", "")):
             group = "primates"
-        elif truthy(row.get("is_mammal", "")):
+        elif "40674" in lineage or truthy(row.get("is_mammal", "")):
             group = "other_mammals"
-        elif truthy(row.get("is_vertebrate", "")):
+        elif "7742" in lineage or truthy(row.get("is_vertebrate", "")):
             group = "non_mammal_vertebrates"
         else:
             group = "other_or_unknown"
