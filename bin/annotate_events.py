@@ -114,6 +114,12 @@ VARIANT_ORTHOLOG_SUPPORT_FIELDS = [
     "support_row_count",
 ]
 
+EVENT_VARIANT_MAP_FIELDS = [
+    "event_group_id",
+    "variant_key",
+    "normalization_status",
+]
+
 PARTITION_TSV_SHARD_FORMAT = "headerless_gzip_member_v1"
 PARTITION_TSV_SHARD_FIELDS = {
     "variant_annotations.tsv.gz": VARIANT_ANNOTATION_FIELDS,
@@ -845,6 +851,18 @@ def variant_aggregate_key(row: dict[str, str], variant_key: str) -> tuple:
     )
 
 
+def event_variant_map_row(
+    event_group_id: int,
+    lookup_key: tuple[str, int, str, str] | None,
+    normalization_status: str,
+) -> dict[str, object]:
+    return {
+        "event_group_id": event_group_id,
+        "variant_key": variant_key_text(lookup_key),
+        "normalization_status": normalization_status,
+    }
+
+
 def path_metadata(path: Path) -> dict[str, object]:
     stat = path.stat()
     return {
@@ -1052,6 +1070,7 @@ def main():
     out_tsv = args.outdir / "variant_annotations.tsv.gz"
     support_tsv = args.outdir / "variant_strategy_support.tsv.gz"
     ortholog_support_dir = args.outdir / "variant_ortholog_support"
+    event_variant_map_tsv = args.outdir / "event_variant_map.tsv.gz"
     ortholog_evidence_tsv = args.outdir / "ortholog_evidence_summary.tsv.gz"
     failures_tsv = args.outdir / "failures.tsv.gz"
     manifest_json = args.outdir / "manifest.json"
@@ -1123,81 +1142,92 @@ def main():
     collapse_complete = False
     try:
         support_stream.__enter__()
-        with gzip.open(args.events_tsv, "rt") as f:
-            reader = csv.DictReader(f, delimiter="\t")
-            header = reader.fieldnames
-            required = {
-                "event_group_id",
-                "gene_id",
-                "event_type",
-                "target_start0",
-                "genomic_accession",
-                "genomic_start1",
-                "ref",
-                "alt",
-                "strategy",
-            }
-            missing = required - set(header or [])
-            if missing:
-                raise ValueError(
-                    f"Events table missing required columns: {', '.join(sorted(missing))}"
-                )
-            for row in reader:
-                input_row_count += 1
-                event_group_id = int_or_default(row.get("event_group_id"), 0)
-                if event_group_id != input_row_count:
+        with gzip.open(event_variant_map_tsv, "wt", newline="") as map_handle:
+            map_writer = csv.DictWriter(
+                map_handle,
+                fieldnames=EVENT_VARIANT_MAP_FIELDS,
+                delimiter="\t",
+                lineterminator="\n",
+            )
+            map_writer.writeheader()
+            with gzip.open(args.events_tsv, "rt") as f:
+                reader = csv.DictReader(f, delimiter="\t")
+                header = reader.fieldnames
+                required = {
+                    "event_group_id",
+                    "gene_id",
+                    "event_type",
+                    "target_start0",
+                    "genomic_accession",
+                    "genomic_start1",
+                    "ref",
+                    "alt",
+                    "strategy",
+                }
+                missing = required - set(header or [])
+                if missing:
                     raise ValueError(
-                        "Compact event_group_id values must be consecutive from 1; "
-                        f"expected {input_row_count}, observed {event_group_id}"
+                        f"Events table missing required columns: {', '.join(sorted(missing))}"
                     )
-                gene_id = str(row.get("gene_id") or "")
-                if gene_id not in contexts:
-                    raise ValueError(
-                        f"Alignment event references gene {gene_id!r} outside the supplied target context"
+                for row in reader:
+                    input_row_count += 1
+                    event_group_id = int_or_default(row.get("event_group_id"), 0)
+                    if event_group_id != input_row_count:
+                        raise ValueError(
+                            "Compact event_group_id values must be consecutive from 1; "
+                            f"expected {input_row_count}, observed {event_group_id}"
+                        )
+                    gene_id = str(row.get("gene_id") or "")
+                    if gene_id not in contexts:
+                        raise ValueError(
+                            f"Alignment event references gene {gene_id!r} outside the supplied target context"
+                        )
+                    exact_support_rows = support_stream.take(event_group_id)
+
+                    acc = row["genomic_accession"]
+                    lookup_key, status = event_vcf_key(row, contexts)
+                    event_key_status_counts[status] += 1
+                    map_writer.writerow(
+                        event_variant_map_row(event_group_id, lookup_key, status)
                     )
-                exact_support_rows = support_stream.take(event_group_id)
+                    if status == "non_concrete_allele":
+                        exact_spool.missing_key_count += len(exact_support_rows)
+                        continue
+                    raw_pos = int_or_default(row.get("genomic_start1"), -1)
+                    if acc and raw_pos > 0:
+                        accession_positions[acc].add(raw_pos)
+                    if acc and lookup_key:
+                        accession_positions[acc].add(int(lookup_key[1]))
 
-                acc = row["genomic_accession"]
-                lookup_key, status = event_vcf_key(row, contexts)
-                event_key_status_counts[status] += 1
-                if status == "non_concrete_allele":
-                    exact_spool.missing_key_count += len(exact_support_rows)
-                    continue
-                raw_pos = int_or_default(row.get("genomic_start1"), -1)
-                if acc and raw_pos > 0:
-                    accession_positions[acc].add(raw_pos)
-                if acc and lookup_key:
-                    accession_positions[acc].add(int(lookup_key[1]))
+                    variant_key = variant_key_text(lookup_key)
+                    aggregate_key = variant_aggregate_key(row, variant_key)
+                    aggregate = variant_aggregates.get(aggregate_key)
+                    if aggregate is None:
+                        variant_context_id = len(aggregates_by_id)
+                        aggregate = {
+                            "variant_key": variant_key,
+                            "gene_id": row.get("gene_id", ""),
+                            "event_type": row.get("event_type", ""),
+                            "target_start0": row.get("target_start0", ""),
+                            "ref": row.get("ref", ""),
+                            "alt": row.get("alt", ""),
+                            "lookup_status": status,
+                            "support_row_count": 0,
+                            "_lookup_key": lookup_key,
+                            "_variant_context_id": variant_context_id,
+                            "_exact_ortholog_count": 0,
+                            "_support_by_strategy": {},
+                        }
+                        variant_aggregates[aggregate_key] = aggregate
+                        aggregates_by_id.append(aggregate)
+                        unique_lookup_status_counts[status] += 1
 
-                variant_key = variant_key_text(lookup_key)
-                aggregate_key = variant_aggregate_key(row, variant_key)
-                aggregate = variant_aggregates.get(aggregate_key)
-                if aggregate is None:
-                    variant_context_id = len(aggregates_by_id)
-                    aggregate = {
-                        "variant_key": variant_key,
-                        "gene_id": row.get("gene_id", ""),
-                        "event_type": row.get("event_type", ""),
-                        "target_start0": row.get("target_start0", ""),
-                        "ref": row.get("ref", ""),
-                        "alt": row.get("alt", ""),
-                        "lookup_status": status,
-                        "support_row_count": 0,
-                        "_lookup_key": lookup_key,
-                        "_variant_context_id": variant_context_id,
-                        "_exact_ortholog_count": 0,
-                        "_support_by_strategy": {},
-                    }
-                    variant_aggregates[aggregate_key] = aggregate
-                    aggregates_by_id.append(aggregate)
-                    unique_lookup_status_counts[status] += 1
-
-                aggregate["support_row_count"] += int_or_default(
-                    row.get("support_row_count"),
-                    1,
-                )
-                add_strategy_support(aggregate, row)
-                exact_spool.add_group(aggregate, row, exact_support_rows)
+                    aggregate["support_row_count"] += int_or_default(
+                        row.get("support_row_count"),
+                        1,
+                    )
+                    add_strategy_support(aggregate, row)
+                    exact_spool.add_group(aggregate, row, exact_support_rows)
         support_stream.finish()
         expected_event_count = manifest_count(alignment_manifest, "alignment_event_count")
         if input_row_count != expected_event_count:
@@ -1395,6 +1425,7 @@ def main():
         "output_mode": "unique_variant_context",
         "partition_id": args.partition_id,
         "event_row_count": input_row_count,
+        "event_variant_map_count": input_row_count,
         "excluded_non_concrete_event_count": event_key_status_counts["non_concrete_allele"],
         "variant_context_count": len(variant_aggregates),
         "annotated_variant_context_count": output_row_count,
@@ -1433,6 +1464,7 @@ def main():
     manifest_json.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
 
     logger.info(f"Saved variant annotations to {out_tsv}")
+    logger.info(f"Saved event-to-variant lineage to {event_variant_map_tsv}")
     logger.info(f"Saved variant-strategy support to {support_tsv}")
     logger.info(f"Saved variant-ortholog support to {ortholog_support_dir}")
     logger.info(f"Saved annotation failures to {failures_tsv}")

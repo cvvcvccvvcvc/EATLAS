@@ -14,6 +14,7 @@ BIN_DIR = Path(__file__).resolve().parents[1] / "bin"
 sys.path.insert(0, str(BIN_DIR))
 
 from annotate_events import (  # noqa: E402
+    EVENT_VARIANT_MAP_FIELDS,
     EventOrthologSupportStream,
     PARTITION_TSV_SHARD_FORMAT,
     VARIANT_ANNOTATION_FIELDS,
@@ -22,6 +23,7 @@ from annotate_events import (  # noqa: E402
     add_strategy_support,
     build_variant_strategy_support,
     event_vcf_key,
+    event_variant_map_row,
     iter_variant_strategy_snv_sites,
     load_snv_alt_genus_support,
     load_alignment_manifest,
@@ -33,6 +35,8 @@ from finalize_annotation_partitions import (  # noqa: E402
     COUNTER_FIELDS,
     COUNT_FIELDS,
     concatenate_tsv_gz_members,
+    copy_event_variant_map_dataset,
+    event_variant_map_manifest,
     merge_gnomad_shared_cache,
     merge_partition_timings,
     validate_partition_manifests,
@@ -163,6 +167,184 @@ def test_annotation_entrypoints_accept_large_tsv_fields(
 
 def test_partitioned_manifest_keeps_non_concrete_exclusion_count() -> None:
     assert "excluded_non_concrete_event_count" in COUNT_FIELDS
+    assert "event_variant_map_count" in COUNT_FIELDS
+
+
+def write_event_variant_map(
+    path: Path,
+    rows: list[dict[str, object]],
+    fields: list[str] | None = None,
+) -> None:
+    with gzip.open(path, "wt", newline="") as handle:
+        writer = csv.DictWriter(
+            handle,
+            fieldnames=fields or EVENT_VARIANT_MAP_FIELDS,
+            delimiter="\t",
+            lineterminator="\n",
+        )
+        writer.writeheader()
+        writer.writerows(rows)
+
+
+def test_event_variant_map_preserves_collapsed_and_non_concrete_lineage() -> None:
+    contexts = {
+        "1": {
+            "chrom": "1",
+            "begin": 100,
+            "end": 104,
+            "seq": "AAAAA",
+        }
+    }
+    raw_deletions = [
+        {
+            "gene_id": "1",
+            "event_type": "del",
+            "target_start0": target_start0,
+            "genomic_accession": "NC_000001.11",
+            "genomic_start1": str(100 + target_start0),
+            "ref": "A",
+            "alt": "",
+        }
+        for target_start0 in [2, 3]
+    ]
+    normalized = [event_vcf_key(row, contexts) for row in raw_deletions]
+    assert normalized == [
+        (("1", 100, "AA", "A"), "ok"),
+        (("1", 100, "AA", "A"), "ok"),
+    ]
+
+    rows = [
+        event_variant_map_row(1, *normalized[0]),
+        event_variant_map_row(2, *normalized[1]),
+        event_variant_map_row(3, None, "non_concrete_allele"),
+    ]
+    assert rows == [
+        {
+            "event_group_id": 1,
+            "variant_key": "1:100:AA>A",
+            "normalization_status": "ok",
+        },
+        {
+            "event_group_id": 2,
+            "variant_key": "1:100:AA>A",
+            "normalization_status": "ok",
+        },
+        {
+            "event_group_id": 3,
+            "variant_key": "",
+            "normalization_status": "non_concrete_allele",
+        },
+    ]
+
+
+def test_event_variant_map_manifest_declares_exact_partitioned_schema() -> None:
+    assert event_variant_map_manifest(3, 2) == {
+        "layout": "partitioned",
+        "format": "tsv_gzip_v1",
+        "path": "event_variant_map/partitions",
+        "partition_count": 2,
+        "row_count": 3,
+        "fields": [
+            "event_group_id",
+            "variant_key",
+            "normalization_status",
+        ],
+        "event_group_id_scope": "partition",
+    }
+
+
+def test_event_variant_map_dataset_is_validated_and_copied_byte_for_byte(
+    tmp_path: Path,
+) -> None:
+    partitions = []
+    source_bytes = {}
+    partition_rows = [
+        [
+            event_variant_map_row(1, ("1", 100, "AA", "A"), "ok"),
+            event_variant_map_row(2, ("1", 100, "AA", "A"), "ok"),
+        ],
+        [event_variant_map_row(1, None, "non_concrete_allele")],
+    ]
+    for index, rows in enumerate(partition_rows, start=1):
+        partition_id = f"partition_{index:06d}"
+        partition = tmp_path / f"annotation_{partition_id}"
+        partition.mkdir()
+        source = partition / "event_variant_map.tsv.gz"
+        write_event_variant_map(source, rows)
+        source_bytes[partition_id] = source.read_bytes()
+        manifest = canonical_partition_manifest(partition_id)
+        manifest["event_row_count"] = len(rows)
+        manifest["event_variant_map_count"] = len(rows)
+        partitions.append((partition, manifest))
+
+    output = tmp_path / "event_variant_map"
+    row_count = copy_event_variant_map_dataset(partitions, output)
+
+    assert row_count == 3
+    for partition_id, expected_bytes in source_bytes.items():
+        copied = output / "partitions" / partition_id / "event_variant_map.tsv.gz"
+        assert copied.read_bytes() == expected_bytes
+
+
+@pytest.mark.parametrize(
+    ("rows", "map_count", "event_count", "error"),
+    [
+        pytest.param(
+            [event_variant_map_row(2, ("1", 100, "A", "G"), "ok")],
+            1,
+            1,
+            "event_group_id values must be consecutive",
+            id="foreign-key-gap",
+        ),
+        pytest.param(
+            [event_variant_map_row(1, ("1", 100, "A", "G"), "ok")],
+            2,
+            1,
+            "row count does not match partition manifest",
+            id="manifest-count",
+        ),
+    ],
+)
+def test_event_variant_map_rejects_invalid_count_or_event_fk(
+    tmp_path: Path,
+    rows: list[dict[str, object]],
+    map_count: int,
+    event_count: int,
+    error: str,
+) -> None:
+    partition_id = "partition_000001"
+    partition = tmp_path / f"annotation_{partition_id}"
+    partition.mkdir()
+    write_event_variant_map(partition / "event_variant_map.tsv.gz", rows)
+    manifest = canonical_partition_manifest(partition_id)
+    manifest["event_variant_map_count"] = map_count
+    manifest["event_row_count"] = event_count
+
+    with pytest.raises(ValueError, match=error):
+        copy_event_variant_map_dataset(
+            [(partition, manifest)],
+            tmp_path / "event_variant_map",
+        )
+
+
+def test_event_variant_map_rejects_noncanonical_schema(tmp_path: Path) -> None:
+    partition_id = "partition_000001"
+    partition = tmp_path / f"annotation_{partition_id}"
+    partition.mkdir()
+    write_event_variant_map(
+        partition / "event_variant_map.tsv.gz",
+        [event_variant_map_row(1, ("1", 100, "A", "G"), "ok")],
+        fields=list(reversed(EVENT_VARIANT_MAP_FIELDS)),
+    )
+    manifest = canonical_partition_manifest(partition_id)
+    manifest["event_variant_map_count"] = 1
+    manifest["event_row_count"] = 1
+
+    with pytest.raises(ValueError, match="Unexpected event-variant map fields"):
+        copy_event_variant_map_dataset(
+            [(partition, manifest)],
+            tmp_path / "event_variant_map",
+        )
 
 
 def test_partition_manifest_validation_requires_current_contract(tmp_path: Path) -> None:

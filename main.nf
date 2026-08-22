@@ -693,6 +693,7 @@ workflow ANNOTATION_STAGE {
 
     emit:
     variant_annotations = ANNOTATE_EVENTS.out.variant_annotations
+    event_variant_map = ANNOTATE_EVENTS.out.event_variant_map
     variant_strategy_support = ANNOTATE_EVENTS.out.variant_strategy_support
     variant_ortholog_support = ANNOTATE_EVENTS.out.variant_ortholog_support
     ortholog_evidence_summary = ANNOTATE_EVENTS.out.ortholog_evidence_summary
@@ -762,6 +763,7 @@ workflow PARTITIONED_ANNOTATION_STAGE {
 
     emit:
     variant_annotations = FINALIZE_ANNOTATION.out.variant_annotations
+    event_variant_map = FINALIZE_ANNOTATION.out.event_variant_map
     variant_strategy_support = FINALIZE_ANNOTATION.out.variant_strategy_support
     variant_ortholog_support = FINALIZE_ANNOTATION.out.variant_ortholog_support
     ortholog_evidence_summary = FINALIZE_ANNOTATION.out.ortholog_evidence_summary

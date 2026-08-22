@@ -20,6 +20,7 @@ csv.field_size_limit(sys.maxsize)
 
 COUNT_FIELDS = [
     "event_row_count",
+    "event_variant_map_count",
     "excluded_non_concrete_event_count",
     "variant_context_count",
     "annotated_variant_context_count",
@@ -87,6 +88,12 @@ VARIANT_ORTHOLOG_SUPPORT_FIELDS = [
     "native_alignment_type",
     "support_row_count",
 ]
+EVENT_VARIANT_MAP_FIELDS = [
+    "event_group_id",
+    "variant_key",
+    "normalization_status",
+]
+EVENT_VARIANT_MAP_FILENAME = "event_variant_map.tsv.gz"
 PARTITION_TSV_SHARD_FORMAT = "headerless_gzip_member_v1"
 FINAL_TSV_FORMAT = "concatenated_gzip_members_v1"
 
@@ -406,6 +413,91 @@ def merge_ortholog_support_dataset(
     return row_count, file_count
 
 
+def copy_event_variant_map_dataset(
+    partitions: list[tuple[Path, dict]],
+    output: Path,
+) -> int:
+    if output.exists() and any(output.iterdir()):
+        raise ValueError(f"Event-variant map output is not empty: {output}")
+    partitions_root = output / "partitions"
+    total_count = 0
+    for partition, manifest in partitions:
+        partition_id = manifest_string(manifest, "partition_id", partition)
+        source = partition / EVENT_VARIANT_MAP_FILENAME
+        if not source.exists():
+            raise FileNotFoundError(
+                f"Annotation partition missing {EVENT_VARIANT_MAP_FILENAME}: {partition}"
+            )
+        with gzip.open(source, "rt", newline="") as handle:
+            reader = csv.reader(handle, delimiter="\t")
+            fields = next(reader, None)
+            if fields != EVENT_VARIANT_MAP_FIELDS:
+                raise ValueError(
+                    f"Unexpected event-variant map fields in {source}: "
+                    f"{fields}"
+                )
+            row_count = 0
+            for row_count, values in enumerate(reader, start=1):
+                if len(values) != len(EVENT_VARIANT_MAP_FIELDS):
+                    raise ValueError(
+                        f"Event-variant map row has {len(values)} columns, expected "
+                        f"{len(EVENT_VARIANT_MAP_FIELDS)}: {source}"
+                    )
+                row = dict(zip(EVENT_VARIANT_MAP_FIELDS, values))
+                try:
+                    event_group_id = int(row["event_group_id"])
+                except (TypeError, ValueError) as exc:
+                    raise ValueError(
+                        f"Invalid event_group_id in event-variant map {source}"
+                    ) from exc
+                if event_group_id != row_count:
+                    raise ValueError(
+                        "Event-variant map event_group_id values must be consecutive "
+                        f"from 1 in {source}: expected {row_count}, "
+                        f"observed {event_group_id}"
+                    )
+                if not row["normalization_status"]:
+                    raise ValueError(
+                        f"Event-variant map has empty normalization_status: {source}"
+                    )
+                if (
+                    row["normalization_status"] == "non_concrete_allele"
+                    and row["variant_key"]
+                ):
+                    raise ValueError(
+                        f"Non-concrete event has a canonical variant_key in {source}"
+                    )
+        expected_count = manifest_count(
+            manifest,
+            "event_variant_map_count",
+            partition,
+        )
+        event_count = manifest_count(manifest, "event_row_count", partition)
+        if row_count != expected_count or row_count != event_count:
+            raise ValueError(
+                "Event-variant map row count does not match partition manifest: "
+                f"partition={partition}, rows={row_count}, "
+                f"map_manifest={expected_count}, events={event_count}"
+            )
+        target = partitions_root / partition_id / EVENT_VARIANT_MAP_FILENAME
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, target)
+        total_count += row_count
+    return total_count
+
+
+def event_variant_map_manifest(row_count: int, partition_count: int) -> dict[str, object]:
+    return {
+        "layout": "partitioned",
+        "format": "tsv_gzip_v1",
+        "path": "event_variant_map/partitions",
+        "partition_count": partition_count,
+        "row_count": row_count,
+        "fields": EVENT_VARIANT_MAP_FIELDS,
+        "event_group_id_scope": "partition",
+    }
+
+
 def merge_gnomad_shared_cache(partitions: list[tuple[Path, dict]]) -> dict[str, object] | None:
     snapshots = [manifest.get("gnomad_shared_cache") for _path, manifest in partitions]
     if not any(snapshot is not None for snapshot in snapshots):
@@ -549,6 +641,10 @@ def main() -> None:
         partitions,
         args.outdir / "variant_ortholog_support",
     )
+    event_variant_map_count = copy_event_variant_map_dataset(
+        partitions,
+        args.outdir / "event_variant_map",
+    )
     ortholog_evidence_count = merge_ortholog_evidence(
         partitions,
         args.outdir / "ortholog_evidence_summary.tsv.gz",
@@ -573,6 +669,12 @@ def main() -> None:
         raise ValueError(
             "Variant-ortholog support row count does not match partition manifests: "
             f"rows={ortholog_support_count}, manifests={counts['variant_ortholog_support_count']}"
+        )
+    if counts["event_variant_map_count"] != event_variant_map_count:
+        raise ValueError(
+            "Event-variant map row count does not match partition manifests: "
+            f"rows={event_variant_map_count}, "
+            f"manifests={counts['event_variant_map_count']}"
         )
     manifest_failure_count = sum(
         manifest_count(manifest, "failure_count", path) for path, manifest in partitions
@@ -605,6 +707,10 @@ def main() -> None:
         "variant_ortholog_support_format": "parquet_dataset",
         "variant_ortholog_support_path": "variant_ortholog_support",
         "variant_ortholog_support_file_count": ortholog_support_file_count,
+        "event_variant_map": event_variant_map_manifest(
+            event_variant_map_count,
+            len(partitions),
+        ),
         "large_tsv_format": FINAL_TSV_FORMAT,
         "ortholog_evidence_summary_count": ortholog_evidence_count,
         "failure_count": failure_count,

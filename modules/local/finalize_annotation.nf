@@ -7,6 +7,7 @@ process FINALIZE_ANNOTATION {
 
     output:
     path "variant_annotations.tsv.gz", emit: variant_annotations
+    path "event_variant_map", emit: event_variant_map
     path "variant_strategy_support.tsv.gz", emit: variant_strategy_support
     path "variant_ortholog_support", emit: variant_ortholog_support
     path "ortholog_evidence_summary.tsv.gz", emit: ortholog_evidence_summary
