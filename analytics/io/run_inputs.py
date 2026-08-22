@@ -11,6 +11,7 @@ from pathlib import Path
 import pandas as pd
 
 from analytics.io.artifacts import file_identity, path_metadata
+from analytics.io.taxonomy_summary import resolve_taxonomy_summary_path
 
 
 @dataclass(frozen=True)
@@ -79,7 +80,7 @@ def resolve_run_inputs(run_dir: Path) -> RunInputs:
         alignment_segments_tsv=run_dir / "alignment" / "alignment_segments.tsv.gz",
         alignment_manifest_json=run_dir / "alignment" / "manifest.json",
         strategy_summary_tsv=run_dir / "alignment" / "strategy_summary.tsv.gz",
-        taxonomy_summary_tsv=run_dir / "alignment" / "taxonomy_summary.tsv.gz",
+        taxonomy_summary_tsv=resolve_taxonomy_summary_path(run_dir),
     )
     if not inputs.genes_tsv.exists():
         raise FileNotFoundError("Missing fetch/genes.tsv.gz under --run-dir.")
