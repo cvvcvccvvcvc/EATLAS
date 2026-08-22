@@ -10,6 +10,7 @@ from pathlib import Path
 
 import pandas as pd
 
+from analytics.io.alignment_aggregates import resolve_alignment_aggregate_paths
 from analytics.io.artifacts import file_identity, path_metadata
 from analytics.io.taxonomy_summary import resolve_taxonomy_summary_path
 
@@ -64,6 +65,7 @@ def resolve_run_inputs(run_dir: Path) -> RunInputs:
         run_dir,
         source_annotations_tsv,
     )
+    alignment_aggregates = resolve_alignment_aggregate_paths(run_dir)
 
     inputs = RunInputs(
         run_dir=run_dir,
@@ -76,10 +78,10 @@ def resolve_run_inputs(run_dir: Path) -> RunInputs:
         ortholog_evidence_summary_tsv=annotation_dir / "ortholog_evidence_summary.tsv.gz",
         annotation_manifest_json=annotation_dir / "manifest.json",
         annotation_failures_tsv=annotation_dir / "failures.tsv.gz",
-        feature_coverage_tsv=run_dir / "alignment" / "feature_coverage.tsv.gz",
+        feature_coverage_tsv=alignment_aggregates.feature_coverage_tsv,
         alignment_segments_tsv=run_dir / "alignment" / "alignment_segments.tsv.gz",
         alignment_manifest_json=run_dir / "alignment" / "manifest.json",
-        strategy_summary_tsv=run_dir / "alignment" / "strategy_summary.tsv.gz",
+        strategy_summary_tsv=alignment_aggregates.strategy_summary_tsv,
         taxonomy_summary_tsv=resolve_taxonomy_summary_path(run_dir),
     )
     if not inputs.genes_tsv.exists():
