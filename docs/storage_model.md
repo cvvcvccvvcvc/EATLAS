@@ -2,6 +2,25 @@
 
 GAPH v2 separates durable biological outputs from temporary execution cache.
 
+## Evidence-First Invariant
+
+Durable pipeline data is normalized evidence, not necessarily a raw provider
+dump. Deterministic parsing, coordinate normalization, lossless compaction,
+deduplication, partitioning, and compression are allowed when stable identifiers
+and exact biological observations remain available.
+
+Report-specific aggregation is not a storage optimization. Taxonomic scope and
+rank selections, scientific counters, thresholds, bins, histograms, and plotting
+tables are analytics artifacts and must be reproducible after `work/` is deleted.
+They may be cached under `analytics/`, but cannot replace or cause deletion of
+their durable row-level inputs.
+
+Manifests may repeat inexpensive counts or checksums to detect incomplete or
+corrupted output. These values are integrity snapshots, not the canonical source
+for scientific analysis. Non-reconstructable outcomes and provenance, such as a
+failed lookup, a valid `no_alignment` result, tool versions, and run parameters,
+remain part of the pipeline contract even when they are compact.
+
 ## Durable Layer
 
 For the default end-to-end run, `params.outdir` is a run root:
@@ -36,6 +55,8 @@ For a default end-to-end `--stage all` run, `fetch/` contains:
 
 `alignment/` contains:
 
+- partitioned normalized Stage 2 source evidence under
+  `evidence/partitions/<partition_id>/`
 - compact per-strategy and feature-coverage summaries
 - compact run-level taxonomy scope/unit summary
 - alignment failures
@@ -64,20 +85,25 @@ regional responses are also stored in a shared reusable cache. The cache uses
 neither a run result nor Nextflow resume state: multiple pipeline and analytics
 runs may reuse it, and a run remains valid when the cache is absent.
 
-Large handoff artifacts remain inside Nextflow `work/` during `--stage all`.
-Alignment partitions reduce raw segments to a compact `snv_site_depth.tsv.gz`
-table, positive per-ortholog event support keyed by a narrow `event_group_id`,
-and temporary taxonomy-aware counts containing only observed concrete SNV
-positions before annotation. Annotation normalizes and locally aggregates the
-positive support into `variant_ortholog_support/*.parquet`; finalization keeps
-the partition files instead of rewriting a global gzip TSV. It also reduces the
-taxonomy-aware counts to a bounded histogram. In a fresh successful run, the
-large handoff artifacts are removed with that run's task work:
+During `--stage all`, alignment partitions reduce segments to a compact
+`snv_site_depth.tsv.gz` table and temporary taxonomy-aware counts so the current
+annotation and report contracts remain unchanged. Those derived partition
+tables remain disposable. The normalized source evidence is copied byte for
+byte into `alignment/evidence/partitions/<partition_id>/`: the partition
+manifest, per-ortholog summary, segments, compact events, and exact ortholog
+support. Local `event_group_id` values are interpreted together with their
+directory `partition_id`; they are not globally rebased.
+
+Annotation also normalizes and locally aggregates positive support into
+`variant_ortholog_support/*.parquet`; finalization keeps the partition files
+instead of rewriting a global gzip TSV. It reduces the temporary taxonomy-aware
+counts to a bounded histogram. In a fresh successful run, only disposable
+inputs and pre-normalization intermediates are removed with that run's task
+work, including:
 
 - selected ortholog FASTA files
-- raw alignment events
-- alignment segments
-- per-ortholog alignment summaries
+- raw per-aligner event tables
+- partition-level site and taxonomic depth tables
 
 Standalone `--stage align` intentionally publishes the compact site-depth and
 taxonomy-aware handoff tables because a later `--stage annotate` run cannot

@@ -118,6 +118,13 @@ Agent workflow rules:
    verified changes, always push the current branch directly to origin,
    including any existing unpushed commits; do not create pull requests or
    invent collaboration/conflict workflows.
+22. Keep durable pipeline outputs evidence-first. Preserve normalized row-level
+   biological observations, non-reconstructable outcomes, and stable identifiers
+   needed to reproduce downstream analyses after `work/` is deleted. Selected
+   taxonomic scopes or ranks, scientific counters, thresholds, histograms, and
+   plotting tables belong to `analytics/` and must never replace their source
+   evidence. Small manifest counts are allowed only as reproducible integrity or
+   operational-QC snapshots, not as scientific data products.
 
 ## Progressive Disclosure
 
