@@ -81,10 +81,6 @@ COMPACT_EVENT_FIELDS = [
     "strategy",
     "support_row_count",
     "support_ortholog_count",
-    "tools",
-    "presets",
-    "tax_id_count",
-    "taxname_count",
     "qc_flags",
 ]
 EVENT_ORTHOLOG_SUPPORT_FIELDS = [
@@ -111,8 +107,6 @@ EVENT_KEY_FIELDS = [
 EVENT_STREAM_FIELDS = [
     *EVENT_KEY_FIELDS,
     "ortholog_gene_id",
-    "tool",
-    "preset",
     "tax_id",
     "taxname",
     "mapq",
@@ -604,8 +598,6 @@ def create_compact_event_table(conn: sqlite3.Connection) -> None:
             alt TEXT,
             ortholog_gene_id TEXT,
             strategy TEXT,
-            tool TEXT,
-            preset TEXT,
             tax_id TEXT,
             taxname TEXT,
             mapq TEXT,
@@ -631,8 +623,6 @@ def insert_event_rows(conn: sqlite3.Connection, path: Path, batch_size: int = 10
         "alt",
         "ortholog_gene_id",
         "strategy",
-        "tool",
-        "preset",
         "tax_id",
         "taxname",
         "mapq",
@@ -648,13 +638,13 @@ def insert_event_rows(conn: sqlite3.Connection, path: Path, batch_size: int = 10
             count += 1
             if len(batch) >= batch_size:
                 conn.executemany(
-                    "INSERT INTO events VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    "INSERT INTO events VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     batch,
                 )
                 batch.clear()
     if batch:
         conn.executemany(
-            "INSERT INTO events VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO events VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             batch,
         )
     return count
@@ -711,24 +701,12 @@ def compact_stream_group(
         **dict(zip(EVENT_KEY_FIELDS, key)),
     }
     orthologs: dict[str, dict[str, object]] = {}
-    tools: set[str] = set()
-    presets: set[str] = set()
-    tax_ids: set[str] = set()
-    taxnames: set[str] = set()
     qc_flags: list[str] = []
     support_row_count = 0
     for values in rows:
         row = dict(zip(EVENT_STREAM_FIELDS, values))
         support_row_count += 1
         merge_ortholog_metadata(orthologs, row)
-        if row["tool"]:
-            tools.add(row["tool"])
-        if row["preset"]:
-            presets.add(row["preset"])
-        if row["tax_id"]:
-            tax_ids.add(row["tax_id"])
-        if row["taxname"]:
-            taxnames.add(row["taxname"])
         if row["qc_flags"]:
             qc_flags.append(row["qc_flags"])
 
@@ -736,10 +714,6 @@ def compact_stream_group(
         {
             "support_row_count": support_row_count,
             "support_ortholog_count": len(orthologs),
-            "tools": ",".join(sorted(tools)),
-            "presets": ",".join(sorted(presets)),
-            "tax_id_count": len(tax_ids),
-            "taxname_count": len(taxnames),
             "qc_flags": compact_event_flags(",".join(qc_flags)),
         }
     )
@@ -819,8 +793,6 @@ def write_compact_events(
                 ref,
                 alt,
                 ortholog_gene_id,
-                tool,
-                preset,
                 tax_id,
                 taxname,
                 mapq,

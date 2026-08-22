@@ -66,10 +66,6 @@ COMPACT_EVENT_HEADER = [
     "strategy",
     "support_row_count",
     "support_ortholog_count",
-    "tools",
-    "presets",
-    "tax_id_count",
-    "taxname_count",
     "qc_flags",
 ]
 SNV_TAXONOMIC_DEPTH_HEADER = ["gene_id", "strategy", "target_start0", *COUNT_KEYS]
@@ -622,7 +618,9 @@ def test_compact_events_preserve_strategy_specific_support(tmp_path: Path) -> No
 
     assert completed.returncode == 0, completed.stderr
     with gzip.open(tmp_path / "merged" / "alignment_events.tsv.gz", "rt", newline="") as handle:
-        rows = list(csv.DictReader(handle, delimiter="\t"))
+        reader = csv.DictReader(handle, delimiter="\t")
+        assert reader.fieldnames == COMPACT_EVENT_HEADER
+        rows = list(reader)
     assert [row["strategy"] for row in rows] == ["s1", "s2"]
     assert [row["support_ortholog_count"] for row in rows] == ["1", "1"]
     with gzip.open(
@@ -981,26 +979,22 @@ def test_final_merge_preserves_precompacted_ortholog_support(tmp_path: Path) -> 
             partition / "alignment_events.tsv.gz",
             COMPACT_EVENT_HEADER,
             [
-                [
-                    "1",
-                    gene_id,
-                    "snv",
-                    "0",
-                    "1",
-                    "NC_1",
-                    "1",
-                    "1",
-                    "A",
-                    "G",
-                    "s1",
-                    "1",
-                    "1",
-                    "tool",
-                    "",
-                    "1",
-                    "1",
-                    "",
-                ]
+                schema_row(
+                    COMPACT_EVENT_HEADER,
+                    event_group_id="1",
+                    gene_id=gene_id,
+                    event_type="snv",
+                    target_start0="0",
+                    target_end0="1",
+                    genomic_accession="NC_1",
+                    genomic_start1="1",
+                    genomic_end1="1",
+                    ref="A",
+                    alt="G",
+                    strategy="s1",
+                    support_row_count="1",
+                    support_ortholog_count="1",
+                )
             ],
         )
         write_tsv_gz(

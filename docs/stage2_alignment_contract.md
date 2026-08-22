@@ -25,6 +25,9 @@ Stage 2 consumes the normalized Stage 1 outputs:
 - `genes.tsv.gz`
 - `target_features.tsv.gz`
 - `orthologs.selected.tsv.gz`
+- `taxonomy.tsv.gz`
+- `taxonomy_failures.tsv.gz`
+- `taxonomy_summary.tsv.gz`
 - `sequences/targets/<gene_id>.fa.gz`
 - `sequences/orthologs/<gene_id>.fa.gz`
 
@@ -84,12 +87,13 @@ inside aligner task outputs before the partition merge.
 
 ## Taxonomy Metadata
 
-Once per run, the alignment stage requests the NCBI taxonomy summary for the
-selected tax IDs and records lineage plus species/genus/family/order
-identifiers. These identifiers support the report's taxonomic scope and
-evidence-unit controls; they do not change aligner selection. The canonical
-`taxonomy.tsv.gz` table contains lineage and taxonomic-unit
-metadata only. Alignment presets belong to the strategy registry, not taxonomy.
+Stage 1 requests the NCBI taxonomy summary once for the selected tax IDs and
+publishes lineage plus species/genus/family/order identifiers. Stage 2 consumes
+that handoff and never fetches taxonomy. These identifiers support the current
+report's taxonomic scope and evidence-unit controls; they do not change aligner
+selection. The canonical `taxonomy.tsv.gz` table contains lineage and
+taxonomic-unit metadata only. Alignment presets belong to the strategy
+registry, not taxonomy.
 
 ## Alignment Granularity
 
@@ -243,6 +247,12 @@ and rejects missing, extra, or reordered fields. In particular,
 input and be replaced with empty values. Final merge applies the same exact
 check to compact events and their `event_group_id`-linked ortholog-support
 sidecar. This validation does not change the valid Stage 2 output format.
+
+The compact event row contains event identity, raw/supporting-ortholog counts,
+and event-level QC flags. It does not repeat tool or preset metadata, which is
+fixed by the strategy manifest, or distinct taxon/name counts, which are
+reproducible from `event_ortholog_support.tsv.gz`. Exact taxonomic identities
+remain in that sidecar rather than being replaced by those counts.
 
 In an end-to-end `--stage all` run, Stage 3 consumes partitioned events directly
 from Nextflow `work/`. Before the per-aligner evidence is discarded, the
