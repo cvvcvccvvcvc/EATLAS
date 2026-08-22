@@ -257,6 +257,7 @@ workflow FETCH_STAGE {
     normalize_script = file("${projectDir}/bin/normalize_ids.py")
     fetch_script = file("${projectDir}/bin/fetch_parse_chunk.py")
     build_fetch_dataset_script = file("${projectDir}/bin/build_fetch_dataset.py")
+    taxonomy_script = file("${projectDir}/bin/fetch_taxonomy.py")
     target_annotation_gff3 = file(params.target_annotation_gff3)
     request_throttle_dir = "${workflow.workDir}/.gaph/ncbi_fetch_throttle"
 
@@ -272,6 +273,7 @@ workflow FETCH_STAGE {
         target_annotation_gff3,
         build_fetch_dataset_script
     )
+    FETCH_TAXONOMY(BUILD_FETCH_DATASET.out.orthologs_selected, taxonomy_script)
     if (params.stage == 'all') {
         FINALIZE_FETCH_OUTPUT(
             BUILD_FETCH_DATASET.out.manifest,
@@ -280,7 +282,10 @@ workflow FETCH_STAGE {
             BUILD_FETCH_DATASET.out.target_features,
             BUILD_FETCH_DATASET.out.orthologs_selected,
             BUILD_FETCH_DATASET.out.failures,
-            BUILD_FETCH_DATASET.out.sequences
+            BUILD_FETCH_DATASET.out.sequences,
+            FETCH_TAXONOMY.out.taxonomy,
+            FETCH_TAXONOMY.out.taxonomy_failures,
+            FETCH_TAXONOMY.out.taxonomy_summary
         )
     }
 
@@ -295,6 +300,9 @@ workflow FETCH_STAGE {
     orthologs_candidates = BUILD_FETCH_DATASET.out.orthologs_candidates
     failures = BUILD_FETCH_DATASET.out.failures
     sequences = BUILD_FETCH_DATASET.out.sequences
+    taxonomy = FETCH_TAXONOMY.out.taxonomy
+    taxonomy_failures = FETCH_TAXONOMY.out.taxonomy_failures
+    taxonomy_summary = FETCH_TAXONOMY.out.taxonomy_summary
 }
 
 workflow ALIGNMENT_STAGE {
@@ -303,9 +311,11 @@ workflow ALIGNMENT_STAGE {
     target_features
     orthologs_selected
     sequences
+    taxonomy
+    taxonomy_failures
+    taxonomy_summary
 
     main:
-    taxonomy_script = file("${projectDir}/bin/fetch_taxonomy.py")
     prepare_script = file("${projectDir}/bin/prepare_alignment_tasks.py")
     minimap2_script = file("${projectDir}/bin/run_minimap2_alignment.py")
     nucmer_script = file("${projectDir}/bin/run_nucmer_alignment.py")
@@ -320,7 +330,6 @@ workflow ALIGNMENT_STAGE {
     taxonomic_evidence_script = file("${projectDir}/bin/taxonomic_evidence.py")
     alignment_table_schema = file("${projectDir}/bin/alignment_table_schema.py")
 
-    FETCH_TAXONOMY(orthologs_selected, taxonomy_script)
     BUILD_ALIGNMENT_TASKS(
         genes,
         orthologs_selected,
@@ -552,7 +561,7 @@ workflow ALIGNMENT_STAGE {
         partition_merge_inputs,
         BUILD_ALIGNMENT_TASKS.out.alignment_tasks,
         SELECTED_ALIGNMENT_STRATEGIES.join(','),
-        FETCH_TAXONOMY.out.taxonomy,
+        taxonomy,
         merge_script,
         feature_coverage_script,
         taxonomic_evidence_script,
@@ -561,9 +570,9 @@ workflow ALIGNMENT_STAGE {
 
     MERGE_ALIGNMENT(
         BUILD_ALIGNMENT_TASKS.out.alignment_tasks,
-        FETCH_TAXONOMY.out.taxonomy,
-        FETCH_TAXONOMY.out.taxonomy_failures,
-        FETCH_TAXONOMY.out.taxonomy_summary,
+        taxonomy,
+        taxonomy_failures,
+        taxonomy_summary,
         genes,
         target_features,
         MERGE_ALIGNMENT_PARTITION.out.partition_dirs.map { meta, dir -> dir }.collect(),
@@ -594,15 +603,38 @@ workflow ALIGNMENT_STAGE {
 workflow ALIGNMENT_STAGE_FROM_DIR {
     main:
     fetch_dir = file(params.fetch_dir)
+    required_files = [
+        'genes.tsv.gz',
+        'target_features.tsv.gz',
+        'orthologs.selected.tsv.gz',
+        'sequences',
+        'taxonomy.tsv.gz',
+        'taxonomy_failures.tsv.gz',
+        'taxonomy_summary.tsv.gz',
+    ]
+    missing_files = required_files.findAll { !fetch_dir.resolve(it).exists() }
+    if (missing_files) {
+        error(
+            "Fetch directory is missing alignment input(s): ${missing_files.join(', ')}. " +
+            "Regenerate the Stage 1 fetch dataset with the current pipeline; " +
+            "alignment does not fetch taxonomy metadata."
+        )
+    }
     genes = Channel.value(file("${fetch_dir}/genes.tsv.gz"))
     target_features = Channel.value(file("${fetch_dir}/target_features.tsv.gz"))
     orthologs_selected = Channel.value(file("${fetch_dir}/orthologs.selected.tsv.gz"))
     sequences = Channel.value(file("${fetch_dir}/sequences"))
+    taxonomy = Channel.value(file("${fetch_dir}/taxonomy.tsv.gz"))
+    taxonomy_failures = Channel.value(file("${fetch_dir}/taxonomy_failures.tsv.gz"))
+    taxonomy_summary = Channel.value(file("${fetch_dir}/taxonomy_summary.tsv.gz"))
     ALIGNMENT_STAGE(
         genes,
         target_features,
         orthologs_selected,
-        sequences
+        sequences,
+        taxonomy,
+        taxonomy_failures,
+        taxonomy_summary
     )
     emit:
     events = ALIGNMENT_STAGE.out.events
@@ -765,7 +797,10 @@ workflow {
             FETCH_STAGE.out.genes,
             FETCH_STAGE.out.target_features,
             FETCH_STAGE.out.orthologs_selected,
-            FETCH_STAGE.out.sequences
+            FETCH_STAGE.out.sequences,
+            FETCH_STAGE.out.taxonomy,
+            FETCH_STAGE.out.taxonomy_failures,
+            FETCH_STAGE.out.taxonomy_summary
         )
         PARTITIONED_ANNOTATION_STAGE(
             ALIGNMENT_STAGE.out.partitions,

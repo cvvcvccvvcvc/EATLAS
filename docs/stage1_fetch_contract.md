@@ -89,6 +89,21 @@ comes from the mandatory task environment.
      metrics.
    - Writes final `manifest.json`.
 
+6. `FETCH_TAXONOMY`
+   - Reads the unique `tax_id` values from `orthologs.selected.tsv.gz`.
+   - Sends one logical batch request to NCBI Datasets taxonomy summary and
+     normalizes the response into one row per selected tax ID.
+   - Writes missing per-taxon responses explicitly to
+     `taxonomy_failures.tsv.gz`; a failed batch request is retried by Nextflow
+     and prevents finalization after retries are exhausted.
+   - Writes the existing `taxonomy_summary.tsv.gz` compatibility handoff used
+     by the current alignment and report implementation. It remains derived
+     from the canonical taxonomy and selected-ortholog tables.
+
+Taxonomy is acquired only in Stage 1. `--stage align`, annotation, and report
+generation consume the published metadata and do not issue another taxonomy
+request.
+
 ## Final Output Files
 
 The table below is the full standalone `--stage fetch` handoff contract. In an
@@ -96,7 +111,8 @@ end-to-end `--stage all` run, the ortholog FASTA, chunk tables, and candidate
 table remain in Nextflow `work/` only as long as downstream alignment needs
 them. The durable `fetch/` directory keeps `manifest.json`,
 `input.ids.tsv`, `genes.tsv.gz`, `target_features.tsv.gz`,
-`orthologs.selected.tsv.gz`, `failures.tsv.gz`, and target FASTA files.
+`orthologs.selected.tsv.gz`, taxonomy metadata, `failures.tsv.gz`, and target
+FASTA files.
 
 | Path | Meaning |
 | --- | --- |
@@ -107,6 +123,9 @@ them. The durable `fetch/` directory keeps `manifest.json`,
 | `target_features.tsv.gz` | Collapsed target-local structural intervals: gene, exon, CDS, UTR, intron. |
 | `orthologs.selected.tsv.gz` | Metadata for selected ortholog sequences. |
 | `orthologs.candidates.tsv.gz` | Non-human ortholog candidate records and reject reasons. |
+| `taxonomy.tsv.gz` | Canonical tax_id-to-lineage and named-rank metadata for selected ortholog taxa. |
+| `taxonomy_failures.tsv.gz` | Selected tax IDs absent from the NCBI taxonomy response. |
+| `taxonomy_summary.tsv.gz` | Current derived compatibility summary for downstream taxonomic reporting. |
 | `failures.tsv.gz` | Gene-level failures. |
 | `sequences/targets/<gene_id>.fa.gz` | Target human genomic sequence. |
 | `sequences/orthologs/<gene_id>.fa.gz` | Selected ortholog genomic sequences. |

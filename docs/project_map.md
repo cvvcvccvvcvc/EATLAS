@@ -63,7 +63,7 @@ Runtime environments:
 - `bin/fetch_taxonomy.py`
   - reads unique ortholog `tax_id` values
   - fetches lineage and taxonomic-unit metadata from NCBI Datasets
-  - writes `taxonomy.tsv.gz`
+  - writes the Stage 1 `taxonomy.tsv.gz` handoff once per fetch dataset
 
 - `bin/prepare_alignment_tasks.py`
   - validates Stage 1 outputs for alignment

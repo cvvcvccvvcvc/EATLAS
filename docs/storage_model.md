@@ -29,6 +29,8 @@ For a default end-to-end `--stage all` run, `fetch/` contains:
 - input and target-gene metadata
 - compact target feature intervals
 - the compact selected-ortholog provenance table
+- canonical taxonomy metadata for selected ortholog tax IDs, its lookup
+  failures, and the current small compatibility summary
 - fetch failures
 - `manifest.json`
 
@@ -95,6 +97,8 @@ Standalone `--stage fetch` and `--stage align` runs still publish their full
 handoff datasets because a later invocation needs those files. The Stage 2
 event handoff is always the compact `alignment_events.tsv.gz` table together
 with its exact `event_group_id`-keyed `event_ortholog_support.tsv.gz` sidecar.
+Taxonomy is fetched once while Stage 1 is assembled and is reused by standalone
+alignment; `--stage align` performs no taxonomy network request.
 
 ## Execution Cache
 

@@ -139,6 +139,9 @@ Fetch outputs:
 - `fetch/genes.tsv.gz` - target gene metadata.
 - `fetch/target_features.tsv.gz` - compact gene/exon/CDS/UTR/intron intervals.
 - `fetch/orthologs.selected.tsv.gz` - selected ortholog sequence metadata.
+- `fetch/taxonomy.tsv.gz` - canonical taxonomy metadata for selected ortholog tax IDs.
+- `fetch/taxonomy_failures.tsv.gz` - missing taxonomy responses.
+- `fetch/taxonomy_summary.tsv.gz` - current compatibility summary consumed by downstream stages.
 - `fetch/failures.tsv.gz` - gene-level failures.
 - `fetch/sequences/targets/*.fa.gz` - GRCh38 target gene sequences.
 
@@ -194,7 +197,7 @@ directory or home quota.
 | 1 | `VALIDATE_IDS` | Read Entrez IDs, remove duplicates, split accepted IDs into chunks. | `fetch/input.ids.tsv`, `fetch/chunks.tsv` |
 | 2 | `FETCH_PARSE_CHUNK` | Download one NCBI gene package with `--ortholog all --include gene`; parse `data_report.jsonl` and `gene.fna`; select GRCh38 human target and one sequence per ortholog GeneID. Concurrent request starts are spaced by a fixed 5 seconds. | Per-chunk compressed FASTA/TSV files in `work/`; durable metrics in `fetch/chunk_metrics.tsv.gz` |
 | 3 | `BUILD_FETCH_DATASET` | Assemble chunk tables, selected per-gene FASTA files, and target structural features into the final fetch dataset. | `fetch/` |
-| 4 | `FETCH_TAXONOMY` | Build compact taxonomy metadata for downstream taxonomic evidence. | `alignment/taxonomy.tsv.gz` |
+| 4 | `FETCH_TAXONOMY` | Fetch taxonomy once for the selected ortholog tax IDs. Alignment and reporting reuse this Stage 1 handoff without another taxonomy request. | `fetch/taxonomy.tsv.gz`, `fetch/taxonomy_failures.tsv.gz`, `fetch/taxonomy_summary.tsv.gz` |
 | 5 | `BUILD_ALIGNMENT_TASKS` | Validate fetch outputs and create per-gene alignment inputs with stable sequence IDs. | `alignment/alignment_tasks.tsv.gz` |
 | 6 | `ALIGN_MINIMAP2` | Run the selected fixed asm10/asm20 baselines or opt-in map-ont long-pseudoread comparator. | Per-gene normalized evidence in `work/` |
 | 7 | `ALIGN_NUCMER_COMPARATOR` | Multi-query nucmer comparator without global one-to-one delta filtering. | Per-gene normalized evidence in `work/` |

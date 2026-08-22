@@ -9,6 +9,9 @@ process FINALIZE_FETCH_OUTPUT {
     path orthologs_selected, stageAs: "source/orthologs.selected.tsv.gz"
     path failures, stageAs: "source/failures.tsv.gz"
     path source_sequences, stageAs: "source/sequences"
+    path taxonomy, stageAs: "source/taxonomy.tsv.gz"
+    path taxonomy_failures, stageAs: "source/taxonomy_failures.tsv.gz"
+    path taxonomy_summary, stageAs: "source/taxonomy_summary.tsv.gz"
 
     output:
     path "manifest.json"
@@ -18,6 +21,9 @@ process FINALIZE_FETCH_OUTPUT {
     path "orthologs.selected.tsv.gz"
     path "failures.tsv.gz"
     path "sequences"
+    path "taxonomy.tsv.gz"
+    path "taxonomy_failures.tsv.gz"
+    path "taxonomy_summary.tsv.gz"
 
     script:
     """
@@ -29,5 +35,8 @@ process FINALIZE_FETCH_OUTPUT {
     cp "${orthologs_selected}" orthologs.selected.tsv.gz
     cp "${failures}" failures.tsv.gz
     cp -R "${source_sequences}/targets" sequences/targets
+    cp "${taxonomy}" taxonomy.tsv.gz
+    cp "${taxonomy_failures}" taxonomy_failures.tsv.gz
+    cp "${taxonomy_summary}" taxonomy_summary.tsv.gz
     """
 }

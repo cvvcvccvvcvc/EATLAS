@@ -189,6 +189,8 @@ Standalone `--stage fetch` expected properties:
 - `target_feature_count` is greater than `target_gene_count`.
 - `failure_count` is 0, unless NCBI data changed or the request failed.
 - `orthologs.candidates.tsv.gz` has no rows with `tax_id=9606`.
+- `taxonomy.tsv.gz` has one row per unique selected ortholog `tax_id`.
+- `taxonomy_failures.tsv.gz` and `taxonomy_summary.tsv.gz` exist.
 
 Standalone `--stage align` expected properties:
 - `alignment/manifest.json` exists.
@@ -201,6 +203,8 @@ Standalone `--stage align` expected properties:
 - `alignment/taxonomy.tsv.gz` has one row per unique ortholog tax_id.
 - `alignment/taxonomy_summary.tsv.gz` records run-level scope and evidence-unit
   counts.
+- The Nextflow trace contains no `FETCH_TAXONOMY` task; standalone alignment
+  consumes the taxonomy handoff from `--fetch_dir`.
 - `alignment/ortholog_alignment_summary.tsv.gz` has rows for each enabled strategy.
 - `alignment/alignment_segments.tsv.gz` and `alignment/alignment_events.tsv.gz`
   are gzip TSV files with stable headers.
