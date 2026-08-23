@@ -96,9 +96,6 @@ comes from the mandatory task environment.
    - Writes missing per-taxon responses explicitly to
      `taxonomy_failures.tsv.gz`; a failed batch request is retried by Nextflow
      and prevents finalization after retries are exhausted.
-   - Writes the existing `taxonomy_summary.tsv.gz` compatibility handoff used
-     by the current alignment and report implementation. It remains derived
-     from the canonical taxonomy and selected-ortholog tables.
 
 Taxonomy is acquired only in Stage 1. `--stage align`, annotation, and report
 generation consume the published metadata and do not issue another taxonomy
@@ -125,7 +122,6 @@ FASTA files.
 | `orthologs.candidates.tsv.gz` | Non-human ortholog candidate records and reject reasons. |
 | `taxonomy.tsv.gz` | Canonical tax_id-to-lineage and named-rank metadata for selected ortholog taxa. |
 | `taxonomy_failures.tsv.gz` | Selected tax IDs absent from the NCBI taxonomy response. |
-| `taxonomy_summary.tsv.gz` | Current derived compatibility summary for downstream taxonomic reporting. |
 | `failures.tsv.gz` | Gene-level failures. |
 | `sequences/targets/<gene_id>.fa.gz` | Target human genomic sequence. |
 | `sequences/orthologs/<gene_id>.fa.gz` | Selected ortholog genomic sequences. |
@@ -150,6 +146,8 @@ and scope counts are inexpensive derivations from `lineage_tax_ids`; keeping a
 single wide row avoids duplicate taxonomy facts and repeated joins. Readers
 continue to accept legacy Stage 2 tables whose lineage column was named
 `parent_tax_ids`, but new Stage 1 outputs use only `lineage_tax_ids`.
+Analytics derives and caches `taxonomy_summary.tsv.gz` from this table and
+`orthologs.selected.tsv.gz`; it is not part of the Stage 1 handoff.
 
 ## Strand Convention
 

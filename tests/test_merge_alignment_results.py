@@ -1124,6 +1124,9 @@ def test_final_report_input_publishes_partitioned_normalized_evidence(
         )
         for index, gene_id in enumerate(["1", "2"], start=1)
     ]
+    for partition_dir in partition_dirs:
+        (partition_dir / "strategy_summary.tsv.gz").unlink()
+        (partition_dir / "feature_coverage.tsv.gz").unlink()
     for partition_dir, gene_id in zip(partition_dirs, ["1", "2"]):
         write_tsv_gz(
             partition_dir / "alignment_events.tsv.gz",
@@ -1194,15 +1197,20 @@ def test_final_report_input_publishes_partitioned_normalized_evidence(
     } == {
         "evidence",
         "failures.tsv.gz",
-        "feature_coverage.tsv.gz",
         "manifest.json",
-        "strategy_summary.tsv.gz",
     }
     manifest = json.loads((outdir / "manifest.json").read_text())
     assert manifest["output_profile"] == "report-input"
     assert manifest["ortholog_alignment_summary_count"] == 8
     assert manifest["alignment_segment_count"] == 10
     assert manifest["alignment_event_count"] == 12
+    assert {
+        "strategy_summary_count",
+        "feature_coverage_count",
+        "snv_site_depth_count",
+        "snv_taxonomic_depth_count",
+        "snv_alt_taxonomic_support_count",
+    }.isdisjoint(manifest)
     assert manifest["normalized_evidence"] == {
         "layout": "partitioned",
         "format": "tsv_gzip_v1",

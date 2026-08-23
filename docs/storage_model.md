@@ -49,8 +49,8 @@ For a default end-to-end `--stage all` run, `fetch/` contains:
 - compact target feature intervals
 - the compact selected-ortholog provenance table
 - one canonical gzip wide taxonomy row per selected ortholog tax ID, its lookup
-  failures, and the current small compatibility summary; no duplicate long
-  classification table or raw NCBI response is published
+  failures; no duplicate summary, long classification table, or raw NCBI
+  response is published
 - fetch failures
 - `manifest.json`
 
@@ -58,10 +58,13 @@ For a default end-to-end `--stage all` run, `fetch/` contains:
 
 - partitioned normalized Stage 2 source evidence under
   `evidence/partitions/<partition_id>/`
-- compact per-strategy and feature-coverage summaries
-- compact run-level taxonomy scope/unit summary
 - alignment failures
 - `manifest.json`
+
+The report derives and fingerprint-caches strategy, feature-coverage, and
+taxonomy summaries under `analytics/`; Stage 2 does not publish duplicate
+global copies in an end-to-end run. Standalone `--stage align` temporarily
+retains its full compatibility handoff for standalone annotation.
 
 `annotation/` contains:
 

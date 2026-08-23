@@ -284,8 +284,7 @@ workflow FETCH_STAGE {
             BUILD_FETCH_DATASET.out.failures,
             BUILD_FETCH_DATASET.out.sequences,
             FETCH_TAXONOMY.out.taxonomy,
-            FETCH_TAXONOMY.out.taxonomy_failures,
-            FETCH_TAXONOMY.out.taxonomy_summary
+            FETCH_TAXONOMY.out.taxonomy_failures
         )
     }
 
@@ -302,7 +301,6 @@ workflow FETCH_STAGE {
     sequences = BUILD_FETCH_DATASET.out.sequences
     taxonomy = FETCH_TAXONOMY.out.taxonomy
     taxonomy_failures = FETCH_TAXONOMY.out.taxonomy_failures
-    taxonomy_summary = FETCH_TAXONOMY.out.taxonomy_summary
 }
 
 workflow ALIGNMENT_STAGE {
@@ -313,7 +311,6 @@ workflow ALIGNMENT_STAGE {
     sequences
     taxonomy
     taxonomy_failures
-    taxonomy_summary
 
     main:
     prepare_script = file("${projectDir}/bin/prepare_alignment_tasks.py")
@@ -572,7 +569,6 @@ workflow ALIGNMENT_STAGE {
         BUILD_ALIGNMENT_TASKS.out.alignment_tasks,
         taxonomy,
         taxonomy_failures,
-        taxonomy_summary,
         genes,
         target_features,
         MERGE_ALIGNMENT_PARTITION.out.partition_dirs.map { meta, dir -> dir }.collect(),
@@ -587,7 +583,6 @@ workflow ALIGNMENT_STAGE {
     tasks = MERGE_ALIGNMENT.out.alignment_tasks
     taxonomy = MERGE_ALIGNMENT.out.taxonomy
     taxonomy_failures = MERGE_ALIGNMENT.out.taxonomy_failures
-    taxonomy_summary = MERGE_ALIGNMENT.out.taxonomy_summary
     summaries = MERGE_ALIGNMENT.out.summaries
     strategy_summary = MERGE_ALIGNMENT.out.strategy_summary
     segments = MERGE_ALIGNMENT.out.segments
@@ -611,7 +606,6 @@ workflow ALIGNMENT_STAGE_FROM_DIR {
         'sequences',
         'taxonomy.tsv.gz',
         'taxonomy_failures.tsv.gz',
-        'taxonomy_summary.tsv.gz',
     ]
     missing_files = required_files.findAll { !fetch_dir.resolve(it).exists() }
     if (missing_files) {
@@ -627,15 +621,13 @@ workflow ALIGNMENT_STAGE_FROM_DIR {
     sequences = Channel.value(file("${fetch_dir}/sequences"))
     taxonomy = Channel.value(file("${fetch_dir}/taxonomy.tsv.gz"))
     taxonomy_failures = Channel.value(file("${fetch_dir}/taxonomy_failures.tsv.gz"))
-    taxonomy_summary = Channel.value(file("${fetch_dir}/taxonomy_summary.tsv.gz"))
     ALIGNMENT_STAGE(
         genes,
         target_features,
         orthologs_selected,
         sequences,
         taxonomy,
-        taxonomy_failures,
-        taxonomy_summary
+        taxonomy_failures
     )
     emit:
     events = ALIGNMENT_STAGE.out.events
@@ -802,8 +794,7 @@ workflow {
             FETCH_STAGE.out.orthologs_selected,
             FETCH_STAGE.out.sequences,
             FETCH_STAGE.out.taxonomy,
-            FETCH_STAGE.out.taxonomy_failures,
-            FETCH_STAGE.out.taxonomy_summary
+            FETCH_STAGE.out.taxonomy_failures
         )
         PARTITIONED_ANNOTATION_STAGE(
             ALIGNMENT_STAGE.out.partitions,

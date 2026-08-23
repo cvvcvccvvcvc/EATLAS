@@ -11,13 +11,6 @@ import subprocess
 from pathlib import Path
 from typing import Iterable
 
-from taxonomic_evidence import (
-    build_taxonomy_summary_rows,
-    load_taxonomy_profiles,
-    write_taxonomy_summary,
-)
-
-
 TSV_NULL = ""
 TAXONOMY_FIELDS = [
     "tax_id",
@@ -199,14 +192,6 @@ def main() -> None:
 
     write_tsv_gz(args.outdir / "taxonomy.tsv.gz", TAXONOMY_FIELDS, rows)
     write_tsv_gz(args.outdir / "taxonomy_failures.tsv.gz", failure_fields, failures)
-    taxonomy_profiles_path = args.outdir / "taxonomy.tsv.gz"
-    taxonomy_profiles = load_taxonomy_profiles(taxonomy_profiles_path)
-    with gzip.open(args.orthologs_tsv, "rt", newline="") as handle:
-        summary_rows = build_taxonomy_summary_rows(
-            csv.DictReader(handle, delimiter="\t"),
-            taxonomy_profiles,
-        )
-        write_taxonomy_summary(args.outdir / "taxonomy_summary.tsv.gz", summary_rows)
 
 if __name__ == "__main__":
     main()

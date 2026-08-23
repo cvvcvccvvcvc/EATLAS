@@ -8,7 +8,6 @@ process FETCH_TAXONOMY {
     output:
     path "taxonomy.tsv.gz", emit: taxonomy
     path "taxonomy_failures.tsv.gz", emit: taxonomy_failures
-    path "taxonomy_summary.tsv.gz", emit: taxonomy_summary
 
     script:
     """

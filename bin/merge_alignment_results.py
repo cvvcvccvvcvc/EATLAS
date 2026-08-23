@@ -41,7 +41,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--alignment-tasks", required=True, type=Path)
     parser.add_argument("--taxonomy", type=Path)
     parser.add_argument("--taxonomy-failures", type=Path)
-    parser.add_argument("--taxonomy-summary", type=Path)
     parser.add_argument("--source-genes", type=Path)
     parser.add_argument("--source-target-features", type=Path)
     parser.add_argument("--outdir", required=True, type=Path)
@@ -1011,16 +1010,12 @@ def require_alignment_tables(
         "ortholog_alignment_summary.tsv.gz",
         "alignment_segments.tsv.gz",
         "alignment_events.tsv.gz",
-        "feature_coverage.tsv.gz",
         "failures.tsv.gz",
     ]
     if output_profile == "report-input":
-        filenames.extend(
-            [
-                "strategy_summary.tsv.gz",
-                "event_ortholog_support.tsv.gz",
-            ]
-        )
+        filenames.append("event_ortholog_support.tsv.gz")
+    else:
+        filenames.append("feature_coverage.tsv.gz")
     missing = [
         str(result_dir / filename)
         for result_dir in result_dirs
@@ -1345,8 +1340,6 @@ def main() -> None:
             copy_or_keep(args.alignment_tasks, args.outdir / "alignment_tasks.tsv.gz")
             copy_or_keep(args.taxonomy, args.outdir / "taxonomy.tsv.gz")
             copy_or_keep(args.taxonomy_failures, args.outdir / "taxonomy_failures.tsv.gz")
-        if args.taxonomy_summary is not None:
-            copy_or_keep(args.taxonomy_summary, args.outdir / "taxonomy_summary.tsv.gz")
     gene_count = len(gene_ids)
 
     expected_event_mode = "raw" if args.partition_id else "compact_support"
@@ -1360,11 +1353,6 @@ def main() -> None:
         copy_partitioned_evidence(result_dirs, args.outdir)
     if args.output_profile == "report-input":
         summary_count = sum_manifest_count(manifests, "ortholog_alignment_summary_count")
-        strategy_summary_count = merge_strategy_summaries(
-            [path / "strategy_summary.tsv.gz" for path in result_dirs],
-            args.outdir / "strategy_summary.tsv.gz",
-            strategies,
-        )
         segment_count = sum_manifest_count(manifests, "alignment_segment_count")
     else:
         summary_inputs = [
@@ -1385,18 +1373,15 @@ def main() -> None:
             args.outdir / "alignment_segments.tsv.gz",
         )
 
-    feature_coverage_inputs = [path / "feature_coverage.tsv.gz" for path in result_dirs]
-    feature_coverage_count = merge_tsv_gz(
-        feature_coverage_inputs,
-        args.outdir / "feature_coverage.tsv.gz",
-    )
+    if args.output_profile != "report-input":
+        feature_coverage_inputs = [path / "feature_coverage.tsv.gz" for path in result_dirs]
+        feature_coverage_count = merge_tsv_gz(
+            feature_coverage_inputs,
+            args.outdir / "feature_coverage.tsv.gz",
+        )
     if args.output_profile == "report-input":
         event_count = sum_manifest_count(manifests, "alignment_event_count")
         raw_event_count = sum_manifest_count(manifests, "raw_alignment_event_count")
-        taxonomic_alt_support_count = sum_manifest_count(
-            manifests,
-            "snv_alt_taxonomic_support_count",
-        )
         event_ortholog_support_count = sum_manifest_count(
             manifests,
             "event_ortholog_support_count",
@@ -1487,13 +1472,6 @@ def main() -> None:
                 f"rows={taxonomic_alt_support_count}, "
                 f"manifests={expected_taxonomic_alt_support_count}"
             )
-    else:
-        snv_site_depth_count = sum_manifest_count(manifests, "snv_site_depth_count")
-        snv_taxonomic_depth_count = sum_manifest_count(
-            manifests,
-            "snv_taxonomic_depth_count",
-        )
-
     failure_count = merge_tsv_gz(
         [path / "failures.tsv.gz" for path in result_dirs],
         args.outdir / "failures.tsv.gz",
@@ -1518,9 +1496,7 @@ def main() -> None:
         "taxonomy_tax_id_count": count_tsv_gz_rows(args.taxonomy) if args.taxonomy else 0,
         "taxonomy_failure_count": count_tsv_gz_rows(args.taxonomy_failures) if args.taxonomy_failures else 0,
         "ortholog_alignment_summary_count": summary_count,
-        "strategy_summary_count": strategy_summary_count,
         "alignment_segment_count": segment_count,
-        "feature_coverage_count": feature_coverage_count,
         "alignment_event_mode": alignment_event_mode,
         "event_ortholog_support_format": (
             "event_group_id_v1" if alignment_event_mode == "compact_support" else ""
@@ -1528,12 +1504,19 @@ def main() -> None:
         "raw_alignment_event_count": raw_event_count,
         "alignment_event_count": event_count,
         "event_ortholog_support_count": event_ortholog_support_count,
-        "snv_site_depth_count": snv_site_depth_count,
-        "snv_taxonomic_depth_count": snv_taxonomic_depth_count,
-        "snv_alt_taxonomic_support_count": taxonomic_alt_support_count,
         "failure_count": failure_count,
         "native_file_count": native_file_count,
     }
+    if args.output_profile != "report-input":
+        manifest.update(
+            {
+                "strategy_summary_count": strategy_summary_count,
+                "feature_coverage_count": feature_coverage_count,
+                "snv_site_depth_count": snv_site_depth_count,
+                "snv_taxonomic_depth_count": snv_taxonomic_depth_count,
+                "snv_alt_taxonomic_support_count": taxonomic_alt_support_count,
+            }
+        )
     if not args.partition_id:
         manifest["source_target_context"] = {
             "genes_sha256": sha256_file(args.source_genes),

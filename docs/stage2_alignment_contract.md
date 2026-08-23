@@ -27,7 +27,6 @@ Stage 2 consumes the normalized Stage 1 outputs:
 - `orthologs.selected.tsv.gz`
 - `taxonomy.tsv.gz`
 - `taxonomy_failures.tsv.gz`
-- `taxonomy_summary.tsv.gz`
 - `sequences/targets/<gene_id>.fa.gz`
 - `sequences/orthologs/<gene_id>.fa.gz`
 
@@ -213,7 +212,6 @@ Standalone `--stage align` publishes the full handoff contract:
 | `alignment_tasks.tsv.gz` | Per-gene task manifest with separate human-target and fetched-ortholog readiness checks. |
 | `taxonomy.tsv.gz` | Compact tax_id-to-lineage mapping. |
 | `taxonomy_failures.tsv.gz` | Taxonomy lookup warnings/failures. |
-| `taxonomy_summary.tsv.gz` | Run-level ortholog and taxonomic-unit counts by scope. |
 | `ortholog_alignment_summary.tsv.gz` | One row per gene/ortholog/output strategy when that strategy emits summary evidence. |
 | `strategy_summary.tsv.gz` | Small canonical per-strategy aggregate derived from `ortholog_alignment_summary.tsv.gz` for reports and run inspection. |
 | `alignment_segments.tsv.gz` | Normalized alignment intervals. |
@@ -267,10 +265,14 @@ the durable join identity is `(partition_id, event_group_id)`.
 The current Stage 3 compatibility path still consumes partition-level SNV site
 depth and taxonomy-aware counts so existing annotation tables and reports keep
 their established results. Those derived tables are not copied into the
-durable evidence dataset. The global `strategy_summary.tsv.gz`,
-`feature_coverage.tsv.gz`, `taxonomy_summary.tsv.gz`, and `failures.tsv.gz`
-remain published for the same reason. The final alignment manifest describes
-the partitioned evidence layout in `normalized_evidence` and retains
+durable evidence dataset. End-to-end runs also do not publish the global
+`strategy_summary.tsv.gz` or `feature_coverage.tsv.gz`; analytics derives and
+caches them from the normalized evidence. The report's run-level taxonomy
+summary is likewise derived from the canonical Stage 1 taxonomy and
+selected-ortholog tables. Standalone `--stage align` retains its full legacy
+aggregate handoff until standalone annotation moves to partition evidence.
+Alignment failures remain operational evidence. The final alignment manifest
+describes the partitioned evidence layout in `normalized_evidence` and retains
 per-partition phase timings plus summed task-runtime totals. The totals are not
 wall-clock time because partitions can run concurrently.
 
