@@ -3,7 +3,6 @@ process CHECK_RUNTIME {
 
     input:
     path check_script
-    val stage
     val alignment_strategies
 
     output:
@@ -12,7 +11,6 @@ process CHECK_RUNTIME {
     script:
     """
     PYTHONPATH="${projectDir}/bin:\${PYTHONPATH:-}" python3 "${check_script}" \\
-        --stage "${stage}" \\
         --alignment-strategies "${alignment_strategies}" \\
         --out-json runtime_check.json
     """

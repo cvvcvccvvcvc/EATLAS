@@ -36,7 +36,6 @@ def _command(tmp_path: Path, outdir: Path, *, fail: bool, hold_seconds: int) -> 
                                 "hold_seconds",
                                 "outdir",
                                 "source_dir",
-                                "stage",
                             ]
                         }
                     }
@@ -102,12 +101,11 @@ def _assert_provenance(payload: dict) -> None:
     ).stdout.strip()
     serialized = json.dumps(payload)
 
-    assert payload["schema_version"] == 1
+    assert payload["schema_version"] == 2
     assert payload["pipeline"] == "gaph_v2"
     assert payload["git_commit"] == expected_commit
     assert isinstance(payload["git_dirty"], bool)
     assert payload["profiles"] == ["standard"]
-    assert payload["stage"] == "test"
     assert payload["nextflow_version"]
     assert payload["parameters"]["api_token"] == "<redacted>"
     assert payload["parameters"]["endpoint"] == (
@@ -120,7 +118,6 @@ def _assert_provenance(payload: dict) -> None:
         "hold_seconds",
         "outdir",
         "source_dir",
-        "stage",
     }
     assert "super-secret" not in serialized
     assert "query-secret" not in serialized

@@ -20,8 +20,6 @@ def test_map_ont_strategy_checks_minimap2_dependency(
         "argv",
         [
             "check_runtime.py",
-            "--stage",
-            "align",
             "--alignment-strategies",
             "minimap2_map_ont_pseudoreads_30000_15000",
             "--out-json",
@@ -36,4 +34,4 @@ def test_map_ont_strategy_checks_minimap2_dependency(
 
     check_runtime.main()
 
-    assert requested == ["bedtools", "minimap2"]
+    assert requested == ["datasets", "bedtools", "minimap2"]

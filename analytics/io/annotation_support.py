@@ -17,8 +17,8 @@ from analytics.io.artifacts import content_identity, file_identity, write_json_a
 from genomics.variants import parse_variant_key
 
 
-# These standalone pipeline helpers still use sibling imports. Keep the compatibility
-# bridge at this migration boundary so the scientific algorithms remain single-source.
+# Pipeline process helpers still use sibling imports. Keep this path bridge local
+# so the scientific algorithms remain single-source.
 _BIN_DIR = Path(__file__).resolve().parents[2] / "bin"
 _ADDED_BIN_PATH = str(_BIN_DIR) not in sys.path
 if _ADDED_BIN_PATH:

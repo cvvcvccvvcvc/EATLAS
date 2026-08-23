@@ -12,9 +12,9 @@ from pathlib import Path
 from analytics.io.artifacts import content_identity, file_identity, write_json_atomic
 
 
-# The pipeline scripts are importable helpers, but still use sibling imports when
-# executed as standalone staged files. Keep this compatibility bridge local to the
-# shadow migration instead of duplicating their scientific algorithms.
+# The pipeline scripts are importable helpers, but process entrypoints still use
+# sibling imports. Keep this path bridge local instead of duplicating their
+# scientific algorithms.
 _BIN_DIR = Path(__file__).resolve().parents[2] / "bin"
 _ADDED_BIN_PATH = str(_BIN_DIR) not in sys.path
 if _ADDED_BIN_PATH:

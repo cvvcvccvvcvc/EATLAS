@@ -440,7 +440,6 @@ RUN="$GAPH_ROOT/results/slurm_smoke_1gene_asm20_$(date +%Y%m%d_%H%M%S)"
 
 micromamba run -p "$GAPH_ROOT/envs/controller" nextflow run . \
   -profile slurm \
-  --stage all \
   --ids_file "$GAPH_ROOT/inputs/smoke_1_gene.ids" \
   --outdir "$RUN" \
   --gnomad_cache_dir "$GAPH_GNOMAD_CACHE_DIR" \

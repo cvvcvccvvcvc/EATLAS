@@ -4,17 +4,32 @@ from pathlib import Path
 PROJECT_DIR = Path(__file__).resolve().parents[1]
 
 
-def test_all_align_and_annotate_share_one_partition_evidence_contract() -> None:
+def test_pipeline_has_one_end_to_end_partition_evidence_path() -> None:
     main = (PROJECT_DIR / "main.nf").read_text()
     partition_merge = (PROJECT_DIR / "modules/local/merge_alignment_partition.nf").read_text()
     final_merge = (PROJECT_DIR / "modules/local/merge_alignment.nf").read_text()
 
     assert "workflow ANNOTATION_STAGE" not in main
-    assert main.count("PARTITIONED_ANNOTATION_STAGE(") == 2
+    assert main.count("PARTITIONED_ANNOTATION_STAGE(") == 1
+    assert "ALIGNMENT_STAGE_FROM_DIR" not in main
+    for parameter in ("params.stage", "params.fetch_dir", "params.alignment_dir"):
+        assert parameter not in main
     assert "params.stage" not in partition_merge
     assert "params.stage" not in final_merge
     assert "--output-profile" not in partition_merge
     assert "--output-profile" not in final_merge
+
+
+def test_removed_stage_modes_are_not_public_parameters() -> None:
+    main = (PROJECT_DIR / "main.nf").read_text()
+    config = (PROJECT_DIR / "nextflow.config").read_text()
+    schema = (PROJECT_DIR / "nextflow_schema.json").read_text()
+
+    for parameter in ("stage", "fetch_dir", "alignment_dir"):
+        assert f"{parameter} =" not in config
+        assert f'"{parameter}"' not in schema
+    assert "removedExecutionParameters = ['stage', 'fetch_dir', 'alignment_dir']" in main
+    assert "The pipeline has one end-to-end execution path" in main
 
 
 def test_pipeline_modules_do_not_publish_derived_alignment_or_annotation_tables() -> None:

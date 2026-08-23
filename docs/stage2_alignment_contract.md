@@ -15,8 +15,9 @@ Entrez IDs
   -> later variant/support stages
 ```
 
-The debug-only `--stage align --fetch_dir <dir>` mode exists to re-run alignment
-from an already published Stage 1 result without downloading NCBI data again.
+The stage boundary is internal to the single pipeline execution path. Nextflow
+reuses completed fetch and alignment processes through `-resume`; there is no
+standalone alignment CLI mode.
 
 ## Inputs
 
@@ -206,8 +207,7 @@ length denominator across all blocks, so consolidated MAF rows leave
 
 ## Durable Outputs
 
-`--stage all` and standalone `--stage align` publish the same canonical
-partitioned evidence contract:
+Alignment publishes one canonical partitioned evidence contract:
 
 | Path | Meaning |
 | --- | --- |
@@ -224,12 +224,10 @@ features, and sequences. Stage 2 references that source dataset but does not
 republish it. Native aligner outputs and analytic aggregates are not durable
 Stage 2 outputs.
 
-The alignment directory is an indivisible Stage 3 handoff. Annotation accepts
-it through `--alignment_dir`, requires `normalized_alignment_evidence_v1`,
-validates every declared partition and file, and verifies that its
-target-context fingerprints match the supplied `--fetch_dir`. Individual
-tables and pre-partitioned legacy layouts are not accepted as independent
-pipeline parameters.
+The alignment directory is an indivisible internal annotation handoff.
+Annotation receives it directly from the alignment workflow, requires
+`normalized_alignment_evidence_v1`, and validates every declared partition and
+file. Individual tables and prior layouts are not independent pipeline inputs.
 
 Every per-gene result and partition uses plural `gene_ids` and `strategies`,
 nested `strategy_parameters`, canonical evidence counts, and an explicit
@@ -253,9 +251,8 @@ remain in that sidecar rather than being replaced by those counts.
 At the final alignment boundary, the pipeline copies normalized partitions
 without parsing, recompression, or global event-ID rebasing. An
 `event_group_id` is local to one partition; its durable join identity is
-`(partition_id, event_group_id)`. `--stage annotate` discovers exactly this
-layout and materializes only the small target context required by each
-partition before annotation.
+`(partition_id, event_group_id)`. Annotation discovers exactly this layout and
+materializes only the small target context required by each partition.
 
 The alignment stage does not compute or publish strategy summaries, feature coverage,
 site depth, taxonomic depth, or ALT taxonomic counters. Analytics derives and
@@ -313,8 +310,8 @@ position not covered            -> no-call
 bad/ambiguous alignment         -> filtered/no-call
 ```
 
-Both standalone Stage 2 and end-to-end runs keep segments in this same
-partitioned form. Analytics computes site depth and taxonomy-aware counts only
+The pipeline keeps segments in this partitioned form. Analytics computes site
+depth and taxonomy-aware counts only
 when requested, using canonical Stage 1 taxonomy. Different ALT alleles at one
 site therefore share the same segment-derived denominator. Multiple overlapping
 segments from the same ortholog must be merged before depth is counted so one
@@ -363,10 +360,9 @@ Alignment results are merged in two bounded levels. Each partition merges at
 most `--alignment_partition_size` genes and streams one raw event group at a
 time from its SQLite key index into the compact event/support pair. The final
 merge streams those disjoint compact partitions through one staged directory
-and rebases their local group IDs when a standalone global handoff is requested.
-This avoids one global event database and avoids placing every gene/strategy
-result path on a single command line while preserving the Stage 2 logical
-evidence.
+without rebasing their local group IDs. This avoids one global event database
+and avoids placing every gene/strategy result path on a single command line
+while preserving the Stage 2 logical evidence.
 
 Both merge levels fail closed. A partition must contain exactly one result for
 every eligible gene/strategy pair, required TSV inputs must exist with valid

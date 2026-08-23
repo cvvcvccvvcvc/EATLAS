@@ -12,7 +12,7 @@ import java.util.regex.Pattern
 
 
 class RunManifest {
-    static final int SCHEMA_VERSION = 1
+    static final int SCHEMA_VERSION = 2
     static final String REDACTED = '<redacted>'
 
     private static final Pattern SENSITIVE_KEY = Pattern.compile(
@@ -45,7 +45,6 @@ class RunManifest {
             exit_status: null,
             run_name: workflow.runName?.toString(),
             session_id: workflow.sessionId?.toString(),
-            stage: parameters.stage?.toString(),
             profiles: parseProfiles(workflow.profile),
             resume: workflow.resume as boolean,
             nextflow_version: workflow.nextflow?.version?.toString(),

@@ -11,11 +11,10 @@ Obtain or identify:
 - the input Gene ID file;
 - the durable result directory;
 - the durable Nextflow work directory;
-- the requested stage, if it is not the default `all`;
 - any explicitly requested alignment strategies or concurrency overrides.
 
-When an option is not specified, keep the Nextflow/config default. In
-particular, the default stage is `all` and the default strategy selection runs
+When an option is not specified, keep the Nextflow/config default. The pipeline
+always runs end to end, and the default strategy selection runs
 `minimap2_asm10`, `minimap2_asm20`, `nucmer`, and `bwa_pseudoreads_150_75`. The
 long-pseudoread `minimap2_map_ont_pseudoreads_30000_15000` and precomputed
 Ensembl strategies must be selected explicitly.
@@ -58,7 +57,6 @@ WORK="$GAPH_ROOT/work/run_name"
 
 micromamba run -p "$GAPH_ROOT/envs/controller" nextflow run . \
   -profile slurm \
-  --stage all \
   --ids_file "$IDS" \
   --outdir "$RUN" \
   --gnomad_cache_dir "$GAPH_GNOMAD_CACHE_DIR" \

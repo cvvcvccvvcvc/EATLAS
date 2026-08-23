@@ -118,7 +118,7 @@ def _make_run(results_root: Path, run_id: str = "run_001") -> Path:
     (run_dir / "run_manifest.json").write_text(
         json.dumps(
             {
-                "schema_version": 1,
+                "schema_version": 2,
                 "status": "complete",
                 "success": True,
                 "exit_status": 0,
@@ -203,7 +203,7 @@ def test_archive_requires_successful_root_run_manifest(tmp_path: Path) -> None:
     (run_dir / "run_manifest.json").write_text(
         json.dumps(
             {
-                "schema_version": 1,
+                "schema_version": 2,
                 "status": "failed",
                 "success": False,
                 "exit_status": 1,

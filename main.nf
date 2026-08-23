@@ -117,135 +117,32 @@ def resolveClinvarInputs() {
     return [vcf: file(selectedVcf), tbi: file(selectedTbi), path: selectedVcf]
 }
 
-def sha256File(path) {
-    def digest = java.security.MessageDigest.getInstance('SHA-256')
-    path.toFile().withInputStream { stream ->
-        byte[] buffer = new byte[1024 * 1024]
-        int count
-        while ((count = stream.read(buffer)) != -1) {
-            digest.update(buffer, 0, count)
-        }
-    }
-    return digest.digest().encodeHex().toString()
-}
-
-def resolveStandaloneAlignmentInputs(fetchDir) {
-    def alignmentDir = file(params.alignment_dir)
-    if (!alignmentDir.exists()) {
-        error "Alignment directory not found: ${alignmentDir}"
-    }
-    if (!java.nio.file.Files.isDirectory(alignmentDir)) {
-        error "Alignment input is not a directory: ${alignmentDir}"
-    }
-
-    def requiredFiles = ['manifest.json', 'evidence/partitions']
-    def missingFiles = requiredFiles.findAll { !alignmentDir.resolve(it).exists() }
-    if (missingFiles) {
-        error "Alignment directory is missing annotation input(s): ${missingFiles.join(', ')}"
-    }
-
-    def manifest = new JsonSlurper().parse(alignmentDir.resolve('manifest.json').toFile())
-    if (manifest.stage != 'alignment') {
-        error "Alignment manifest has invalid stage: ${manifest.stage}"
-    }
-    if (manifest.schema != 'normalized_alignment_evidence_v1') {
-        error "Standalone annotation requires normalized alignment evidence schema v1, observed schema=${manifest.schema}"
-    }
-    if (manifest.alignment_event_mode != 'compact_support') {
-        error "Standalone annotation requires compact_support events, observed alignment_event_mode=${manifest.alignment_event_mode}"
-    }
-    if (manifest.event_ortholog_support_format != 'event_group_id_v1') {
-        error "Alignment manifest has unsupported event ortholog support format: ${manifest.event_ortholog_support_format}"
-    }
-    def evidenceContract = manifest.normalized_evidence
-    if (!(evidenceContract instanceof Map)) {
-        error "Alignment manifest is missing normalized_evidence"
-    }
-    def expectedPartitionFiles = [
-        'manifest.json',
-        'ortholog_alignment_summary.tsv.gz',
-        'alignment_segments.tsv.gz',
-        'alignment_events.tsv.gz',
-        'event_ortholog_support.tsv.gz',
-    ]
-    if (
-        evidenceContract.layout != 'partitioned' ||
-        evidenceContract.format != 'tsv_gzip_v1' ||
-        evidenceContract.path != 'evidence/partitions' ||
-        evidenceContract.event_group_id_scope != 'partition' ||
-        evidenceContract.partition_files != expectedPartitionFiles
-    ) {
-        error "Alignment manifest has an unsupported normalized_evidence contract"
-    }
-    def evidenceDir = alignmentDir.resolve('evidence')
-    def partitionDirs = evidenceDir.resolve('partitions').toFile().listFiles()
-        .findAll { it.isDirectory() }
-        .sort { left, right -> left.name <=> right.name }
-    if (partitionDirs.size() != (evidenceContract.partition_count as Integer)) {
-        error "Alignment evidence partition count does not match manifest"
-    }
-    partitionDirs.each { partitionDir ->
-        def missingPartitionFiles = expectedPartitionFiles.findAll {
-            !partitionDir.toPath().resolve(it).exists()
-        }
-        if (missingPartitionFiles) {
-            error "Alignment partition ${partitionDir.name} is missing file(s): ${missingPartitionFiles.join(', ')}"
-        }
-    }
-
-    def sourceContext = manifest.source_target_context
-    if (!(sourceContext instanceof Map)) {
-        error "Alignment manifest is missing source_target_context"
-    }
-    def genesPath = fetchDir.resolve('genes.tsv.gz')
-    def targetFeaturesPath = fetchDir.resolve('target_features.tsv.gz')
-    [genesPath, targetFeaturesPath].each { path ->
-        if (!path.exists()) {
-            error "Fetch directory is missing target context input: ${path}"
-        }
-    }
-    def observedGenesSha256 = sha256File(genesPath)
-    def observedTargetFeaturesSha256 = sha256File(targetFeaturesPath)
-    if (sourceContext.genes_sha256 != observedGenesSha256) {
-        error "Alignment and fetch directories have different genes.tsv.gz inputs"
-    }
-    if (sourceContext.target_features_sha256 != observedTargetFeaturesSha256) {
-        error "Alignment and fetch directories have different target_features.tsv.gz inputs"
-    }
-
-    return [
-        manifest: alignmentDir.resolve('manifest.json'),
-        evidence: evidenceDir,
-    ]
-}
-
 // Print help message
 if (params.help) {
     log.info paramsHelp("gaph_v2")
     exit 0
 }
 
+def removedExecutionParameters = ['stage', 'fetch_dir', 'alignment_dir'].findAll {
+    params.containsKey(it)
+}
+if (removedExecutionParameters) {
+    error(
+        "Removed parameter(s): " +
+        removedExecutionParameters.collect { "--${it}" }.join(', ') +
+        ". The pipeline has one end-to-end execution path; use -resume to continue an interrupted run."
+    )
+}
+
 // Validate parameters against nextflow_schema.json
 validateParameters()
 
-if (['all', 'fetch'].contains(params.stage) && !params.ids_file) {
+if (!params.ids_file) {
     error "Missing required parameter: --ids_file"
 }
 
-if (['all', 'fetch'].contains(params.stage) && !file(params.target_annotation_gff3).exists()) {
-    error "Target annotation GFF3 not found for --stage ${params.stage}: ${params.target_annotation_gff3}. Pass --target_annotation_gff3, set GAPH_TARGET_ANNOTATION_GFF3, or place the file at assets/reference/ncbi/refseq/GCF_000001405.40_GRCh38.p14/genomic.gff.gz"
-}
-
-if (params.stage == 'align' && !params.fetch_dir) {
-    error "Missing required parameter for --stage align: --fetch_dir"
-}
-
-if (params.stage == 'annotate' && !params.alignment_dir) {
-    error "Missing required parameter for --stage annotate: --alignment_dir"
-}
-
-if (params.stage == 'annotate' && !params.fetch_dir) {
-    error "Missing required parameter for --stage annotate: --fetch_dir"
+if (!file(params.target_annotation_gff3).exists()) {
+    error "Target annotation GFF3 not found: ${params.target_annotation_gff3}. Pass --target_annotation_gff3, set GAPH_TARGET_ANNOTATION_GFF3, or place the file at assets/reference/ncbi/refseq/GCF_000001405.40_GRCh38.p14/genomic.gff.gz"
 }
 
 SELECTED_ALIGNMENT_STRATEGIES = parseAlignmentStrategies(params.alignment_strategies)
@@ -304,19 +201,17 @@ workflow FETCH_STAGE {
         build_fetch_dataset_script
     )
     FETCH_TAXONOMY(BUILD_FETCH_DATASET.out.orthologs_selected, taxonomy_script)
-    if (params.stage == 'all') {
-        FINALIZE_FETCH_OUTPUT(
-            BUILD_FETCH_DATASET.out.manifest,
-            BUILD_FETCH_DATASET.out.input_ids,
-            BUILD_FETCH_DATASET.out.genes,
-            BUILD_FETCH_DATASET.out.target_features,
-            BUILD_FETCH_DATASET.out.orthologs_selected,
-            BUILD_FETCH_DATASET.out.failures,
-            BUILD_FETCH_DATASET.out.sequences,
-            FETCH_TAXONOMY.out.taxonomy,
-            FETCH_TAXONOMY.out.taxonomy_failures
-        )
-    }
+    FINALIZE_FETCH_OUTPUT(
+        BUILD_FETCH_DATASET.out.manifest,
+        BUILD_FETCH_DATASET.out.input_ids,
+        BUILD_FETCH_DATASET.out.genes,
+        BUILD_FETCH_DATASET.out.target_features,
+        BUILD_FETCH_DATASET.out.orthologs_selected,
+        BUILD_FETCH_DATASET.out.failures,
+        BUILD_FETCH_DATASET.out.sequences,
+        FETCH_TAXONOMY.out.taxonomy,
+        FETCH_TAXONOMY.out.taxonomy_failures
+    )
 
     emit:
     manifest = BUILD_FETCH_DATASET.out.manifest
@@ -582,39 +477,6 @@ workflow ALIGNMENT_STAGE {
     failures = MERGE_ALIGNMENT.out.failures
 }
 
-workflow ALIGNMENT_STAGE_FROM_DIR {
-    main:
-    fetch_dir = file(params.fetch_dir)
-    required_files = [
-        'genes.tsv.gz',
-        'target_features.tsv.gz',
-        'orthologs.selected.tsv.gz',
-        'sequences',
-    ]
-    missing_files = required_files.findAll { !fetch_dir.resolve(it).exists() }
-    if (missing_files) {
-        error(
-            "Fetch directory is missing alignment input(s): ${missing_files.join(', ')}. " +
-            "Regenerate the Stage 1 fetch dataset with the current pipeline; " +
-            "alignment does not fetch taxonomy metadata."
-        )
-    }
-    genes = Channel.value(file("${fetch_dir}/genes.tsv.gz"))
-    target_features = Channel.value(file("${fetch_dir}/target_features.tsv.gz"))
-    orthologs_selected = Channel.value(file("${fetch_dir}/orthologs.selected.tsv.gz"))
-    sequences = Channel.value(file("${fetch_dir}/sequences"))
-    ALIGNMENT_STAGE(
-        genes,
-        target_features,
-        orthologs_selected,
-        sequences
-    )
-    emit:
-    evidence = ALIGNMENT_STAGE.out.evidence
-    genes = genes
-    sequences = sequences
-}
-
 workflow PARTITIONED_ANNOTATION_STAGE {
     take:
     alignment_evidence
@@ -713,53 +575,32 @@ workflow {
         file("${projectDir}/nextflow_schema.json")
     )
 
-    if (params.stage in ['all', 'annotate']) {
-        if (params.gnomad_cache_dir) {
-            log.info "Using shared gnomAD cache: ${params.gnomad_cache_dir}"
-        } else {
-            log.warn "Shared gnomAD cache is disabled; set --gnomad_cache_dir or GAPH_GNOMAD_CACHE_DIR to reuse regional responses"
-        }
+    if (params.gnomad_cache_dir) {
+        log.info "Using shared gnomAD cache: ${params.gnomad_cache_dir}"
+    } else {
+        log.warn "Shared gnomAD cache is disabled; set --gnomad_cache_dir or GAPH_GNOMAD_CACHE_DIR to reuse regional responses"
     }
 
     runtime_check_script = file("${projectDir}/bin/check_runtime.py")
-    CHECK_RUNTIME(runtime_check_script, params.stage, SELECTED_ALIGNMENT_STRATEGIES.join(','))
+    CHECK_RUNTIME(runtime_check_script, SELECTED_ALIGNMENT_STRATEGIES.join(','))
 
-    if (params.stage == 'all') {
-        clinvar_inputs = resolveClinvarInputs()
-        log.info "Using ClinVar VCF: ${clinvar_inputs.path}"
-        FETCH_STAGE(file(params.ids_file))
-        ALIGNMENT_STAGE(
-            FETCH_STAGE.out.genes,
-            FETCH_STAGE.out.target_features,
-            FETCH_STAGE.out.orthologs_selected,
-            FETCH_STAGE.out.sequences
-        )
-        PARTITIONED_ANNOTATION_STAGE(
-            ALIGNMENT_STAGE.out.evidence,
-            FETCH_STAGE.out.genes,
-            FETCH_STAGE.out.sequences.map { sequences_dir -> file("${sequences_dir}/targets") },
-            clinvar_inputs.vcf,
-            clinvar_inputs.tbi,
-            params.gnomad_cache_dir ?: ''
-        )
-    } else if (params.stage == 'fetch') {
-        FETCH_STAGE(file(params.ids_file))
-    } else if (params.stage == 'align') {
-        ALIGNMENT_STAGE_FROM_DIR()
-    } else if (params.stage == 'annotate') {
-        clinvar_inputs = resolveClinvarInputs()
-        log.info "Using ClinVar VCF: ${clinvar_inputs.path}"
-        fetch_dir = file(params.fetch_dir)
-        alignment_inputs = resolveStandaloneAlignmentInputs(fetch_dir)
-        PARTITIONED_ANNOTATION_STAGE(
-            Channel.value(file(alignment_inputs.evidence)),
-            file("${fetch_dir}/genes.tsv.gz"),
-            file("${fetch_dir}/sequences/targets"),
-            clinvar_inputs.vcf,
-            clinvar_inputs.tbi,
-            params.gnomad_cache_dir ?: ''
-        )
-    }
+    clinvar_inputs = resolveClinvarInputs()
+    log.info "Using ClinVar VCF: ${clinvar_inputs.path}"
+    FETCH_STAGE(file(params.ids_file))
+    ALIGNMENT_STAGE(
+        FETCH_STAGE.out.genes,
+        FETCH_STAGE.out.target_features,
+        FETCH_STAGE.out.orthologs_selected,
+        FETCH_STAGE.out.sequences
+    )
+    PARTITIONED_ANNOTATION_STAGE(
+        ALIGNMENT_STAGE.out.evidence,
+        FETCH_STAGE.out.genes,
+        FETCH_STAGE.out.sequences.map { sequences_dir -> file("${sequences_dir}/targets") },
+        clinvar_inputs.vcf,
+        clinvar_inputs.tbi,
+        params.gnomad_cache_dir ?: ''
+    )
 }
 
 workflow.onComplete {

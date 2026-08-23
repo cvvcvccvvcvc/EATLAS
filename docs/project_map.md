@@ -101,7 +101,7 @@ Runtime environments:
 
 - `bin/merge_alignment_results.py`
   - merges per-gene/per-strategy evidence into bounded genomic partitions
-  - publishes the same canonical partition contract in every launch mode
+  - publishes the canonical partition contract
   - writes compact events and their `event_group_id`-keyed positive ortholog
     handoff in one index-ordered pass
   - copies final partitions without global evidence recompression

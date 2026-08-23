@@ -19,8 +19,8 @@ unreduced event-by-ortholog relation. Native-record traceability is still
 dropped. Raw per-task event files remain recoverable through Nextflow `work/`
 while the cache is retained.
 
-End-to-end and standalone alignment publish the same partition tree and do not
-write a second global event table. Annotation consumes that tree directly. It
+Alignment publishes one partition tree and does not write a second global event
+table. Annotation consumes that tree directly. It
 publishes the unique `variant_annotations.tsv.gz` and a partitioned
 event-to-variant map, but not another event-by-ortholog relation. Analytics
 streams the event, segment, exact-support, and event-map relations to derive the
@@ -32,8 +32,7 @@ Alignment merging is partitioned by genomic-order target groups. A partition is
 released as soon as all expected strategy results for its genes are ready. Each
 partition retains per-ortholog summaries, segments, compact events, and exact
 support. The final alignment process validates and copies those gzip files
-without global sorting, recompression, or event-ID rebasing. Standalone and
-end-to-end modes share this exact path.
+without global sorting, recompression, or event-ID rebasing.
 
 ## BWA Pseudoreads
 

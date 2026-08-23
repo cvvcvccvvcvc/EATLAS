@@ -103,7 +103,7 @@ def _validate_run_dir(
         except (OSError, json.JSONDecodeError) as exc:
             raise ArchiveError(f"Invalid JSON manifest: {run_manifest_path}") from exc
         if (
-            run_manifest.get("schema_version") != 1
+            run_manifest.get("schema_version") != 2
             or run_manifest.get("status") != "complete"
             or run_manifest.get("success") is not True
             or run_manifest.get("exit_status") != 0

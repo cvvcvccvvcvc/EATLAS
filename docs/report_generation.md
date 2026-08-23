@@ -99,7 +99,7 @@ manifest:
 }
 ```
 
-Every member must be a successful, clean, current `--stage all` run with a
+Every member must be a successful, clean, current end-to-end run with a
 finalized bulk-VEP artifact. Before creating analytics artifacts, the report
 requires the same pipeline revision, target assembly and GFF contract,
 strategy set and parameters, event/support contracts, ClinVar contents,

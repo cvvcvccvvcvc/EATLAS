@@ -42,7 +42,7 @@ Archival tools must treat this file as the provenance source of truth. For
 legacy runs without it, the producing commit is unknown and must not be inferred
 from the current checkout.
 
-For a default end-to-end `--stage all` run, `fetch/` contains:
+For an end-to-end run, `fetch/` contains:
 
 - compressed target FASTA files
 - input and target-gene metadata
@@ -62,9 +62,8 @@ For a default end-to-end `--stage all` run, `fetch/` contains:
 - `manifest.json`
 
 The report derives and fingerprint-caches strategy, feature-coverage, and
-taxonomy summaries under `analytics/`; Stage 2 does not publish duplicate
-global copies. Standalone `--stage align` publishes the same partitioned
-evidence contract as an end-to-end run.
+taxonomy summaries under `analytics/`; alignment does not publish duplicate
+global copies.
 
 `annotation/` contains:
 
@@ -93,8 +92,8 @@ per-ortholog summary, segments, compact events, and exact ortholog support.
 Local `event_group_id` values are interpreted together with their directory
 `partition_id`; they are not globally rebased.
 
-Annotation reads those same partitions in every launch mode. It writes one
-canonical variant-context annotation table and preserves the partition-local
+Annotation reads those same partitions in the end-to-end dataflow. It writes
+one canonical variant-context annotation table and preserves the partition-local
 event-to-variant mapping needed by analytics. It does not materialize
 variant-strategy, variant-ortholog, site-depth, or taxonomic histogram products.
 In a fresh successful run, disposable inputs and pre-normalization
@@ -108,12 +107,12 @@ The durable `variant_annotations.tsv.gz` is assembled from partition gzip
 members without row parsing or recompression. Event maps stay partitioned, so
 their local IDs need no global rewrite.
 
-Standalone `--stage fetch` publishes the ortholog FASTA files required to start
-alignment in a later invocation. A completed end-to-end run keeps selected
-ortholog metadata and canonical taxonomy but does not retain those large FASTA
-files after alignment. Human target FASTA remains because annotation and
-reproducible target-context normalization need it. Stage 2 performs no taxonomy
-lookup and does not receive taxonomy as an input.
+Selected ortholog FASTA files pass directly from fetch to alignment through the
+Nextflow execution cache and are not copied into durable results. A completed
+run keeps selected-ortholog metadata and canonical taxonomy. Human target FASTA
+remains because annotation and reproducible target-context normalization need
+it. Alignment performs no taxonomy lookup and does not receive taxonomy as an
+input.
 
 Analytics owns the reproducible derived layer:
 
@@ -205,16 +204,14 @@ Keep:
 - `results/.../sequences/targets/*.fa.gz`
 - `results/.../target_features.tsv.gz`
 
-Keep standalone Stage 1 output until its Stage 2 consumer has finished:
-- `results/.../sequences/orthologs/*.fa.gz`
-
 Usually remove after validation:
 - Nextflow `work/`
 - `.nextflow*` local execution files in throwaway run directories
 - raw NCBI package files if any were produced manually
 
-Rejected ortholog candidate sequences are not retained. Rejected candidates are
-represented only by metadata rows in `orthologs.candidates.tsv.gz`.
+Rejected ortholog candidate sequences and candidate metadata remain disposable
+fetch intermediates; selected-ortholog provenance is retained in
+`fetch/orthologs.selected.tsv.gz`.
 
 Raw aligner outputs are also not retained by default:
 

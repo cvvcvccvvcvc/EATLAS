@@ -13,13 +13,12 @@ publishes normalized compressed FASTA/TSV outputs.
 
 ## Run
 
-Default local execution runs every stage in one command:
+The pipeline has one end-to-end execution path:
 
 ```bash
 RUN="results/run_default_strategies_$(date +%Y%m%d_%H%M%S)"
 
 nextflow run . \
-  --stage all \
   --ids_file assets/inputs/gene_ids/panel_10_genes.txt \
   --outdir "$RUN" \
   --alignment_strategies all
@@ -74,31 +73,6 @@ nextflow run . \
   --outdir "$GAPH_ROOT/results/run_001"
 ```
 
-Alignment-only debug mode can reuse an existing fetch result:
-
-```bash
-nextflow run . \
-  --stage align \
-  --fetch_dir results/run_test/fetch \
-  --outdir results/align_debug \
-  -resume
-```
-
-Annotation-only debug mode consumes one complete standalone alignment result:
-
-```bash
-nextflow run . \
-  --stage annotate \
-  --alignment_dir results/align_debug \
-  --fetch_dir results/run_test/fetch \
-  --outdir results/annotate_debug \
-  -resume
-```
-
-The alignment directory is one versioned handoff. It contains compact events,
-exact ortholog support, site depth, taxonomy-aware depth and ALT support, plus a
-manifest that binds those tables to the matching fetch target context.
-
 By default, `--alignment_strategies all` runs `minimap2_asm10`,
 `minimap2_asm20`, `nucmer`, and `bwa_pseudoreads_150_75`. Both the precomputed
 Ensembl strategy and `minimap2_map_ont_pseudoreads_30000_15000` remain available
@@ -106,9 +80,8 @@ only when named explicitly. Use a comma-separated list to select a different set
 
 ```bash
 nextflow run . \
-  --stage align \
-  --fetch_dir results/run_test/fetch \
-  --outdir results/align_minimap2_asm20 \
+  --ids_file assets/inputs/gene_ids/panel_10_genes.txt \
+  --outdir results/run_minimap2_asm20 \
   --alignment_strategies minimap2_asm20 \
   -resume
 ```
@@ -130,7 +103,7 @@ results/run_test/
   annotation/
 ```
 
-The default end-to-end `--stage all` output is intentionally compact.
+The published end-to-end output is intentionally compact.
 
 Fetch outputs:
 
@@ -171,10 +144,11 @@ The report derives strategy summaries, feature coverage, site depth, taxonomic
 evidence, and variant-strategy support under fingerprinted `analytics/` caches.
 These analytic tables are not pipeline outputs.
 
-Standalone `--stage fetch` additionally publishes ortholog FASTA required by a
-separate `--stage align` invocation. Standalone alignment and annotation use the
-same partitioned contracts as `--stage all`; there is no parallel full/legacy
-handoff.
+Fetch, alignment, and annotation remain explicit internal workflow boundaries,
+but they are not separate CLI modes. Recovery uses Nextflow `-resume` with the
+same inputs, result directory, and work directory.
+Removed `--stage`, `--fetch_dir`, and `--alignment_dir` parameters fail with a
+clear error instead of being ignored.
 
 The target assembly is fixed to GRCh38.p14 (`GCF_000001405.40`). Ortholog
 retrieval always uses the complete NCBI ortholog set (`--ortholog all`).
@@ -198,7 +172,7 @@ directory or home quota.
 | Step | Process | What Happens | Durable Output |
 | --- | --- | --- | --- |
 | 1 | `VALIDATE_IDS` | Read Entrez IDs, remove duplicates, split accepted IDs into chunks. | `fetch/input.ids.tsv`, `fetch/chunks.tsv` |
-| 2 | `FETCH_PARSE_CHUNK` | Download one NCBI gene package with `--ortholog all --include gene`; parse `data_report.jsonl` and `gene.fna`; select GRCh38 human target and one sequence per ortholog GeneID. Concurrent request starts are spaced by a fixed 5 seconds. | Per-chunk compressed FASTA/TSV files in `work/`; durable metrics in `fetch/chunk_metrics.tsv.gz` |
+| 2 | `FETCH_PARSE_CHUNK` | Download one NCBI gene package with `--ortholog all --include gene`; parse `data_report.jsonl` and `gene.fna`; select GRCh38 human target and one sequence per ortholog GeneID. Concurrent request starts are spaced by a fixed 5 seconds. | Per-chunk compressed FASTA/TSV files in `work/` |
 | 3 | `BUILD_FETCH_DATASET` | Assemble chunk tables, selected per-gene FASTA files, and target structural features into the final fetch dataset. | `fetch/` |
 | 4 | `FETCH_TAXONOMY` | Fetch canonical taxonomy once for the selected ortholog tax IDs. Analytics later consumes this Stage 1 handoff; alignment performs no taxonomy work. | `fetch/taxonomy.tsv.gz`, `fetch/taxonomy_failures.tsv.gz` |
 | 5 | `BUILD_ALIGNMENT_TASKS` | Validate fetch outputs and create temporary per-gene alignment inputs with stable sequence IDs. | Task metadata in `work/` |

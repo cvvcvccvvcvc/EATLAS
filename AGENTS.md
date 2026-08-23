@@ -99,8 +99,9 @@ Agent workflow rules:
 16. Do not auto-commit broad, exploratory, cross-cutting, or partially
     validated work. Leave it uncommitted with a clear status summary, or ask
     before committing when the boundary is unclear.
-17. Keep alignment and annotation as separate stages; `--stage align` must not
-    trigger annotation.
+17. Keep fetch, alignment, and annotation as explicit internal workflow
+    boundaries, but expose one end-to-end pipeline execution path. Recovery is
+    handled by Nextflow `-resume`, not standalone stage modes.
 18. Put standalone experiments that build on the pipeline or its data under
     `experiments/<experiment_name>/` (create `experiments/` when needed). Keep
     each experiment's code, data, scratch files, reports, and generated outputs

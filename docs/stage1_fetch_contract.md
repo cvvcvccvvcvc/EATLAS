@@ -85,8 +85,7 @@ comes from the mandatory task environment.
    - Requires one manifest for every planned chunk and rejects duplicate or
      missing chunk results.
    - Builds compact target structural features from the configured local target assembly GFF3.
-   - Writes `chunk_metrics.tsv.gz` with durable per-chunk timing and package-size
-     metrics.
+   - Emits `chunk_metrics.tsv.gz` in task work for fetch diagnostics.
    - Writes final `manifest.json`.
 
 6. `FETCH_TAXONOMY`
@@ -97,16 +96,15 @@ comes from the mandatory task environment.
      `taxonomy_failures.tsv.gz`; a failed batch request is retried by Nextflow
      and prevents finalization after retries are exhausted.
 
-Taxonomy is acquired only in Stage 1. `--stage align`, annotation, and report
-generation consume the published metadata and do not issue another taxonomy
-request.
+Taxonomy is acquired only in the fetch boundary. Alignment does not consume it;
+annotation and report generation reuse the published metadata and do not issue
+another taxonomy request.
 
 ## Final Output Files
 
-The table below is the full standalone `--stage fetch` handoff contract. In an
-end-to-end `--stage all` run, the ortholog FASTA, chunk tables, and candidate
-table remain in Nextflow `work/` only as long as downstream alignment needs
-them. The durable `fetch/` directory keeps `manifest.json`,
+There is no standalone fetch output contract. Ortholog FASTA, chunk tables, and
+the candidate table remain in Nextflow `work/` only as long as downstream
+alignment or `-resume` needs them. The durable `fetch/` directory keeps `manifest.json`,
 `input.ids.tsv`, `genes.tsv.gz`, `target_features.tsv.gz`,
 `orthologs.selected.tsv.gz`, taxonomy metadata, `failures.tsv.gz`, and target
 FASTA files.
@@ -115,16 +113,13 @@ FASTA files.
 | --- | --- |
 | `manifest.json` | Run status, constants, counts, download fallback metrics, and Datasets CLI version(s). |
 | `input.ids.tsv` | All input rows, accepted status, duplicate mapping. |
-| `chunks.tsv` | Chunk IDs and accepted Gene IDs assigned to each chunk. |
 | `genes.tsv.gz` | Target human gene metadata and sequence checksum. |
 | `target_features.tsv.gz` | Collapsed target-local structural intervals: gene, exon, CDS, UTR, intron. |
 | `orthologs.selected.tsv.gz` | Metadata for selected ortholog sequences. |
-| `orthologs.candidates.tsv.gz` | Non-human ortholog candidate records and reject reasons. |
 | `taxonomy.tsv.gz` | Canonical tax_id-to-lineage and named-rank metadata for selected ortholog taxa. |
 | `taxonomy_failures.tsv.gz` | Selected tax IDs absent from the NCBI taxonomy response. |
 | `failures.tsv.gz` | Gene-level failures. |
 | `sequences/targets/<gene_id>.fa.gz` | Target human genomic sequence. |
-| `sequences/orthologs/<gene_id>.fa.gz` | Selected ortholog genomic sequences. |
 
 `orthologs.selected.tsv.gz` is grouped by `query_gene_id`. This ordering is part
 of the Stage 1 contract: Stage 2 can prepare one gene at a time without loading

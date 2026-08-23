@@ -16,7 +16,7 @@ nextflow run . \
   -resume
 ```
 
-The default `--stage all` runs every stage. Every run uses the declared
+The pipeline always runs fetch, alignment, and annotation in order. Every run uses the declared
 `envs/*.yml` task environments through Micromamba, including local runs without
 a profile.
 Annotation fetches gnomAD data from the live API for clustered event regions and
@@ -179,23 +179,21 @@ Expected layout:
   annotation/
 ```
 
-Standalone `--stage fetch` expected properties:
+Fetch-boundary expected properties:
 - `fetch/manifest.json` exists.
 - `input_record_count` is 4.
 - `unique_gene_count` is 3.
 - `chunk_count` is 3.
-- `chunk_metrics.tsv.gz` exists and includes per-chunk download/parse timings.
 - `target_gene_count` is 3.
 - `target_feature_count` is greater than `target_gene_count`.
 - `failure_count` is 0, unless NCBI data changed or the request failed.
-- `orthologs.candidates.tsv.gz` has no rows with `tax_id=9606`.
 - `taxonomy.tsv.gz` has one row per unique selected ortholog `tax_id`, explicit
   `taxonomy_status`, direct domain-through-species ID/name columns, and ordered
   `lineage_tax_ids`; current files do not contain derived `is_*` flags.
 - `taxonomy_failures.tsv.gz` exists; `taxonomy_summary.tsv.gz` does not, because
   it is derived by analytics.
 
-Standalone `--stage align` expected properties:
+Alignment-boundary expected properties:
 - `alignment/manifest.json` exists.
 - The manifest declares `stage=alignment` and
   `schema=normalized_alignment_evidence_v1`.
@@ -203,8 +201,8 @@ Standalone `--stage align` expected properties:
   those IDs equal the union of genes eligible for the selected strategies in
   the Stage 1 selection. Ensembl requires a target sequence; the other
   strategies require selected ortholog sequences.
-- The Nextflow trace contains no `FETCH_TAXONOMY` task; standalone alignment
-  neither receives nor republishes taxonomy.
+- The Nextflow trace contains exactly one `FETCH_TAXONOMY` task owned by fetch;
+  alignment neither receives nor republishes taxonomy.
 - `alignment/evidence/partitions/<partition_id>/` exists for every partition in
   the manifest. Each contains exactly its manifest, per-ortholog summary,
   segments, compact events, and exact event-ortholog support.
@@ -216,8 +214,7 @@ Standalone `--stage align` expected properties:
 - Global alignment event, segment, summary, feature-coverage, site-depth,
   taxonomy, task, and native-artifact files are absent.
 
-Default end-to-end `--stage all` must publish the same Stage 2 contract. Compare
-the layout and schemas, not a separate mode-specific file list. Also verify that
+The end-to-end run must publish this Stage 2 contract. Also verify that
 `fetch/orthologs.selected.tsv.gz`, canonical taxonomy, target features, and
 target FASTA remain available for analytics and annotation, while
 `fetch/sequences/orthologs/` is absent from the completed end-to-end output.
@@ -303,48 +300,13 @@ for partition in sorted(path for path in base.iterdir() if path.is_dir()):
 PY
 ```
 
-## Alignment-Only Debug
+## Resume A Failed Boundary
 
-Use this only when Stage 1 output already exists and the alignment stage is being
-debugged:
-
-```bash
-nextflow run . \
-  --stage align \
-  --fetch_dir /path/to/fetch \
-  --outdir /tmp/gaph_v2_align_debug \
-  -work-dir /tmp/gaph_v2_align_debug_work \
-  -resume
-```
-
-Strategy selection works in alignment-only mode as well:
-
-```bash
-nextflow run . \
-  --stage align \
-  --fetch_dir /path/to/fetch \
-  --outdir /tmp/gaph_v2_align_debug_asm20 \
-  --alignment_strategies minimap2_asm20 \
-  -work-dir /tmp/gaph_v2_align_debug_work_asm20 \
-  -resume
-```
-
-## Annotation-Only Debug
-
-Annotation-only mode reuses a complete standalone alignment directory and its
-matching fetch directory. The alignment manifest binds the compact handoff to
-`genes.tsv.gz` and `target_features.tsv.gz`; mismatched directories fail before
-annotation. Target sequences remain required for VCF normalization.
-
-```bash
-nextflow run . \
-  --stage annotate \
-  --alignment_dir /path/to/alignment \
-  --fetch_dir /path/to/fetch \
-  --outdir /tmp/gaph_v2_annotate_debug \
-  -work-dir /tmp/gaph_v2_annotate_debug_work \
-  -resume
-```
+Re-run the same end-to-end command with the same `-work-dir` and `-resume`.
+Nextflow restores every completed process whose inputs and code are unchanged;
+for example, an annotation failure resumes without re-running successful fetch
+or alignment tasks. There are no standalone stage input directories or
+stage-selection parameters.
 
 ## After Validation
 

@@ -2,7 +2,7 @@
     "$schema": "http://json-schema.org/draft-07/schema",
     "$id": "https://raw.githubusercontent.com/cvv/gaph_v2/master/nextflow_schema.json",
     "title": "gaph_v2 pipeline parameters",
-    "description": "GAPH v2 gene fetch and ortholog-to-target alignment workflow",
+    "description": "GAPH v2 end-to-end comparative variant evidence pipeline",
     "type": "object",
     "definitions": {
         "input_output_options": {
@@ -14,23 +14,9 @@
                     "type": "boolean",
                     "description": "Display help text."
                 },
-                "stage": {
-                    "type": "string",
-                    "default": "all",
-                    "enum": ["all", "fetch", "align", "annotate"],
-                    "description": "Pipeline stage to run. 'all' runs fetch, alignment, and annotation; 'align' consumes fetch_dir; 'annotate' consumes matching alignment_dir and fetch_dir results."
-                },
                 "ids_file": {
                     "type": "string",
                     "description": "Path to the input file containing gene IDs"
-                },
-                "fetch_dir": {
-                    "type": "string",
-                    "description": "Directory containing fetched sequences and target context. Required if stage is 'align' or 'annotate'."
-                },
-                "alignment_dir": {
-                    "type": "string",
-                    "description": "Directory containing the complete standalone Stage 2 alignment handoff. Required if stage is 'annotate'."
                 },
                 "outdir": {
                     "type": "string",

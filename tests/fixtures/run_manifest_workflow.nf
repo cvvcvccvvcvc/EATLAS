@@ -9,8 +9,6 @@ params.api_token = null
 params.endpoint = null
 params.fail = false
 params.hold_seconds = 0
-params.stage = 'test'
-
 process TERMINAL_TASK {
     input:
     val fail

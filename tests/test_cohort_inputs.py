@@ -90,11 +90,10 @@ def _make_run(
     _write_json(
         run / "run_manifest.json",
         {
-            "schema_version": 1,
+            "schema_version": 2,
             "pipeline": "gaph_v2",
             "status": "complete",
             "success": True,
-            "stage": "all",
             "git_commit": "a" * 40,
             "git_dirty": False,
         },

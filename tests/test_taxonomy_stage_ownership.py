@@ -21,7 +21,7 @@ def test_taxonomy_fetch_is_owned_by_stage_one() -> None:
     alignment_stage = source_between(
         workflow,
         "workflow ALIGNMENT_STAGE {",
-        "workflow ALIGNMENT_STAGE_FROM_DIR {",
+        "workflow PARTITIONED_ANNOTATION_STAGE {",
     )
 
     assert fetch_stage.count("FETCH_TAXONOMY(") == 1
@@ -31,22 +31,6 @@ def test_taxonomy_fetch_is_owned_by_stage_one() -> None:
         assert output not in alignment_stage.split("main:", 1)[0]
     assert "taxonomy_summary" not in fetch_stage
     assert "taxonomy_summary" not in alignment_stage
-
-
-def test_standalone_alignment_does_not_require_taxonomy() -> None:
-    workflow = source_between(
-        PROJECT_DIR / "main.nf",
-        "workflow ALIGNMENT_STAGE_FROM_DIR {",
-        "workflow PARTITIONED_ANNOTATION_STAGE {",
-    )
-
-    for filename in (
-        "taxonomy.tsv.gz",
-        "taxonomy_failures.tsv.gz",
-    ):
-        assert filename not in workflow
-    assert "taxonomy_summary.tsv.gz" not in workflow
-    assert "alignment does not fetch taxonomy metadata" in workflow
 
 
 def test_fetch_publication_contains_taxonomy_handoff() -> None:
@@ -74,11 +58,11 @@ def test_fetch_publication_contains_taxonomy_handoff() -> None:
         "withName: BUILD_ALIGNMENT_TASKS {",
     )
     assert 'conda = "${projectDir}/envs/fetch.yml"' in config
-    assert "enabled: params.stage == 'fetch'" in config
+    assert "publishDir" not in config
 
     build_config = source_between(
         PROJECT_DIR / "nextflow.config",
         "withName: BUILD_FETCH_DATASET {",
         "withName: FINALIZE_FETCH_OUTPUT {",
     )
-    assert "enabled: params.stage == 'fetch'" in build_config
+    assert "publishDir" not in build_config

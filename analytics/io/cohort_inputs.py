@@ -311,12 +311,10 @@ def _load_member(label: str, run_dir: Path) -> CohortMember:
 def _validate_completed_run(manifest: dict[str, object], run_dir: Path) -> None:
     if manifest.get("pipeline") != "gaph_v2":
         raise ValueError(f"Not a gaph_v2 run: {run_dir}")
-    if manifest.get("schema_version") != 1:
+    if manifest.get("schema_version") != 2:
         raise ValueError(f"Unsupported run manifest schema: {run_dir}")
     if manifest.get("status") != "complete" or manifest.get("success") is not True:
         raise ValueError(f"Run is not successfully complete: {run_dir}")
-    if manifest.get("stage") != "all":
-        raise ValueError(f"Cohort reports require completed --stage all runs: {run_dir}")
     if manifest.get("git_dirty") is not False:
         raise ValueError(f"Cohort reports require a clean pipeline revision: {run_dir}")
 
