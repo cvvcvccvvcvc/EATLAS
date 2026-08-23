@@ -125,6 +125,11 @@ Agent workflow rules:
    plotting tables belong to `analytics/` and must never replace their source
    evidence. Small manifest counts are allowed only as reproducible integrity or
    operational-QC snapshots, not as scientific data products.
+23. Prefer one current, explicit, straightforward implementation path. Do not
+   introduce legacy compatibility fallbacks, silent schema or version
+   autodetection, parallel old/new code paths, or speculative branching. Reject
+   obsolete inputs with a concrete error. Add branches or abstractions only
+   when required by a demonstrated current use case.
 
 ## Progressive Disclosure
 
