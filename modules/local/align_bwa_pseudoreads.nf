@@ -25,7 +25,6 @@ process ALIGN_BWA_PSEUDOREADS {
         --pseudoread-step "${meta.pseudoread_step}" \\
         --pseudoread-phred "${meta.pseudoread_phred}" \\
         --threads "${task.cpus}" \\
-        --target-features "${task_dir}/target_features.tsv.gz" \\
         --keep-native "${params.keep_native_alignments}"
     """
 }

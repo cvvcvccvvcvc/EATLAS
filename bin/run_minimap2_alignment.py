@@ -30,7 +30,6 @@ from alignment_task_io import (
     materialize_task_fastas,
     write_fasta_record,
 )
-from feature_coverage import summarize_feature_coverage_rows
 
 
 CS_OP_RE = re.compile(r"(:\d+|=[A-Za-z]+|\*[A-Za-z][A-Za-z]|[+\-][A-Za-z]+|~[A-Za-z]{2}\d+[A-Za-z]{2})")
@@ -73,7 +72,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--pseudoread-step", default=0, type=int)
     parser.add_argument("--minimap2-bin", default="minimap2")
     parser.add_argument("--threads", default=1, type=int)
-    parser.add_argument("--target-features", required=True, type=Path)
     parser.add_argument("--keep-native", default="false")
     return parser.parse_args()
 
@@ -776,12 +774,6 @@ def main() -> None:
     write_tsv_gz(args.outdir / "alignment_events.tsv.gz", EVENT_FIELDS, all_events)
     write_tsv_gz(args.outdir / "ortholog_alignment_summary.tsv.gz", SUMMARY_FIELDS, summary_rows)
     write_tsv_gz(args.outdir / "failures.tsv.gz", FAILURE_FIELDS, failures)
-    feature_coverage_count = summarize_feature_coverage_rows(
-        args.target_features,
-        summary_rows,
-        all_segments,
-        args.outdir / "feature_coverage.tsv.gz",
-    )
     strategy_parameters: dict[str, object] = {
         "preset": args.preset,
         "mapq_policy": "aligner_reported_unfiltered",
@@ -807,7 +799,6 @@ def main() -> None:
         "alignment_event_mode": "raw",
         "raw_alignment_event_count": len(all_events),
         "alignment_event_count": len(all_events),
-        "feature_coverage_count": feature_coverage_count,
         "failure_count": len(failures),
         "ortholog_count": len(ortholog_meta),
         "keep_native": keep_native,

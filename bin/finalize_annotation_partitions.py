@@ -7,7 +7,6 @@ import argparse
 import csv
 import gzip
 import json
-import re
 import shutil
 import sys
 from collections import Counter
@@ -21,15 +20,8 @@ csv.field_size_limit(sys.maxsize)
 COUNT_FIELDS = [
     "event_row_count",
     "event_variant_map_count",
-    "excluded_non_concrete_event_count",
     "variant_context_count",
     "annotated_variant_context_count",
-    "variant_strategy_support_count",
-    "variant_strategy_support_missing_key_count",
-    "variant_ortholog_support_count",
-    "variant_ortholog_support_missing_key_count",
-    "variant_strategy_site_depth_count",
-    "target_context_count",
     "clinvar_cached_variant_count",
     "gnomad_region_count",
     "gnomad_region_success_count",
@@ -38,9 +30,7 @@ COUNT_FIELDS = [
     "gnomad_cached_variant_count",
 ]
 COUNTER_FIELDS = [
-    "annotation_nonempty_counts",
     "event_key_status_counts",
-    "unique_lookup_status_counts",
     "gnomad_key_status_counts",
     "clinvar_key_status_counts",
 ]
@@ -76,17 +66,6 @@ ORTHOLOG_EVIDENCE_COUNT_FIELDS = [
 ORTHOLOG_EVIDENCE_FIELDS = [
     *ORTHOLOG_EVIDENCE_KEY_FIELDS,
     *ORTHOLOG_EVIDENCE_COUNT_FIELDS,
-]
-VARIANT_ORTHOLOG_SUPPORT_FIELDS = [
-    "variant_key",
-    "gene_id",
-    "strategy",
-    "ortholog_gene_id",
-    "tax_id",
-    "taxname",
-    "mapq",
-    "native_alignment_type",
-    "support_row_count",
 ]
 EVENT_VARIANT_MAP_FIELDS = [
     "event_group_id",
@@ -170,29 +149,17 @@ def load_partitions(root: Path) -> list[tuple[Path, dict]]:
 def validate_partition_manifests(partitions: list[tuple[Path, dict]]) -> None:
     reference_identity = None
     for partition, manifest in partitions:
-        if manifest_string(manifest, "output_mode", partition) != "unique_variant_context":
-            raise ValueError(f"Annotation partition has unexpected output_mode: {partition}")
-        for field in [
-            *COUNT_FIELDS,
-            "failure_count",
-            "ortholog_evidence_summary_count",
-            "variant_ortholog_support_file_count",
-        ]:
+        if manifest_string(manifest, "stage", partition) != "annotation":
+            raise ValueError(f"Annotation partition has unexpected stage: {partition}")
+        if (
+            manifest_string(manifest, "schema", partition)
+            != "normalized_annotation_evidence_partition_v1"
+        ):
+            raise ValueError(f"Annotation partition has unexpected schema: {partition}")
+        for field in [*COUNT_FIELDS, "failure_count"]:
             manifest_count(manifest, field, partition)
         for field in COUNTER_FIELDS:
             manifest_counter(manifest, field, partition)
-        if manifest_string(
-            manifest,
-            "variant_ortholog_support_format",
-            partition,
-        ) != "parquet_dataset":
-            raise ValueError(f"Annotation partition has unexpected support format: {partition}")
-        if manifest_string(
-            manifest,
-            "variant_ortholog_support_path",
-            partition,
-        ) != "variant_ortholog_support":
-            raise ValueError(f"Annotation partition has unexpected support path: {partition}")
 
         clinvar_vcf = required_manifest_value(manifest, "clinvar_vcf", partition)
         clinvar_tbi = required_manifest_value(manifest, "clinvar_tbi", partition)
@@ -325,94 +292,6 @@ def concatenate_tsv_gz_members(
     return row_count
 
 
-def sql_string(value: Path | str) -> str:
-    return "'" + str(value).replace("'", "''") + "'"
-
-
-def safe_partition_name(value: str) -> str:
-    normalized = re.sub(r"[^A-Za-z0-9._-]+", "_", value).strip("._")
-    return normalized or "partition"
-
-
-def merge_ortholog_support_dataset(
-    partitions: list[tuple[Path, dict]],
-    output: Path,
-) -> tuple[int, int]:
-    try:
-        import duckdb
-    except ImportError as exc:
-        raise RuntimeError(
-            "DuckDB is required to validate exact ortholog support Parquet"
-        ) from exc
-
-    output.mkdir(parents=True, exist_ok=True)
-    if any(output.iterdir()):
-        raise ValueError(f"Variant ortholog support output is not empty: {output}")
-    connection = duckdb.connect()
-    expected_schema = None
-    row_count = 0
-    file_count = 0
-    try:
-        for partition_index, (partition, manifest) in enumerate(partitions, start=1):
-            if manifest_string(
-                manifest,
-                "variant_ortholog_support_format",
-                partition,
-            ) != "parquet_dataset":
-                raise ValueError(
-                    f"Annotation partition does not declare Parquet exact support: {partition}"
-                )
-            source_dir = partition / "variant_ortholog_support"
-            source_files = sorted(source_dir.glob("*.parquet"))
-            expected_file_count = manifest_count(
-                manifest,
-                "variant_ortholog_support_file_count",
-                partition,
-            )
-            if len(source_files) != expected_file_count:
-                raise ValueError(
-                    "Variant ortholog support file count does not match partition manifest: "
-                    f"partition={partition}, files={len(source_files)}, "
-                    f"manifest={expected_file_count}"
-                )
-            if not source_files:
-                raise ValueError(f"Annotation partition has no exact-support Parquet: {partition}")
-            partition_id = safe_partition_name(
-                manifest_string(manifest, "partition_id", partition)
-            )
-            for source_index, source in enumerate(source_files, start=1):
-                schema = connection.execute(
-                    f"DESCRIBE SELECT * FROM read_parquet({sql_string(source)})"
-                ).fetchall()
-                field_names = [str(row[0]) for row in schema]
-                if field_names != VARIANT_ORTHOLOG_SUPPORT_FIELDS:
-                    raise ValueError(
-                        f"Unexpected exact-support Parquet fields in {source}: {field_names}"
-                    )
-                normalized_schema = [(str(row[0]), str(row[1])) for row in schema]
-                if expected_schema is None:
-                    expected_schema = normalized_schema
-                elif normalized_schema != expected_schema:
-                    raise ValueError(
-                        f"Exact-support Parquet schema differs in {source}: "
-                        f"expected {expected_schema}, observed {normalized_schema}"
-                    )
-                source_count = int(
-                    connection.execute(
-                        f"SELECT COUNT(*) FROM read_parquet({sql_string(source)})"
-                    ).fetchone()[0]
-                )
-                target = output / (
-                    f"part-{partition_index:06d}-{partition_id}-{source_index:02d}.parquet"
-                )
-                shutil.copy2(source, target)
-                row_count += source_count
-                file_count += 1
-    finally:
-        connection.close()
-    return row_count, file_count
-
-
 def copy_event_variant_map_dataset(
     partitions: list[tuple[Path, dict]],
     output: Path,
@@ -531,9 +410,8 @@ def merge_gnomad_shared_cache(partitions: list[tuple[Path, dict]]) -> dict[str, 
 
 def merge_partition_timings(
     partitions: list[tuple[Path, dict]],
-) -> tuple[dict[str, dict[str, float]], dict[str, float]]:
+) -> dict[str, dict[str, float]]:
     by_partition = {}
-    totals: Counter = Counter()
     for path, manifest in partitions:
         timings = manifest.get("timings_seconds")
         if not isinstance(timings, dict):
@@ -543,11 +421,7 @@ def merge_partition_timings(
         if any(value < 0 for value in normalized.values()):
             raise ValueError(f"Negative phase timing in annotation partition {partition_id}")
         by_partition[partition_id] = normalized
-        totals.update(normalized)
-    return (
-        dict(sorted(by_partition.items())),
-        {name: round(value, 3) for name, value in sorted(totals.items())},
-    )
+    return dict(sorted(by_partition.items()))
 
 
 def merge_ortholog_evidence(
@@ -631,23 +505,9 @@ def main() -> None:
         "annotated_variant_context_count",
         args.outdir / "variant_annotations.tsv.gz",
     )
-    support_count = concatenate_tsv_gz_members(
-        partitions,
-        "variant_strategy_support.tsv.gz",
-        "variant_strategy_support_count",
-        args.outdir / "variant_strategy_support.tsv.gz",
-    )
-    ortholog_support_count, ortholog_support_file_count = merge_ortholog_support_dataset(
-        partitions,
-        args.outdir / "variant_ortholog_support",
-    )
     event_variant_map_count = copy_event_variant_map_dataset(
         partitions,
         args.outdir / "event_variant_map",
-    )
-    ortholog_evidence_count = merge_ortholog_evidence(
-        partitions,
-        args.outdir / "ortholog_evidence_summary.tsv.gz",
     )
     failure_count = merge_tsv_gz(partitions, "failures.tsv.gz", args.outdir / "failures.tsv.gz")
 
@@ -659,16 +519,6 @@ def main() -> None:
         raise ValueError(
             "Annotation row count does not match partition manifests: "
             f"rows={annotation_count}, manifests={counts['annotated_variant_context_count']}"
-        )
-    if counts["variant_strategy_support_count"] != support_count:
-        raise ValueError(
-            "Variant-strategy support row count does not match partition manifests: "
-            f"rows={support_count}, manifests={counts['variant_strategy_support_count']}"
-        )
-    if counts["variant_ortholog_support_count"] != ortholog_support_count:
-        raise ValueError(
-            "Variant-ortholog support row count does not match partition manifests: "
-            f"rows={ortholog_support_count}, manifests={counts['variant_ortholog_support_count']}"
         )
     if counts["event_variant_map_count"] != event_variant_map_count:
         raise ValueError(
@@ -693,26 +543,21 @@ def main() -> None:
 
     first_manifest = partitions[0][1]
     gnomad_shared_cache = merge_gnomad_shared_cache(partitions)
-    partition_timings, timing_totals = merge_partition_timings(partitions)
+    partition_timings = merge_partition_timings(partitions)
     manifest = {
         "created_at": utc_now(),
-        "output_mode": "unique_variant_context_partitioned",
+        "stage": "annotation",
+        "schema": "normalized_annotation_evidence_v1",
         "partition_count": len(partitions),
         "partition_ids": [manifest_string(item, "partition_id", path) for path, item in partitions],
         **counts,
         **counters,
         "annotated_variant_context_count": annotation_count,
-        "variant_strategy_support_count": support_count,
-        "variant_ortholog_support_count": ortholog_support_count,
-        "variant_ortholog_support_format": "parquet_dataset",
-        "variant_ortholog_support_path": "variant_ortholog_support",
-        "variant_ortholog_support_file_count": ortholog_support_file_count,
         "event_variant_map": event_variant_map_manifest(
             event_variant_map_count,
             len(partitions),
         ),
         "large_tsv_format": FINAL_TSV_FORMAT,
-        "ortholog_evidence_summary_count": ortholog_evidence_count,
         "failure_count": failure_count,
         "clinvar_vcf": first_manifest["clinvar_vcf"],
         "clinvar_tbi": first_manifest["clinvar_tbi"],
@@ -724,7 +569,6 @@ def main() -> None:
         manifest["gnomad_shared_cache"] = gnomad_shared_cache
     if partition_timings:
         manifest["partition_timings_seconds"] = partition_timings
-        manifest["partition_timing_totals_seconds"] = timing_totals
     (args.outdir / "manifest.json").write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
 
 

@@ -62,6 +62,12 @@ def annotationBaseMemoryGbForSupportRows(rawSupportRowCount) {
             "event_ortholog_support_count must be non-negative: ${supportRowCount}"
         )
     }
+    if (supportRowCount <= 1_000_000L) {
+        return 8
+    }
+    if (supportRowCount <= 5_000_000L) {
+        return 16
+    }
     if (supportRowCount <= 15_000_000L) {
         return 32
     }
@@ -132,14 +138,7 @@ def resolveStandaloneAlignmentInputs(fetchDir) {
         error "Alignment input is not a directory: ${alignmentDir}"
     }
 
-    def requiredFiles = [
-        'manifest.json',
-        'alignment_events.tsv.gz',
-        'event_ortholog_support.tsv.gz',
-        'snv_site_depth.tsv.gz',
-        'snv_taxonomic_depth.tsv.gz',
-        'snv_alt_taxonomic_support.tsv.gz',
-    ]
+    def requiredFiles = ['manifest.json', 'evidence/partitions']
     def missingFiles = requiredFiles.findAll { !alignmentDir.resolve(it).exists() }
     if (missingFiles) {
         error "Alignment directory is missing annotation input(s): ${missingFiles.join(', ')}"
@@ -149,14 +148,49 @@ def resolveStandaloneAlignmentInputs(fetchDir) {
     if (manifest.stage != 'alignment') {
         error "Alignment manifest has invalid stage: ${manifest.stage}"
     }
-    if (manifest.output_profile != 'full') {
-        error "Standalone annotation requires a full alignment result, observed output_profile=${manifest.output_profile}"
+    if (manifest.schema != 'normalized_alignment_evidence_v1') {
+        error "Standalone annotation requires normalized alignment evidence schema v1, observed schema=${manifest.schema}"
     }
     if (manifest.alignment_event_mode != 'compact_support') {
         error "Standalone annotation requires compact_support events, observed alignment_event_mode=${manifest.alignment_event_mode}"
     }
     if (manifest.event_ortholog_support_format != 'event_group_id_v1') {
         error "Alignment manifest has unsupported event ortholog support format: ${manifest.event_ortholog_support_format}"
+    }
+    def evidenceContract = manifest.normalized_evidence
+    if (!(evidenceContract instanceof Map)) {
+        error "Alignment manifest is missing normalized_evidence"
+    }
+    def expectedPartitionFiles = [
+        'manifest.json',
+        'ortholog_alignment_summary.tsv.gz',
+        'alignment_segments.tsv.gz',
+        'alignment_events.tsv.gz',
+        'event_ortholog_support.tsv.gz',
+    ]
+    if (
+        evidenceContract.layout != 'partitioned' ||
+        evidenceContract.format != 'tsv_gzip_v1' ||
+        evidenceContract.path != 'evidence/partitions' ||
+        evidenceContract.event_group_id_scope != 'partition' ||
+        evidenceContract.partition_files != expectedPartitionFiles
+    ) {
+        error "Alignment manifest has an unsupported normalized_evidence contract"
+    }
+    def evidenceDir = alignmentDir.resolve('evidence')
+    def partitionDirs = evidenceDir.resolve('partitions').toFile().listFiles()
+        .findAll { it.isDirectory() }
+        .sort { left, right -> left.name <=> right.name }
+    if (partitionDirs.size() != (evidenceContract.partition_count as Integer)) {
+        error "Alignment evidence partition count does not match manifest"
+    }
+    partitionDirs.each { partitionDir ->
+        def missingPartitionFiles = expectedPartitionFiles.findAll {
+            !partitionDir.toPath().resolve(it).exists()
+        }
+        if (missingPartitionFiles) {
+            error "Alignment partition ${partitionDir.name} is missing file(s): ${missingPartitionFiles.join(', ')}"
+        }
     }
 
     def sourceContext = manifest.source_target_context
@@ -181,11 +215,7 @@ def resolveStandaloneAlignmentInputs(fetchDir) {
 
     return [
         manifest: alignmentDir.resolve('manifest.json'),
-        events: alignmentDir.resolve('alignment_events.tsv.gz'),
-        eventOrthologSupport: alignmentDir.resolve('event_ortholog_support.tsv.gz'),
-        snvSiteDepth: alignmentDir.resolve('snv_site_depth.tsv.gz'),
-        snvTaxonomicDepth: alignmentDir.resolve('snv_taxonomic_depth.tsv.gz'),
-        snvAltTaxonomicSupport: alignmentDir.resolve('snv_alt_taxonomic_support.tsv.gz'),
+        evidence: evidenceDir,
     ]
 }
 
@@ -245,9 +275,9 @@ include { BUILD_ENSEMBL_COMPARA_MAF_MANIFEST } from './modules/local/build_ensem
 include { BUILD_ENSEMBL_COMPARA_MAF_CHUNK_TASKS } from './modules/local/build_ensembl_compara_maf_chunk_tasks.nf'
 include { ALIGN_ENSEMBL_COMPARA_MAF_CHUNK } from './modules/local/align_ensembl_compara_maf_chunk.nf'
 include { MERGE_ENSEMBL_COMPARA_MAF_GENE } from './modules/local/merge_ensembl_compara_maf_gene.nf'
-include { ANNOTATE_EVENTS } from './modules/local/annotate_events.nf'
 include { ANNOTATE_EVENTS_PARTITION } from './modules/local/annotate_events_partition.nf'
 include { FINALIZE_ANNOTATION } from './modules/local/finalize_annotation.nf'
+include { PREPARE_ANNOTATION_CONTEXTS } from './modules/local/prepare_annotation_contexts.nf'
 
 workflow FETCH_STAGE {
     take:
@@ -309,8 +339,6 @@ workflow ALIGNMENT_STAGE {
     target_features
     orthologs_selected
     sequences
-    taxonomy
-    taxonomy_failures
 
     main:
     prepare_script = file("${projectDir}/bin/prepare_alignment_tasks.py")
@@ -323,14 +351,11 @@ workflow ALIGNMENT_STAGE {
     ensembl_compara_maf_chunk_script = file("${projectDir}/bin/run_ensembl_compara_maf_chunk_alignment.py")
     ensembl_compara_maf_gene_merge_script = file("${projectDir}/bin/merge_ensembl_compara_maf_gene.py")
     merge_script = file("${projectDir}/bin/merge_alignment_results.py")
-    feature_coverage_script = file("${projectDir}/bin/feature_coverage.py")
-    taxonomic_evidence_script = file("${projectDir}/bin/taxonomic_evidence.py")
     alignment_table_schema = file("${projectDir}/bin/alignment_table_schema.py")
 
     BUILD_ALIGNMENT_TASKS(
         genes,
         orthologs_selected,
-        target_features,
         sequences,
         prepare_script
     )
@@ -378,27 +403,6 @@ workflow ALIGNMENT_STAGE {
         .map { gene_id, dir, partition_id -> tuple(gene_id, partition_id, dir) }
     target_fastas_by_gene = sequences.flatMap { seq_dir -> fastaFilesByGene(seq_dir, 'targets') }
     ortholog_fastas_by_gene = sequences.flatMap { seq_dir -> fastaFilesByGene(seq_dir, 'orthologs') }
-    target_features_by_gene = BUILD_ALIGNMENT_TASKS.out.target_feature_parts.flatten().map { path ->
-        tuple(path.baseName.replaceFirst(/\.tsv$/, ''), path)
-    }
-    selected_partition_genes = (
-        SELECTED_ALIGNMENT_STRATEGIES.contains(ENSEMBL_COMPARA_STRATEGY)
-        ? BUILD_ALIGNMENT_TASKS.out.target_partition_genes
-        : BUILD_ALIGNMENT_TASKS.out.partition_genes
-    )
-    partition_genes = selected_partition_genes.flatten().map { path ->
-        tuple(path.baseName.replaceFirst(/\.tsv$/, ''), path)
-    }
-    target_fastas_by_partition = eligible_task_dirs_by_gene
-        .map { gene_id, partition_id, dir -> tuple(gene_id, partition_id) }
-        .join(target_fastas_by_gene)
-        .map { gene_id, partition_id, fasta -> tuple(partition_id, fasta) }
-        .groupTuple()
-    target_features_by_partition = eligible_task_dirs_by_gene
-        .map { gene_id, partition_id, dir -> tuple(gene_id, partition_id) }
-        .join(target_features_by_gene)
-        .map { gene_id, partition_id, features -> tuple(partition_id, features) }
-        .groupTuple()
     alignment_inputs = ortholog_task_dirs_by_gene
         .join(target_fastas_by_gene)
         .join(ortholog_fastas_by_gene)
@@ -558,17 +562,12 @@ workflow ALIGNMENT_STAGE {
         partition_merge_inputs,
         BUILD_ALIGNMENT_TASKS.out.alignment_tasks,
         SELECTED_ALIGNMENT_STRATEGIES.join(','),
-        taxonomy,
         merge_script,
-        feature_coverage_script,
-        taxonomic_evidence_script,
         alignment_table_schema
     )
 
     MERGE_ALIGNMENT(
         BUILD_ALIGNMENT_TASKS.out.alignment_tasks,
-        taxonomy,
-        taxonomy_failures,
         genes,
         target_features,
         MERGE_ALIGNMENT_PARTITION.out.partition_dirs.map { meta, dir -> dir }.collect(),
@@ -580,20 +579,7 @@ workflow ALIGNMENT_STAGE {
     emit:
     manifest = MERGE_ALIGNMENT.out.manifest
     evidence = MERGE_ALIGNMENT.out.evidence
-    tasks = MERGE_ALIGNMENT.out.alignment_tasks
-    taxonomy = MERGE_ALIGNMENT.out.taxonomy
-    taxonomy_failures = MERGE_ALIGNMENT.out.taxonomy_failures
-    summaries = MERGE_ALIGNMENT.out.summaries
-    strategy_summary = MERGE_ALIGNMENT.out.strategy_summary
-    segments = MERGE_ALIGNMENT.out.segments
-    feature_coverage = MERGE_ALIGNMENT.out.feature_coverage
-    events = MERGE_ALIGNMENT.out.events
-    event_ortholog_support = MERGE_ALIGNMENT.out.event_ortholog_support
     failures = MERGE_ALIGNMENT.out.failures
-    partitions = MERGE_ALIGNMENT_PARTITION.out.partition_dirs
-    partition_genes = partition_genes
-    partition_target_fastas = target_fastas_by_partition
-    partition_target_features = target_features_by_partition
 }
 
 workflow ALIGNMENT_STAGE_FROM_DIR {
@@ -604,8 +590,6 @@ workflow ALIGNMENT_STAGE_FROM_DIR {
         'target_features.tsv.gz',
         'orthologs.selected.tsv.gz',
         'sequences',
-        'taxonomy.tsv.gz',
-        'taxonomy_failures.tsv.gz',
     ]
     missing_files = required_files.findAll { !fetch_dir.resolve(it).exists() }
     if (missing_files) {
@@ -619,33 +603,22 @@ workflow ALIGNMENT_STAGE_FROM_DIR {
     target_features = Channel.value(file("${fetch_dir}/target_features.tsv.gz"))
     orthologs_selected = Channel.value(file("${fetch_dir}/orthologs.selected.tsv.gz"))
     sequences = Channel.value(file("${fetch_dir}/sequences"))
-    taxonomy = Channel.value(file("${fetch_dir}/taxonomy.tsv.gz"))
-    taxonomy_failures = Channel.value(file("${fetch_dir}/taxonomy_failures.tsv.gz"))
     ALIGNMENT_STAGE(
         genes,
         target_features,
         orthologs_selected,
-        sequences,
-        taxonomy,
-        taxonomy_failures
+        sequences
     )
     emit:
-    events = ALIGNMENT_STAGE.out.events
-    event_ortholog_support = ALIGNMENT_STAGE.out.event_ortholog_support
+    evidence = ALIGNMENT_STAGE.out.evidence
     genes = genes
     sequences = sequences
 }
 
-workflow ANNOTATION_STAGE {
+workflow PARTITIONED_ANNOTATION_STAGE {
     take:
-    alignment_manifest
-    events_tsv
-    event_ortholog_support_tsv
-    snv_site_depth_tsv
-    snv_taxonomic_depth_tsv
-    snv_alt_taxonomic_support_tsv
+    alignment_evidence
     genes_tsv
-    target_features
     target_sequences_dir
     clinvar_vcf
     clinvar_vcf_tbi
@@ -653,63 +626,7 @@ workflow ANNOTATION_STAGE {
 
     main:
     annotate_script = file("${projectDir}/bin/annotate_events.py")
-    annotation_helpers = [
-        file("${projectDir}/bin/feature_coverage.py"),
-        file("${projectDir}/bin/ortholog_evidence_summary.py"),
-        file("${projectDir}/bin/taxonomic_evidence.py"),
-    ]
-    genomics_sources = [
-        file("${projectDir}/genomics/__init__.py"),
-        file("${projectDir}/genomics/clinvar.py"),
-        file("${projectDir}/genomics/gnomad.py"),
-        file("${projectDir}/genomics/gnomad_cache.py"),
-        file("${projectDir}/genomics/variants.py"),
-    ]
-    ANNOTATE_EVENTS(
-        alignment_manifest,
-        events_tsv,
-        event_ortholog_support_tsv,
-        snv_site_depth_tsv,
-        snv_taxonomic_depth_tsv,
-        snv_alt_taxonomic_support_tsv,
-        genes_tsv,
-        target_features,
-        target_sequences_dir,
-        annotate_script,
-        annotation_helpers,
-        genomics_sources,
-        clinvar_vcf,
-        clinvar_vcf_tbi,
-        gnomad_cache_dir
-    )
-
-    emit:
-    variant_annotations = ANNOTATE_EVENTS.out.variant_annotations
-    event_variant_map = ANNOTATE_EVENTS.out.event_variant_map
-    variant_strategy_support = ANNOTATE_EVENTS.out.variant_strategy_support
-    variant_ortholog_support = ANNOTATE_EVENTS.out.variant_ortholog_support
-    ortholog_evidence_summary = ANNOTATE_EVENTS.out.ortholog_evidence_summary
-    manifest = ANNOTATE_EVENTS.out.manifest
-    failures = ANNOTATE_EVENTS.out.failures
-}
-
-workflow PARTITIONED_ANNOTATION_STAGE {
-    take:
-    alignment_partitions
-    partition_genes
-    partition_target_fastas
-    partition_target_features
-    clinvar_vcf
-    clinvar_vcf_tbi
-    gnomad_cache_dir
-
-    main:
-    annotate_script = file("${projectDir}/bin/annotate_events.py")
-    annotation_helpers = [
-        file("${projectDir}/bin/feature_coverage.py"),
-        file("${projectDir}/bin/ortholog_evidence_summary.py"),
-        file("${projectDir}/bin/taxonomic_evidence.py"),
-    ]
+    prepare_contexts_script = file("${projectDir}/bin/prepare_annotation_contexts.py")
     genomics_sources = [
         file("${projectDir}/genomics/__init__.py"),
         file("${projectDir}/genomics/clinvar.py"),
@@ -718,17 +635,36 @@ workflow PARTITIONED_ANNOTATION_STAGE {
         file("${projectDir}/genomics/variants.py"),
     ]
     finalize_script = file("${projectDir}/bin/finalize_annotation_partitions.py")
+    PREPARE_ANNOTATION_CONTEXTS(
+        alignment_evidence,
+        genes_tsv,
+        target_sequences_dir,
+        prepare_contexts_script
+    )
+    alignment_partitions = alignment_evidence.flatMap { evidence_dir ->
+        def partitionsRoot = evidence_dir.resolve('partitions').toFile()
+        def directories = partitionsRoot.listFiles()
+            .findAll { it.isDirectory() }
+            .sort { left, right -> left.name <=> right.name }
+        directories.collect { directory ->
+            def partition_id = directory.name
+            tuple(partition_id, [id: partition_id, partition_id: partition_id], file(directory))
+        }
+    }
+    partition_contexts = PREPARE_ANNOTATION_CONTEXTS.out.context_dirs.flatten().map { context_dir ->
+        tuple(context_dir.baseName, context_dir)
+    }
     annotation_inputs = alignment_partitions
-        .map { meta, dir -> tuple(meta.partition_id as String, meta, dir) }
-        .join(partition_genes)
-        .join(partition_target_fastas)
-        .join(partition_target_features)
-        .map { partition_id, meta, alignment_partition, genes_tsv, target_fastas, target_features ->
+        .join(partition_contexts)
+        .map { partition_id, meta, alignment_partition, context_dir ->
             def manifestPath = alignment_partition.resolve('manifest.json')
             if (!manifestPath.exists()) {
                 error "Alignment partition ${partition_id} is missing manifest.json: ${alignment_partition}"
             }
             def partitionManifest = new JsonSlurper().parse(manifestPath.toFile())
+            if (partitionManifest.schema != 'normalized_alignment_evidence_partition_v1') {
+                error "Alignment partition ${partition_id} has unsupported schema=${partitionManifest.schema}"
+            }
             if (partitionManifest.event_ortholog_support_count == null) {
                 error "Alignment partition ${partition_id} manifest is missing event_ortholog_support_count"
             }
@@ -737,12 +673,19 @@ workflow PARTITIONED_ANNOTATION_STAGE {
                 annotation_event_ortholog_support_count: supportRowCount,
                 annotation_memory_gb: annotationBaseMemoryGbForSupportRows(supportRowCount),
             ]
-            tuple(annotationMeta, alignment_partition, genes_tsv, target_fastas, target_features)
+            def contextGenes = context_dir.resolve('genes.tsv.gz')
+            def targetFastas = context_dir.resolve('targets').toFile().listFiles()
+                .findAll { it.isFile() && it.name.endsWith('.fa.gz') }
+                .sort { left, right -> left.name <=> right.name }
+                .collect { file(it) }
+            if (!contextGenes.exists() || !targetFastas) {
+                error "Annotation context is incomplete for partition ${partition_id}: ${context_dir}"
+            }
+            tuple(annotationMeta, alignment_partition, contextGenes, targetFastas)
         }
     ANNOTATE_EVENTS_PARTITION(
         annotation_inputs,
         annotate_script,
-        annotation_helpers,
         genomics_sources,
         clinvar_vcf,
         clinvar_vcf_tbi,
@@ -756,9 +699,6 @@ workflow PARTITIONED_ANNOTATION_STAGE {
     emit:
     variant_annotations = FINALIZE_ANNOTATION.out.variant_annotations
     event_variant_map = FINALIZE_ANNOTATION.out.event_variant_map
-    variant_strategy_support = FINALIZE_ANNOTATION.out.variant_strategy_support
-    variant_ortholog_support = FINALIZE_ANNOTATION.out.variant_ortholog_support
-    ortholog_evidence_summary = FINALIZE_ANNOTATION.out.ortholog_evidence_summary
     manifest = FINALIZE_ANNOTATION.out.manifest
     failures = FINALIZE_ANNOTATION.out.failures
 }
@@ -792,15 +732,12 @@ workflow {
             FETCH_STAGE.out.genes,
             FETCH_STAGE.out.target_features,
             FETCH_STAGE.out.orthologs_selected,
-            FETCH_STAGE.out.sequences,
-            FETCH_STAGE.out.taxonomy,
-            FETCH_STAGE.out.taxonomy_failures
+            FETCH_STAGE.out.sequences
         )
         PARTITIONED_ANNOTATION_STAGE(
-            ALIGNMENT_STAGE.out.partitions,
-            ALIGNMENT_STAGE.out.partition_genes,
-            ALIGNMENT_STAGE.out.partition_target_fastas,
-            ALIGNMENT_STAGE.out.partition_target_features,
+            ALIGNMENT_STAGE.out.evidence,
+            FETCH_STAGE.out.genes,
+            FETCH_STAGE.out.sequences.map { sequences_dir -> file("${sequences_dir}/targets") },
             clinvar_inputs.vcf,
             clinvar_inputs.tbi,
             params.gnomad_cache_dir ?: ''
@@ -814,15 +751,9 @@ workflow {
         log.info "Using ClinVar VCF: ${clinvar_inputs.path}"
         fetch_dir = file(params.fetch_dir)
         alignment_inputs = resolveStandaloneAlignmentInputs(fetch_dir)
-        ANNOTATION_STAGE(
-            alignment_inputs.manifest,
-            alignment_inputs.events,
-            alignment_inputs.eventOrthologSupport,
-            alignment_inputs.snvSiteDepth,
-            alignment_inputs.snvTaxonomicDepth,
-            alignment_inputs.snvAltTaxonomicSupport,
+        PARTITIONED_ANNOTATION_STAGE(
+            Channel.value(file(alignment_inputs.evidence)),
             file("${fetch_dir}/genes.tsv.gz"),
-            file("${fetch_dir}/target_features.tsv.gz"),
             file("${fetch_dir}/sequences/targets"),
             clinvar_inputs.vcf,
             clinvar_inputs.tbi,

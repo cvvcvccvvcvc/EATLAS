@@ -11,6 +11,8 @@ import pytest
 
 
 BIN_DIR = Path(__file__).resolve().parents[1] / "bin"
+PROJECT_DIR = BIN_DIR.parent
+FINALIZE_SCRIPT = BIN_DIR / "finalize_annotation_partitions.py"
 sys.path.insert(0, str(BIN_DIR))
 
 from annotate_events import (  # noqa: E402
@@ -18,7 +20,6 @@ from annotate_events import (  # noqa: E402
     EventOrthologSupportStream,
     PARTITION_TSV_SHARD_FORMAT,
     VARIANT_ANNOTATION_FIELDS,
-    VARIANT_ORTHOLOG_SUPPORT_FIELDS,
     VARIANT_STRATEGY_SUPPORT_FIELDS,
     add_strategy_support,
     build_variant_strategy_support,
@@ -46,14 +47,11 @@ from finalize_annotation_partitions import (  # noqa: E402
 def canonical_partition_manifest(partition_id: str) -> dict:
     return {
         "partition_id": partition_id,
-        "output_mode": "unique_variant_context",
+        "stage": "annotation",
+        "schema": "normalized_annotation_evidence_partition_v1",
         **{field: 0 for field in COUNT_FIELDS},
         **{field: {} for field in COUNTER_FIELDS},
         "failure_count": 0,
-        "ortholog_evidence_summary_count": 0,
-        "variant_ortholog_support_format": "parquet_dataset",
-        "variant_ortholog_support_path": "variant_ortholog_support",
-        "variant_ortholog_support_file_count": 1,
         "clinvar_vcf": {"path": "clinvar.vcf.gz", "size_bytes": 1, "mtime": 1},
         "clinvar_tbi": {"path": "clinvar.vcf.gz.tbi", "size_bytes": 1, "mtime": 1},
         "gnomad_api_url": "https://gnomad.example/api",
@@ -65,14 +63,11 @@ def canonical_alignment_manifest(partition_id: str = "") -> dict:
     return {
         "stage": "alignment",
         "partition_id": partition_id,
-        "output_profile": "annotation-input" if partition_id else "full",
+        "schema": "normalized_alignment_evidence_partition_v1",
         "alignment_event_mode": "compact_support",
         "event_ortholog_support_format": "event_group_id_v1",
         "alignment_event_count": 0,
         "event_ortholog_support_count": 0,
-        "snv_site_depth_count": 0,
-        "snv_taxonomic_depth_count": 0,
-        "snv_alt_taxonomic_support_count": 0,
     }
 
 
@@ -165,8 +160,8 @@ def test_annotation_entrypoints_accept_large_tsv_fields(
     assert completed.stdout.strip() == str(len(large_field))
 
 
-def test_partitioned_manifest_keeps_non_concrete_exclusion_count() -> None:
-    assert "excluded_non_concrete_event_count" in COUNT_FIELDS
+def test_partitioned_manifest_keeps_durable_lineage_counts_only() -> None:
+    assert "excluded_non_concrete_event_count" not in COUNT_FIELDS
     assert "event_variant_map_count" in COUNT_FIELDS
 
 
@@ -358,6 +353,74 @@ def test_partition_manifest_validation_requires_current_contract(tmp_path: Path)
         validate_partition_manifests([(partition, manifest)])
 
 
+def test_finalizer_publishes_only_source_annotation_evidence(tmp_path: Path) -> None:
+    partition_root = tmp_path / "partitions"
+    partition = partition_root / "annotation_partition_000001"
+    partition.mkdir(parents=True)
+    manifest = canonical_partition_manifest("partition_000001")
+    manifest.update(
+        {
+            "event_row_count": 1,
+            "event_variant_map_count": 1,
+            "variant_context_count": 1,
+            "annotated_variant_context_count": 1,
+            "partition_tsv_shard_format": PARTITION_TSV_SHARD_FORMAT,
+            "partition_tsv_shard_fields": {
+                "variant_annotations.tsv.gz": VARIANT_ANNOTATION_FIELDS,
+            },
+        }
+    )
+    (partition / "manifest.json").write_text(json.dumps(manifest) + "\n")
+    write_tsv_gz(
+        partition / "variant_annotations.tsv.gz",
+        VARIANT_ANNOTATION_FIELDS,
+        [{"variant_key": "1:100:A>G", "gene_id": "1", "lookup_status": "ok"}],
+        include_header=False,
+    )
+    write_event_variant_map(
+        partition / "event_variant_map.tsv.gz",
+        [event_variant_map_row(1, ("1", 100, "A", "G"), "ok")],
+    )
+    with gzip.open(partition / "failures.tsv.gz", "wt", newline="") as handle:
+        csv.writer(handle, delimiter="\t", lineterminator="\n").writerow(
+            ["source", "scope", "chrom", "start", "end", "failure_type", "message"]
+        )
+    outdir = tmp_path / "annotation"
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            str(FINALIZE_SCRIPT),
+            "--partition-root",
+            str(partition_root),
+            "--outdir",
+            str(outdir),
+        ],
+        cwd=PROJECT_DIR,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert {path.name for path in outdir.iterdir()} == {
+        "variant_annotations.tsv.gz",
+        "event_variant_map",
+        "failures.tsv.gz",
+        "manifest.json",
+    }
+    final_manifest = json.loads((outdir / "manifest.json").read_text())
+    assert final_manifest["stage"] == "annotation"
+    assert final_manifest["schema"] == "normalized_annotation_evidence_v1"
+    forbidden_keys = {
+        "variant_strategy_support_count",
+        "variant_ortholog_support_count",
+        "variant_ortholog_support_format",
+        "ortholog_evidence_summary_count",
+    }
+    assert forbidden_keys.isdisjoint(final_manifest)
+
+
 def test_partition_timings_are_preserved_and_summed(tmp_path: Path) -> None:
     partitions = [
         (
@@ -376,13 +439,12 @@ def test_partition_timings_are_preserved_and_summed(tmp_path: Path) -> None:
         ),
     ]
 
-    by_partition, totals = merge_partition_timings(partitions)
+    by_partition = merge_partition_timings(partitions)
 
     assert by_partition == {
         "partition_000001": {"collapse_events": 1.25, "gnomad_lookup": 0.5},
         "partition_000002": {"collapse_events": 2.75},
     }
-    assert totals == {"collapse_events": 4.0, "gnomad_lookup": 0.5}
 
 
 def test_partition_tsv_members_are_concatenated_without_recompression(
@@ -465,25 +527,14 @@ def test_partition_tsv_member_rejects_embedded_header(tmp_path: Path) -> None:
         )
 
 
-def test_variant_strategy_support_schema_includes_genus_and_site_depth() -> None:
+def test_analytics_support_schema_is_not_part_of_stage3_manifest() -> None:
     assert VARIANT_STRATEGY_SUPPORT_FIELDS[-1] == "site_aligned_ortholog_count"
     assert "alt_support_genus_count" in VARIANT_STRATEGY_SUPPORT_FIELDS
-    assert "variant_strategy_site_depth_count" in COUNT_FIELDS
+    assert "variant_strategy_site_depth_count" not in COUNT_FIELDS
 
 
-def test_variant_ortholog_support_schema_is_database_ready() -> None:
-    assert VARIANT_ORTHOLOG_SUPPORT_FIELDS == [
-        "variant_key",
-        "gene_id",
-        "strategy",
-        "ortholog_gene_id",
-        "tax_id",
-        "taxname",
-        "mapq",
-        "native_alignment_type",
-        "support_row_count",
-    ]
-    assert "variant_ortholog_support_count" in COUNT_FIELDS
+def test_exact_support_schema_is_not_part_of_stage3_manifest() -> None:
+    assert "variant_ortholog_support_count" not in COUNT_FIELDS
 
 
 def test_partitioned_manifest_aggregates_shared_gnomad_cache_metrics(tmp_path: Path) -> None:

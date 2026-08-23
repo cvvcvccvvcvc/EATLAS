@@ -18,7 +18,6 @@ from alignment_table_schema import (
     SEGMENT_FIELDS,
     SUMMARY_FIELDS,
 )
-from feature_coverage import summarize_feature_coverage
 from ensembl_compara_maf import (
     OUTPUT_GZIP_COMPRESSLEVEL,
     interval_union_length,
@@ -202,13 +201,6 @@ def main() -> None:
     )
     summary_rows = consolidate_summaries(fragments, segments_path, events_path, target_length)
     write_tsv_gz(args.outdir / "ortholog_alignment_summary.tsv.gz", SUMMARY_FIELDS, summary_rows)
-    feature_coverage_count = summarize_feature_coverage(
-        args.task_dir / "target_features.tsv.gz",
-        args.outdir / "ortholog_alignment_summary.tsv.gz",
-        segments_path,
-        args.outdir / "feature_coverage.tsv.gz",
-    )
-
     manifests = [json.loads((path / "manifest.json").read_text()) for path in fragments]
     strategies = {tuple(item.get("strategies") or []) for item in manifests}
     if len(strategies) != 1 or len(next(iter(strategies))) != 1:
@@ -231,7 +223,6 @@ def main() -> None:
         "alignment_event_mode": "raw",
         "raw_alignment_event_count": event_count,
         "alignment_event_count": event_count,
-        "feature_coverage_count": feature_coverage_count,
         "failure_count": failure_count,
         "output_gzip_compresslevel": OUTPUT_GZIP_COMPRESSLEVEL,
     }

@@ -23,7 +23,6 @@ from alignment_table_schema import (
     SUMMARY_FIELDS,
 )
 from alignment_task_io import load_task_context, materialize_task_fastas
-from feature_coverage import summarize_feature_coverage_rows
 import bam_filtering_v1
 
 EventKey = tuple[str, int, int, str, str]
@@ -49,7 +48,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--pseudoread-len", required=True, type=int)
     parser.add_argument("--pseudoread-step", required=True, type=int)
     parser.add_argument("--pseudoread-phred", required=True, type=int)
-    parser.add_argument("--target-features", required=True, type=Path)
     parser.add_argument("--keep-native", default="false")
     return parser.parse_args()
 
@@ -660,13 +658,6 @@ def main() -> None:
         write_tsv_gz(outdir / "alignment_events.tsv.gz", EVENT_FIELDS, event_rows)
         write_tsv_gz(outdir / "ortholog_alignment_summary.tsv.gz", SUMMARY_FIELDS, summary_rows)
         write_tsv_gz(outdir / "failures.tsv.gz", FAILURE_FIELDS, [])
-        feature_coverage_count = summarize_feature_coverage_rows(
-            args.target_features,
-            summary_rows,
-            segment_rows,
-            outdir / "feature_coverage.tsv.gz",
-        )
-
         if keep_native:
             keep_native_outputs(work_dir, outdir)
 
@@ -686,7 +677,6 @@ def main() -> None:
             "alignment_event_mode": "raw",
             "raw_alignment_event_count": len(event_rows),
             "alignment_event_count": len(event_rows),
-            "feature_coverage_count": feature_coverage_count,
             "failure_count": 0,
             "ortholog_count": len(ortholog_meta),
             "pseudoread_count": pseudoreads.total_reads,

@@ -42,8 +42,6 @@ def minimap2_cli_args(preset: str) -> list[str]:
         "ortholog.fa.gz",
         "--outdir",
         "out",
-        "--target-features",
-        "target_features.tsv.gz",
         "--strategy",
         f"minimap2_{preset}",
         "--preset",

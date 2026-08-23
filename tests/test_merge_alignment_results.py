@@ -20,8 +20,6 @@ from alignment_table_schema import (  # noqa: E402
     SEGMENT_FIELDS,
     SUMMARY_FIELDS,
 )
-from taxonomic_evidence import COUNT_KEYS  # noqa: E402
-
 TABLE_HEADERS = {
     "ortholog_alignment_summary.tsv.gz": SUMMARY_FIELDS,
     "strategy_summary.tsv.gz": [
@@ -33,7 +31,6 @@ TABLE_HEADERS = {
         "aligned_target_bp",
     ],
     "alignment_segments.tsv.gz": SEGMENT_FIELDS,
-    "feature_coverage.tsv.gz": ["gene_id"],
     "alignment_events.tsv.gz": EVENT_FIELDS,
     "snv_site_depth.tsv.gz": [
         "gene_id",
@@ -68,17 +65,6 @@ COMPACT_EVENT_HEADER = [
     "support_ortholog_count",
     "qc_flags",
 ]
-SNV_TAXONOMIC_DEPTH_HEADER = ["gene_id", "strategy", "target_start0", *COUNT_KEYS]
-SNV_ALT_TAXONOMIC_SUPPORT_HEADER = [
-    "gene_id",
-    "strategy",
-    "target_start0",
-    "ref",
-    "alt",
-    *COUNT_KEYS,
-]
-
-
 def write_tsv_gz(path: Path, header: list[str], rows: list[list[str]] | None = None) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with gzip.open(path, "wt", newline="") as handle:
@@ -126,7 +112,6 @@ def write_result_dir(
     manifest.setdefault("snv_site_depth_count", 0)
     manifest.setdefault("snv_taxonomic_depth_count", 0)
     manifest.setdefault("snv_alt_taxonomic_support_count", 0)
-    manifest.setdefault("feature_coverage_count", 0)
     manifest.setdefault("failure_count", 0)
     (result_dir / "manifest.json").write_text(json.dumps(manifest) + "\n")
 
@@ -173,14 +158,21 @@ def write_compact_result_dir(root: Path, name: str, manifest: dict) -> Path:
         result_dir / "event_ortholog_support.tsv.gz",
         EVENT_ORTHOLOG_SUPPORT_HEADER,
     )
-    write_tsv_gz(
-        result_dir / "snv_taxonomic_depth.tsv.gz",
-        SNV_TAXONOMIC_DEPTH_HEADER,
-    )
-    write_tsv_gz(
-        result_dir / "snv_alt_taxonomic_support.tsv.gz",
-        SNV_ALT_TAXONOMIC_SUPPORT_HEADER,
-    )
+    partition_manifest = json.loads((result_dir / "manifest.json").read_text())
+    partition_manifest["schema"] = "normalized_alignment_evidence_partition_v1"
+    for field in (
+        "strategy_summary_count",
+        "snv_site_depth_count",
+        "snv_taxonomic_depth_count",
+        "snv_alt_taxonomic_support_count",
+    ):
+        partition_manifest.pop(field, None)
+    (result_dir / "manifest.json").write_text(json.dumps(partition_manifest) + "\n")
+    for filename in (
+        "strategy_summary.tsv.gz",
+        "snv_site_depth.tsv.gz",
+    ):
+        (result_dir / filename).unlink(missing_ok=True)
     return result_dir
 
 
@@ -212,18 +204,6 @@ def partition_arguments(
                 for gene_id in gene_ids.split(",")
             ],
         )
-    taxonomy = outdir.parent / f"{outdir.name}.taxonomy.tsv.gz"
-    write_tsv_gz(
-        taxonomy,
-        [
-            "tax_id",
-            "species_id",
-            "genus_id",
-            "family_id",
-            "order_id",
-            "parent_tax_ids",
-        ],
-    )
     arguments = [
         "--partition-id",
         "partition_000001",
@@ -235,8 +215,6 @@ def partition_arguments(
         str(outdir),
         "--alignment-tasks",
         str(alignment_tasks),
-        "--taxonomy",
-        str(taxonomy),
     ]
     for result_dir in result_dirs:
         arguments.extend(["--result-dir", str(result_dir)])
@@ -247,10 +225,8 @@ def write_final_inputs(
     root: Path,
     task_rows: list[list[str]],
     task_header: list[str] | None = None,
-) -> tuple[Path, Path, Path, Path, Path]:
+) -> tuple[Path, Path, Path]:
     alignment_tasks = root / "alignment_tasks.tsv.gz"
-    taxonomy = root / "taxonomy.tsv.gz"
-    taxonomy_failures = root / "taxonomy_failures.tsv.gz"
     source_genes = root / "genes.tsv.gz"
     source_target_features = root / "target_features.tsv.gz"
     if task_header is None:
@@ -260,14 +236,10 @@ def write_final_inputs(
             for row in task_rows
         ]
     write_tsv_gz(alignment_tasks, task_header, task_rows)
-    write_tsv_gz(taxonomy, ["tax_id"])
-    write_tsv_gz(taxonomy_failures, ["tax_id"])
     write_tsv_gz(source_genes, ["gene_id"])
     write_tsv_gz(source_target_features, ["gene_id"])
     return (
         alignment_tasks,
-        taxonomy,
-        taxonomy_failures,
         source_genes,
         source_target_features,
     )
@@ -276,24 +248,18 @@ def write_final_inputs(
 def final_arguments(
     result_dirs: list[Path],
     outdir: Path,
-    inputs: tuple[Path, Path, Path, Path, Path],
+    inputs: tuple[Path, Path, Path],
     *,
     strategies: str,
 ) -> list[str]:
     (
         alignment_tasks,
-        taxonomy,
-        taxonomy_failures,
         source_genes,
         source_target_features,
     ) = inputs
     arguments = [
         "--alignment-tasks",
         str(alignment_tasks),
-        "--taxonomy",
-        str(taxonomy),
-        "--taxonomy-failures",
-        str(taxonomy_failures),
         "--source-genes",
         str(source_genes),
         "--source-target-features",
@@ -417,7 +383,7 @@ def test_partition_merge_uses_strategy_specific_gene_eligibility(tmp_path: Path)
     assert completed.returncode == 0, completed.stderr
     manifest = json.loads((outdir / "manifest.json").read_text())
     assert manifest["gene_ids"] == ["1", "2"]
-    assert manifest["strategy_eligible_gene_counts"] == {"s1": 1, ensembl: 2}
+    assert manifest["strategies"] == [ensembl, "s1"]
 
 
 def test_partition_merge_always_publishes_compact_events(tmp_path: Path) -> None:
@@ -443,7 +409,7 @@ def test_partition_merge_always_publishes_compact_events(tmp_path: Path) -> None
     assert manifest["alignment_event_count"] == 0
 
 
-def test_partition_annotation_input_keeps_compact_annotation_tables(tmp_path: Path) -> None:
+def test_partition_merge_publishes_only_normalized_evidence(tmp_path: Path) -> None:
     result_dir = write_result_dir(
         tmp_path,
         "gene_1_s1",
@@ -521,8 +487,6 @@ def test_partition_annotation_input_keeps_compact_annotation_tables(tmp_path: Pa
         gene_ids="1",
         strategies="s1",
     )
-    arguments.extend(["--output-profile", "annotation-input"])
-
     completed = run_merge(arguments)
 
     assert completed.returncode == 0, completed.stderr
@@ -535,28 +499,19 @@ def test_partition_annotation_input_keeps_compact_annotation_tables(tmp_path: Pa
         "alignment_events.tsv.gz",
         "event_ortholog_support.tsv.gz",
         "failures.tsv.gz",
-        "feature_coverage.tsv.gz",
         "manifest.json",
         "ortholog_alignment_summary.tsv.gz",
-        "snv_alt_taxonomic_support.tsv.gz",
-        "snv_site_depth.tsv.gz",
-        "snv_taxonomic_depth.tsv.gz",
-        "strategy_summary.tsv.gz",
     }
     manifest = json.loads((outdir / "manifest.json").read_text())
-    assert manifest["output_profile"] == "annotation-input"
+    assert manifest["schema"] == "normalized_alignment_evidence_partition_v1"
     assert manifest["alignment_segment_count"] == 2
-    assert manifest["snv_site_depth_count"] == 1
-    assert manifest["timings_seconds"]["snv_site_depth"] >= 0
-    with gzip.open(outdir / "snv_site_depth.tsv.gz", "rt", newline="") as handle:
-        assert list(csv.DictReader(handle, delimiter="\t")) == [
-            {
-                "gene_id": "1",
-                "strategy": "s1",
-                "target_start0": "4",
-                "site_aligned_ortholog_count": "2",
-            }
-        ]
+    assert {
+        "strategy_summary_count",
+        "feature_coverage_count",
+        "snv_site_depth_count",
+        "snv_taxonomic_depth_count",
+        "snv_alt_taxonomic_support_count",
+    }.isdisjoint(manifest)
 
 
 def test_compact_events_preserve_strategy_specific_support(tmp_path: Path) -> None:
@@ -642,7 +597,6 @@ def test_compact_events_preserve_strategy_specific_support(tmp_path: Path) -> No
         "load_events_sqlite",
         "build_event_index",
         "stream_event_groups",
-        "snv_site_depth",
     }
 
 
@@ -957,7 +911,7 @@ def test_final_merge_reports_strategy_specific_eligible_gene_counts(tmp_path: Pa
     assert completed.returncode == 0, completed.stderr
     manifest = json.loads((outdir / "manifest.json").read_text())
     assert manifest["gene_ids"] == ["1", "2"]
-    assert manifest["strategy_eligible_gene_counts"] == {"s1": 1, ensembl: 2}
+    assert manifest["strategies"] == [ensembl, "s1"]
 
 
 def test_final_merge_preserves_precompacted_ortholog_support(tmp_path: Path) -> None:
@@ -1018,93 +972,22 @@ def test_final_merge_preserves_precompacted_ortholog_support(tmp_path: Path) -> 
     completed = run_merge(final_arguments(partition_dirs, outdir, inputs, strategies="s1"))
 
     assert completed.returncode == 0, completed.stderr
-    with gzip.open(outdir / "event_ortholog_support.tsv.gz", "rt", newline="") as handle:
-        rows = list(csv.DictReader(handle, delimiter="\t"))
-    assert [row["event_group_id"] for row in rows] == ["1", "2"]
-    assert [row["ortholog_gene_id"] for row in rows] == ["101", "201"]
+    copied_root = outdir / "evidence" / "partitions"
+    copied_rows = []
+    for partition in partition_dirs:
+        with gzip.open(
+            copied_root / partition.name / "event_ortholog_support.tsv.gz",
+            "rt",
+            newline="",
+        ) as handle:
+            copied_rows.append(list(csv.DictReader(handle, delimiter="\t")))
+    assert [rows[0]["event_group_id"] for rows in copied_rows] == ["1", "1"]
+    assert [rows[0]["ortholog_gene_id"] for rows in copied_rows] == ["101", "201"]
     manifest = json.loads((outdir / "manifest.json").read_text())
     assert manifest["event_ortholog_support_count"] == 2
 
 
-def test_final_full_merge_publishes_globally_sorted_taxonomic_handoff(
-    tmp_path: Path,
-) -> None:
-    partition_dirs = []
-    for index, gene_id in enumerate(["3", "20"], start=1):
-        partition = write_compact_result_dir(
-            tmp_path,
-            f"partition_{index:06d}",
-            {
-                "partition_id": f"partition_{index:06d}",
-                "gene_count": 1,
-                "gene_ids": [gene_id],
-                "strategies": ["s1"],
-                "snv_taxonomic_depth_count": 1,
-                "snv_alt_taxonomic_support_count": 1,
-            },
-        )
-        counts = ["1" for _field in COUNT_KEYS]
-        write_tsv_gz(
-            partition / "snv_taxonomic_depth.tsv.gz",
-            SNV_TAXONOMIC_DEPTH_HEADER,
-            [[gene_id, "s1", "4", *counts]],
-        )
-        write_tsv_gz(
-            partition / "snv_alt_taxonomic_support.tsv.gz",
-            SNV_ALT_TAXONOMIC_SUPPORT_HEADER,
-            [[gene_id, "s1", "4", "A", "G", *counts]],
-        )
-        partition_dirs.append(partition)
-
-    inputs = write_final_inputs(tmp_path, [["3", "ready"], ["20", "ready"]])
-    outdir = tmp_path / "merged"
-    completed = run_merge(final_arguments(partition_dirs, outdir, inputs, strategies="s1"))
-
-    assert completed.returncode == 0, completed.stderr
-    with gzip.open(outdir / "snv_taxonomic_depth.tsv.gz", "rt", newline="") as handle:
-        depth_rows = list(csv.DictReader(handle, delimiter="\t"))
-    with gzip.open(
-        outdir / "snv_alt_taxonomic_support.tsv.gz",
-        "rt",
-        newline="",
-    ) as handle:
-        alt_rows = list(csv.DictReader(handle, delimiter="\t"))
-    assert [row["gene_id"] for row in depth_rows] == ["20", "3"]
-    assert [row["gene_id"] for row in alt_rows] == ["20", "3"]
-    manifest = json.loads((outdir / "manifest.json").read_text())
-    assert manifest["snv_taxonomic_depth_count"] == 2
-    assert manifest["snv_alt_taxonomic_support_count"] == 2
-    assert set(manifest["source_target_context"]) == {
-        "genes_sha256",
-        "target_features_sha256",
-    }
-
-
-def test_final_full_merge_rejects_taxonomic_handoff_count_mismatch(
-    tmp_path: Path,
-) -> None:
-    partition = write_compact_result_dir(
-        tmp_path,
-        "partition_000001",
-        {
-            "partition_id": "partition_000001",
-            "gene_count": 1,
-            "gene_ids": ["1"],
-            "strategies": ["s1"],
-            "snv_taxonomic_depth_count": 1,
-        },
-    )
-    inputs = write_final_inputs(tmp_path, [["1", "ready"]])
-
-    completed = run_merge(
-        final_arguments([partition], tmp_path / "merged", inputs, strategies="s1")
-    )
-
-    assert completed.returncode != 0
-    assert "taxonomic depth row count does not match" in completed.stderr
-
-
-def test_final_report_input_publishes_partitioned_normalized_evidence(
+def test_final_merge_publishes_partitioned_normalized_evidence(
     tmp_path: Path,
 ) -> None:
     partition_dirs = [
@@ -1124,9 +1007,6 @@ def test_final_report_input_publishes_partitioned_normalized_evidence(
         )
         for index, gene_id in enumerate(["1", "2"], start=1)
     ]
-    for partition_dir in partition_dirs:
-        (partition_dir / "strategy_summary.tsv.gz").unlink()
-        (partition_dir / "feature_coverage.tsv.gz").unlink()
     for partition_dir, gene_id in zip(partition_dirs, ["1", "2"]):
         write_tsv_gz(
             partition_dir / "alignment_events.tsv.gz",
@@ -1186,8 +1066,6 @@ def test_final_report_input_publishes_partitioned_normalized_evidence(
         inputs,
         strategies="s1",
     )
-    arguments.extend(["--output-profile", "report-input"])
-
     completed = run_merge(arguments)
 
     assert completed.returncode == 0, completed.stderr
@@ -1200,7 +1078,7 @@ def test_final_report_input_publishes_partitioned_normalized_evidence(
         "manifest.json",
     }
     manifest = json.loads((outdir / "manifest.json").read_text())
-    assert manifest["output_profile"] == "report-input"
+    assert manifest["schema"] == "normalized_alignment_evidence_v1"
     assert manifest["ortholog_alignment_summary_count"] == 8
     assert manifest["alignment_segment_count"] == 10
     assert manifest["alignment_event_count"] == 12

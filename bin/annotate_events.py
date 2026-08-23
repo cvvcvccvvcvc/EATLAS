@@ -22,7 +22,6 @@ if __package__ in {None, ""}:
         runtime_root = Path(__file__).resolve().parents[1]
     sys.path.insert(0, str(runtime_root))
 
-from feature_coverage import load_snv_site_depth
 from genomics.clinvar import review_stars as clinvar_review_stars
 from genomics.gnomad import GNOMAD_API_URL, fetch_region_variants_recursive, select_af_metrics
 from genomics.gnomad_cache import GnomadRegionCache
@@ -35,7 +34,6 @@ from genomics.variants import (
     refseq_accession_to_chrom,
     variant_key_text,
 )
-from ortholog_evidence_summary import write_ortholog_evidence_summary
 
 
 csv.field_size_limit(sys.maxsize)
@@ -100,18 +98,6 @@ VARIANT_STRATEGY_SUPPORT_FIELDS = [
 
 ALT_SUPPORT_GENUS_COLUMN = "all__genus"
 
-VARIANT_ORTHOLOG_SUPPORT_FIELDS = [
-    "variant_key",
-    "gene_id",
-    "strategy",
-    "ortholog_gene_id",
-    "tax_id",
-    "taxname",
-    "mapq",
-    "native_alignment_type",
-    "support_row_count",
-]
-
 EVENT_VARIANT_MAP_FIELDS = [
     "event_group_id",
     "variant_key",
@@ -121,7 +107,6 @@ EVENT_VARIANT_MAP_FIELDS = [
 PARTITION_TSV_SHARD_FORMAT = "headerless_gzip_member_v1"
 PARTITION_TSV_SHARD_FIELDS = {
     "variant_annotations.tsv.gz": VARIANT_ANNOTATION_FIELDS,
-    "variant_strategy_support.tsv.gz": VARIANT_STRATEGY_SUPPORT_FIELDS,
 }
 
 FAILURE_FIELDS = ["source", "scope", "chrom", "start", "end", "failure_type", "message"]
@@ -139,12 +124,8 @@ def parse_args():
     parser.add_argument("--alignment-manifest", required=True, type=Path)
     parser.add_argument("--events-tsv", required=True, type=Path)
     parser.add_argument("--event-ortholog-support-tsv", required=True, type=Path)
-    parser.add_argument("--snv-site-depth-tsv", required=True, type=Path)
-    parser.add_argument("--snv-taxonomic-depth-tsv", required=True, type=Path)
-    parser.add_argument("--snv-alt-taxonomic-support-tsv", required=True, type=Path)
     parser.add_argument("--genes-tsv", required=True, type=Path)
     parser.add_argument("--target-sequences-dir", required=True, type=Path)
-    parser.add_argument("--target-features", required=True, type=Path)
     parser.add_argument("--clinvar-vcf", required=True, type=Path)
     parser.add_argument("--outdir", required=True, type=Path)
     parser.add_argument("--partition-id", default="")
@@ -211,18 +192,17 @@ def load_alignment_manifest(path: Path, partition_id: str) -> dict:
             "Alignment manifest partition mismatch: "
             f"expected {partition_id!r}, observed {observed_partition_id!r}"
         )
-    expected_profile = "annotation-input" if partition_id else "full"
-    if manifest.get("output_profile") != expected_profile:
+    if not partition_id:
+        raise ValueError("Annotation requires a partition-scoped alignment manifest")
+    expected_schema = "normalized_alignment_evidence_partition_v1"
+    if manifest.get("schema") != expected_schema:
         raise ValueError(
-            "Alignment manifest output profile mismatch: "
-            f"expected {expected_profile!r}, observed {manifest.get('output_profile')!r}"
+            "Alignment manifest schema mismatch: "
+            f"expected {expected_schema!r}, observed {manifest.get('schema')!r}"
         )
     for field in (
         "alignment_event_count",
         "event_ortholog_support_count",
-        "snv_site_depth_count",
-        "snv_taxonomic_depth_count",
-        "snv_alt_taxonomic_support_count",
     ):
         manifest_count(manifest, field)
     return manifest
@@ -336,7 +316,7 @@ class ExactSupportSpool:
     """Encode exact supporters as narrow local integer IDs for DuckDB."""
 
     def __init__(self, outdir: Path):
-        self.path = outdir / ".variant_ortholog_support_rows.tsv"
+        self.path = outdir / ".exact_support_rows.tsv"
         self.handle = self.path.open("w", buffering=1024 * 1024)
         self.strategy_ids: dict[str, int] = {}
         self.strategy_names: list[str] = []
@@ -452,48 +432,11 @@ def sql_string(value: Path | str) -> str:
     return "'" + str(value).replace("'", "''") + "'"
 
 
-def write_dimension_tsv(path: Path, fields: list[str], rows: Iterable[dict]) -> None:
-    with path.open("w", newline="") as handle:
-        writer = csv.DictWriter(
-            handle,
-            fieldnames=fields,
-            delimiter="\t",
-            lineterminator="\n",
-        )
-        writer.writeheader()
-        for row in rows:
-            writer.writerow({field: row.get(field, "") for field in fields})
-
-
-def write_empty_exact_support_parquet(connection, output: Path) -> None:
-    connection.execute(
-        f"""
-        COPY (
-            SELECT
-                CAST(NULL AS VARCHAR) AS variant_key,
-                CAST(NULL AS VARCHAR) AS gene_id,
-                CAST(NULL AS VARCHAR) AS strategy,
-                CAST(NULL AS VARCHAR) AS ortholog_gene_id,
-                CAST(NULL AS VARCHAR) AS tax_id,
-                CAST(NULL AS VARCHAR) AS taxname,
-                CAST(NULL AS USMALLINT) AS mapq,
-                CAST(NULL AS VARCHAR) AS native_alignment_type,
-                CAST(NULL AS UBIGINT) AS support_row_count
-            WHERE FALSE
-        ) TO {sql_string(output)} (
-            FORMAT PARQUET,
-            COMPRESSION ZSTD
-        )
-        """
-    )
-
-
 def aggregate_exact_support(
     spool: ExactSupportSpool,
     aggregates_by_id: list[dict | None],
-    output_dir: Path,
 ) -> int:
-    """Aggregate local integer edges and write one partition Parquet file."""
+    """Validate exact event support and update variant-context support counts."""
 
     try:
         import duckdb
@@ -504,39 +447,9 @@ def aggregate_exact_support(
         ) from exc
 
     spool.close()
-    output_dir.mkdir(parents=True, exist_ok=True)
-    output = output_dir / "part-00000.parquet"
-    output.unlink(missing_ok=True)
-    temp_dir = output_dir.parent / ".exact_support_duckdb"
+    work_dir = spool.path.parent
+    temp_dir = work_dir / ".exact_support_duckdb"
     temp_dir.mkdir(parents=True, exist_ok=True)
-    variant_dim = output_dir.parent / ".variant_context_dimension.tsv"
-    strategy_dim = output_dir.parent / ".strategy_dimension.tsv"
-    ortholog_dim = output_dir.parent / ".ortholog_dimension.tsv"
-    write_dimension_tsv(
-        variant_dim,
-        ["variant_context_id", "variant_key", "gene_id"],
-        (
-            {
-                "variant_context_id": variant_context_id,
-                "variant_key": aggregates_by_id[variant_context_id]["variant_key"],
-                "gene_id": aggregates_by_id[variant_context_id]["gene_id"],
-            }
-            for variant_context_id in sorted(spool.used_variant_ids)
-        ),
-    )
-    write_dimension_tsv(
-        strategy_dim,
-        ["strategy_id", "strategy"],
-        (
-            {"strategy_id": index, "strategy": strategy}
-            for index, strategy in enumerate(spool.strategy_names, start=1)
-        ),
-    )
-    write_dimension_tsv(
-        ortholog_dim,
-        ["ortholog_id", "gene_id", "ortholog_gene_id", "tax_id", "taxname"],
-        spool.ortholog_rows,
-    )
 
     memory_limit = os.environ.get("GAPH_ANNOTATION_DUCKDB_MEMORY_LIMIT", "4GB")
     threads = max(1, int_or_default(os.environ.get("GAPH_ANNOTATION_DUCKDB_THREADS"), 1))
@@ -550,7 +463,6 @@ def aggregate_exact_support(
     )
     try:
         if spool.input_edge_count == 0:
-            write_empty_exact_support_parquet(connection, output)
             return 0
 
         connection.execute(
@@ -645,60 +557,10 @@ def aggregate_exact_support(
             if aggregate is not None:
                 aggregate["_exact_ortholog_count"] = int(ortholog_count)
 
-        connection.execute(
-            f"""
-            COPY (
-                SELECT
-                    v.variant_key,
-                    v.gene_id,
-                    s.strategy,
-                    o.ortholog_gene_id,
-                    o.tax_id,
-                    o.taxname,
-                    CAST(NULLIF(e.mapq, '') AS USMALLINT) AS mapq,
-                    NULLIF(e.native_alignment_type, '') AS native_alignment_type,
-                    CAST(e.support_row_count AS UBIGINT) AS support_row_count
-                FROM exact_support AS e
-                JOIN read_csv(
-                    {sql_string(variant_dim)},
-                    delim = '\t',
-                    header = true,
-                    columns = {{
-                        'variant_context_id': 'UBIGINT',
-                        'variant_key': 'VARCHAR',
-                        'gene_id': 'VARCHAR'
-                    }}
-                ) AS v USING (variant_context_id)
-                JOIN read_csv(
-                    {sql_string(strategy_dim)},
-                    delim = '\t',
-                    header = true,
-                    columns = {{'strategy_id': 'UINTEGER', 'strategy': 'VARCHAR'}}
-                ) AS s USING (strategy_id)
-                JOIN read_csv(
-                    {sql_string(ortholog_dim)},
-                    delim = '\t',
-                    header = true,
-                    columns = {{
-                        'ortholog_id': 'UBIGINT',
-                        'gene_id': 'VARCHAR',
-                        'ortholog_gene_id': 'VARCHAR',
-                        'tax_id': 'VARCHAR',
-                        'taxname': 'VARCHAR'
-                    }}
-                ) AS o USING (ortholog_id)
-            ) TO {sql_string(output)} (
-                FORMAT PARQUET,
-                COMPRESSION ZSTD,
-                ROW_GROUP_SIZE 100000
-            )
-            """
-        )
         return int(connection.execute("SELECT COUNT(*) FROM exact_support").fetchone()[0])
     finally:
         connection.close()
-        for path in (spool.path, variant_dim, strategy_dim, ortholog_dim):
-            path.unlink(missing_ok=True)
+        spool.path.unlink(missing_ok=True)
         shutil.rmtree(temp_dir, ignore_errors=True)
 
 
@@ -1066,54 +928,20 @@ def main():
     timings_seconds: dict[str, float] = {}
     args.outdir.mkdir(parents=True, exist_ok=True)
     out_tsv = args.outdir / "variant_annotations.tsv.gz"
-    support_tsv = args.outdir / "variant_strategy_support.tsv.gz"
-    ortholog_support_dir = args.outdir / "variant_ortholog_support"
     event_variant_map_tsv = args.outdir / "event_variant_map.tsv.gz"
-    ortholog_evidence_tsv = args.outdir / "ortholog_evidence_summary.tsv.gz"
     failures_tsv = args.outdir / "failures.tsv.gz"
     manifest_json = args.outdir / "manifest.json"
-    if not args.snv_site_depth_tsv.exists():
-        raise FileNotFoundError(f"SNV site-depth TSV not found: {args.snv_site_depth_tsv}")
     if not args.event_ortholog_support_tsv.exists():
         raise FileNotFoundError(
             f"Event ortholog support TSV not found: {args.event_ortholog_support_tsv}"
         )
     required_inputs = [
-        args.snv_taxonomic_depth_tsv,
-        args.snv_alt_taxonomic_support_tsv,
         args.genes_tsv,
         args.target_sequences_dir,
     ]
     for path in required_inputs:
         if not path.exists():
             raise FileNotFoundError(f"Required annotation input not found: {path}")
-    target_feature_paths = resolve_target_feature_paths(args.target_features)
-    observed_taxonomic_depth_count = count_tsv_gz_rows(args.snv_taxonomic_depth_tsv)
-    expected_taxonomic_depth_count = manifest_count(
-        alignment_manifest,
-        "snv_taxonomic_depth_count",
-    )
-    if observed_taxonomic_depth_count != expected_taxonomic_depth_count:
-        raise ValueError(
-            "SNV taxonomic depth row count does not match alignment manifest: "
-            f"rows={observed_taxonomic_depth_count}, manifest={expected_taxonomic_depth_count}"
-        )
-    observed_taxonomic_alt_support_count = count_tsv_gz_rows(
-        args.snv_alt_taxonomic_support_tsv
-    )
-    expected_taxonomic_alt_support_count = manifest_count(
-        alignment_manifest,
-        "snv_alt_taxonomic_support_count",
-    )
-    if observed_taxonomic_alt_support_count != expected_taxonomic_alt_support_count:
-        raise ValueError(
-            "SNV ALT taxonomic support row count does not match alignment manifest: "
-            f"rows={observed_taxonomic_alt_support_count}, "
-            f"manifest={expected_taxonomic_alt_support_count}"
-        )
-    genus_supports = load_snv_alt_genus_support(
-        args.snv_alt_taxonomic_support_tsv
-    )
     if not args.clinvar_vcf.exists():
         raise FileNotFoundError(f"ClinVar VCF not found: {args.clinvar_vcf}")
     clinvar_tbi = Path(f"{args.clinvar_vcf}.tbi")
@@ -1131,7 +959,6 @@ def main():
     phase_started = start_phase("collapse_events")
     accession_positions = defaultdict(set)
     event_key_status_counts = Counter()
-    unique_lookup_status_counts = Counter()
     variant_aggregates: dict[tuple, dict] = {}
     aggregates_by_id: list[dict | None] = [None]
     input_row_count = 0
@@ -1218,7 +1045,6 @@ def main():
                         }
                         variant_aggregates[aggregate_key] = aggregate
                         aggregates_by_id.append(aggregate)
-                        unique_lookup_status_counts[status] += 1
 
                     aggregate["support_row_count"] += int_or_default(
                         row.get("support_row_count"),
@@ -1253,24 +1079,11 @@ def main():
     finish_phase(timings_seconds, "collapse_events", phase_started)
 
     phase_started = start_phase("aggregate_ortholog_support")
-    ortholog_support_count = aggregate_exact_support(
+    aggregate_exact_support(
         exact_spool,
         aggregates_by_id,
-        ortholog_support_dir,
     )
-    ortholog_support_missing_key_count = exact_spool.missing_key_count
     finish_phase(timings_seconds, "aggregate_ortholog_support", phase_started)
-
-    phase_started = start_phase("load_site_depth")
-    site_depths = load_snv_site_depth(args.snv_site_depth_tsv)
-    expected_site_depth_count = manifest_count(alignment_manifest, "snv_site_depth_count")
-    if len(site_depths) != expected_site_depth_count:
-        raise ValueError(
-            "SNV site-depth row count does not match alignment manifest: "
-            f"rows={len(site_depths)}, manifest={expected_site_depth_count}"
-        )
-    logger.info(f"Calculated site-aligned ortholog depth for {len(site_depths)} variant-strategy SNV(s).")
-    finish_phase(timings_seconds, "load_site_depth", phase_started)
 
     # 2. Determine gnomAD clusters
     phase_started = start_phase("gnomad_lookup")
@@ -1356,7 +1169,6 @@ def main():
 
     # 5. Annotate unique variant-context rows.
     phase_started = start_phase("write_variant_annotations")
-    annotation_value_counts = Counter()
     variant_rows: list[dict] = []
     for aggregate in variant_aggregates.values():
         lookup_key = aggregate["_lookup_key"]
@@ -1374,9 +1186,6 @@ def main():
         row["strategies"] = ",".join(sorted(support_by_strategy))
         row.update(clinvar_annotation)
         row.update(gnomad_annotation)
-        for column in ANNOTATION_COLUMNS:
-            if row[column]:
-                annotation_value_counts[column] += 1
         variant_rows.append(row)
 
     variant_rows.sort(
@@ -1394,51 +1203,17 @@ def main():
     )
     finish_phase(timings_seconds, "write_variant_annotations", phase_started)
 
-    phase_started = start_phase("write_support_tables")
-    strategy_support_rows, strategy_support_missing_key_count = build_variant_strategy_support(
-        variant_aggregates.values(),
-        site_depths,
-        genus_supports,
-    )
-    strategy_support_count = write_tsv_gz(
-        support_tsv,
-        VARIANT_STRATEGY_SUPPORT_FIELDS,
-        strategy_support_rows,
-        include_header=not bool(args.partition_id),
-    )
-    finish_phase(timings_seconds, "write_support_tables", phase_started)
-
-    phase_started = start_phase("write_ortholog_evidence")
-    ortholog_evidence_summary_count = write_ortholog_evidence_summary(
-        args.snv_taxonomic_depth_tsv,
-        args.snv_alt_taxonomic_support_tsv,
-        target_feature_paths,
-        build_gnomad_statuses(variant_aggregates.values(), gnomad_cache, failures),
-        ortholog_evidence_tsv,
-    )
-    finish_phase(timings_seconds, "write_ortholog_evidence", phase_started)
-
     phase_started = start_phase("write_failures")
     failure_count = write_tsv_gz(failures_tsv, FAILURE_FIELDS, failures)
     finish_phase(timings_seconds, "write_failures", phase_started)
     manifest = {
-        "output_mode": "unique_variant_context",
+        "stage": "annotation",
+        "schema": "normalized_annotation_evidence_partition_v1",
         "partition_id": args.partition_id,
         "event_row_count": input_row_count,
         "event_variant_map_count": input_row_count,
-        "excluded_non_concrete_event_count": event_key_status_counts["non_concrete_allele"],
         "variant_context_count": len(variant_aggregates),
         "annotated_variant_context_count": output_row_count,
-        "variant_strategy_support_count": strategy_support_count,
-        "variant_strategy_support_missing_key_count": strategy_support_missing_key_count,
-        "variant_ortholog_support_count": ortholog_support_count,
-        "variant_ortholog_support_missing_key_count": ortholog_support_missing_key_count,
-        "variant_ortholog_support_format": "parquet_dataset",
-        "variant_ortholog_support_path": "variant_ortholog_support",
-        "variant_ortholog_support_file_count": 1,
-        "variant_strategy_site_depth_count": len(site_depths),
-        "ortholog_evidence_summary_count": ortholog_evidence_summary_count,
-        "target_context_count": len(contexts),
         "clinvar_vcf": path_metadata(args.clinvar_vcf),
         "clinvar_tbi": path_metadata(clinvar_tbi),
         "clinvar_cached_variant_count": len(clinvar_cache),
@@ -1451,9 +1226,7 @@ def main():
         "gnomad_cached_variant_count": len(gnomad_cache),
         "gnomad_shared_cache": gnomad_region_cache.snapshot(),
         "failure_count": failure_count,
-        "annotation_nonempty_counts": dict(annotation_value_counts),
         "event_key_status_counts": dict(event_key_status_counts),
-        "unique_lookup_status_counts": dict(unique_lookup_status_counts),
         "gnomad_key_status_counts": dict(gnomad_key_status_counts),
         "clinvar_key_status_counts": dict(clinvar_key_status_counts),
         "timings_seconds": timings_seconds,
@@ -1465,8 +1238,6 @@ def main():
 
     logger.info(f"Saved variant annotations to {out_tsv}")
     logger.info(f"Saved event-to-variant lineage to {event_variant_map_tsv}")
-    logger.info(f"Saved variant-strategy support to {support_tsv}")
-    logger.info(f"Saved variant-ortholog support to {ortholog_support_dir}")
     logger.info(f"Saved annotation failures to {failures_tsv}")
     logger.info(f"Saved annotation manifest to {manifest_json}")
 

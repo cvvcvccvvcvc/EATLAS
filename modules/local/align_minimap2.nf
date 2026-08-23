@@ -23,7 +23,6 @@ process ALIGN_MINIMAP2 {
         --pseudoread-len "${meta.pseudoread_len}" \\
         --pseudoread-step "${meta.pseudoread_step}" \\
         --threads "${task.cpus}" \\
-        --target-features "${task_dir}/target_features.tsv.gz" \\
         --keep-native "${params.keep_native_alignments}"
     """
 }

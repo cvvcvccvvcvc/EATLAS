@@ -30,7 +30,7 @@ def read_tsv_gz(path: Path) -> list[dict[str, str]]:
         return list(csv.DictReader(handle, delimiter="\t"))
 
 
-def test_partition_genes_contains_only_ready_alignment_tasks(tmp_path: Path) -> None:
+def test_alignment_tasks_capture_target_and_ortholog_readiness(tmp_path: Path) -> None:
     genes = tmp_path / "genes.tsv.gz"
     gene_fields = [
         "gene_id",
@@ -97,20 +97,6 @@ def test_partition_genes_contains_only_ready_alignment_tasks(tmp_path: Path) -> 
         ],
     )
 
-    target_features = tmp_path / "target_features.tsv.gz"
-    write_tsv_gz(
-        target_features,
-        ["gene_id", "feature_type", "target_start0", "target_end0"],
-        [
-            {
-                "gene_id": gene_id,
-                "feature_type": "gene",
-                "target_start0": "0",
-                "target_end0": "4",
-            }
-            for gene_id in ("1", "2")
-        ],
-    )
     sequences = tmp_path / "sequences"
     for directory, gene_ids in (("targets", ("1", "2")), ("orthologs", ("1",))):
         output_dir = sequences / directory
@@ -133,8 +119,6 @@ def test_partition_genes_contains_only_ready_alignment_tasks(tmp_path: Path) -> 
             str(genes),
             "--orthologs-tsv",
             str(orthologs),
-            "--target-features",
-            str(target_features),
             "--outdir",
             str(outdir),
             "--sequences-dir",
@@ -163,14 +147,6 @@ def test_partition_genes_contains_only_ready_alignment_tasks(tmp_path: Path) -> 
         "1": ("true", "true"),
         "2": ("true", "false"),
     }
-    partition_rows = read_tsv_gz(
-        outdir / "partition_genes" / "partition_000001.tsv.gz"
-    )
-    assert [row["gene_id"] for row in partition_rows] == ["1"]
-    target_partition_rows = read_tsv_gz(
-        outdir / "target_partition_genes" / "partition_000001.tsv.gz"
-    )
-    assert [row["gene_id"] for row in target_partition_rows] == ["1", "2"]
     assert (outdir / "tasks" / "task_2" / "task.json").exists()
 
     task_dir = outdir / "tasks" / "task_1"

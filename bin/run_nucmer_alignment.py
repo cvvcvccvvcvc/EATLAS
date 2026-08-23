@@ -22,7 +22,6 @@ from alignment_table_schema import (
     SUMMARY_FIELDS,
 )
 from alignment_task_io import load_task_context, materialize_task_fastas
-from feature_coverage import summarize_feature_coverage_rows
 
 
 TSV_NULL = ""
@@ -38,7 +37,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--outdir", required=True, type=Path)
     parser.add_argument("--nucmer-bin", default="nucmer")
     parser.add_argument("--threads", default=1, type=int)
-    parser.add_argument("--target-features", required=True, type=Path)
     parser.add_argument("--keep-native", default="false")
     return parser.parse_args()
 
@@ -543,12 +541,6 @@ def main() -> None:
     write_tsv_gz(args.outdir / "alignment_events.tsv.gz", EVENT_FIELDS, events)
     write_tsv_gz(args.outdir / "ortholog_alignment_summary.tsv.gz", SUMMARY_FIELDS, summary_rows)
     write_tsv_gz(args.outdir / "failures.tsv.gz", FAILURE_FIELDS, failures)
-    feature_coverage_count = summarize_feature_coverage_rows(
-        args.target_features,
-        summary_rows,
-        segments,
-        args.outdir / "feature_coverage.tsv.gz",
-    )
     manifest = {
         "gene_ids": [gene_id],
         "strategies": ["nucmer"],
@@ -561,7 +553,6 @@ def main() -> None:
         "raw_alignment_event_count": len(events),
         "alignment_event_count": len(events),
         "ambiguous_event_allele_count": ambiguous_event_allele_count,
-        "feature_coverage_count": feature_coverage_count,
         "failure_count": len(failures),
         "ortholog_count": len(ortholog_meta),
         "keep_native": keep_native,

@@ -41,8 +41,6 @@ def test_bwa_cli_accepts_strategy_registry_parameters(monkeypatch: pytest.Monkey
             "75",
             "--pseudoread-phred",
             "30",
-            "--target-features",
-            "target_features.tsv.gz",
         ],
     )
 

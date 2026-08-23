@@ -28,23 +28,23 @@ def test_taxonomy_fetch_is_owned_by_stage_one() -> None:
     assert "FETCH_TAXONOMY(" not in alignment_stage
     for output in ("taxonomy", "taxonomy_failures"):
         assert f"{output} = FETCH_TAXONOMY.out.{output}" in fetch_stage
-        assert output in alignment_stage.split("main:", 1)[0]
+        assert output not in alignment_stage.split("main:", 1)[0]
     assert "taxonomy_summary" not in fetch_stage
     assert "taxonomy_summary" not in alignment_stage
 
 
-def test_standalone_alignment_requires_published_taxonomy() -> None:
+def test_standalone_alignment_does_not_require_taxonomy() -> None:
     workflow = source_between(
         PROJECT_DIR / "main.nf",
         "workflow ALIGNMENT_STAGE_FROM_DIR {",
-        "workflow ANNOTATION_STAGE {",
+        "workflow PARTITIONED_ANNOTATION_STAGE {",
     )
 
     for filename in (
         "taxonomy.tsv.gz",
         "taxonomy_failures.tsv.gz",
     ):
-        assert filename in workflow
+        assert filename not in workflow
     assert "taxonomy_summary.tsv.gz" not in workflow
     assert "alignment does not fetch taxonomy metadata" in workflow
 

@@ -21,13 +21,6 @@ from itertools import groupby
 from pathlib import Path
 
 from alignment_table_schema import ALIGNER_OUTPUT_SCHEMAS
-from feature_coverage import (
-    SNV_TAXONOMIC_DEPTH_FIELDS,
-    iter_snv_event_sites,
-    write_snv_site_depth,
-    write_snv_taxonomic_depth,
-)
-from taxonomic_evidence import COUNT_KEYS, count_member_groups, load_taxonomy_profiles
 
 
 csv.field_size_limit(sys.maxsize)
@@ -39,8 +32,6 @@ logger = logging.getLogger(__name__)
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--alignment-tasks", required=True, type=Path)
-    parser.add_argument("--taxonomy", type=Path)
-    parser.add_argument("--taxonomy-failures", type=Path)
     parser.add_argument("--source-genes", type=Path)
     parser.add_argument("--source-target-features", type=Path)
     parser.add_argument("--outdir", required=True, type=Path)
@@ -49,12 +40,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--partition-id")
     parser.add_argument("--expected-strategies", required=True)
     parser.add_argument("--expected-gene-ids")
-    parser.add_argument(
-        "--output-profile",
-        choices=["full", "annotation-input", "report-input"],
-        default="full",
-        help="Select full outputs, partitioned annotation inputs, or final report inputs.",
-    )
     return parser.parse_args()
 
 
@@ -119,15 +104,6 @@ EVENT_STREAM_FIELDS = [
     "native_alignment_type",
     "qc_flags",
 ]
-SNV_ALT_TAXONOMIC_SUPPORT_FIELDS = [
-    "gene_id",
-    "strategy",
-    "target_start0",
-    "ref",
-    "alt",
-    *COUNT_KEYS,
-]
-
 STRATEGY_SUMMARY_FIELDS = [
     "strategy",
     "summary_row_count",
@@ -138,13 +114,19 @@ STRATEGY_SUMMARY_FIELDS = [
 ]
 
 ENSEMBL_COMPARA_STRATEGY = "precomputed_ensembl_92_mammals_epo_extended"
-DNA_BASES = frozenset("ACGT")
-ALIGNMENT_MANIFEST_COUNT_FIELDS = (
+ALIGNER_MANIFEST_COUNT_FIELDS = (
     "ortholog_alignment_summary_count",
     "alignment_segment_count",
-    "feature_coverage_count",
     "raw_alignment_event_count",
     "alignment_event_count",
+    "failure_count",
+)
+PARTITION_MANIFEST_COUNT_FIELDS = (
+    "ortholog_alignment_summary_count",
+    "alignment_segment_count",
+    "raw_alignment_event_count",
+    "alignment_event_count",
+    "event_ortholog_support_count",
     "failure_count",
 )
 
@@ -270,17 +252,12 @@ def expected_gene_strategy_pairs(
 def summarize_alignment_tasks(
     path: Path,
     expected_strategies: list[str],
-) -> tuple[int, list[str], dict[str, int]]:
-    """Return task count, selected-strategy gene union, and per-strategy eligibility."""
-    task_count, capabilities = read_alignment_capabilities(path)
+) -> list[str]:
+    """Return the selected-strategy-eligible gene union."""
+    _task_count, capabilities = read_alignment_capabilities(path)
     gene_ids = sorted_gene_ids(set(capabilities))
     pairs = expected_gene_strategy_pairs(capabilities, gene_ids, expected_strategies)
-    eligible_gene_ids = sorted_gene_ids({gene_id for gene_id, _strategy in pairs})
-    strategy_counts = {
-        strategy: sum(pair_strategy == strategy for _gene_id, pair_strategy in pairs)
-        for strategy in expected_strategies
-    }
-    return task_count, eligible_gene_ids, strategy_counts
+    return sorted_gene_ids({gene_id for gene_id, _strategy in pairs})
 
 
 def unique_paths(paths: list[Path]) -> list[Path]:
@@ -700,7 +677,6 @@ def compact_stream_group(
     event_group_id: int,
     key: tuple[str, ...],
     rows: object,
-    taxonomy_profiles: dict | None,
 ) -> tuple[dict[str, object], list[dict[str, object]]]:
     record: dict[str, object] = {
         "event_group_id": event_group_id,
@@ -723,17 +699,6 @@ def compact_stream_group(
             "qc_flags": compact_event_flags(",".join(qc_flags)),
         }
     )
-    if taxonomy_profiles is not None:
-        record.update(
-            count_member_groups(
-                (
-                    (ortholog_gene_id, str(support["tax_id"]))
-                    for ortholog_gene_id, support in orthologs.items()
-                    if support["tax_id"]
-                ),
-                taxonomy_profiles,
-            )
-        )
     support_rows = [orthologs[key] for key in sorted(orthologs)]
     return record, support_rows
 
@@ -742,12 +707,8 @@ def write_compact_events(
     paths: list[Path],
     output: Path,
     ortholog_support_output: Path,
-    taxonomy: Path | None = None,
-    taxonomic_support_output: Path | None = None,
     timings: dict[str, float] | None = None,
-) -> tuple[int, int, int, int]:
-    if (taxonomy is None) != (taxonomic_support_output is None):
-        raise ValueError("Taxonomic event support requires both taxonomy metadata and an output path")
+) -> tuple[int, int, int]:
     output.parent.mkdir(parents=True, exist_ok=True)
     db_path = output.parent / "alignment_event_support.sqlite"
     if db_path.exists():
@@ -818,94 +779,48 @@ def write_compact_events(
                 ref,
                 alt
         """
-        taxonomy_profiles = (
-            load_taxonomy_profiles(taxonomy)
-            if taxonomy is not None
-            else None
-        )
         compact_count = 0
-        taxonomic_support_count = 0
         ortholog_support_count = 0
         phase_started = start_phase("stream_event_groups")
-        support_handle = (
-            gzip.open(taxonomic_support_output, "wt", newline="")
-            if taxonomic_support_output is not None
-            else None
-        )
-        try:
-            support_writer = None
-            if support_handle is not None:
-                support_writer = csv.DictWriter(
-                    support_handle,
-                    fieldnames=SNV_ALT_TAXONOMIC_SUPPORT_FIELDS,
-                    delimiter="\t",
-                    lineterminator="\n",
-                )
-                support_writer.writeheader()
-            with (
-                gzip.open(output, "wt", newline="") as handle,
-                gzip.open(ortholog_support_output, "wt", newline="") as ortholog_handle,
+        with (
+            gzip.open(output, "wt", newline="") as handle,
+            gzip.open(ortholog_support_output, "wt", newline="") as ortholog_handle,
+        ):
+            writer = csv.DictWriter(
+                handle,
+                fieldnames=COMPACT_EVENT_FIELDS,
+                delimiter="\t",
+                extrasaction="ignore",
+                lineterminator="\n",
+            )
+            ortholog_writer = csv.DictWriter(
+                ortholog_handle,
+                fieldnames=EVENT_ORTHOLOG_SUPPORT_FIELDS,
+                delimiter="\t",
+                extrasaction="ignore",
+                lineterminator="\n",
+            )
+            writer.writeheader()
+            ortholog_writer.writeheader()
+            event_rows = conn.execute(query)
+            for key, rows in groupby(
+                event_rows,
+                key=lambda values: values[: len(EVENT_KEY_FIELDS)],
             ):
-                writer = csv.DictWriter(
-                    handle,
-                    fieldnames=COMPACT_EVENT_FIELDS,
-                    delimiter="\t",
-                    extrasaction="ignore",
-                    lineterminator="\n",
+                compact_count += 1
+                record, ortholog_rows = compact_stream_group(
+                    compact_count,
+                    key,
+                    rows,
                 )
-                ortholog_writer = csv.DictWriter(
-                    ortholog_handle,
-                    fieldnames=EVENT_ORTHOLOG_SUPPORT_FIELDS,
-                    delimiter="\t",
-                    extrasaction="ignore",
-                    lineterminator="\n",
-                )
-                writer.writeheader()
-                ortholog_writer.writeheader()
-                event_rows = conn.execute(query)
-                for key, rows in groupby(
-                    event_rows,
-                    key=lambda values: values[: len(EVENT_KEY_FIELDS)],
-                ):
-                    compact_count += 1
-                    record, ortholog_rows = compact_stream_group(
-                        compact_count,
-                        key,
-                        rows,
-                        taxonomy_profiles,
+                writer.writerow(record)
+                for ortholog_row in ortholog_rows:
+                    ortholog_writer.writerow(
+                        {"event_group_id": compact_count, **ortholog_row}
                     )
-                    writer.writerow(record)
-                    for ortholog_row in ortholog_rows:
-                        ortholog_writer.writerow(
-                            {"event_group_id": compact_count, **ortholog_row}
-                        )
-                        ortholog_support_count += 1
-                    if (
-                        support_writer is None
-                        or record.get("event_type") != "snv"
-                        or len(str(record.get("ref") or "")) != 1
-                        or len(str(record.get("alt") or "")) != 1
-                        or str(record.get("ref") or "").upper() not in DNA_BASES
-                        or str(record.get("alt") or "").upper() not in DNA_BASES
-                        or int(record.get("all__ortholog") or 0) < 1
-                    ):
-                        continue
-                    support_writer.writerow(
-                        {
-                            "gene_id": record["gene_id"],
-                            "strategy": record["strategy"],
-                            "target_start0": record["target_start0"],
-                            "ref": str(record["ref"]).upper(),
-                            "alt": str(record["alt"]).upper(),
-                            **{key: int(record[key]) for key in COUNT_KEYS},
-                        }
-                    )
-                    taxonomic_support_count += 1
-        finally:
-            if support_handle is not None:
-                support_handle.close()
+                    ortholog_support_count += 1
         finish_phase(phase_timings, "stream_event_groups", phase_started)
-        return compact_count, raw_count, taxonomic_support_count, ortholog_support_count
+        return compact_count, raw_count, ortholog_support_count
     finally:
         conn.close()
         if db_path.exists():
@@ -1004,7 +919,7 @@ def merge_strategy_parameters(manifests: list[dict]) -> dict[str, dict]:
 
 def require_alignment_tables(
     result_dirs: list[Path],
-    output_profile: str,
+    input_event_mode: str,
 ) -> None:
     filenames = [
         "ortholog_alignment_summary.tsv.gz",
@@ -1012,10 +927,8 @@ def require_alignment_tables(
         "alignment_events.tsv.gz",
         "failures.tsv.gz",
     ]
-    if output_profile == "report-input":
+    if input_event_mode == "compact_support":
         filenames.append("event_ortholog_support.tsv.gz")
-    else:
-        filenames.append("feature_coverage.tsv.gz")
     missing = [
         str(result_dir / filename)
         for result_dir in result_dirs
@@ -1223,11 +1136,16 @@ def validate_alignment_manifests(manifests: list[dict]) -> None:
     for manifest in manifests:
         manifest_values(manifest, "gene_ids")
         manifest_values(manifest, "strategies")
-        for field in ALIGNMENT_MANIFEST_COUNT_FIELDS:
-            manifest_count(manifest, field)
         mode = manifest.get("alignment_event_mode")
         if mode not in {"raw", "compact_support"}:
             raise ValueError(f"Alignment manifest has invalid alignment_event_mode: {mode!r}")
+        count_fields = (
+            ALIGNER_MANIFEST_COUNT_FIELDS
+            if mode == "raw"
+            else PARTITION_MANIFEST_COUNT_FIELDS
+        )
+        for field in count_fields:
+            manifest_count(manifest, field)
         raw_count = manifest_count(manifest, "raw_alignment_event_count")
         event_count = manifest_count(manifest, "alignment_event_count")
         if raw_count < event_count:
@@ -1261,21 +1179,12 @@ def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
     args = parse_args()
     timings_seconds: dict[str, float] = {}
-    if args.partition_id and args.output_profile == "report-input":
-        raise ValueError("--output-profile report-input is only valid for the final merge")
-    if not args.partition_id and args.output_profile == "annotation-input":
-        raise ValueError("--output-profile annotation-input requires --partition-id")
     expected_strategies = sorted(
         parse_expected_values(args.expected_strategies, "--expected-strategies")
     )
     args.outdir.mkdir(parents=True, exist_ok=True)
     result_dirs = resolve_result_dirs(args.result_dir, args.result_root)
 
-    global_inputs = [args.taxonomy, args.taxonomy_failures]
-    if not args.partition_id and any(path is None for path in global_inputs):
-        raise ValueError(
-            "Final alignment merge requires --taxonomy and --taxonomy-failures"
-        )
     source_context_inputs = [args.source_genes, args.source_target_features]
     if not args.partition_id and any(path is None for path in source_context_inputs):
         raise ValueError(
@@ -1291,7 +1200,7 @@ def main() -> None:
     input_event_mode = merged_event_mode(manifests)
     require_alignment_tables(
         result_dirs,
-        output_profile=args.output_profile,
+        input_event_mode=input_event_mode,
     )
     validate_alignment_table_schemas(
         result_dirs,
@@ -1306,24 +1215,11 @@ def main() -> None:
             expected_strategies,
             args.alignment_tasks,
         )
-        alignment_task_count = len(gene_ids)
-        strategy_eligible_gene_counts = {
-            strategy: len(
-                {
-                    gene_id
-                    for manifest in manifests
-                    if strategy in manifest_strategies([manifest])
-                    for gene_id in manifest_gene_ids([manifest])
-                }
-            )
-            for strategy in strategies
-        }
     else:
-        (
-            alignment_task_count,
-            expected_gene_ids,
-            strategy_eligible_gene_counts,
-        ) = summarize_alignment_tasks(args.alignment_tasks, expected_strategies)
+        expected_gene_ids = summarize_alignment_tasks(
+            args.alignment_tasks,
+            expected_strategies,
+        )
         if not expected_gene_ids:
             raise ValueError(
                 f"Alignment tasks {args.alignment_tasks} contain no genes eligible "
@@ -1336,10 +1232,6 @@ def main() -> None:
             expected_strategies,
             args.alignment_tasks,
         )
-        if args.output_profile == "full":
-            copy_or_keep(args.alignment_tasks, args.outdir / "alignment_tasks.tsv.gz")
-            copy_or_keep(args.taxonomy, args.outdir / "taxonomy.tsv.gz")
-            copy_or_keep(args.taxonomy_failures, args.outdir / "taxonomy_failures.tsv.gz")
     gene_count = len(gene_ids)
 
     expected_event_mode = "raw" if args.partition_id else "compact_support"
@@ -1349,9 +1241,9 @@ def main() -> None:
             f"{merge_level} alignment merge requires {expected_event_mode} inputs, "
             f"observed {input_event_mode}"
         )
-    if args.output_profile == "report-input":
+    if not args.partition_id:
         copy_partitioned_evidence(result_dirs, args.outdir)
-    if args.output_profile == "report-input":
+    if not args.partition_id:
         summary_count = sum_manifest_count(manifests, "ortholog_alignment_summary_count")
         segment_count = sum_manifest_count(manifests, "alignment_segment_count")
     else:
@@ -1363,23 +1255,12 @@ def main() -> None:
             summary_inputs,
             args.outdir / "ortholog_alignment_summary.tsv.gz",
         )
-        _, strategy_summary_count = write_strategy_summary(
-            [args.outdir / "ortholog_alignment_summary.tsv.gz"],
-            args.outdir / "strategy_summary.tsv.gz",
-            strategies,
-        )
         segment_count = merge_tsv_gz(
             [path / "alignment_segments.tsv.gz" for path in result_dirs],
             args.outdir / "alignment_segments.tsv.gz",
         )
 
-    if args.output_profile != "report-input":
-        feature_coverage_inputs = [path / "feature_coverage.tsv.gz" for path in result_dirs]
-        feature_coverage_count = merge_tsv_gz(
-            feature_coverage_inputs,
-            args.outdir / "feature_coverage.tsv.gz",
-        )
-    if args.output_profile == "report-input":
+    if not args.partition_id:
         event_count = sum_manifest_count(manifests, "alignment_event_count")
         raw_event_count = sum_manifest_count(manifests, "raw_alignment_event_count")
         event_ortholog_support_count = sum_manifest_count(
@@ -1393,16 +1274,11 @@ def main() -> None:
             (
                 event_count,
                 raw_event_count,
-                taxonomic_alt_support_count,
                 event_ortholog_support_count,
             ) = write_compact_events(
                 event_inputs,
                 args.outdir / "alignment_events.tsv.gz",
                 args.outdir / "event_ortholog_support.tsv.gz",
-                args.taxonomy if args.partition_id and args.taxonomy else None,
-                args.outdir / "snv_alt_taxonomic_support.tsv.gz"
-                if args.partition_id and args.taxonomy
-                else None,
                 timings=timings_seconds,
             )
         else:
@@ -1412,89 +1288,25 @@ def main() -> None:
                 args.outdir / "alignment_events.tsv.gz",
                 args.outdir / "event_ortholog_support.tsv.gz",
             )
-            taxonomic_alt_support_count = 0
         alignment_event_mode = "compact_support"
-
-    if args.partition_id:
-        phase_started = start_phase("snv_site_depth")
-        snv_site_depth_count = write_snv_site_depth(
-            [path / "alignment_segments.tsv.gz" for path in result_dirs],
-            iter_snv_event_sites([args.outdir / "alignment_events.tsv.gz"]),
-            args.outdir / "snv_site_depth.tsv.gz",
-            args.outdir,
-        )
-        finish_phase(timings_seconds, "snv_site_depth", phase_started)
-        if args.taxonomy is not None:
-            phase_started = start_phase("snv_taxonomic_depth")
-            snv_taxonomic_depth_count = write_snv_taxonomic_depth(
-                [path / "alignment_segments.tsv.gz" for path in result_dirs],
-                iter_snv_event_sites([args.outdir / "alignment_events.tsv.gz"]),
-                args.taxonomy,
-                args.outdir / "snv_taxonomic_depth.tsv.gz",
-                args.outdir,
-            )
-            finish_phase(timings_seconds, "snv_taxonomic_depth", phase_started)
-        else:
-            snv_taxonomic_depth_count = 0
-    elif args.output_profile == "full":
-        snv_site_depth_count = merge_tsv_gz(
-            [path / "snv_site_depth.tsv.gz" for path in result_dirs],
-            args.outdir / "snv_site_depth.tsv.gz",
-        )
-        snv_taxonomic_depth_count = merge_sorted_tsv_gz(
-            [path / "snv_taxonomic_depth.tsv.gz" for path in result_dirs],
-            args.outdir / "snv_taxonomic_depth.tsv.gz",
-            SNV_TAXONOMIC_DEPTH_FIELDS,
-            ["-k1,1", "-k2,2", "-k3,3n"],
-        )
-        expected_taxonomic_depth_count = sum_manifest_count(
-            manifests,
-            "snv_taxonomic_depth_count",
-        )
-        if snv_taxonomic_depth_count != expected_taxonomic_depth_count:
-            raise ValueError(
-                "SNV taxonomic depth row count does not match partition manifests: "
-                f"rows={snv_taxonomic_depth_count}, manifests={expected_taxonomic_depth_count}"
-            )
-        taxonomic_alt_support_count = merge_sorted_tsv_gz(
-            [path / "snv_alt_taxonomic_support.tsv.gz" for path in result_dirs],
-            args.outdir / "snv_alt_taxonomic_support.tsv.gz",
-            SNV_ALT_TAXONOMIC_SUPPORT_FIELDS,
-            ["-k1,1", "-k2,2", "-k3,3n", "-k4,4", "-k5,5"],
-        )
-        expected_taxonomic_alt_support_count = sum_manifest_count(
-            manifests,
-            "snv_alt_taxonomic_support_count",
-        )
-        if taxonomic_alt_support_count != expected_taxonomic_alt_support_count:
-            raise ValueError(
-                "SNV ALT taxonomic support row count does not match partition manifests: "
-                f"rows={taxonomic_alt_support_count}, "
-                f"manifests={expected_taxonomic_alt_support_count}"
-            )
     failure_count = merge_tsv_gz(
         [path / "failures.tsv.gz" for path in result_dirs],
         args.outdir / "failures.tsv.gz",
-    )
-    native_file_count = (
-        copy_native(result_dirs, args.outdir)
-        if args.output_profile == "full"
-        else 0
     )
     manifest = {
         "created_at": utc_now(),
         "stage": "alignment",
         "partition_id": args.partition_id or "",
-        "output_profile": args.output_profile,
+        "schema": (
+            "normalized_alignment_evidence_partition_v1"
+            if args.partition_id
+            else "normalized_alignment_evidence_v1"
+        ),
         "strategy_count": len(strategies),
         "strategies": strategies,
-        "strategy_eligible_gene_counts": strategy_eligible_gene_counts,
         "strategy_parameters": strategy_parameters,
         "gene_count": gene_count,
         "gene_ids": gene_ids,
-        "alignment_task_count": alignment_task_count,
-        "taxonomy_tax_id_count": count_tsv_gz_rows(args.taxonomy) if args.taxonomy else 0,
-        "taxonomy_failure_count": count_tsv_gz_rows(args.taxonomy_failures) if args.taxonomy_failures else 0,
         "ortholog_alignment_summary_count": summary_count,
         "alignment_segment_count": segment_count,
         "alignment_event_mode": alignment_event_mode,
@@ -1505,24 +1317,13 @@ def main() -> None:
         "alignment_event_count": event_count,
         "event_ortholog_support_count": event_ortholog_support_count,
         "failure_count": failure_count,
-        "native_file_count": native_file_count,
     }
-    if args.output_profile != "report-input":
-        manifest.update(
-            {
-                "strategy_summary_count": strategy_summary_count,
-                "feature_coverage_count": feature_coverage_count,
-                "snv_site_depth_count": snv_site_depth_count,
-                "snv_taxonomic_depth_count": snv_taxonomic_depth_count,
-                "snv_alt_taxonomic_support_count": taxonomic_alt_support_count,
-            }
-        )
     if not args.partition_id:
         manifest["source_target_context"] = {
             "genes_sha256": sha256_file(args.source_genes),
             "target_features_sha256": sha256_file(args.source_target_features),
         }
-    if args.output_profile == "report-input":
+    if not args.partition_id:
         manifest["normalized_evidence"] = {
             "layout": "partitioned",
             "format": "tsv_gzip_v1",
@@ -1536,13 +1337,6 @@ def main() -> None:
     partition_timings = collect_partition_timings(manifests)
     if partition_timings:
         manifest["partition_timings_seconds"] = partition_timings
-        timing_totals: dict[str, float] = {}
-        for timings in partition_timings.values():
-            for name, value in timings.items():
-                timing_totals[name] = timing_totals.get(name, 0.0) + value
-        manifest["partition_timing_totals_seconds"] = {
-            name: round(value, 3) for name, value in sorted(timing_totals.items())
-        }
     (args.outdir / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
 
 
