@@ -11,7 +11,6 @@ from analytics.analyses.candidate_conservation_aggregation import (
     resolve_candidate_aggregation_source,
 )
 from analytics.analyses.conservation import PositionScores, parse_tracks
-from analytics.io.artifacts import file_identity
 
 
 def test_candidate_conservation_deduplicates_memberships_and_reuses_cache(
@@ -101,7 +100,7 @@ def test_candidate_conservation_deduplicates_memberships_and_reuses_cache(
 
     monkeypatch.setattr(candidate, "read_position_scores", fake_read_position_scores)
     result = candidate.build_candidate_conservation(
-        variant_annotations_tsv=annotations,
+        variant_annotations_source=annotations,
         analytics_dir=tmp_path / "analytics",
         annotation_failures_tsv=failures,
         additional_rows=[{"chrom": "1", "pos": "4", "ref": "T", "alt": "C"}],
@@ -140,7 +139,7 @@ def test_candidate_conservation_deduplicates_memberships_and_reuses_cache(
 
     monkeypatch.setattr(candidate, "read_position_scores", lambda **_kwargs: (_ for _ in ()).throw(AssertionError()))
     cached = candidate.build_candidate_conservation(
-        variant_annotations_tsv=annotations,
+        variant_annotations_source=annotations,
         analytics_dir=tmp_path / "analytics",
         annotation_failures_tsv=failures,
         phylop_bigwig=local_bigwig,
@@ -204,7 +203,7 @@ def test_candidate_conservation_scores_indels_and_excludes_complex_alleles(
 
     monkeypatch.setattr(candidate, "read_position_scores", fake_read_position_scores)
     result = candidate.build_candidate_conservation(
-        variant_annotations_tsv=annotations,
+        variant_annotations_source=annotations,
         analytics_dir=tmp_path / "analytics",
     )
 
@@ -260,7 +259,7 @@ def test_candidate_score_materialization_reuses_scores_and_tracks_missing_values
     )
 
     result = candidate.build_candidate_conservation(
-        variant_annotations_tsv=annotations,
+        variant_annotations_source=annotations,
         analytics_dir=tmp_path / "analytics",
         chunk_size=1,
     )
@@ -276,15 +275,15 @@ def test_candidate_score_materialization_reuses_scores_and_tracks_missing_values
     assert groups[("s1", "not_found")]["scored_count"] == 0
 
 
-def test_candidate_source_prefers_validated_vep_input_partitions(tmp_path: Path) -> None:
-    artifact = tmp_path / "vep_consequences"
-    inputs = artifact / "inputs"
-    inputs.mkdir(parents=True)
+def test_candidate_source_reads_validated_pipeline_partitions(tmp_path: Path) -> None:
+    artifact = tmp_path / "variant_annotations"
+    inputs = artifact / "partitions"
     columns = sorted(candidate.REQUIRED_COLUMNS)
     entries = []
     for index, variant_key in enumerate(["1:1:A>G", "1:2:C>T"], start=1):
         partition_id = f"partition_{index:06d}"
-        path = inputs / f"{partition_id}.tsv.gz"
+        path = inputs / partition_id / "shard_000001.tsv.gz"
+        path.parent.mkdir(parents=True)
         with gzip.open(path, "wt", newline="") as handle:
             writer = csv.DictWriter(handle, fieldnames=columns, delimiter="\t", lineterminator="\n")
             writer.writeheader()
@@ -296,45 +295,42 @@ def test_candidate_source_prefers_validated_vep_input_partitions(tmp_path: Path)
                     "gnomad_af": "",
                 }
             )
-        entries.append(
-            {
-                "partition_id": partition_id,
-                "path": f"inputs/{partition_id}.tsv.gz",
+        entries.append({
+            "partition_id": partition_id,
+            "shard_count": 1,
+            "row_count": 1,
+            "shards": [{
+                "shard_id": "shard_000001",
+                "path": f"partitions/{partition_id}/shard_000001.tsv.gz",
                 "row_count": 1,
-                "file": file_identity(path),
-            }
-        )
-    plan = {
+                "size_bytes": path.stat().st_size,
+            }],
+        })
+    manifest = artifact / "manifest.json"
+    manifest.write_text(json.dumps({
+        "schema": "gaph_variant_annotation_dataset_v1",
         "status": "complete",
-        "source": {"path": "/source/variant_annotations.tsv.gz"},
+        "layout": "partitioned",
+        "format": "tsv_gzip_v1",
+        "partition_count": 2,
+        "shard_count": 2,
         "row_count": 2,
-        "input_columns": columns,
+        "fields": columns,
         "partitions": entries,
-    }
-    (artifact / "plan.json").write_text(json.dumps(plan))
-    merged = artifact / "variant_annotations.vep.tsv.gz"
-    with gzip.open(merged, "wt") as handle:
-        handle.write("\t".join([*columns, "vep_status"]) + "\n")
-    (artifact / "manifest.json").write_text(
-        json.dumps(
-            {
-                "status": "complete",
-                "source": plan["source"],
-                "row_count": 2,
-                "output": file_identity(merged),
-            }
-        )
-    )
+    }))
 
-    source = resolve_candidate_aggregation_source(merged)
+    source = resolve_candidate_aggregation_source(manifest)
 
-    assert source.mode == "vep_input_partitions"
+    assert source.mode == "partitioned"
     assert source.header is True
     assert source.row_count == 2
-    assert source.paths == tuple((inputs / f"partition_{index:06d}.tsv.gz").resolve() for index in (1, 2))
+    assert source.paths == tuple(
+        (inputs / f"partition_{index:06d}" / "shard_000001.tsv.gz").resolve()
+        for index in (1, 2)
+    )
 
     store = build_candidate_allele_store(
-        variant_annotations_tsv=merged,
+        variant_annotations_source=manifest,
         strategies=["s1"],
         annotation_failures_path=None,
         temp_dir=tmp_path / "duckdb_tmp",
@@ -370,7 +366,7 @@ def test_candidate_store_keeps_gnomad_status_per_strategy(tmp_path: Path) -> Non
         )
 
     store = build_candidate_allele_store(
-        variant_annotations_tsv=annotations,
+        variant_annotations_source=annotations,
         strategies=["found_strategy", "not_found_strategy"],
         annotation_failures_path=None,
         temp_dir=tmp_path / "duckdb_tmp",

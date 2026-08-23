@@ -103,7 +103,7 @@ def test_filter_score_store_and_candidate_curves_are_allele_level(tmp_path: Path
     )
 
     score_path, _manifest, cache_hit = build_or_load_filter_score_store(
-        variant_annotations_tsv=annotations,
+        variant_annotations_source=annotations,
         variant_strategy_support_tsv=support,
         annotation_failures_tsv=failures,
         analytics_dir=tmp_path / "analytics",

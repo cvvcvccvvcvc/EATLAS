@@ -65,16 +65,6 @@ def annotate_vep_consequences(
     if vep_forks < 1:
         raise ValueError("VEP forks must be >= 1")
 
-    unique = (
-        rows[list(required)]
-        .astype({"variant_key": str, "gene_id": str, "chrom": str, "ref": str, "alt": str})
-        .drop_duplicates(["variant_key", "gene_id"])
-        .sort_values(["chrom", "pos", "variant_key", "gene_id"], kind="mergesort")
-        .reset_index(drop=True)
-    )
-    if unique.empty:
-        return _empty_annotations(), {"status": "complete", "requested": 0, "cached": 0, "queried": 0}
-
     if backend == "rest":
         release = release or _fetch_release(base_url, retries, timeout_seconds)
         # Preserve the original REST hash so existing caches remain reusable.
@@ -96,6 +86,25 @@ def annotate_vep_consequences(
             release=str(release),
             base_url=base_url,
         )
+
+    unique = (
+        rows[list(required)]
+        .astype({"variant_key": str, "gene_id": str, "chrom": str, "ref": str, "alt": str})
+        .drop_duplicates(["variant_key", "gene_id"])
+        .sort_values(["chrom", "pos", "variant_key", "gene_id"], kind="mergesort")
+        .reset_index(drop=True)
+    )
+    if unique.empty:
+        return _empty_annotations(), {
+            "status": "complete",
+            "backend": backend,
+            "release": str(release),
+            "options": VEP_OPTIONS,
+            "requested": 0,
+            "cached": 0,
+            "queried": 0,
+            "status_counts": {},
+        }
     config_hash = hashlib.sha256(json.dumps(config, sort_keys=True).encode()).hexdigest()
 
     result_cache = (

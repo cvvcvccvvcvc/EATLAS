@@ -19,7 +19,7 @@ from analytics.vep.consequences import (
 )
 from analytics.io.artifacts import path_metadata, write_json_atomic
 from analytics.io.variant_source import (
-    resolve_pre_vep_variant_source,
+    resolve_variant_table_source,
     sql_string,
     variant_source_sql,
 )
@@ -72,7 +72,7 @@ class BasicFilteringAnalysis:
 
 def build_basic_filtering_analysis(
     *,
-    variant_annotations_tsv: Path,
+    variant_annotations_source: Path,
     variant_strategy_support_tsv: Path,
     annotation_failures_tsv: Path,
     analytics_dir: Path,
@@ -83,7 +83,7 @@ def build_basic_filtering_analysis(
     """Build candidate-retention, gnomAD, and ClinVar threshold curves."""
 
     score_path, manifest_path, cache_hit = build_or_load_filter_score_store(
-        variant_annotations_tsv=variant_annotations_tsv,
+        variant_annotations_source=variant_annotations_source,
         variant_strategy_support_tsv=variant_strategy_support_tsv,
         annotation_failures_tsv=annotation_failures_tsv,
         analytics_dir=analytics_dir,
@@ -110,7 +110,7 @@ def build_basic_filtering_analysis(
 
 def build_or_load_filter_score_store(
     *,
-    variant_annotations_tsv: Path,
+    variant_annotations_source: Path,
     variant_strategy_support_tsv: Path,
     annotation_failures_tsv: Path,
     analytics_dir: Path,
@@ -118,8 +118,8 @@ def build_or_load_filter_score_store(
 ) -> tuple[Path, Path, bool]:
     """Materialize one bounded-width allele/strategy table for all filter views."""
 
-    source = resolve_pre_vep_variant_source(
-        variant_annotations_tsv,
+    source = resolve_variant_table_source(
+        variant_annotations_source,
         required_columns={"variant_key", "event_type", "lookup_status", "gnomad_af"},
     )
     support_columns = _read_header(variant_strategy_support_tsv)

@@ -123,9 +123,9 @@ fi
 command -v sbatch >/dev/null || fail "sbatch was not found; run this launcher on the Slurm controller"
 
 if [[ "$source_kind" == run ]]; then
-  vep_dir="$run_dir/analytics/vep_consequences"
-  [[ -s "$vep_dir/manifest.json" && -s "$vep_dir/variant_annotations.vep.tsv.gz" ]] || fail \
-    "missing finalized bulk VEP artifact under $vep_dir; run: bash analytics/slurm/submit_vep_annotation.sh --run-dir '$run_dir'"
+  annotation_dir="$run_dir/annotation"
+  [[ -s "$annotation_dir/manifest.json" && -s "$annotation_dir/variant_annotations/manifest.json" ]] || fail \
+    "missing finalized pipeline variant-annotation dataset under $annotation_dir"
 fi
 
 for argument in "${report_args[@]}"; do

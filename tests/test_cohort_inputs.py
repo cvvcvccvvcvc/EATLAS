@@ -14,11 +14,11 @@ from analytics.analyses.variant_summary import build_variant_summary
 from analytics.analyses.variant_summary_aggregation import (
     resolve_variant_aggregation_source,
 )
-from analytics.io.artifacts import file_identity, path_metadata
+from analytics.io.artifacts import path_metadata
 from analytics.io.cohort_inputs import resolve_cohort_inputs
 from bin.alignment_table_schema import SEGMENT_FIELDS, SUMMARY_FIELDS
-from bin.annotate_events import EVENT_VARIANT_MAP_FIELDS
 from bin.fetch_taxonomy import TAXONOMY_FIELDS
+from bin.finalize_annotation_partitions import EVENT_VARIANT_MAP_FIELDS
 from bin.merge_alignment_results import (
     COMPACT_EVENT_FIELDS,
     EVENT_ORTHOLOG_SUPPORT_FIELDS,
@@ -80,12 +80,10 @@ def _make_run(
     fetch = run / "fetch"
     alignment = run / "alignment"
     annotation = run / "annotation"
-    vep = run / "analytics" / "vep_consequences"
     targets = fetch / "sequences" / "targets"
     targets.mkdir(parents=True)
     alignment.mkdir(parents=True)
     annotation.mkdir(parents=True)
-    vep.mkdir(parents=True)
 
     _write_json(
         run / "run_manifest.json",
@@ -356,8 +354,6 @@ def _make_run(
         "clinvar_scv_count": "3",
         "gnomad_af": gnomad_af,
     }
-    source = annotation / "variant_annotations.tsv.gz"
-    _write_gzip_table(source, [base_row], BASE_COLUMNS)
     _write_gzip_table(
         annotation / "failures.tsv.gz",
         [
@@ -380,7 +376,7 @@ def _make_run(
         annotation / "manifest.json",
         {
             "stage": "annotation",
-            "schema": "normalized_annotation_evidence_v2",
+            "schema": "normalized_annotation_evidence_v3",
             "partition_ids": [partition_id],
             "event_variant_map": {
                 "layout": "partitioned",
@@ -400,62 +396,50 @@ def _make_run(
             "event_key_status_counts": {"ok": 1},
         },
     )
-
-    input_partition = vep / "input" / "p1.tsv.gz"
-    output_partition = vep / "partitions" / "p1.tsv.gz"
     enriched = {
         **base_row,
         "vep_status": "ok",
         "vep_primary_consequence": "missense_variant",
         "vep_consequence_terms": "missense_variant",
     }
-    _write_gzip_table(input_partition, [base_row], BASE_COLUMNS)
-    _write_gzip_table(output_partition, [enriched], [*BASE_COLUMNS, *VEP_COLUMNS], header=False)
-    entry = {
-        "partition_id": "p1",
-        "path": "input/p1.tsv.gz",
-        "row_count": 1,
-        "file": file_identity(input_partition),
-    }
-    _write_json(
-        vep / "plan.json",
-        {
-            "schema_version": 1,
-            "status": "complete",
-            "source": path_metadata(source),
-            "row_count": 1,
-            "input_columns": BASE_COLUMNS,
-            "output_columns": [*BASE_COLUMNS, *VEP_COLUMNS],
-            "partitions": [entry],
-        },
-    )
     config = {"backend": "local", "release": "116"}
-    _write_json(
-        vep / "partitions" / "p1.json",
-        {
-            "status": "complete",
-            "input": entry,
-            "row_count": 1,
-            "config": config,
-            "output_columns": [*BASE_COLUMNS, *VEP_COLUMNS],
-            "output": file_identity(output_partition),
-        },
-    )
-    final_output = vep / "variant_annotations.vep.tsv.gz"
-    _write_gzip_table(final_output, [enriched], [*BASE_COLUMNS, *VEP_COLUMNS])
-    _write_json(
-        vep / "manifest.json",
-        {
-            "schema_version": 1,
-            "status": "complete",
-            "source": path_metadata(source),
-            "config": config,
-            "row_count": 1,
-            "status_counts": {"ok": 1},
-            "columns": [*BASE_COLUMNS, *VEP_COLUMNS],
-            "output": file_identity(final_output),
-        },
-    )
+    dataset_dir = annotation / "variant_annotations"
+    shard_relative = Path("partitions") / partition_id / "shard_000001.tsv.gz"
+    shard = dataset_dir / shard_relative
+    fields = [*BASE_COLUMNS, *VEP_COLUMNS]
+    _write_gzip_table(shard, [enriched], fields)
+    variant_annotations = {
+        "schema": "gaph_variant_annotation_dataset_v1",
+        "status": "complete",
+        "layout": "partitioned",
+        "format": "tsv_gzip_v1",
+        "path": "variant_annotations/manifest.json",
+        "partition_count": 1,
+        "shard_count": 1,
+        "row_count": 1,
+        "fields": fields,
+        "vep_config": config,
+        "vep_status_counts": {"ok": 1},
+        "partitions": [
+            {
+                "partition_id": partition_id,
+                "shard_count": 1,
+                "row_count": 1,
+                "shards": [
+                    {
+                        "shard_id": "shard_000001",
+                        "path": str(shard_relative),
+                        "row_count": 1,
+                        "size_bytes": shard.stat().st_size,
+                    }
+                ],
+            }
+        ],
+    }
+    _write_json(dataset_dir / "manifest.json", variant_annotations)
+    annotation_manifest = json.loads((annotation / "manifest.json").read_text())
+    annotation_manifest["variant_annotations"] = variant_annotations
+    _write_json(annotation / "manifest.json", annotation_manifest)
     return run
 
 
@@ -485,7 +469,7 @@ def test_cohort_resolves_disjoint_runs_as_stable_virtual_union(tmp_path: Path) -
         cohort_root=cohort_root,
         clinvar_vcf=clinvar,
     )
-    descriptor_mtime = first.variant_annotations_tsv.stat().st_mtime_ns
+    descriptor_mtime = first.variant_annotations_source.stat().st_mtime_ns
     reordered = resolve_cohort_inputs(
         _manifest(tmp_path / "cohort-b.json", [("b", run_b), ("a", run_a)]),
         cohort_root=cohort_root,
@@ -494,11 +478,11 @@ def test_cohort_resolves_disjoint_runs_as_stable_virtual_union(tmp_path: Path) -
 
     assert first.cohort_id == reordered.cohort_id
     assert first.run_dir == reordered.run_dir
-    assert descriptor_mtime == reordered.variant_annotations_tsv.stat().st_mtime_ns
+    assert descriptor_mtime == reordered.variant_annotations_source.stat().st_mtime_ns
     assert sorted(
         pd.read_csv(first.genes_tsv, sep="\t")["gene_id"].astype(str).tolist()
     ) == ["1", "2"]
-    source = resolve_variant_aggregation_source(first.variant_annotations_tsv)
+    source = resolve_variant_aggregation_source(first.variant_annotations_source)
     assert source.row_count == 2
     assert len(source.paths) == 2
     strategy_summary = pd.read_csv(first.strategy_summary_tsv, sep="\t")
@@ -528,11 +512,31 @@ def test_cohort_resolves_disjoint_runs_as_stable_virtual_union(tmp_path: Path) -
     assert "analytics/taxonomy_summary/taxonomy_summary.tsv.gz" in scientific_paths
     assert "fetch/taxonomy.tsv.gz" in scientific_paths
     assert "fetch/orthologs.selected.tsv.gz" in scientific_paths
+    assert "annotation/variant_annotations/manifest.json" in scientific_paths
+    assert (
+        "annotation/variant_annotations/partitions/partition_000001/shard_000001.tsv.gz"
+        in scientific_paths
+    )
+    assert not (first.run_dir / "analytics" / "vep_consequences").exists()
+    descriptor = json.loads(first.variant_annotations_source.read_text())
+    assert {Path(member["path"]) for member in descriptor["members"]} == {
+        run_a / "annotation" / "variant_annotations" / "manifest.json",
+        run_b / "annotation" / "variant_annotations" / "manifest.json",
+    }
+    annotation_manifest = json.loads(first.annotation_manifest_json.read_text())
+    variant_contract = annotation_manifest["variant_annotations"]
+    assert variant_contract["schema"] == "gaph_variant_annotation_dataset_v1"
+    assert variant_contract["layout"] == "cohort_partitioned"
+    assert variant_contract["row_count"] == 2
+    assert variant_contract["shard_count"] == 2
+    assert variant_contract["partition_count"] == 2
+    assert variant_contract["vep_config"] == {"backend": "local", "release": "116"}
+    assert variant_contract["vep_status_counts"] == {"ok": 2}
     assert "alignment/strategy_summary.tsv.gz" not in scientific_paths
     assert "annotation/variant_strategy_support.tsv.gz" not in scientific_paths
 
     observed = build_or_load_observed_variant_store(
-        variant_annotations_tsv=first.variant_annotations_tsv,
+        variant_annotations_source=first.variant_annotations_source,
         analytics_dir=first.run_dir / "analytics",
         strategies=["s1"],
     )
@@ -579,6 +583,27 @@ def test_cohort_rejects_member_without_normalized_alignment_evidence(
         )
 
 
+def test_cohort_rejects_member_without_pipeline_variant_dataset(tmp_path: Path) -> None:
+    clinvar = tmp_path / "clinvar.vcf.gz"
+    clinvar.write_bytes(b"clinvar")
+    Path(f"{clinvar}.tbi").write_bytes(b"index")
+    run = _make_run(tmp_path / "run", gene_id="1", clinvar_vcf=clinvar)
+    dataset_manifest = run / "annotation" / "variant_annotations" / "manifest.json"
+    dataset_manifest.unlink()
+    legacy = run / "analytics" / "vep_consequences" / "variant_annotations.vep.tsv.gz"
+    _write_gzip_table(legacy, [], [*BASE_COLUMNS, *VEP_COLUMNS])
+
+    with pytest.raises(
+        FileNotFoundError,
+        match="Missing pipeline variant-annotation dataset manifest",
+    ):
+        resolve_cohort_inputs(
+            _manifest(tmp_path / "cohort.json", [("old", run)]),
+            cohort_root=tmp_path / "cohorts",
+            clinvar_vcf=clinvar,
+        )
+
+
 def test_cohort_rejects_incompatible_strategy_contracts(tmp_path: Path) -> None:
     clinvar = tmp_path / "clinvar.vcf.gz"
     clinvar.write_bytes(b"clinvar")
@@ -592,6 +617,29 @@ def test_cohort_rejects_incompatible_strategy_contracts(tmp_path: Path) -> None:
     )
 
     with pytest.raises(ValueError, match="contracts differ: strategies, strategy_parameters"):
+        resolve_cohort_inputs(
+            _manifest(tmp_path / "cohort.json", [("a", run_a), ("b", run_b)]),
+            cohort_root=tmp_path / "cohorts",
+            clinvar_vcf=clinvar,
+        )
+
+
+def test_cohort_rejects_incompatible_variant_annotation_config(tmp_path: Path) -> None:
+    clinvar = tmp_path / "clinvar.vcf.gz"
+    clinvar.write_bytes(b"clinvar")
+    Path(f"{clinvar}.tbi").write_bytes(b"index")
+    run_a = _make_run(tmp_path / "run-a", gene_id="1", clinvar_vcf=clinvar)
+    run_b = _make_run(tmp_path / "run-b", gene_id="2", clinvar_vcf=clinvar)
+    dataset_path = run_b / "annotation" / "variant_annotations" / "manifest.json"
+    dataset = json.loads(dataset_path.read_text())
+    dataset["vep_config"]["release"] = "115"
+    _write_json(dataset_path, dataset)
+    annotation_path = run_b / "annotation" / "manifest.json"
+    annotation = json.loads(annotation_path.read_text())
+    annotation["variant_annotations"] = dataset
+    _write_json(annotation_path, annotation)
+
+    with pytest.raises(ValueError, match="contracts differ: vep_release"):
         resolve_cohort_inputs(
             _manifest(tmp_path / "cohort.json", [("a", run_a), ("b", run_b)]),
             cohort_root=tmp_path / "cohorts",
@@ -644,7 +692,7 @@ def test_cohort_successful_gnomad_evidence_supersedes_failed_duplicate(
     )
 
     summary = build_variant_summary(
-        inputs.variant_annotations_tsv,
+        inputs.variant_annotations_source,
         inputs.run_dir / "analytics",
         strategy_label=str,
         target_features_path=inputs.target_features_tsv,

@@ -16,9 +16,6 @@ from typing import Any, Iterable
 import duckdb
 import pandas as pd
 
-from analytics.analyses.variant_summary_aggregation import (
-    resolve_variant_aggregation_source,
-)
 from analytics.io.artifacts import (
     content_identity,
     path_metadata,
@@ -26,7 +23,6 @@ from analytics.io.artifacts import (
 )
 from analytics.io.run_inputs import (
     RunInputs,
-    bulk_vep_manifest,
     read_json,
     resolve_run_inputs,
     validate_report_inputs,
@@ -34,7 +30,8 @@ from analytics.io.run_inputs import (
 from analytics.io.variant_source import (
     COHORT_VARIANT_SOURCE_KIND,
     COHORT_VARIANT_SOURCE_SCHEMA_VERSION,
-    resolve_pre_vep_variant_source,
+    VARIANT_DATASET_SCHEMA,
+    resolve_variant_table_source,
     sql_string,
     variant_source_sql,
 )
@@ -46,7 +43,7 @@ from analytics.derivations.taxonomy import (
 
 
 COHORT_MANIFEST_SCHEMA_VERSION = 1
-COHORT_CONTRACT_VERSION = 1
+COHORT_CONTRACT_VERSION = 2
 COHORT_RESOLVED_MANIFEST = "cohort.resolved.json"
 
 
@@ -62,7 +59,6 @@ class CohortMember:
     fetch_manifest: dict[str, object]
     alignment_manifest: dict[str, object]
     annotation_manifest: dict[str, object]
-    vep_manifest: dict[str, object]
 
 
 def resolve_cohort_inputs(
@@ -97,21 +93,12 @@ def resolve_cohort_inputs(
     inputs_dir = cohort_dir / "inputs"
     inputs_dir.mkdir(parents=True, exist_ok=True)
 
-    variant_descriptor = inputs_dir / "variant_annotations.cohort.json"
-    _write_json_stable(
-        variant_descriptor,
-        {
-            "schema_version": COHORT_VARIANT_SOURCE_SCHEMA_VERSION,
-            "kind": COHORT_VARIANT_SOURCE_KIND,
-            "members": [
-                {
-                    "fingerprint": member.fingerprint,
-                    "path": str(member.inputs.variant_annotations_tsv),
-                }
-                for member in members
-            ],
-        },
+    variant_descriptor = inputs_dir / "variant_annotations" / "manifest.json"
+    variant_annotations = _cohort_variant_annotations_descriptor(
+        members,
+        "variant_annotations/manifest.json",
     )
+    _write_json_stable(variant_descriptor, variant_annotations)
     _validate_shared_allele_evidence(variant_descriptor)
 
     genes_tsv = inputs_dir / "genes.tsv.gz"
@@ -154,7 +141,6 @@ def resolve_cohort_inputs(
     fetch_manifest_path = inputs_dir / "fetch_manifest.json"
     alignment_manifest_path = inputs_dir / "alignment_manifest.json"
     annotation_manifest_path = inputs_dir / "annotation_manifest.json"
-    vep_manifest_path = cohort_dir / "analytics" / "vep_consequences" / "manifest.json"
     _write_json_stable(fetch_manifest_path, _cohort_fetch_manifest(members, compatibility))
     _write_json_stable(
         alignment_manifest_path,
@@ -162,9 +148,12 @@ def resolve_cohort_inputs(
     )
     _write_json_stable(
         annotation_manifest_path,
-        _cohort_annotation_manifest(members, compatibility),
+        _cohort_annotation_manifest(
+            members,
+            compatibility,
+            variant_annotations,
+        ),
     )
-    _write_json_stable(vep_manifest_path, _cohort_vep_manifest(members))
 
     resolved_manifest_path = cohort_dir / COHORT_RESOLVED_MANIFEST
     resolved_manifest = {
@@ -199,7 +188,7 @@ def resolve_cohort_inputs(
         genes_tsv=genes_tsv,
         target_features_tsv=target_features_tsv,
         target_sequences_dir=target_sequences_dir,
-        variant_annotations_tsv=variant_descriptor,
+        variant_annotations_source=variant_descriptor,
         variant_strategy_support_tsv=support_tsv,
         ortholog_evidence_summary_tsv=ortholog_evidence_tsv,
         annotation_manifest_json=annotation_manifest_path,
@@ -277,7 +266,6 @@ def _load_member(label: str, run_dir: Path) -> CohortMember:
     fetch_manifest = _required_json(inputs.fetch_manifest_json)
     alignment_manifest = _required_json(inputs.alignment_manifest_json)
     annotation_manifest = _required_json(inputs.annotation_manifest_json)
-    vep_manifest = bulk_vep_manifest(inputs)
     _validate_completed_run(root_manifest, run_dir)
     requested_gene_ids = frozenset(_read_requested_gene_ids(run_dir / "fetch" / "input.ids.tsv"))
     target_gene_ids = frozenset(_read_gene_ids(inputs.genes_tsv))
@@ -305,7 +293,6 @@ def _load_member(label: str, run_dir: Path) -> CohortMember:
         fetch_manifest=fetch_manifest,
         alignment_manifest=alignment_manifest,
         annotation_manifest=annotation_manifest,
-        vep_manifest=vep_manifest,
     )
 
 
@@ -388,7 +375,7 @@ def _validate_compatibility(
         "ortholog_scope": "all",
         "alignment_event_mode": "compact_support",
         "event_ortholog_support_format": "event_group_id_v2",
-        "annotation_schema": "normalized_annotation_evidence_v2",
+        "annotation_schema": "normalized_annotation_evidence_v3",
         "gnomad_dataset": "gnomad_r4",
     }
     incompatible_constants = [
@@ -416,8 +403,10 @@ def _member_compatibility(member: CohortMember) -> dict[str, object]:
     fetch = member.fetch_manifest
     alignment = member.alignment_manifest
     annotation = member.annotation_manifest
-    vep = member.vep_manifest
-    vep_config = vep.get("config")
+    variant_annotations = annotation.get("variant_annotations")
+    if not isinstance(variant_annotations, dict):
+        variant_annotations = {}
+    vep_config = variant_annotations.get("vep_config")
     if not isinstance(vep_config, dict):
         vep_config = {}
     return {
@@ -437,7 +426,7 @@ def _member_compatibility(member: CohortMember) -> dict[str, object]:
         "gnomad_dataset": annotation.get("gnomad_dataset"),
         "vep_backend": vep_config.get("backend"),
         "vep_release": vep_config.get("release"),
-        "vep_columns": vep.get("columns"),
+        "vep_columns": variant_annotations.get("fields"),
     }
 
 
@@ -480,11 +469,13 @@ def _scientific_file_records(inputs: RunInputs, run_dir: Path) -> Iterable[dict[
         inputs.variant_strategy_support_tsv,
         inputs.ortholog_evidence_summary_tsv,
         inputs.taxonomy_summary_tsv,
-        inputs.variant_annotations_tsv.parent / "plan.json",
-        inputs.variant_annotations_tsv.parent / "manifest.json",
+        inputs.variant_annotations_source,
     ]
     paths.extend(sorted(inputs.target_sequences_dir.glob("*.fa.gz")))
-    source = resolve_variant_aggregation_source(inputs.variant_annotations_tsv)
+    source = resolve_variant_table_source(
+        inputs.variant_annotations_source,
+        required_columns=set(),
+    )
     paths.extend(source.paths)
     unique = sorted(set(paths), key=lambda path: path.relative_to(run_dir).as_posix())
     for path in unique:
@@ -505,7 +496,7 @@ def _validate_shared_allele_evidence(variant_descriptor: Path) -> None:
         "clinvar_review_stars",
         "clinvar_scv_count",
     }
-    source = resolve_pre_vep_variant_source(
+    source = resolve_variant_table_source(
         variant_descriptor,
         required_columns=required,
     )
@@ -727,13 +718,16 @@ def _cohort_alignment_manifest(
 
 
 def _cohort_annotation_manifest(
-    members: list[CohortMember], compatibility: dict[str, object]
+    members: list[CohortMember],
+    compatibility: dict[str, object],
+    variant_annotations: dict[str, object],
 ) -> dict[str, object]:
     manifests = [member.annotation_manifest for member in members]
     return {
         "stage": "annotation",
         "schema": compatibility["annotation_schema"],
         "cohort": True,
+        "variant_annotations": variant_annotations,
         "gnomad_api_url": compatibility["gnomad_api_url"],
         "gnomad_dataset": compatibility["gnomad_dataset"],
         "failure_count": _sum_int(manifests, "failure_count"),
@@ -742,18 +736,55 @@ def _cohort_annotation_manifest(
     }
 
 
-def _cohort_vep_manifest(members: list[CohortMember]) -> dict[str, object]:
-    manifests = [member.vep_manifest for member in members]
-    return {
-        "schema_version": manifests[0].get("schema_version"),
+def _cohort_variant_annotations_descriptor(
+    members: list[CohortMember],
+    path: str,
+) -> dict[str, object]:
+    manifests = [member.annotation_manifest for member in members]
+    datasets = [manifest.get("variant_annotations") for manifest in manifests]
+    if not all(isinstance(dataset, dict) for dataset in datasets):
+        raise ValueError("Cohort annotation manifest lacks variant_annotations descriptor")
+    typed_datasets = [dataset for dataset in datasets if isinstance(dataset, dict)]
+    baseline = typed_datasets[0]
+    exact_fields = ("schema", "status", "layout", "format", "fields", "vep_config")
+    for member, dataset in zip(members[1:], typed_datasets[1:]):
+        differing = [field for field in exact_fields if dataset.get(field) != baseline.get(field)]
+        if differing:
+            raise ValueError(
+                f"Incompatible cohort run {member.label!r}; variant annotation "
+                "descriptors differ: " + ", ".join(differing)
+            )
+    if (
+        baseline.get("schema") != VARIANT_DATASET_SCHEMA
+        or baseline.get("status") != "complete"
+        or baseline.get("layout") != "partitioned"
+        or baseline.get("format") != "tsv_gzip_v1"
+    ):
+        raise ValueError("Cohort members do not use the current variant annotation dataset")
+    variant_annotations = {
+        "schema_version": COHORT_VARIANT_SOURCE_SCHEMA_VERSION,
+        "kind": COHORT_VARIANT_SOURCE_KIND,
+        "schema": VARIANT_DATASET_SCHEMA,
         "status": "complete",
-        "cohort": True,
-        "config": manifests[0].get("config"),
-        "row_count": _sum_int(manifests, "row_count"),
-        "status_counts": _sum_counters(manifests, "status_counts"),
-        "columns": manifests[0].get("columns"),
-        "members": [member.fingerprint for member in members],
+        "layout": "cohort_partitioned",
+        "format": "tsv_gzip_v1",
+        "path": path,
+        "member_count": len(members),
+        "partition_count": _sum_int(typed_datasets, "partition_count"),
+        "shard_count": _sum_int(typed_datasets, "shard_count"),
+        "row_count": _sum_int(typed_datasets, "row_count"),
+        "fields": baseline.get("fields"),
+        "vep_config": baseline.get("vep_config"),
+        "vep_status_counts": _sum_counters(typed_datasets, "vep_status_counts"),
+        "members": [
+            {
+                "fingerprint": member.fingerprint,
+                "path": str(member.inputs.variant_annotations_source),
+            }
+            for member in members
+        ],
     }
+    return variant_annotations
 
 
 def _sum_int(manifests: list[dict[str, object]], key: str) -> int:

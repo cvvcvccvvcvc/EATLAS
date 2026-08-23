@@ -21,9 +21,6 @@ from analytics.analyses.variant_summary_aggregation import (
     available_cpu_count,
     resolve_variant_aggregation_source,
 )
-from analytics.io.artifacts import file_identity
-
-
 CORE_COLUMNS = ["variant_key", "gene_id", "event_type", "ref", "alt", "strategies"]
 COLUMNS = [*CORE_COLUMNS, "vep_status", "vep_primary_consequence"]
 
@@ -103,79 +100,60 @@ def test_strategy_masks_preserve_gene_context_and_union_global_alleles(tmp_path:
         aggregate_strategy_masks(source, threads=0)
 
 
-def test_partitioned_source_validates_manifests_and_matches_merged_vep(tmp_path: Path) -> None:
-    artifact = tmp_path / "vep_consequences"
+def test_partitioned_source_validates_pipeline_dataset(tmp_path: Path) -> None:
+    artifact = tmp_path / "variant_annotations"
     partitions = artifact / "partitions"
-    partitions.mkdir(parents=True)
     rows = [
         ["1:100:A>G", "gene_a", "snv", "A", "G", "s1,s2", "ok", "missense_variant"],
         ["1:200:C>T", "gene_a", "snv", "C", "T", "s2", "ok", "synonymous_variant"],
     ]
-    entries = []
-    manifest_files = []
+    partition_entries = []
     for index, row in enumerate(rows, start=1):
         partition_id = f"partition_{index:06d}"
-        path = partitions / f"{partition_id}.tsv.gz"
+        path = partitions / partition_id / "shard_000001.tsv.gz"
+        path.parent.mkdir(parents=True)
         pd.DataFrame([row], columns=COLUMNS).to_csv(
             path,
             sep="\t",
             index=False,
-            header=False,
             compression="gzip",
         )
-        entry = {
+        partition_entries.append({
             "partition_id": partition_id,
-            "path": f"inputs/{partition_id}.tsv.gz",
+            "shard_count": 1,
             "row_count": 1,
-            "file": {"size_bytes": 1, "mtime_ns": 1},
-        }
-        entries.append(entry)
-        partition_manifest = {
-            "status": "complete",
-            "input": entry,
-            "row_count": 1,
-            "output_columns": COLUMNS,
-            "output": file_identity(path),
-        }
-        manifest_path = partitions / f"{partition_id}.json"
-        manifest_path.write_text(json.dumps(partition_manifest))
-        manifest_files.append({"partition_id": partition_id, "file": file_identity(manifest_path)})
-
-    plan = {
+            "shards": [{
+                "shard_id": "shard_000001",
+                "path": f"partitions/{partition_id}/shard_000001.tsv.gz",
+                "row_count": 1,
+                "size_bytes": path.stat().st_size,
+            }],
+        })
+    manifest_path = artifact / "manifest.json"
+    manifest_path.write_text(json.dumps({
+        "schema": "gaph_variant_annotation_dataset_v1",
         "status": "complete",
+        "layout": "partitioned",
+        "format": "tsv_gzip_v1",
+        "partition_count": 2,
+        "shard_count": 2,
         "row_count": 2,
-        "output_columns": COLUMNS,
-        "partitions": entries,
-    }
-    (artifact / "plan.json").write_text(json.dumps(plan))
-    merged = artifact / "variant_annotations.vep.tsv.gz"
-    with gzip.open(merged, "wt") as handle:
-        handle.write("\t".join(COLUMNS) + "\n")
-    (artifact / "manifest.json").write_text(
-        json.dumps(
-            {
-                "status": "complete",
-                "row_count": 2,
-                "columns": COLUMNS,
-                "partition_manifests": manifest_files,
-                "output": file_identity(merged),
-            }
-        )
-    )
+        "fields": COLUMNS,
+        "partitions": partition_entries,
+    }))
 
-    source = resolve_variant_aggregation_source(merged)
+    source = resolve_variant_aggregation_source(manifest_path)
     result = aggregate_strategy_masks(source, threads=2)
 
     assert source.partitioned
     assert source.row_count == 2
     assert result.strategy_counts() == {"s1": 1, "s2": 2}
 
-    first_manifest = partitions / "partition_000001.json"
-    payload = json.loads(first_manifest.read_text())
-    payload["row_count"] = 2
-    first_manifest.write_text(json.dumps(payload))
+    payload = json.loads(manifest_path.read_text())
+    payload["partitions"][0]["row_count"] = 2
+    manifest_path.write_text(json.dumps(payload))
     with pytest.raises(ValueError, match="row count changed"):
-        resolve_variant_aggregation_source(merged)
+        resolve_variant_aggregation_source(manifest_path)
 
 
 def test_variant_groups_keep_gene_specific_context_and_consequence(tmp_path: Path) -> None:

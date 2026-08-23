@@ -15,7 +15,6 @@ from analytics.analyses.variant_summary_aggregation import (
 )
 from analytics.io.alignment_aggregates import resolve_alignment_aggregate_paths
 from analytics.io.annotation_support import resolve_annotation_support_paths
-from analytics.io.artifacts import file_identity, path_metadata
 from analytics.io.taxonomy_summary import resolve_taxonomy_summary_path
 
 
@@ -26,7 +25,7 @@ class RunInputs:
     genes_tsv: Path
     target_features_tsv: Path
     target_sequences_dir: Path
-    variant_annotations_tsv: Path
+    variant_annotations_source: Path
     variant_strategy_support_tsv: Path
     ortholog_evidence_summary_tsv: Path
     annotation_manifest_json: Path
@@ -58,15 +57,9 @@ def resolve_run_inputs(run_dir: Path) -> RunInputs:
         raise NotADirectoryError(f"--run-dir is not a directory: {run_dir}")
 
     annotation_dir = run_dir / "annotation"
-    source_annotations_tsv = annotation_dir / "variant_annotations.tsv.gz"
-    if not source_annotations_tsv.exists():
-        raise FileNotFoundError(
-            f"Missing variant_annotations.tsv.gz under {annotation_dir}. "
-            "Complete the end-to-end pipeline before building this report."
-        )
-    variant_annotations_tsv = resolve_vep_variant_annotations(
-        run_dir,
-        source_annotations_tsv,
+    annotation_manifest_json = annotation_dir / "manifest.json"
+    variant_annotations_source = resolve_variant_annotations_source(
+        annotation_manifest_json
     )
     alignment_aggregates = resolve_alignment_aggregate_paths(run_dir)
     annotation_support = resolve_annotation_support_paths(run_dir)
@@ -77,10 +70,10 @@ def resolve_run_inputs(run_dir: Path) -> RunInputs:
         genes_tsv=run_dir / "fetch" / "genes.tsv.gz",
         target_features_tsv=run_dir / "fetch" / "target_features.tsv.gz",
         target_sequences_dir=run_dir / "fetch" / "sequences" / "targets",
-        variant_annotations_tsv=variant_annotations_tsv,
+        variant_annotations_source=variant_annotations_source,
         variant_strategy_support_tsv=annotation_support.variant_strategy_support_tsv,
         ortholog_evidence_summary_tsv=annotation_support.ortholog_evidence_summary_tsv,
-        annotation_manifest_json=annotation_dir / "manifest.json",
+        annotation_manifest_json=annotation_manifest_json,
         annotation_failures_tsv=annotation_dir / "failures.tsv.gz",
         feature_coverage_tsv=alignment_aggregates.feature_coverage_tsv,
         alignment_manifest_json=run_dir / "alignment" / "manifest.json",
@@ -96,60 +89,104 @@ def resolve_run_inputs(run_dir: Path) -> RunInputs:
     return inputs
 
 
-def resolve_vep_variant_annotations(run_dir: Path, source: Path) -> Path:
-    """Require the finalized bulk-VEP artifact matching the source table."""
+def resolve_variant_annotations_source(annotation_manifest_path: Path) -> Path:
+    """Resolve the pipeline-owned partitioned variant-annotation dataset."""
 
-    artifact_dir = run_dir / "analytics" / "vep_consequences"
-    manifest_path = artifact_dir / "manifest.json"
-    output_path = artifact_dir / "variant_annotations.vep.tsv.gz"
-    if not manifest_path.exists() and not output_path.exists():
+    descriptor = _variant_annotation_descriptor(annotation_manifest_path)
+    declared = Path(str(descriptor.get("path") or ""))
+    if declared.as_posix() != "variant_annotations/manifest.json":
+        raise ValueError(
+            "Annotation manifest has an unsupported variant_annotations path: "
+            f"{annotation_manifest_path}"
+        )
+    source = (annotation_manifest_path.parent / declared).resolve()
+    if not source.is_file():
         raise FileNotFoundError(
-            f"Missing finalized bulk VEP artifact under {artifact_dir}. "
-            "Build it with `python -m analytics.vep_annotation prepare --run-dir <run>`, "
-            "annotate all declared partitions, and run "
-            "`python -m analytics.vep_annotation finalize --run-dir <run>` before "
-            "generating the report. Individual non-ok vep_status values are allowed in "
-            "a finalized artifact."
+            f"Missing pipeline variant-annotation dataset manifest: {source}"
         )
-    if not manifest_path.exists() or not output_path.exists():
-        raise ValueError(f"Incomplete bulk VEP artifact under {artifact_dir}")
-
-    manifest = read_json(manifest_path)
-    source_identity = path_metadata(source)
-    if manifest.get("status") != "complete" or manifest.get("source") != source_identity:
-        raise ValueError(f"Bulk VEP artifact does not match {source}")
-    output_identity = file_identity(output_path)
-    if manifest.get("output") != output_identity:
-        raise ValueError(f"Bulk VEP output metadata changed: {output_path}")
-    return output_path
-
-
-def bulk_vep_manifest(inputs: RunInputs) -> dict:
-    if inputs.is_cohort:
-        manifest = read_json(
-            inputs.run_dir / "analytics" / "vep_consequences" / "manifest.json"
+    dataset_manifest = read_json(source)
+    if dataset_manifest != descriptor:
+        raise ValueError(
+            "Annotation variant_annotations descriptor does not match its dataset "
+            f"manifest: {source}"
         )
-        if manifest.get("status") != "complete" or manifest.get("cohort") is not True:
-            raise ValueError("Cohort bulk VEP manifest is incomplete")
-        return manifest
-    expected = inputs.run_dir / "analytics" / "vep_consequences" / "variant_annotations.vep.tsv.gz"
-    if inputs.variant_annotations_tsv != expected:
-        raise ValueError("Report inputs do not use the finalized bulk VEP artifact")
-    return read_json(expected.parent / "manifest.json")
+    return source
 
 
-def bulk_vep_release(inputs: RunInputs) -> str:
-    manifest = bulk_vep_manifest(inputs)
-    release = manifest.get("config", {}).get("release")
+def variant_annotation_descriptor(inputs: RunInputs) -> dict[str, object]:
+    descriptor = _variant_annotation_descriptor(inputs.annotation_manifest_json)
+    declared_source = resolve_variant_annotations_source(inputs.annotation_manifest_json)
+    if inputs.variant_annotations_source.resolve() != declared_source:
+        raise ValueError(
+            "Report inputs do not use the variant_annotations dataset declared by "
+            f"{inputs.annotation_manifest_json}"
+        )
+    return descriptor
+
+
+def variant_annotation_release(descriptor: dict[str, object]) -> str:
+    config = descriptor["vep_config"]
+    release = config.get("release") if isinstance(config, dict) else None
     if not release:
-        raise ValueError("Bulk VEP manifest is missing config.release")
+        raise ValueError("Variant annotation dataset is missing vep_config.release")
     return str(release)
+
+
+def _variant_annotation_descriptor(annotation_manifest_path: Path) -> dict[str, object]:
+    if not annotation_manifest_path.is_file():
+        raise FileNotFoundError(
+            f"Missing pipeline annotation manifest: {annotation_manifest_path}"
+        )
+    manifest = read_json(annotation_manifest_path)
+    if (
+        manifest.get("stage") != "annotation"
+        or manifest.get("schema") != "normalized_annotation_evidence_v3"
+    ):
+        raise ValueError(
+            f"Unsupported pipeline annotation contract: {annotation_manifest_path}"
+        )
+    descriptor = manifest.get("variant_annotations")
+    if not isinstance(descriptor, dict):
+        raise ValueError(
+            "Annotation manifest does not declare variant_annotations: "
+            f"{annotation_manifest_path}"
+        )
+    config = descriptor.get("vep_config")
+    status_counts = descriptor.get("vep_status_counts")
+    if not isinstance(config, dict) or not config:
+        raise ValueError("Variant annotation dataset has no VEP configuration")
+    if config.get("backend") not in {"rest", "local"}:
+        raise ValueError("Variant annotation dataset has invalid vep_config.backend")
+    if not isinstance(status_counts, dict):
+        raise ValueError("Variant annotation dataset has no VEP status counts")
+    try:
+        raw_row_count = descriptor["row_count"]
+        if isinstance(raw_row_count, bool):
+            raise TypeError
+        row_count = int(raw_row_count)
+        normalized_counts = {}
+        for status, raw_count in status_counts.items():
+            if not str(status) or isinstance(raw_count, bool):
+                raise TypeError
+            normalized_counts[str(status)] = int(raw_count)
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ValueError("Variant annotation dataset has invalid VEP status counts") from exc
+    if (
+        row_count < 0
+        or any(count < 0 for count in normalized_counts.values())
+        or sum(normalized_counts.values()) != row_count
+    ):
+        raise ValueError("Variant annotation VEP status counts do not match row_count")
+    variant_annotation_release(descriptor)
+    return descriptor
 
 
 def validate_report_inputs(inputs: RunInputs) -> None:
     """Fail before expensive work when a production table contract is incompatible."""
+    descriptor = variant_annotation_descriptor(inputs)
+    resolve_variant_aggregation_source(inputs.variant_annotations_source)
     contracts = {
-        inputs.variant_annotations_tsv: {
+        inputs.variant_annotations_source: {
             "variant_key",
             "gene_id",
             "event_type",
@@ -214,8 +251,8 @@ def validate_report_inputs(inputs: RunInputs) -> None:
     for path, required in contracts.items():
         if not path.exists():
             raise FileNotFoundError(f"Missing report input: {path}")
-        if path == inputs.variant_annotations_tsv and path.suffix == ".json":
-            header = set(resolve_variant_aggregation_source(path).columns)
+        if path == inputs.variant_annotations_source:
+            header = set(str(field) for field in descriptor.get("fields", []))
         else:
             compression = "gzip" if path.suffix == ".gz" else None
             header = set(pd.read_csv(path, sep="\t", compression=compression, nrows=0).columns)

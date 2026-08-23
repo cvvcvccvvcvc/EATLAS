@@ -48,7 +48,7 @@ def build_conservation_analysis(
 ) -> ConservationAnalysis:
     with profile_stage(performance_profile, "Candidate phyloP distributions"):
         candidate = build_candidate_conservation(
-            variant_annotations_tsv=inputs.variant_annotations_tsv,
+            variant_annotations_source=inputs.variant_annotations_source,
             analytics_dir=inputs.run_dir / "analytics",
             annotation_failures_tsv=inputs.annotation_failures_tsv,
             additional_rows=universe_rows(validation.universe),

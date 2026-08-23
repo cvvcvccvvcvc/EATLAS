@@ -16,12 +16,13 @@ FINALIZE_SCRIPT = BIN_DIR / "finalize_annotation_partitions.py"
 
 from bin.annotate_events import (
     EVENT_VARIANT_MAP_FIELDS,
-    PARTITION_TSV_SHARD_FORMAT,
     VARIANT_ANNOTATION_FIELDS,
     event_variant_map_row,
     load_alignment_manifest,
     write_tsv_gz,
+    write_variant_annotation_shards,
 )
+from bin.annotate_vep_partition import SCHEMA as VEP_SHARD_SCHEMA, VEP_FIELDS
 from analytics.derivations.support import (  # noqa: E402
     VARIANT_STRATEGY_SUPPORT_FIELDS,
     EventOrthologSupportStream,
@@ -33,8 +34,9 @@ from genomics.variants import event_vcf_key, variant_aggregate_key  # noqa: E402
 from bin.finalize_annotation_partitions import (
     COUNTER_FIELDS,
     COUNT_FIELDS,
-    concatenate_tsv_gz_members,
+    VARIANT_DATASET_SCHEMA,
     copy_event_variant_map_dataset,
+    copy_variant_annotation_dataset,
     event_variant_map_manifest,
     merge_gnomad_shared_cache,
     merge_partition_timings,
@@ -105,7 +107,11 @@ def test_variant_annotation_schema_is_analysis_ready() -> None:
 
 @pytest.mark.parametrize(
     "entrypoint",
-    ["annotate_events.py", "finalize_annotation_partitions.py"],
+    [
+        "annotate_events.py",
+        "annotate_vep_partition.py",
+        "finalize_annotation_partitions.py",
+    ],
 )
 def test_annotation_entrypoints_accept_large_tsv_fields(
     tmp_path: Path,
@@ -159,6 +165,47 @@ def write_event_variant_map(
         )
         writer.writeheader()
         writer.writerows(rows)
+
+
+def write_vep_shard(
+    root: Path,
+    *,
+    partition_id: str,
+    shard: dict[str, object],
+    source_fields: list[str],
+    rows: list[dict[str, object]],
+) -> Path:
+    shard_id = str(shard["shard_id"])
+    directory = root / f"vep_{partition_id}_{shard_id}"
+    directory.mkdir(parents=True)
+    output = directory / "variant_annotations.tsv.gz"
+    output_fields = [*source_fields, *VEP_FIELDS]
+    write_tsv_gz(output, output_fields, rows)
+    status_counts = {}
+    for row in rows:
+        status = str(row.get("vep_status") or "")
+        status_counts[status] = status_counts.get(status, 0) + 1
+    manifest = {
+        "stage": "annotation",
+        "schema": VEP_SHARD_SCHEMA,
+        "partition_id": partition_id,
+        "shard_id": shard_id,
+        "row_count": len(rows),
+        "status_counts": status_counts,
+        "input": {
+            "name": str(shard["path"]),
+            "size_bytes": int(shard["size_bytes"]),
+            "fields": source_fields,
+        },
+        "output": {
+            "name": output.name,
+            "size_bytes": output.stat().st_size,
+            "fields": output_fields,
+        },
+        "config": {"backend": "local", "release": "116"},
+    }
+    (directory / "manifest.json").write_text(json.dumps(manifest) + "\n")
+    return directory
 
 
 def test_event_variant_map_preserves_collapsed_and_non_concrete_lineage() -> None:
@@ -344,19 +391,17 @@ def test_finalizer_publishes_only_source_annotation_evidence(tmp_path: Path) -> 
             "event_variant_map_count": 1,
             "variant_context_count": 1,
             "annotated_variant_context_count": 1,
-            "partition_tsv_shard_format": PARTITION_TSV_SHARD_FORMAT,
-            "partition_tsv_shard_fields": {
-                "variant_annotations.tsv.gz": VARIANT_ANNOTATION_FIELDS,
-            },
         }
     )
-    (partition / "manifest.json").write_text(json.dumps(manifest) + "\n")
-    write_tsv_gz(
-        partition / "variant_annotations.tsv.gz",
-        VARIANT_ANNOTATION_FIELDS,
-        [{"variant_key": "1:100:A>G", "gene_id": "1", "lookup_status": "ok"}],
-        include_header=False,
+    source_rows = [
+        {"variant_key": "1:100:A>G", "gene_id": "1", "lookup_status": "ok"}
+    ]
+    source_dataset = write_variant_annotation_shards(
+        partition / "variant_annotation_shards",
+        source_rows,
     )
+    manifest["variant_annotations"] = source_dataset
+    (partition / "manifest.json").write_text(json.dumps(manifest) + "\n")
     write_event_variant_map(
         partition / "event_variant_map.tsv.gz",
         [event_variant_map_row(1, ("1", 100, "A", "G"), "ok")],
@@ -365,6 +410,20 @@ def test_finalizer_publishes_only_source_annotation_evidence(tmp_path: Path) -> 
         csv.writer(handle, delimiter="\t", lineterminator="\n").writerow(
             ["source", "scope", "chrom", "start", "end", "failure_type", "message"]
         )
+    vep_root = tmp_path / "vep"
+    vep_directory = write_vep_shard(
+        vep_root,
+        partition_id="partition_000001",
+        shard=source_dataset["shards"][0],
+        source_fields=VARIANT_ANNOTATION_FIELDS,
+        rows=[
+            {
+                **source_rows[0],
+                "vep_status": "ok",
+                "vep_primary_consequence": "intron_variant",
+            }
+        ],
+    )
     outdir = tmp_path / "annotation"
 
     completed = subprocess.run(
@@ -373,6 +432,8 @@ def test_finalizer_publishes_only_source_annotation_evidence(tmp_path: Path) -> 
             str(FINALIZE_SCRIPT),
             "--partition-root",
             str(partition_root),
+            "--vep-root",
+            str(vep_root),
             "--outdir",
             str(outdir),
         ],
@@ -384,14 +445,28 @@ def test_finalizer_publishes_only_source_annotation_evidence(tmp_path: Path) -> 
 
     assert completed.returncode == 0, completed.stderr
     assert {path.name for path in outdir.iterdir()} == {
-        "variant_annotations.tsv.gz",
+        "variant_annotations",
         "event_variant_map",
         "failures.tsv.gz",
         "manifest.json",
     }
     final_manifest = json.loads((outdir / "manifest.json").read_text())
     assert final_manifest["stage"] == "annotation"
-    assert final_manifest["schema"] == "normalized_annotation_evidence_v2"
+    assert final_manifest["schema"] == "normalized_annotation_evidence_v3"
+    dataset_manifest = json.loads(
+        (outdir / "variant_annotations" / "manifest.json").read_text()
+    )
+    assert dataset_manifest["schema"] == VARIANT_DATASET_SCHEMA
+    assert dataset_manifest["row_count"] == 1
+    assert dataset_manifest["vep_status_counts"] == {"ok": 1}
+    durable_shard = (
+        outdir
+        / "variant_annotations"
+        / dataset_manifest["partitions"][0]["shards"][0]["path"]
+    )
+    assert durable_shard.read_bytes() == (
+        vep_directory / "variant_annotations.tsv.gz"
+    ).read_bytes()
     forbidden_keys = {
         "variant_strategy_support_count",
         "variant_ortholog_support_count",
@@ -425,86 +500,6 @@ def test_partition_timings_are_preserved_and_summed(tmp_path: Path) -> None:
         "partition_000001": {"collapse_events": 1.25, "gnomad_lookup": 0.5},
         "partition_000002": {"collapse_events": 2.75},
     }
-
-
-def test_partition_tsv_members_are_concatenated_without_recompression(
-    tmp_path: Path,
-) -> None:
-    filename = "large_table.tsv.gz"
-    fields = ["variant_key", "support_count"]
-    partition_rows = [
-        [{"variant_key": "1:1:A>G", "support_count": 2}],
-        [],
-        [{"variant_key": "2:2:C>T", "support_count": 3}],
-    ]
-    partitions = []
-    source_bytes = []
-    for index, rows in enumerate(partition_rows, start=1):
-        partition = tmp_path / f"partition_{index:06d}"
-        partition.mkdir()
-        source = partition / filename
-        write_tsv_gz(source, fields, rows, include_header=False)
-        source_bytes.append(source.read_bytes())
-        partitions.append(
-            (
-                partition,
-                {
-                    "partition_tsv_shard_format": PARTITION_TSV_SHARD_FORMAT,
-                    "partition_tsv_shard_fields": {filename: fields},
-                    "row_count": len(rows),
-                },
-            )
-        )
-    output = tmp_path / "merged.tsv.gz"
-
-    row_count = concatenate_tsv_gz_members(
-        partitions,
-        filename,
-        "row_count",
-        output,
-    )
-
-    with gzip.open(output, "rt", newline="") as handle:
-        assert list(csv.reader(handle, delimiter="\t")) == [
-            fields,
-            ["1:1:A>G", "2"],
-            ["2:2:C>T", "3"],
-        ]
-    output_bytes = output.read_bytes()
-    member_positions = [output_bytes.find(member) for member in source_bytes]
-    assert row_count == 2
-    assert all(position >= 0 for position in member_positions)
-    assert member_positions == sorted(member_positions)
-    assert output_bytes.endswith(source_bytes[-1])
-
-
-def test_partition_tsv_member_rejects_embedded_header(tmp_path: Path) -> None:
-    filename = "large_table.tsv.gz"
-    fields = ["variant_key", "support_count"]
-    partition = tmp_path / "partition_000001"
-    partition.mkdir()
-    write_tsv_gz(
-        partition / filename,
-        fields,
-        [{"variant_key": "1:1:A>G", "support_count": 2}],
-    )
-
-    with pytest.raises(ValueError, match="unexpectedly contains a header"):
-        concatenate_tsv_gz_members(
-            [
-                (
-                    partition,
-                    {
-                        "partition_tsv_shard_format": PARTITION_TSV_SHARD_FORMAT,
-                        "partition_tsv_shard_fields": {filename: fields},
-                        "row_count": 1,
-                    },
-                )
-            ],
-            filename,
-            "row_count",
-            tmp_path / "merged.tsv.gz",
-        )
 
 
 def test_analytics_support_schema_is_not_part_of_stage3_manifest() -> None:

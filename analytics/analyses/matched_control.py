@@ -30,11 +30,12 @@ from analytics.io.artifacts import (
     write_tsv_atomic,
 )
 from analytics.io.performance import PerformanceProfile, profile_stage
-from analytics.io.variant_source import sql_string
+from analytics.io.variant_source import resolve_variant_table_source, sql_string
 from .conservation import Track, annotate_track, parse_tracks, track_identity
 from .external_evidence import build_external_evidence
 from .observed_variant_store import (
     FOCAL_RANK_METHOD,
+    REQUIRED_COLUMNS as OBSERVED_VARIANT_COLUMNS,
     ObservedVariantStore,
     available_cpu_count,
     build_or_load_observed_variant_store,
@@ -90,7 +91,7 @@ class TargetSpaceNullAnalysis:
 def build_target_space_null(
     *,
     run_dir: Path,
-    variant_annotations_tsv: Path,
+    variant_annotations_source: Path,
     target_features_tsv: Path,
     genes_tsv: Path,
     target_sequences_dir: Path,
@@ -132,10 +133,14 @@ def build_target_space_null(
         "phyloP100way",
         phylop_bigwig=phylop_bigwig,
     )[0]
+    variant_source = resolve_variant_table_source(
+        variant_annotations_source,
+        required_columns=OBSERVED_VARIANT_COLUMNS,
+    )
 
     expected_inputs = {
         "version": CONTROL_VERSION,
-        "variant_annotations": path_metadata(variant_annotations_tsv),
+        "variant_annotations": variant_source.identity,
         "target_features": path_metadata(target_features_tsv),
         "genes": path_metadata(genes_tsv),
         "target_sequences": directory_metadata(target_sequences_dir, "*.fa.gz"),
@@ -181,7 +186,7 @@ def build_target_space_null(
     with profile_stage(performance_profile, "Target-null observed store") as timing:
         if observed_store is None:
             observed_store = build_or_load_observed_variant_store(
-                variant_annotations_tsv=variant_annotations_tsv,
+                variant_annotations_source=variant_annotations_source,
                 analytics_dir=run_dir / "analytics",
                 strategies=strategies,
             )
@@ -201,7 +206,7 @@ def build_target_space_null(
 
     focal_inputs = {
         "version": FOCAL_CACHE_VERSION,
-        "variant_annotations": path_metadata(variant_annotations_tsv),
+        "variant_annotations": variant_source.identity,
         "target_features": path_metadata(target_features_tsv),
         "genes": path_metadata(genes_tsv),
         "target_sequences": directory_metadata(target_sequences_dir, "*.fa.gz"),

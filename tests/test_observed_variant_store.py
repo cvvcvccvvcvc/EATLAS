@@ -155,7 +155,7 @@ def test_observed_store_reuses_cache_and_queries_strategy_memberships(
     _write_annotations(annotations, rows)
 
     store = build_or_load_observed_variant_store(
-        variant_annotations_tsv=annotations,
+        variant_annotations_source=annotations,
         analytics_dir=tmp_path / "analytics",
         strategies=["s1", "s2", "s3"],
     )
@@ -181,7 +181,7 @@ def test_observed_store_reuses_cache_and_queries_strategy_memberships(
         assert connection.read_parquet(str(store.allele_path)).columns == ALLELE_COLUMNS
 
     cached = build_or_load_observed_variant_store(
-        variant_annotations_tsv=annotations,
+        variant_annotations_source=annotations,
         analytics_dir=tmp_path / "analytics",
         strategies=["s1", "s2", "s3"],
     )
@@ -261,7 +261,7 @@ def test_observed_store_focal_sampling_matches_stable_md5_topk(tmp_path: Path) -
     strategies = ["s1", "s2"]
 
     store = build_or_load_observed_variant_store(
-        variant_annotations_tsv=annotations,
+        variant_annotations_source=annotations,
         analytics_dir=tmp_path / "analytics",
         strategies=strategies,
     )
@@ -315,7 +315,7 @@ def test_observed_store_focal_sampling_matches_stable_md5_topk(tmp_path: Path) -
     reordered_annotations = tmp_path / "variant_annotations.reordered.tsv.gz"
     _write_annotations(reordered_annotations, list(reversed(rows)))
     reordered_store = build_or_load_observed_variant_store(
-        variant_annotations_tsv=reordered_annotations,
+        variant_annotations_source=reordered_annotations,
         analytics_dir=tmp_path / "reordered_analytics",
         strategies=strategies,
     )
@@ -357,7 +357,7 @@ def test_observed_store_invalidates_when_source_changes(tmp_path: Path) -> None:
     ]
     _write_annotations(annotations, first_rows)
     first = build_or_load_observed_variant_store(
-        variant_annotations_tsv=annotations,
+        variant_annotations_source=annotations,
         analytics_dir=tmp_path / "analytics",
         strategies=["s1"],
     )
@@ -379,7 +379,7 @@ def test_observed_store_invalidates_when_source_changes(tmp_path: Path) -> None:
         ],
     )
     rebuilt = build_or_load_observed_variant_store(
-        variant_annotations_tsv=annotations,
+        variant_annotations_source=annotations,
         analytics_dir=tmp_path / "analytics",
         strategies=["s1"],
     )
@@ -407,7 +407,7 @@ def test_observed_store_rejects_strategy_contract_mismatch(tmp_path: Path) -> No
 
     with pytest.raises(ValueError, match="source strategies differ"):
         build_or_load_observed_variant_store(
-            variant_annotations_tsv=annotations,
+            variant_annotations_source=annotations,
             analytics_dir=tmp_path / "analytics",
             strategies=["s1"],
         )

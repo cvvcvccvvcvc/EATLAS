@@ -21,8 +21,6 @@ from analytics.analyses.observed_variant_store import (
 )
 from analytics.analyses.variant_summary import build_variant_summary
 from analytics.io.run_inputs import (
-    bulk_vep_manifest,
-    bulk_vep_release,
     read_failures,
     read_feature_coverage,
     read_input_gene_count,
@@ -32,6 +30,8 @@ from analytics.io.run_inputs import (
     resolve_out_html,
     resolve_run_inputs,
     validate_report_inputs,
+    variant_annotation_descriptor,
+    variant_annotation_release,
 )
 from analytics.io.cohort_inputs import resolve_cohort_inputs
 from analytics.io.artifacts import write_text_atomic
@@ -245,11 +245,12 @@ def main() -> None:
     else:
         inputs = resolve_run_inputs(args.run_dir)
         validate_report_inputs(inputs)
-    candidate_vep_manifest = bulk_vep_manifest(inputs)
-    artifact_release = bulk_vep_release(inputs)
+    candidate_annotation_descriptor = variant_annotation_descriptor(inputs)
+    artifact_release = variant_annotation_release(candidate_annotation_descriptor)
     if args.vep_release and str(args.vep_release) != artifact_release:
         raise ValueError(
-            f"Bulk VEP artifact uses release {artifact_release}, not {args.vep_release}"
+            "Pipeline variant annotations use VEP release "
+            f"{artifact_release}, not {args.vep_release}"
         )
     if not args.vep_release:
         args.vep_release = artifact_release
@@ -278,10 +279,10 @@ def main() -> None:
             f"{args.vep_result_cache_dir.expanduser()} "
             f"(tile size {args.vep_result_cache_tile_size_bp} bp)"
         )
-    print(f"Streaming {inputs.variant_annotations_tsv}...")
+    print(f"Streaming {inputs.variant_annotations_source}...")
     with performance.stage("Variant summary") as timing:
         variant_summary = build_variant_summary(
-            inputs.variant_annotations_tsv,
+            inputs.variant_annotations_source,
             analytics_dir,
             strategy_label,
             target_features_path=inputs.target_features_tsv,
@@ -331,7 +332,7 @@ def main() -> None:
     print("Building observed variant store...")
     with performance.stage("Observed variant store") as timing:
         observed_store = build_or_load_observed_variant_store(
-            variant_annotations_tsv=inputs.variant_annotations_tsv,
+            variant_annotations_source=inputs.variant_annotations_source,
             analytics_dir=analytics_dir,
             strategies=strategies,
         )
@@ -379,7 +380,7 @@ def main() -> None:
     print("Computing basic support-filter curves...")
     with performance.stage("Basic filtering") as timing:
         basic_filtering = build_basic_filtering_analysis(
-            variant_annotations_tsv=inputs.variant_annotations_tsv,
+            variant_annotations_source=inputs.variant_annotations_source,
             variant_strategy_support_tsv=inputs.variant_strategy_support_tsv,
             annotation_failures_tsv=inputs.annotation_failures_tsv,
             analytics_dir=inputs.run_dir / "analytics",
@@ -417,7 +418,7 @@ def main() -> None:
         with performance.stage("Target-space null"):
             negative_controls = build_target_space_null(
                 run_dir=inputs.run_dir,
-                variant_annotations_tsv=inputs.variant_annotations_tsv,
+                variant_annotations_source=inputs.variant_annotations_source,
                 target_features_tsv=inputs.target_features_tsv,
                 genes_tsv=inputs.genes_tsv,
                 target_sequences_dir=inputs.target_sequences_dir,
@@ -515,12 +516,12 @@ def main() -> None:
                     annotation_manifest,
                     alignment_manifest,
                     taxonomy_summary,
+                    candidate_annotation_descriptor,
                     validation=validation,
                     conservation_analysis=conservation_analysis,
                     negative_controls=negative_controls,
                     report_timings=performance.table_rows(),
                     report_profile_path=performance_path,
-                    candidate_vep_manifest=candidate_vep_manifest,
                 ),
             ),
         ]

@@ -7,6 +7,7 @@ import argparse
 import csv
 import gzip
 import json
+import re
 import shutil
 import sys
 from collections import Counter
@@ -56,13 +57,25 @@ EVENT_VARIANT_MAP_FIELDS = [
     "normalization_status",
 ]
 EVENT_VARIANT_MAP_FILENAME = "event_variant_map.tsv.gz"
-PARTITION_TSV_SHARD_FORMAT = "headerless_gzip_member_v1"
-FINAL_TSV_FORMAT = "concatenated_gzip_members_v1"
+VEP_SHARD_SCHEMA = "normalized_vep_annotation_shard_v1"
+VARIANT_DATASET_SCHEMA = "gaph_variant_annotation_dataset_v1"
+SAFE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+VEP_FIELDS = [
+    "vep_status",
+    "vep_primary_consequence",
+    "vep_consequence_terms",
+    "vep_transcript_id",
+    "vep_mane_select",
+    "vep_canonical",
+    "vep_impact",
+    "vep_variant_class",
+]
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--partition-root", required=True, type=Path)
+    parser.add_argument("--vep-root", required=True, type=Path)
     parser.add_argument("--outdir", required=True, type=Path)
     return parser.parse_args()
 
@@ -120,6 +133,8 @@ def load_partitions(root: Path) -> list[tuple[Path, dict]]:
             raise FileNotFoundError(f"Annotation partition missing manifest.json: {path}")
         manifest = json.loads(manifest_path.read_text())
         partition_id = manifest_string(manifest, "partition_id", path)
+        if SAFE_ID.fullmatch(partition_id) is None:
+            raise ValueError(f"Unsafe annotation partition_id: {partition_id!r}")
         if partition_id in seen_ids:
             raise ValueError(f"Duplicate annotation partition_id: {partition_id}")
         seen_ids.add(partition_id)
@@ -164,6 +179,95 @@ def validate_partition_manifests(partitions: list[tuple[Path, dict]]) -> None:
             raise ValueError("Annotation reference metadata differs across partitions")
 
 
+def variant_annotation_shards(
+    partition: Path,
+    manifest: dict,
+) -> list[dict[str, object]]:
+    dataset = required_manifest_value(manifest, "variant_annotations", partition)
+    if not isinstance(dataset, dict):
+        raise ValueError(f"Annotation partition has invalid variant_annotations: {partition}")
+    if dataset.get("layout") != "partitioned" or dataset.get("format") != "tsv_gzip_v1":
+        raise ValueError(
+            f"Annotation partition has unsupported variant_annotations format: {partition}"
+        )
+    relative_root = str(dataset.get("path") or "")
+    fields = dataset.get("fields")
+    raw_shards = dataset.get("shards")
+    if (
+        not relative_root
+        or not isinstance(fields, list)
+        or not fields
+        or not all(isinstance(field, str) and field for field in fields)
+        or not isinstance(raw_shards, list)
+        or not raw_shards
+    ):
+        raise ValueError(f"Annotation partition has invalid variant_annotations: {partition}")
+
+    shards = []
+    seen_ids = set()
+    observed_rows = 0
+    for raw in raw_shards:
+        if not isinstance(raw, dict):
+            raise ValueError(f"Annotation partition has invalid annotation shard: {partition}")
+        shard_id = str(raw.get("shard_id") or "")
+        relative_path = str(raw.get("path") or "")
+        try:
+            row_count = int(raw["row_count"])
+            size_bytes = int(raw["size_bytes"])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ValueError(
+                f"Annotation partition has invalid annotation shard: {partition}"
+            ) from exc
+        if (
+            not shard_id
+            or SAFE_ID.fullmatch(shard_id) is None
+            or shard_id in seen_ids
+            or not relative_path
+            or row_count < 0
+            or size_bytes < 1
+        ):
+            raise ValueError(f"Annotation partition has invalid annotation shard: {partition}")
+        seen_ids.add(shard_id)
+        relative_root_path = Path(relative_root)
+        relative_shard_path = Path(relative_path)
+        if relative_root_path.is_absolute() or relative_shard_path.is_absolute():
+            raise ValueError(f"Annotation shard path must be relative: {partition}")
+        partition_root = partition.resolve()
+        dataset_root = (partition_root / relative_root_path).resolve()
+        source = (dataset_root / relative_shard_path).resolve()
+        try:
+            dataset_root.relative_to(partition_root)
+            source.relative_to(dataset_root)
+        except ValueError as exc:
+            raise ValueError(f"Annotation shard escapes its dataset: {source}") from exc
+        if not source.is_file() or source.stat().st_size != size_bytes:
+            raise ValueError(f"Annotation input shard changed: {source}")
+        with gzip.open(source, "rt", newline="") as handle:
+            header = next(csv.reader(handle, delimiter="\t"), None)
+        if header != fields:
+            raise ValueError(f"Annotation input shard header changed: {source}")
+        observed_rows += row_count
+        shards.append(
+            {
+                "partition_id": manifest_string(manifest, "partition_id", partition),
+                "shard_id": shard_id,
+                "row_count": row_count,
+                "size_bytes": size_bytes,
+                "fields": fields,
+                "source": source,
+            }
+        )
+    if len(shards) != int(dataset.get("shard_count", -1)):
+        raise ValueError(f"Annotation partition shard count changed: {partition}")
+    if observed_rows != int(dataset.get("row_count", -1)):
+        raise ValueError(f"Annotation partition shard row count changed: {partition}")
+    if observed_rows != manifest_count(manifest, "annotated_variant_context_count", partition):
+        raise ValueError(
+            f"Annotation shard rows do not match annotated_variant_context_count: {partition}"
+        )
+    return shards
+
+
 def merge_tsv_gz(partitions: list[tuple[Path, dict]], filename: str, output: Path) -> int:
     output.parent.mkdir(parents=True, exist_ok=True)
     expected_header = None
@@ -189,90 +293,6 @@ def merge_tsv_gz(partitions: list[tuple[Path, dict]], filename: str, output: Pat
                     writer.writerow(row)
                     count += 1
     return count
-
-
-def concatenate_tsv_gz_members(
-    partitions: list[tuple[Path, dict]],
-    filename: str,
-    count_field: str,
-    output: Path,
-) -> int:
-    """Assemble headerless partition gzip members without recompressing rows."""
-
-    expected_fields: list[str] | None = None
-    source_paths: list[Path] = []
-    row_count = 0
-    for partition, manifest in partitions:
-        if manifest.get("partition_tsv_shard_format") != PARTITION_TSV_SHARD_FORMAT:
-            raise ValueError(
-                f"Annotation partition does not declare {PARTITION_TSV_SHARD_FORMAT}: "
-                f"{partition}"
-            )
-        fields_by_file = manifest.get("partition_tsv_shard_fields")
-        if not isinstance(fields_by_file, dict):
-            raise ValueError(
-                f"Annotation partition is missing partition_tsv_shard_fields: {partition}"
-            )
-        fields = fields_by_file.get(filename)
-        if (
-            not isinstance(fields, list)
-            or not fields
-            or not all(isinstance(field, str) and field for field in fields)
-            or len(set(fields)) != len(fields)
-        ):
-            raise ValueError(
-                f"Annotation partition has invalid fields for {filename}: {partition}"
-            )
-        if expected_fields is None:
-            expected_fields = fields
-        elif fields != expected_fields:
-            raise ValueError(
-                f"Annotation partition fields differ for {filename}: "
-                f"expected {expected_fields}, observed {fields} in {partition}"
-            )
-
-        path = partition / filename
-        if not path.exists():
-            raise FileNotFoundError(f"Annotation partition missing {filename}: {partition}")
-        try:
-            with gzip.open(path, "rt", newline="") as handle:
-                first_row = next(csv.reader(handle, delimiter="\t"), None)
-        except (EOFError, OSError, UnicodeError) as exc:
-            raise ValueError(f"Invalid gzip TSV shard: {path}") from exc
-        if first_row == fields:
-            raise ValueError(f"Partition TSV shard unexpectedly contains a header: {path}")
-        if first_row is not None and len(first_row) != len(fields):
-            raise ValueError(
-                f"Partition TSV shard has {len(first_row)} columns, expected "
-                f"{len(fields)}: {path}"
-            )
-        source_paths.append(path)
-        try:
-            partition_count = int(manifest[count_field])
-        except (KeyError, TypeError, ValueError) as exc:
-            raise ValueError(
-                f"Annotation partition has invalid {count_field}: {partition}"
-            ) from exc
-        if partition_count < 0:
-            raise ValueError(
-                f"Annotation partition has negative {count_field}: {partition_count}"
-            )
-        if (partition_count == 0) != (first_row is None):
-            raise ValueError(
-                f"Annotation partition {count_field} does not match whether {path} is empty"
-            )
-        row_count += partition_count
-
-    if expected_fields is None:
-        raise ValueError(f"No annotation partition fields found for {filename}")
-    output.parent.mkdir(parents=True, exist_ok=True)
-    with gzip.open(output, "wt", newline="") as handle:
-        csv.writer(handle, delimiter="\t", lineterminator="\n").writerow(expected_fields)
-    with output.open("ab") as output_handle:
-        for source in source_paths:
-            with source.open("rb") as source_handle:
-                shutil.copyfileobj(source_handle, output_handle, length=16 * 1024 * 1024)
-    return row_count
 
 
 def copy_event_variant_map_dataset(
@@ -360,6 +380,176 @@ def event_variant_map_manifest(row_count: int, partition_count: int) -> dict[str
     }
 
 
+def load_vep_results(root: Path) -> dict[tuple[str, str], dict[str, object]]:
+    if not root.is_dir():
+        raise NotADirectoryError(f"VEP shard root is not a directory: {root}")
+    results = {}
+    for directory in sorted(item for item in root.iterdir() if item.is_dir()):
+        manifest_path = directory / "manifest.json"
+        output = directory / "variant_annotations.tsv.gz"
+        if not manifest_path.is_file() or not output.is_file():
+            raise FileNotFoundError(f"Incomplete VEP shard output: {directory}")
+        manifest = json.loads(manifest_path.read_text())
+        if manifest.get("stage") != "annotation" or manifest.get("schema") != VEP_SHARD_SCHEMA:
+            raise ValueError(f"Unexpected VEP shard contract: {directory}")
+        partition_id = str(manifest.get("partition_id") or "")
+        shard_id = str(manifest.get("shard_id") or "")
+        key = (partition_id, shard_id)
+        if not partition_id or not shard_id or key in results:
+            raise ValueError(f"Duplicate or invalid VEP shard identity: {directory}")
+        try:
+            row_count = int(manifest["row_count"])
+            output_size = int(manifest["output"]["size_bytes"])
+            fields = list(manifest["output"]["fields"])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ValueError(f"Invalid VEP shard manifest: {directory}") from exc
+        if row_count < 0 or output_size < 1 or output.stat().st_size != output_size:
+            raise ValueError(f"VEP shard output changed: {output}")
+        with gzip.open(output, "rt", newline="") as handle:
+            header = next(csv.reader(handle, delimiter="\t"), None)
+        if header != fields:
+            raise ValueError(f"VEP shard output header changed: {output}")
+        config = manifest.get("config")
+        status_counts = manifest.get("status_counts")
+        if not isinstance(config, dict) or not config:
+            raise ValueError(f"VEP shard has no semantic config: {directory}")
+        if not isinstance(status_counts, dict):
+            raise ValueError(f"VEP shard has invalid status counts: {directory}")
+        normalized_status_counts = {
+            str(status): int(count) for status, count in status_counts.items()
+        }
+        if (
+            any(count < 0 for count in normalized_status_counts.values())
+            or sum(normalized_status_counts.values()) != row_count
+        ):
+            raise ValueError(f"VEP shard status counts do not match rows: {directory}")
+        results[key] = {
+            "directory": directory,
+            "manifest": manifest,
+            "output": output,
+            "row_count": row_count,
+            "fields": fields,
+            "config": config,
+            "status_counts": normalized_status_counts,
+        }
+    if not results:
+        raise ValueError(f"No VEP shard outputs found in {root}")
+    return results
+
+
+def copy_variant_annotation_dataset(
+    partitions: list[tuple[Path, dict]],
+    vep_root: Path,
+    output: Path,
+) -> dict[str, object]:
+    if output.exists() and any(output.iterdir()):
+        raise ValueError(f"Variant annotation output is not empty: {output}")
+    expected = {}
+    partition_order = []
+    for partition, manifest in partitions:
+        partition_id = manifest_string(manifest, "partition_id", partition)
+        partition_order.append(partition_id)
+        for shard in variant_annotation_shards(partition, manifest):
+            key = (partition_id, str(shard["shard_id"]))
+            if key in expected:
+                raise ValueError(f"Duplicate annotation shard identity: {key}")
+            expected[key] = shard
+
+    observed = load_vep_results(vep_root)
+    missing = sorted(set(expected) - set(observed))
+    unexpected = sorted(set(observed) - set(expected))
+    if missing or unexpected:
+        raise ValueError(
+            f"VEP shard set differs from annotation inputs: missing={missing}, "
+            f"unexpected={unexpected}"
+        )
+
+    fields: list[str] | None = None
+    config: dict[str, object] | None = None
+    status_counts: Counter[str] = Counter()
+    partitions_manifest = []
+    row_count = 0
+    shard_count = 0
+    for partition_id in partition_order:
+        durable_shards = []
+        partition_keys = sorted(key for key in expected if key[0] == partition_id)
+        for key in partition_keys:
+            source = expected[key]
+            result = observed[key]
+            manifest = result["manifest"]
+            declared_input = manifest.get("input")
+            if not isinstance(declared_input, dict):
+                raise ValueError(f"VEP shard has invalid input contract: {result['directory']}")
+            if (
+                int(declared_input.get("size_bytes", -1)) != int(source["size_bytes"])
+                or list(declared_input.get("fields", [])) != list(source["fields"])
+                or int(result["row_count"]) != int(source["row_count"])
+            ):
+                raise ValueError(f"VEP shard input contract changed: {result['directory']}")
+            if list(result["fields"]) != [*source["fields"], *VEP_FIELDS]:
+                raise ValueError(f"VEP shard output fields changed: {result['directory']}")
+            if fields is None:
+                fields = list(result["fields"])
+            elif list(result["fields"]) != fields:
+                raise ValueError("VEP shard output fields differ")
+            if config is None:
+                config = dict(result["config"])
+            elif result["config"] != config:
+                raise ValueError("VEP semantic configuration differs across shards")
+
+            shard_id = key[1]
+            relative = Path("partitions") / partition_id / f"{shard_id}.tsv.gz"
+            destination = output / relative
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(result["output"], destination)
+            durable_shards.append(
+                {
+                    "shard_id": shard_id,
+                    "path": str(relative),
+                    "row_count": int(result["row_count"]),
+                    "size_bytes": destination.stat().st_size,
+                }
+            )
+            row_count += int(result["row_count"])
+            shard_count += 1
+            status_counts.update(result["status_counts"])
+        partitions_manifest.append(
+            {
+                "partition_id": partition_id,
+                "shard_count": len(durable_shards),
+                "row_count": sum(item["row_count"] for item in durable_shards),
+                "shards": durable_shards,
+            }
+        )
+
+    if fields is None or config is None:
+        raise ValueError("VEP annotation dataset is empty")
+    if sum(status_counts.values()) != row_count:
+        raise ValueError(
+            "VEP status counts do not match annotation rows: "
+            f"statuses={sum(status_counts.values())}, rows={row_count}"
+        )
+    descriptor = {
+        "schema": VARIANT_DATASET_SCHEMA,
+        "status": "complete",
+        "layout": "partitioned",
+        "format": "tsv_gzip_v1",
+        "path": "variant_annotations/manifest.json",
+        "partition_count": len(partitions_manifest),
+        "shard_count": shard_count,
+        "row_count": row_count,
+        "fields": fields,
+        "vep_config": config,
+        "vep_status_counts": dict(sorted(status_counts.items())),
+        "partitions": partitions_manifest,
+    }
+    output.mkdir(parents=True, exist_ok=True)
+    (output / "manifest.json").write_text(
+        json.dumps(descriptor, indent=2, sort_keys=True) + "\n"
+    )
+    return descriptor
+
+
 def merge_gnomad_shared_cache(partitions: list[tuple[Path, dict]]) -> dict[str, object] | None:
     snapshots = [manifest.get("gnomad_shared_cache") for _path, manifest in partitions]
     if not any(snapshot is not None for snapshot in snapshots):
@@ -412,12 +602,12 @@ def main() -> None:
     args.outdir.mkdir(parents=True, exist_ok=True)
     partitions = load_partitions(args.partition_root)
     validate_partition_manifests(partitions)
-    annotation_count = concatenate_tsv_gz_members(
+    variant_annotations = copy_variant_annotation_dataset(
         partitions,
-        "variant_annotations.tsv.gz",
-        "annotated_variant_context_count",
-        args.outdir / "variant_annotations.tsv.gz",
+        args.vep_root,
+        args.outdir / "variant_annotations",
     )
+    annotation_count = int(variant_annotations["row_count"])
     event_variant_map_count = copy_event_variant_map_dataset(
         partitions,
         args.outdir / "event_variant_map",
@@ -460,17 +650,17 @@ def main() -> None:
     manifest = {
         "created_at": utc_now(),
         "stage": "annotation",
-        "schema": "normalized_annotation_evidence_v2",
+        "schema": "normalized_annotation_evidence_v3",
         "partition_count": len(partitions),
         "partition_ids": [manifest_string(item, "partition_id", path) for path, item in partitions],
         **counts,
         **counters,
         "annotated_variant_context_count": annotation_count,
+        "variant_annotations": variant_annotations,
         "event_variant_map": event_variant_map_manifest(
             event_variant_map_count,
             len(partitions),
         ),
-        "large_tsv_format": FINAL_TSV_FORMAT,
         "failure_count": failure_count,
         "clinvar_vcf": first_manifest["clinvar_vcf"],
         "clinvar_tbi": first_manifest["clinvar_tbi"],

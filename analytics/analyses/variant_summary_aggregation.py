@@ -2,23 +2,18 @@
 
 from __future__ import annotations
 
-import csv
-import gzip
-import json
 import os
 import re
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
 
 import duckdb
 import pandas as pd
 
 from analytics.analyses.target_context import read_disjoint_contexts
 from analytics.vep.consequences import UNANNOTATED_CONSEQUENCE
-from analytics.io.artifacts import file_identity, path_metadata
-from analytics.io.variant_source import cohort_variant_paths
+from analytics.io.variant_source import resolve_variant_table_source
 from genomics.variants import read_failed_regions
 
 
@@ -53,6 +48,7 @@ class VariantAggregationSource:
     columns: tuple[str, ...]
     row_count: int | None
     partitioned: bool
+    header: bool
     identity: dict[str, object]
 
 
@@ -192,99 +188,16 @@ def _memory_limit_setting(value: float) -> str:
 
 
 def resolve_variant_aggregation_source(path: Path) -> VariantAggregationSource:
-    """Resolve a validated finalized VEP artifact."""
+    """Resolve the current pipeline-owned variant annotation dataset."""
 
-    path = path.resolve()
-    cohort_paths = cohort_variant_paths(path)
-    if cohort_paths is not None:
-        sources = [resolve_variant_aggregation_source(member) for member in cohort_paths]
-        columns = sources[0].columns
-        if any(source.columns != columns for source in sources[1:]):
-            raise ValueError("Cohort VEP outputs have different table columns")
-        partitioned = sources[0].partitioned
-        if any(source.partitioned != partitioned for source in sources[1:]):
-            raise ValueError("Cohort VEP outputs mix partitioned and merged source modes")
-        row_count = (
-            sum(int(source.row_count) for source in sources)
-            if all(source.row_count is not None for source in sources)
-            else None
-        )
-        return VariantAggregationSource(
-            paths=tuple(item for source in sources for item in source.paths),
-            columns=columns,
-            row_count=row_count,
-            partitioned=partitioned,
-            identity={
-                "cohort_descriptor": path_metadata(path),
-                "members": [source.identity for source in sources],
-            },
-        )
-    artifact_dir = path.parent
-    plan_path = artifact_dir / "plan.json"
-    manifest_path = artifact_dir / "manifest.json"
-    partitions_dir = artifact_dir / "partitions"
-    if path.name == "variant_annotations.vep.tsv.gz" and plan_path.exists():
-        if not manifest_path.exists():
-            raise ValueError(f"Incomplete partitioned VEP artifact under {artifact_dir}")
-        plan = _read_json(plan_path)
-        manifest = _read_json(manifest_path)
-        if plan.get("status") != "complete" or manifest.get("status") != "complete":
-            raise ValueError(f"Incomplete partitioned VEP artifact under {artifact_dir}")
-        columns = tuple(str(column) for column in plan.get("output_columns", []))
-        _require_columns(columns, path)
-        if list(columns) != list(manifest.get("columns", [])):
-            raise ValueError("VEP plan and final manifest columns differ")
-        row_count = int(plan.get("row_count", -1))
-        if row_count < 0 or row_count != int(manifest.get("row_count", -2)):
-            raise ValueError("VEP plan and final manifest row counts differ")
-
-        paths = []
-        partition_identities = []
-        observed_rows = 0
-        for entry in plan.get("partitions", []):
-            partition_id = str(entry.get("partition_id", ""))
-            partition_manifest_path = partitions_dir / f"{partition_id}.json"
-            partition_path = partitions_dir / f"{partition_id}.tsv.gz"
-            partition_manifest = _read_json(partition_manifest_path)
-            if partition_manifest.get("status") != "complete":
-                raise ValueError(f"Incomplete VEP partition: {partition_id}")
-            if partition_manifest.get("input") != entry:
-                raise ValueError(f"VEP partition input contract changed: {partition_id}")
-            if list(partition_manifest.get("output_columns", [])) != list(columns):
-                raise ValueError(f"VEP partition columns changed: {partition_id}")
-            expected_output = dict(partition_manifest.get("output", {}))
-            if not partition_path.exists() or file_identity(partition_path) != expected_output:
-                raise ValueError(f"VEP partition output changed: {partition_id}")
-            partition_rows = int(partition_manifest.get("row_count", -1))
-            if partition_rows != int(entry.get("row_count", -2)):
-                raise ValueError(f"VEP partition row count changed: {partition_id}")
-            observed_rows += partition_rows
-            paths.append(partition_path)
-            partition_identities.append(path_metadata(partition_manifest_path))
-        if not paths or observed_rows != row_count:
-            raise ValueError("VEP partition set does not match the declared row count")
-        return VariantAggregationSource(
-            paths=tuple(paths),
-            columns=columns,
-            row_count=row_count,
-            partitioned=True,
-            identity={
-                "plan": path_metadata(plan_path),
-                "manifest": path_metadata(manifest_path),
-                "partition_manifests": partition_identities,
-            },
-        )
-
-    if not path.exists():
-        raise FileNotFoundError(path)
-    columns = tuple(_read_header(path))
-    _require_columns(columns, path)
+    source = resolve_variant_table_source(path, required_columns=REQUIRED_COLUMNS)
     return VariantAggregationSource(
-        paths=(path,),
-        columns=columns,
-        row_count=None,
-        partitioned=False,
-        identity={"input": path_metadata(path)},
+        paths=source.paths,
+        columns=source.columns,
+        row_count=source.row_count,
+        partitioned=source.mode != "explicit_tsv",
+        header=source.header,
+        identity=source.identity,
     )
 
 
@@ -874,35 +787,11 @@ def _source_sql(source: VariantAggregationSource) -> str:
         f"{_sql_string(column)}: 'VARCHAR'" for column in source.columns
     ) + "}"
     paths = "[" + ",".join(_sql_string(path) for path in source.paths) + "]"
-    header = "false" if source.partitioned else "true"
     return (
-        f"read_csv({paths}, delim='\\t', header={header}, columns={columns}, "
-        "auto_detect=false, compression='auto', parallel=true, "
+        f"read_csv({paths}, delim='\\t', header={'true' if source.header else 'false'}, "
+        f"columns={columns}, auto_detect=false, compression='auto', parallel=true, "
         "nullstr='__GAPH_NULL_SENTINEL__')"
     )
-
-
-def _read_header(path: Path) -> list[str]:
-    handle = gzip.open(path, "rt", newline="") if path.suffix == ".gz" else path.open(newline="")
-    with handle:
-        return next(csv.reader(handle, delimiter="\t"))
-
-
-def _require_columns(columns: tuple[str, ...], path: Path) -> None:
-    missing = REQUIRED_COLUMNS - set(columns)
-    if missing:
-        raise ValueError(
-            f"Variant annotations {path} missing columns: {', '.join(sorted(missing))}"
-        )
-
-
-def _read_json(path: Path) -> dict[str, Any]:
-    if not path.exists():
-        raise FileNotFoundError(path)
-    value = json.loads(path.read_text())
-    if not isinstance(value, dict):
-        raise ValueError(f"Expected a JSON object: {path}")
-    return value
 
 
 def _directory_size(path: Path | None) -> int:

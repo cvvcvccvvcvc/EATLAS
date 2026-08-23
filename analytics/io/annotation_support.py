@@ -39,10 +39,15 @@ from analytics.derivations.taxonomy import (
     load_taxonomy_profiles,
 )
 from analytics.io.artifacts import content_identity, file_identity, write_json_atomic
+from analytics.io.variant_source import (
+    VariantTableSource,
+    resolve_variant_table_source,
+    variant_source_sql,
+)
 from genomics.variants import parse_variant_key, variant_aggregate_key
 
 
-CACHE_SCHEMA_VERSION = 3
+CACHE_SCHEMA_VERSION = 4
 CACHE_DIRNAME = "annotation_support"
 VARIANT_SUPPORT_FILENAME = "variant_strategy_support.tsv.gz"
 ORTHOLOG_EVIDENCE_FILENAME = "ortholog_evidence_summary.tsv.gz"
@@ -100,7 +105,7 @@ def resolve_annotation_support_paths(run_dir: Path) -> AnnotationSupportPaths:
         raise ValueError(
             f"Annotation manifest has invalid stage: {annotation_manifest_path}"
         )
-    if annotation_manifest.get("schema") != "normalized_annotation_evidence_v2":
+    if annotation_manifest.get("schema") != "normalized_annotation_evidence_v3":
         raise ValueError(
             f"Annotation manifest has unsupported schema: {annotation_manifest_path}"
         )
@@ -116,7 +121,7 @@ def resolve_annotation_support_paths(run_dir: Path) -> AnnotationSupportPaths:
     alignment_manifest_path = alignment_dir / "manifest.json"
     map_root = annotation_dir / "event_variant_map" / "partitions"
     evidence_root = alignment_dir / "evidence" / "partitions"
-    source_annotations = annotation_dir / "variant_annotations.tsv.gz"
+    variant_annotations_source = annotation_dir / "variant_annotations" / "manifest.json"
     failures = annotation_dir / "failures.tsv.gz"
     taxonomy = run_dir / "fetch" / "taxonomy.tsv.gz"
     target_features = run_dir / "fetch" / "target_features.tsv.gz"
@@ -124,7 +129,7 @@ def resolve_annotation_support_paths(run_dir: Path) -> AnnotationSupportPaths:
         alignment_manifest_path,
         map_root,
         evidence_root,
-        source_annotations,
+        variant_annotations_source,
         failures,
         taxonomy,
         target_features,
@@ -181,7 +186,7 @@ def resolve_annotation_support_paths(run_dir: Path) -> AnnotationSupportPaths:
         map_root=map_root,
         taxonomy=taxonomy,
         target_features=target_features,
-        source_annotations=source_annotations,
+        variant_annotations_source=variant_annotations_source,
         failures=failures,
         alignment_manifest=alignment_manifest_path,
         annotation_manifest=annotation_manifest_path,
@@ -195,7 +200,7 @@ def build_or_load_annotation_support(
     map_root: Path,
     taxonomy: Path,
     target_features: Path,
-    source_annotations: Path,
+    variant_annotations_source: Path,
     failures: Path,
     alignment_manifest: Path,
     annotation_manifest: Path,
@@ -213,7 +218,7 @@ def build_or_load_annotation_support(
     for path in (
         taxonomy,
         target_features,
-        source_annotations,
+        variant_annotations_source,
         failures,
         alignment_manifest,
         annotation_manifest,
@@ -227,12 +232,16 @@ def build_or_load_annotation_support(
         ortholog_evidence_summary_tsv=cache_dir / ORTHOLOG_EVIDENCE_FILENAME,
     )
     manifest_path = cache_dir / "manifest.json"
+    variant_source = resolve_variant_table_source(
+        variant_annotations_source,
+        required_columns={"variant_key", "gene_id", "lookup_status", "gnomad_af"},
+    )
     inputs = _input_identities(
         partition_dirs=partition_dirs,
         map_root=map_root,
         taxonomy=taxonomy,
         target_features=target_features,
-        source_annotations=source_annotations,
+        variant_source=variant_source,
         failures=failures,
         alignment_manifest=alignment_manifest,
         annotation_manifest=annotation_manifest,
@@ -261,7 +270,7 @@ def build_or_load_annotation_support(
             )
             connection.execute(f"SET memory_limit = {_sql_string(memory_limit)}")
             connection.execute(f"SET temp_directory = {_sql_string(temporary_dir / 'duckdb_tmp')}")
-            _load_source_annotations(connection, source_annotations)
+            _load_source_annotations(connection, variant_source)
             with gzip.open(temporary_support, "wt", newline="") as support_handle:
                 support_writer = csv.DictWriter(
                     support_handle,
@@ -546,9 +555,7 @@ def _validate_exact_event_support(
         )
 
 
-def _load_source_annotations(connection, path: Path) -> None:
-    required = {"variant_key", "gene_id", "lookup_status", "gnomad_af"}
-    _require_tsv_header(path, required)
+def _load_source_annotations(connection, source: VariantTableSource) -> None:
     connection.execute(
         f"""
         CREATE TABLE source_annotations AS
@@ -557,12 +564,7 @@ def _load_source_annotations(connection, path: Path) -> None:
             CAST(gene_id AS VARCHAR) AS gene_id,
             CAST(lookup_status AS VARCHAR) AS lookup_status,
             CAST(gnomad_af AS VARCHAR) AS gnomad_af
-        FROM read_csv(
-            {_sql_string(path)},
-            delim = '\t',
-            header = true,
-            all_varchar = true
-        )
+        FROM {variant_source_sql(source)}
         """
     )
     connection.execute(
@@ -673,7 +675,7 @@ def _input_identities(
     map_root: Path,
     taxonomy: Path,
     target_features: Path,
-    source_annotations: Path,
+    variant_source: VariantTableSource,
     failures: Path,
     alignment_manifest: Path,
     annotation_manifest: Path,
@@ -683,7 +685,7 @@ def _input_identities(
         "annotation_manifest": content_identity(annotation_manifest),
         "taxonomy": content_identity(taxonomy),
         "target_features": content_identity(target_features),
-        "source_annotations": file_identity(source_annotations),
+        "variant_annotations": variant_source.identity,
         "failures": file_identity(failures),
         "partitions": [
             {

@@ -190,17 +190,16 @@ def validation_consequence_grouping_table(source: str = "Ensembl VEP") -> pd.Dat
 
 
 def vep_qc_tables(
-    candidate_manifest: dict | None,
+    candidate_annotation_descriptor: dict,
     validation,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
-    candidate = candidate_manifest or {}
     clinvar = dict(getattr(validation, "manifest", {}).get("vep", {}))
     datasets = [
         (
             "Candidates",
-            int(candidate.get("row_count", 0)),
-            dict(candidate.get("status_counts", {})),
-            dict(candidate.get("config", {})),
+            int(candidate_annotation_descriptor["row_count"]),
+            dict(candidate_annotation_descriptor["vep_status_counts"]),
+            dict(candidate_annotation_descriptor["vep_config"]),
         ),
         (
             "ClinVar universe",
@@ -423,17 +422,17 @@ def build_methods_sections(
     annotation_manifest: dict,
     alignment_manifest: dict,
     taxonomy_summary: pd.DataFrame,
+    candidate_annotation_descriptor: dict,
     validation=None,
     conservation_analysis: ConservationAnalysis | None = None,
     negative_controls: TargetSpaceNullAnalysis | None = None,
     report_timings: list[dict[str, object]] | None = None,
     report_profile_path: Path | None = None,
-    candidate_vep_manifest: dict | None = None,
 ) -> list[str]:
     files = [
         ("Analysis Root", inputs.run_dir),
         ("Fetch Manifest", inputs.fetch_manifest_json),
-        ("Variant Annotations", inputs.variant_annotations_tsv),
+        ("Variant Annotation Dataset", inputs.variant_annotations_source),
         ("Variant Strategy Support", inputs.variant_strategy_support_tsv),
         ("Ortholog Evidence Summary", inputs.ortholog_evidence_summary_tsv),
         ("Target Features", inputs.target_features_tsv),
@@ -443,10 +442,6 @@ def build_methods_sections(
         ("Taxonomy Summary", inputs.taxonomy_summary_tsv),
         ("Annotation Manifest", inputs.annotation_manifest_json),
         ("Alignment Manifest", inputs.alignment_manifest_json),
-        (
-            "Bulk VEP Manifest",
-            inputs.run_dir / "analytics" / "vep_consequences" / "manifest.json",
-        ),
         ("Output HTML", out_html),
     ]
     if inputs.cohort_manifest_json is not None:
@@ -473,9 +468,12 @@ def build_methods_sections(
 
     ok_events = int(annotation_manifest.get("event_key_status_counts", {}).get("ok", 0))
     missing_left_anchor = int(annotation_manifest.get("event_key_status_counts", {}).get("missing_left_anchor", 0))
-    vep_config, vep_status = vep_qc_tables(candidate_vep_manifest, validation)
+    vep_config, vep_status = vep_qc_tables(
+        candidate_annotation_descriptor,
+        validation,
+    )
     candidate_vep_ok = int(
-        (candidate_vep_manifest or {}).get("status_counts", {}).get("ok", 0)
+        candidate_annotation_descriptor["vep_status_counts"].get("ok", 0)
     )
     clinvar_vep = dict(getattr(validation, "manifest", {}).get("vep", {}))
     clinvar_vep_ok = int(clinvar_vep.get("status_counts", {}).get("ok", 0))
@@ -485,7 +483,7 @@ def build_methods_sections(
             [
                 (
                     "VEP release",
-                    str((candidate_vep_manifest or {}).get("config", {}).get("release", "")),
+                    str(candidate_annotation_descriptor["vep_config"]["release"]),
                 ),
                 ("Candidate rows VEP ok", format_int(candidate_vep_ok)),
                 ("ClinVar alleles VEP ok", format_int(clinvar_vep_ok)),

@@ -1,0 +1,8 @@
+name: gaph-v2-vep
+channels:
+  - conda-forge
+dependencies:
+  - python=3.11
+  - numpy
+  - pandas
+  - python-duckdb=1.5

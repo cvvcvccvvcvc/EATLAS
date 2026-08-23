@@ -15,7 +15,7 @@ import pandas as pd
 from analytics.io.artifacts import path_metadata, write_json_atomic
 from analytics.io.variant_source import (
     VariantTableSource,
-    resolve_pre_vep_variant_source,
+    resolve_variant_table_source,
     sql_string,
     variant_source_sql,
 )
@@ -170,7 +170,7 @@ class ObservedVariantStore:
 
 def build_or_load_observed_variant_store(
     *,
-    variant_annotations_tsv: Path,
+    variant_annotations_source: Path,
     analytics_dir: Path,
     strategies: list[str] | tuple[str, ...],
 ) -> ObservedVariantStore:
@@ -184,8 +184,8 @@ def build_or_load_observed_variant_store(
             f"Observed-variant store supports at most {MAX_STRATEGIES} strategies, "
             f"found {len(selected_strategies)}"
         )
-    source = resolve_pre_vep_variant_source(
-        variant_annotations_tsv,
+    source = resolve_variant_table_source(
+        variant_annotations_source,
         required_columns=REQUIRED_COLUMNS,
     )
     outdir = analytics_dir / "observed_variants"

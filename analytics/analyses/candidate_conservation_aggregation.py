@@ -12,7 +12,7 @@ import pandas as pd
 
 from analytics.io.variant_source import (
     VariantTableSource,
-    resolve_pre_vep_variant_source,
+    resolve_variant_table_source,
     sql_string,
     variant_source_sql,
 )
@@ -291,12 +291,12 @@ class CandidateAlleleStore:
 
 def build_candidate_allele_store(
     *,
-    variant_annotations_tsv: Path,
+    variant_annotations_source: Path,
     strategies: list[str] | tuple[str, ...] | None,
     annotation_failures_path: Path | None,
     temp_dir: Path,
 ) -> CandidateAlleleStore:
-    source = resolve_candidate_aggregation_source(variant_annotations_tsv)
+    source = resolve_candidate_aggregation_source(variant_annotations_source)
     selected = tuple(sorted({str(value).strip() for value in (strategies or []) if str(value).strip()}))
     if not selected:
         selected = _read_strategies(source)
@@ -313,7 +313,7 @@ def build_candidate_allele_store(
 
 
 def resolve_candidate_aggregation_source(path: Path) -> CandidateAggregationSource:
-    return resolve_pre_vep_variant_source(
+    return resolve_variant_table_source(
         path,
         required_columns=REQUIRED_COLUMNS,
     )

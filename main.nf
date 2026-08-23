@@ -144,6 +144,17 @@ if (!params.ids_file) {
 if (!file(params.target_annotation_gff3).exists()) {
     error "Target annotation GFF3 not found: ${params.target_annotation_gff3}. Pass --target_annotation_gff3, set GAPH_TARGET_ANNOTATION_GFF3, or place the file at assets/reference/ncbi/refseq/GCF_000001405.40_GRCh38.p14/genomic.gff.gz"
 }
+if (params.vep_backend == 'local') {
+    if (!params.vep_release) {
+        error "Local VEP requires --vep_release or GAPH_VEP_RELEASE"
+    }
+    if (!params.vep_cache_dir) {
+        error "Local VEP requires --vep_cache_dir or GAPH_VEP_CACHE_DIR"
+    }
+    if (!file(params.vep_cache_dir).exists()) {
+        error "Local VEP cache directory not found: ${params.vep_cache_dir}"
+    }
+}
 
 SELECTED_ALIGNMENT_STRATEGIES = parseAlignmentStrategies(params.alignment_strategies)
 SELECTED_ORTHOLOG_ALIGNMENT_STRATEGIES = SELECTED_ALIGNMENT_STRATEGIES.findAll {
@@ -173,6 +184,7 @@ include { BUILD_ENSEMBL_COMPARA_MAF_CHUNK_TASKS } from './modules/local/build_en
 include { ALIGN_ENSEMBL_COMPARA_MAF_CHUNK } from './modules/local/align_ensembl_compara_maf_chunk.nf'
 include { MERGE_ENSEMBL_COMPARA_MAF_GENE } from './modules/local/merge_ensembl_compara_maf_gene.nf'
 include { ANNOTATE_EVENTS_PARTITION } from './modules/local/annotate_events_partition.nf'
+include { ANNOTATE_VEP_PARTITION } from './modules/local/annotate_vep_partition.nf'
 include { FINALIZE_ANNOTATION } from './modules/local/finalize_annotation.nf'
 include { PREPARE_ANNOTATION_CONTEXTS } from './modules/local/prepare_annotation_contexts.nf'
 
@@ -496,14 +508,23 @@ workflow PARTITIONED_ANNOTATION_STAGE {
 
     main:
     annotate_script = file("${projectDir}/bin/annotate_events.py")
+    annotate_vep_script = file("${projectDir}/bin/annotate_vep_partition.py")
     bin_package_init = file("${projectDir}/bin/__init__.py")
+    genomics_package_init = file("${projectDir}/genomics/__init__.py")
+    variants_source = file("${projectDir}/genomics/variants.py")
     prepare_contexts_script = file("${projectDir}/bin/prepare_annotation_contexts.py")
     genomics_sources = [
-        file("${projectDir}/genomics/__init__.py"),
+        genomics_package_init,
         file("${projectDir}/genomics/clinvar.py"),
         file("${projectDir}/genomics/gnomad.py"),
         file("${projectDir}/genomics/gnomad_cache.py"),
         file("${projectDir}/genomics/variants.py"),
+    ]
+    vep_sources = [
+        file("${projectDir}/genomics/vep/__init__.py"),
+        file("${projectDir}/genomics/vep/annotator.py"),
+        file("${projectDir}/genomics/vep/result_cache.py"),
+        file("${projectDir}/genomics/vep/terms.py"),
     ]
     finalize_script = file("${projectDir}/bin/finalize_annotation_partitions.py")
     PREPARE_ANNOTATION_CONTEXTS(
@@ -563,8 +584,46 @@ workflow PARTITIONED_ANNOTATION_STAGE {
         clinvar_vcf_tbi,
         gnomad_cache_dir
     )
+    vep_inputs = ANNOTATE_EVENTS_PARTITION.out.partition_dirs.flatMap { meta, partition_dir ->
+        def manifestPath = partition_dir.resolve('manifest.json')
+        if (!manifestPath.exists()) {
+            error "Annotation partition ${meta.partition_id} is missing manifest.json: ${partition_dir}"
+        }
+        def manifest = new JsonSlurper().parse(manifestPath.toFile())
+        def dataset = manifest.variant_annotations
+        if (!(dataset instanceof Map) || dataset.layout != 'partitioned' || !(dataset.shards instanceof List)) {
+            error "Annotation partition ${meta.partition_id} has invalid variant_annotations metadata"
+        }
+        dataset.shards.collect { shard ->
+            def shardId = shard.shard_id as String
+            def shardPath = partition_dir.resolve(dataset.path as String).resolve(shard.path as String)
+            if (!shardId || !shardPath.exists()) {
+                error "Annotation partition ${meta.partition_id} has a missing VEP input shard: ${shardPath}"
+            }
+            tuple(
+                meta + [shard_id: shardId, vep_row_count: shard.row_count as Long],
+                file(shardPath)
+            )
+        }
+    }
+    ANNOTATE_VEP_PARTITION(
+        vep_inputs,
+        annotate_vep_script,
+        bin_package_init,
+        genomics_package_init,
+        variants_source,
+        vep_sources,
+        params.vep_backend,
+        params.vep_release ?: '',
+        params.vep_executable,
+        params.vep_cache_dir ?: '',
+        params.vep_result_cache_dir ?: '',
+        params.vep_result_cache_tile_size_bp,
+        params.vep_forks
+    )
     FINALIZE_ANNOTATION(
         ANNOTATE_EVENTS_PARTITION.out.partition_dirs.map { meta, dir -> dir }.collect(),
+        ANNOTATE_VEP_PARTITION.out.shard_dirs.map { meta, dir -> dir }.collect(),
         finalize_script
     )
 

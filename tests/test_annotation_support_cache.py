@@ -353,7 +353,7 @@ def _write_source_contract(run_dir: Path) -> dict[str, object]:
         json.dumps(
             {
                 "stage": "annotation",
-                "schema": "normalized_annotation_evidence_v2",
+                "schema": "normalized_annotation_evidence_v3",
                 "partition_ids": [partition_id],
                 "event_variant_map": {
                     "layout": "partitioned",
@@ -390,7 +390,7 @@ def test_annotation_support_cache_reproduces_current_report_contract(tmp_path: P
         map_root=contract["map_root"],
         taxonomy=contract["taxonomy"],
         target_features=contract["target_features"],
-        source_annotations=contract["source_annotations"],
+        variant_annotations_source=contract["source_annotations"],
         failures=contract["failures"],
         alignment_manifest=contract["alignment_manifest"],
         annotation_manifest=contract["annotation_manifest"],
@@ -555,7 +555,7 @@ def test_annotation_support_cache_hit_and_failure_invalidation(tmp_path: Path) -
         "map_root": contract["map_root"],
         "taxonomy": contract["taxonomy"],
         "target_features": contract["target_features"],
-        "source_annotations": contract["source_annotations"],
+        "variant_annotations_source": contract["source_annotations"],
         "failures": contract["failures"],
         "alignment_manifest": contract["alignment_manifest"],
         "annotation_manifest": contract["annotation_manifest"],
@@ -596,7 +596,7 @@ def test_annotation_support_resolution_rejects_missing_or_incomplete_contract(
         json.dumps(
             {
                 "stage": "annotation",
-                "schema": "normalized_annotation_evidence_v2",
+                "schema": "normalized_annotation_evidence_v3",
             }
         )
         + "\n"
@@ -608,7 +608,7 @@ def test_annotation_support_resolution_rejects_missing_or_incomplete_contract(
         json.dumps(
             {
                 "stage": "annotation",
-                "schema": "normalized_annotation_evidence_v2",
+                "schema": "normalized_annotation_evidence_v3",
                 "partition_ids": ["partition_000001"],
                 "event_variant_map": {
                     "layout": "partitioned",
@@ -655,8 +655,8 @@ def test_run_inputs_uses_resolved_annotation_support_paths(
     )
     monkeypatch.setattr(
         run_inputs_module,
-        "resolve_vep_variant_annotations",
-        lambda _run_dir, source: source,
+        "resolve_variant_annotations_source",
+        lambda _manifest: source_annotations,
     )
     monkeypatch.setattr(
         run_inputs_module,

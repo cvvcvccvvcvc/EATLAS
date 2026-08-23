@@ -15,6 +15,7 @@ from analytics.io.performance import PerformanceProfile, profile_stage
 from .candidate_conservation_aggregation import (
     CandidateAlleleStore,
     build_candidate_allele_store,
+    resolve_candidate_aggregation_source,
 )
 from .conservation import (
     DEFAULT_TRACK_NAMES,
@@ -54,7 +55,7 @@ class CandidateConservation:
 
 def build_candidate_conservation(
     *,
-    variant_annotations_tsv: Path,
+    variant_annotations_source: Path,
     analytics_dir: Path,
     annotation_failures_tsv: Path | None = None,
     additional_rows: list[dict[str, str]] | None = None,
@@ -74,6 +75,7 @@ def build_candidate_conservation(
     if len(tracks) != 1:
         raise ValueError("Candidate-wide conservation currently requires exactly one track.")
     track = tracks[0]
+    variant_source = resolve_candidate_aggregation_source(variant_annotations_source)
     analytics_dir.mkdir(parents=True, exist_ok=True)
     distributions_path = (
         analytics_dir / "candidate_variants.phyloP100way.distributions.tsv.gz"
@@ -82,7 +84,7 @@ def build_candidate_conservation(
     manifest_path = analytics_dir / "candidate_variants.phyloP100way.manifest.json"
     expected_inputs = {
         "cache_version": CACHE_VERSION,
-        "variant_annotations": path_metadata(variant_annotations_tsv),
+        "variant_annotations": variant_source.identity,
         "annotation_failures": (
             path_metadata(annotation_failures_tsv) if annotation_failures_tsv is not None else None
         ),
@@ -103,7 +105,7 @@ def build_candidate_conservation(
     ) as temporary:
         with profile_stage(performance_profile, "Candidate allele collapse") as timing:
             store = build_candidate_allele_store(
-                variant_annotations_tsv=variant_annotations_tsv,
+                variant_annotations_source=variant_annotations_source,
                 strategies=strategies,
                 annotation_failures_path=annotation_failures_tsv,
                 temp_dir=Path(temporary),

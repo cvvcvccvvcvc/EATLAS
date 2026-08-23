@@ -181,8 +181,8 @@ def test_run_inputs_exposes_new_taxonomy_summary_cache(
     )
     monkeypatch.setattr(
         run_inputs_module,
-        "resolve_vep_variant_annotations",
-        lambda _run_dir, source: source,
+        "resolve_variant_annotations_source",
+        lambda _manifest: source_annotations,
     )
     monkeypatch.setattr(
         run_inputs_module,

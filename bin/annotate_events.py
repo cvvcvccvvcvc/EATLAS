@@ -77,16 +77,14 @@ VARIANT_ANNOTATION_FIELDS = [
     *ANNOTATION_COLUMNS,
 ]
 
+VARIANT_ANNOTATION_SHARD_SIZE = 250_000
+VARIANT_ANNOTATION_SHARD_FORMAT = "tsv_gzip_v1"
+
 EVENT_VARIANT_MAP_FIELDS = [
     "event_group_id",
     "variant_key",
     "normalization_status",
 ]
-
-PARTITION_TSV_SHARD_FORMAT = "headerless_gzip_member_v1"
-PARTITION_TSV_SHARD_FIELDS = {
-    "variant_annotations.tsv.gz": VARIANT_ANNOTATION_FIELDS,
-}
 
 FAILURE_FIELDS = ["source", "scope", "chrom", "start", "end", "failure_type", "message"]
 GNOMAD_DATASET = "gnomad_r4"
@@ -174,6 +172,47 @@ def write_tsv_gz(
         for row in rows:
             writer.writerow({field: row.get(field, "") for field in fields})
     return len(rows)
+
+
+def write_variant_annotation_shards(
+    directory: Path,
+    rows: list[dict],
+    *,
+    shard_size: int = VARIANT_ANNOTATION_SHARD_SIZE,
+) -> dict[str, object]:
+    """Write one ordered, headered shard set without duplicating the full table."""
+
+    if shard_size < 1:
+        raise ValueError("Variant annotation shard size must be >= 1")
+    directory.mkdir(parents=True, exist_ok=True)
+    if any(directory.iterdir()):
+        raise ValueError(f"Variant annotation shard directory is not empty: {directory}")
+
+    shards = []
+    shard_count = max(1, (len(rows) + shard_size - 1) // shard_size)
+    for index in range(shard_count):
+        shard_id = f"shard_{index + 1:06d}"
+        path = directory / f"{shard_id}.tsv.gz"
+        shard_rows = rows[index * shard_size : (index + 1) * shard_size]
+        write_tsv_gz(path, VARIANT_ANNOTATION_FIELDS, shard_rows)
+        shards.append(
+            {
+                "shard_id": shard_id,
+                "path": path.name,
+                "row_count": len(shard_rows),
+                "size_bytes": path.stat().st_size,
+            }
+        )
+    return {
+        "layout": "partitioned",
+        "format": VARIANT_ANNOTATION_SHARD_FORMAT,
+        "path": directory.name,
+        "row_count": len(rows),
+        "shard_size": shard_size,
+        "shard_count": len(shards),
+        "fields": VARIANT_ANNOTATION_FIELDS,
+        "shards": shards,
+    }
 
 
 def int_or_default(value, default: int = 0) -> int:
@@ -346,7 +385,7 @@ def main():
     alignment_manifest = load_alignment_manifest(args.alignment_manifest, args.partition_id)
     timings_seconds: dict[str, float] = {}
     args.outdir.mkdir(parents=True, exist_ok=True)
-    out_tsv = args.outdir / "variant_annotations.tsv.gz"
+    variant_annotations_dir = args.outdir / "variant_annotation_shards"
     event_variant_map_tsv = args.outdir / "event_variant_map.tsv.gz"
     failures_tsv = args.outdir / "failures.tsv.gz"
     manifest_json = args.outdir / "manifest.json"
@@ -564,12 +603,11 @@ def main():
             row.get("event_type", ""),
         )
     )
-    output_row_count = write_tsv_gz(
-        out_tsv,
-        VARIANT_ANNOTATION_FIELDS,
+    variant_annotations = write_variant_annotation_shards(
+        variant_annotations_dir,
         variant_rows,
-        include_header=not bool(args.partition_id),
     )
+    output_row_count = int(variant_annotations["row_count"])
     finish_phase(timings_seconds, "write_variant_annotations", phase_started)
 
     phase_started = start_phase("write_failures")
@@ -583,6 +621,7 @@ def main():
         "event_variant_map_count": input_row_count,
         "variant_context_count": len(variant_aggregates),
         "annotated_variant_context_count": output_row_count,
+        "variant_annotations": variant_annotations,
         "clinvar_vcf": path_metadata(args.clinvar_vcf),
         "clinvar_tbi": path_metadata(clinvar_tbi),
         "clinvar_cached_variant_count": len(clinvar_cache),
@@ -600,12 +639,14 @@ def main():
         "clinvar_key_status_counts": dict(clinvar_key_status_counts),
         "timings_seconds": timings_seconds,
     }
-    if args.partition_id:
-        manifest["partition_tsv_shard_format"] = PARTITION_TSV_SHARD_FORMAT
-        manifest["partition_tsv_shard_fields"] = PARTITION_TSV_SHARD_FIELDS
     manifest_json.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
 
-    logger.info(f"Saved variant annotations to {out_tsv}")
+    logger.info(
+        "Saved %s variant annotation row(s) in %s shard(s) to %s",
+        output_row_count,
+        variant_annotations["shard_count"],
+        variant_annotations_dir,
+    )
     logger.info(f"Saved event-to-variant lineage to {event_variant_map_tsv}")
     logger.info(f"Saved annotation failures to {failures_tsv}")
     logger.info(f"Saved annotation manifest to {manifest_json}")

@@ -31,7 +31,7 @@ def _build_observed_store(
         compression="gzip",
     )
     return controls.build_or_load_observed_variant_store(
-        variant_annotations_tsv=annotations_path,
+        variant_annotations_source=annotations_path,
         analytics_dir=tmp_path / "analytics",
         strategies=strategies,
     )
@@ -94,7 +94,7 @@ def test_build_target_space_null_end_to_end_with_mocked_annotations(
         ]
     ).to_csv(annotations_path, sep="\t", index=False, compression="gzip")
     observed_store = controls.build_or_load_observed_variant_store(
-        variant_annotations_tsv=annotations_path,
+        variant_annotations_source=annotations_path,
         analytics_dir=run_dir / "analytics",
         strategies=["s1"],
     )
@@ -159,7 +159,7 @@ def test_build_target_space_null_end_to_end_with_mocked_annotations(
 
     analysis = controls.build_target_space_null(
         run_dir=run_dir,
-        variant_annotations_tsv=annotations_path,
+        variant_annotations_source=annotations_path,
         target_features_tsv=features_path,
         genes_tsv=genes_path,
         target_sequences_dir=target_dir,
@@ -234,7 +234,7 @@ def test_build_target_space_null_end_to_end_with_mocked_annotations(
     )
     controls.build_target_space_null(
         run_dir=run_dir,
-        variant_annotations_tsv=annotations_path,
+        variant_annotations_source=annotations_path,
         target_features_tsv=features_path,
         genes_tsv=genes_path,
         target_sequences_dir=target_dir,

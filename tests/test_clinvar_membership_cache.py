@@ -93,7 +93,7 @@ def test_observed_clinvar_memberships_are_cached_and_reused(
         ],
     ).to_csv(annotations_path, sep="\t", index=False, compression="gzip")
     observed_store = build_or_load_observed_variant_store(
-        variant_annotations_tsv=annotations_path,
+        variant_annotations_source=annotations_path,
         analytics_dir=tmp_path / "analytics",
         strategies=["s1", "s2"],
     )

@@ -17,6 +17,8 @@ from analytics.io.run_inputs import (
     read_taxonomy_summary,
     resolve_run_inputs,
     validate_report_inputs,
+    variant_annotation_descriptor,
+    variant_annotation_release,
 )
 from analytics.reporting.components import dataframe_records, format_table_dataframe
 from analytics.reporting.basic_filtering import basic_filtering_view
@@ -52,6 +54,93 @@ from analytics.reporting.variant_profile import (
 from analytics.strategy_report import _default_phylop_bigwig
 
 
+REPORT_VARIANT_FIELDS = [
+    "variant_key",
+    "gene_id",
+    "event_type",
+    "ref",
+    "alt",
+    "lookup_status",
+    "strategies",
+    "support_row_count",
+    "support_ortholog_count",
+    "clinvar_id",
+    "clinvar_sig",
+    "clinvar_review_stars",
+    "clinvar_scv_count",
+    "gnomad_af",
+    "vep_status",
+    "vep_primary_consequence",
+    "vep_consequence_terms",
+]
+
+
+def write_pipeline_variant_dataset(annotation_dir: Path) -> tuple[Path, dict]:
+    dataset_dir = annotation_dir / "variant_annotations"
+    shard = dataset_dir / "partitions" / "partition_000001" / "shard_000001.tsv.gz"
+    shard.parent.mkdir(parents=True)
+    pd.DataFrame(
+        [
+            {
+                "variant_key": "1:100:A>G",
+                "gene_id": "1",
+                "event_type": "snv",
+                "ref": "A",
+                "alt": "G",
+                "lookup_status": "ok",
+                "strategies": "s1",
+                "vep_status": "ok",
+                "vep_primary_consequence": "missense_variant",
+                "vep_consequence_terms": "missense_variant",
+            }
+        ],
+        columns=REPORT_VARIANT_FIELDS,
+    ).fillna("").to_csv(shard, sep="\t", index=False, compression="gzip")
+    descriptor = {
+        "schema": "gaph_variant_annotation_dataset_v1",
+        "status": "complete",
+        "layout": "partitioned",
+        "format": "tsv_gzip_v1",
+        "path": "variant_annotations/manifest.json",
+        "partition_count": 1,
+        "shard_count": 1,
+        "row_count": 1,
+        "fields": REPORT_VARIANT_FIELDS,
+        "vep_config": {"backend": "local", "release": "116"},
+        "vep_status_counts": {"ok": 1},
+        "partitions": [
+            {
+                "partition_id": "partition_000001",
+                "shard_count": 1,
+                "row_count": 1,
+                "shards": [
+                    {
+                        "shard_id": "shard_000001",
+                        "path": "partitions/partition_000001/shard_000001.tsv.gz",
+                        "row_count": 1,
+                        "size_bytes": shard.stat().st_size,
+                    }
+                ],
+            }
+        ],
+    }
+    dataset_manifest = dataset_dir / "manifest.json"
+    dataset_manifest.write_text(json.dumps(descriptor, indent=2, sort_keys=True) + "\n")
+    (annotation_dir / "manifest.json").write_text(
+        json.dumps(
+            {
+                "stage": "annotation",
+                "schema": "normalized_annotation_evidence_v3",
+                "variant_annotations": descriptor,
+            },
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n"
+    )
+    return dataset_manifest, descriptor
+
+
 def test_local_phylop_default_prefers_environment_or_existing_gaph_root(
     tmp_path: Path,
     monkeypatch,
@@ -77,15 +166,8 @@ def test_report_preflight_accepts_compact_production_contract(tmp_path: Path) ->
         pd.DataFrame(columns=columns).to_csv(path, sep="\t", index=False, compression="gzip")
         return path
 
-    annotations = write_table(
-        "annotations.tsv.gz",
-        [
-            "variant_key", "gene_id", "event_type", "ref", "alt", "lookup_status",
-            "strategies", "support_row_count", "support_ortholog_count", "clinvar_id",
-            "clinvar_sig", "clinvar_review_stars", "clinvar_scv_count", "gnomad_af",
-            "vep_status", "vep_primary_consequence", "vep_consequence_terms",
-        ],
-    )
+    annotation_dir = tmp_path / "annotation"
+    annotations, _descriptor = write_pipeline_variant_dataset(annotation_dir)
     genes = write_table("genes.tsv.gz", ["gene_id", "chromosome", "begin", "end", "sequence_length"])
     features = write_table(
         "features.tsv.gz", ["gene_id", "feature_type", "target_start0", "target_end0"]
@@ -140,10 +222,10 @@ def test_report_preflight_accepts_compact_production_contract(tmp_path: Path) ->
         genes_tsv=genes,
         target_features_tsv=features,
         target_sequences_dir=targets,
-        variant_annotations_tsv=annotations,
+        variant_annotations_source=annotations,
         variant_strategy_support_tsv=support,
         ortholog_evidence_summary_tsv=ortholog_evidence,
-        annotation_manifest_json=tmp_path / "annotation_manifest.json",
+        annotation_manifest_json=annotation_dir / "manifest.json",
         annotation_failures_tsv=tmp_path / "annotation_failures.tsv.gz",
         feature_coverage_tsv=coverage,
         alignment_manifest_json=tmp_path / "alignment_manifest.json",
@@ -166,47 +248,20 @@ def test_read_taxonomy_summary_requires_the_canonical_table(tmp_path: Path) -> N
         read_taxonomy_summary(tmp_path / "missing.tsv.gz")
 
 
-def test_report_inputs_use_matching_completed_vep_artifact(
+def test_report_inputs_use_pipeline_variant_annotation_dataset(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     run_dir = tmp_path / "run"
     annotation_dir = run_dir / "annotation"
-    artifact_dir = run_dir / "analytics" / "vep_consequences"
     (run_dir / "fetch" / "sequences" / "targets").mkdir(parents=True)
     annotation_dir.mkdir()
-    artifact_dir.mkdir(parents=True)
-    source = annotation_dir / "variant_annotations.tsv.gz"
-    pd.DataFrame(columns=["variant_key"]).to_csv(
-        source, sep="\t", index=False, compression="gzip"
-    )
+    source, descriptor = write_pipeline_variant_dataset(annotation_dir)
     pd.DataFrame(columns=["gene_id"]).to_csv(
         run_dir / "fetch" / "genes.tsv.gz", sep="\t", index=False, compression="gzip"
     )
     pd.DataFrame(columns=["gene_id"]).to_csv(
         run_dir / "fetch" / "target_features.tsv.gz", sep="\t", index=False, compression="gzip"
-    )
-    output = artifact_dir / "variant_annotations.vep.tsv.gz"
-    pd.DataFrame(columns=["variant_key", "vep_status"]).to_csv(
-        output, sep="\t", index=False, compression="gzip"
-    )
-    source_stat = source.stat()
-    output_stat = output.stat()
-    (artifact_dir / "manifest.json").write_text(
-        json.dumps(
-            {
-                "status": "complete",
-                "source": {
-                    "path": str(source.resolve()),
-                    "size_bytes": source_stat.st_size,
-                    "mtime_ns": source_stat.st_mtime_ns,
-                },
-                "output": {
-                    "size_bytes": output_stat.st_size,
-                    "mtime_ns": output_stat.st_mtime_ns,
-                },
-            }
-        )
     )
     monkeypatch.setattr(
         run_inputs_module,
@@ -232,30 +287,40 @@ def test_report_inputs_use_matching_completed_vep_artifact(
 
     inputs = resolve_run_inputs(run_dir)
 
-    assert inputs.variant_annotations_tsv == output
+    assert inputs.variant_annotations_source == source
+    assert variant_annotation_descriptor(inputs) == descriptor
+    assert variant_annotation_release(descriptor) == "116"
 
 
-def test_report_inputs_require_finalized_vep_artifact(tmp_path: Path) -> None:
+def test_report_inputs_require_pipeline_variant_annotation_dataset(tmp_path: Path) -> None:
     run_dir = tmp_path / "run"
     annotation_dir = run_dir / "annotation"
     (run_dir / "fetch" / "sequences" / "targets").mkdir(parents=True)
-    annotation_dir.mkdir()
-    pd.DataFrame(columns=["variant_key"]).to_csv(
-        annotation_dir / "variant_annotations.tsv.gz",
-        sep="\t",
-        index=False,
-        compression="gzip",
-    )
+    dataset_manifest, _descriptor = write_pipeline_variant_dataset(annotation_dir)
+    dataset_manifest.unlink()
 
-    with pytest.raises(FileNotFoundError, match="Missing finalized bulk VEP artifact"):
+    with pytest.raises(FileNotFoundError, match="dataset manifest"):
         resolve_run_inputs(run_dir)
+
+
+def test_report_inputs_reject_changed_variant_annotation_descriptor(
+    tmp_path: Path,
+) -> None:
+    annotation_dir = tmp_path / "run" / "annotation"
+    dataset_manifest, _descriptor = write_pipeline_variant_dataset(annotation_dir)
+    changed = json.loads(dataset_manifest.read_text())
+    changed["vep_status_counts"] = {"ok": 0, "failed": 1}
+    dataset_manifest.write_text(json.dumps(changed) + "\n")
+
+    with pytest.raises(ValueError, match="descriptor does not match"):
+        resolve_run_inputs(tmp_path / "run")
 
 
 def test_vep_qc_reports_candidate_and_clinvar_statuses() -> None:
     candidate_manifest = {
         "row_count": 100,
-        "config": {"backend": "local", "release": "116"},
-        "status_counts": {"ok": 99, "invalid_variant_key": 1},
+        "vep_config": {"backend": "local", "release": "116"},
+        "vep_status_counts": {"ok": 99, "invalid_variant_key": 1},
     }
     validation = SimpleNamespace(
         manifest={
