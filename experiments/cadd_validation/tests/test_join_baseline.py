@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import os
 import subprocess
 import sys
 import tempfile
@@ -11,6 +12,7 @@ from pathlib import Path
 BASE = Path(__file__).resolve().parent
 FIXTURES = BASE / "fixtures"
 ROOT = BASE.parent
+PROJECT_ROOT = ROOT.parents[1]
 
 
 class JoinBaselineTest(unittest.TestCase):
@@ -18,7 +20,9 @@ class JoinBaselineTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             features = Path(tmp) / "features.tsv"
             joined = Path(tmp) / "joined.tsv"
-            env = {"PYTHONPATH": str(ROOT / "src")}
+            env = {
+                "PYTHONPATH": os.pathsep.join((str(PROJECT_ROOT), str(ROOT / "src")))
+            }
             subprocess.run(
                 [
                     sys.executable,

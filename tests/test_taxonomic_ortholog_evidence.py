@@ -6,6 +6,8 @@ import json
 import sys
 from pathlib import Path
 
+import pytest
+
 PROJECT_DIR = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_DIR / "bin"))
 
@@ -30,13 +32,13 @@ def write_tsv_gz(path: Path, fields: list[str], rows: list[dict[str, object]]) -
 
 def taxonomy_fixture(tmp_path: Path) -> Path:
     path = tmp_path / "taxonomy.tsv.gz"
-    fields = ["tax_id", "species_id", "genus_id", "family_id", "order_id", "lineage_tax_ids"]
     write_tsv_gz(
         path,
-        fields,
+        TAXONOMY_FIELDS,
         [
             {
                 "tax_id": "9598",
+                "taxonomy_status": "resolved",
                 "species_id": "9598",
                 "genus_id": "9596",
                 "family_id": "9604",
@@ -45,6 +47,7 @@ def taxonomy_fixture(tmp_path: Path) -> Path:
             },
             {
                 "tax_id": "10090",
+                "taxonomy_status": "resolved",
                 "species_id": "10090",
                 "genus_id": "10088",
                 "family_id": "10066",
@@ -103,8 +106,8 @@ def test_taxonomy_row_marks_missing_response_without_inventing_lineage() -> None
     assert row["lineage_tax_ids"] == ""
 
 
-def test_taxonomy_loader_reads_legacy_parent_tax_ids(tmp_path: Path) -> None:
-    path = tmp_path / "legacy.taxonomy.tsv.gz"
+def test_taxonomy_loader_rejects_noncanonical_lineage_column(tmp_path: Path) -> None:
+    path = tmp_path / "taxonomy.tsv.gz"
     write_tsv_gz(
         path,
         [
@@ -127,8 +130,49 @@ def test_taxonomy_loader_reads_legacy_parent_tax_ids(tmp_path: Path) -> None:
         ],
     )
 
-    profile = load_taxonomy_profiles(path)["9598"]
-    assert profile.ancestor_ids == frozenset({"2759", "33208", "7742", "9443", "9598"})
+    with pytest.raises(ValueError, match="exact canonical fields"):
+        load_taxonomy_profiles(path)
+
+
+def test_taxonomy_loader_rejects_extra_alias_and_invalid_status(tmp_path: Path) -> None:
+    path = tmp_path / "taxonomy.tsv.gz"
+    row = taxonomy_row("9598", None)
+    write_tsv_gz(
+        path,
+        [*TAXONOMY_FIELDS, "parent_tax_ids"],
+        [{**row, "parent_tax_ids": "2759,9443"}],
+    )
+    with pytest.raises(ValueError, match="exact canonical fields"):
+        load_taxonomy_profiles(path)
+
+    row["taxonomy_status"] = "unknown"
+    write_tsv_gz(path, TAXONOMY_FIELDS, [row])
+    with pytest.raises(ValueError, match="invalid taxonomy_status"):
+        load_taxonomy_profiles(path)
+
+
+def test_taxonomic_counts_reject_tax_id_absent_from_canonical_taxonomy(
+    tmp_path: Path,
+) -> None:
+    profiles = load_taxonomy_profiles(taxonomy_fixture(tmp_path))
+
+    with pytest.raises(ValueError, match="tax_id absent from canonical taxonomy"):
+        count_member_groups([("unknown_gene", "999999")], profiles)
+
+
+def test_taxonomy_summary_requires_exact_selected_tax_id_coverage(tmp_path: Path) -> None:
+    profiles = load_taxonomy_profiles(taxonomy_fixture(tmp_path))
+    rows = [
+        {"query_gene_id": "1", "ortholog_gene_id": "chimp", "tax_id": "9598"},
+        {"query_gene_id": "1", "ortholog_gene_id": "mouse", "tax_id": "10090"},
+        {"query_gene_id": "1", "ortholog_gene_id": "unknown", "tax_id": "999999"},
+    ]
+
+    with pytest.raises(ValueError, match=r"missing taxonomy tax_id\(s\): 999999"):
+        build_taxonomy_summary_rows(rows, profiles)
+
+    with pytest.raises(ValueError, match=r"unexpected taxonomy tax_id\(s\): 10090"):
+        build_taxonomy_summary_rows(rows[:1], profiles)
 
 
 def test_taxonomy_batch_request_does_not_use_single_taxon_parents_flag(
@@ -177,11 +221,10 @@ def test_scope_and_unit_counts_use_any_member_semantics(tmp_path: Path) -> None:
     assert by_key[("primates", "species")]["units_per_gene_median"] == "1.0"
 
 
-def test_compact_events_write_taxonomic_alt_counts_in_sqlite(tmp_path: Path) -> None:
+def test_compact_events_preserve_exact_taxonomic_identities(tmp_path: Path) -> None:
     events = tmp_path / "alignment_events.tsv.gz"
     compact = tmp_path / "compact.tsv.gz"
     ortholog_support = tmp_path / "event_ortholog_support.tsv.gz"
-    support = tmp_path / "support.tsv.gz"
     fields = [
         "gene_id",
         "event_type",
@@ -225,20 +268,13 @@ def test_compact_events_write_taxonomic_alt_counts_in_sqlite(tmp_path: Path) -> 
         ],
     )
 
-    compact_count, raw_count, support_count, ortholog_support_count = write_compact_events(
+    compact_count, raw_count, ortholog_support_count = write_compact_events(
         [events],
         compact,
         ortholog_support,
-        taxonomy_fixture(tmp_path),
-        support,
     )
 
-    assert (compact_count, raw_count, support_count, ortholog_support_count) == (1, 2, 1, 2)
-    with gzip.open(support, "rt", newline="") as handle:
-        row = next(csv.DictReader(handle, delimiter="\t"))
-    assert row["all__ortholog"] == "2"
-    assert row["mammalia__species"] == "2"
-    assert row["primates__species"] == "1"
+    assert (compact_count, raw_count, ortholog_support_count) == (1, 2, 2)
     with gzip.open(compact, "rt", newline="") as handle:
         compact_row = next(csv.DictReader(handle, delimiter="\t"))
     with gzip.open(ortholog_support, "rt", newline="") as handle:
@@ -249,13 +285,13 @@ def test_compact_events_write_taxonomic_alt_counts_in_sqlite(tmp_path: Path) -> 
         "chimp_gene",
         "mouse_gene",
     }
+    assert {row["tax_id"] for row in ortholog_rows} == {"9598", "10090"}
 
 
-def test_compact_taxonomic_alt_counts_use_numeric_site_order(tmp_path: Path) -> None:
+def test_compact_events_use_numeric_site_order(tmp_path: Path) -> None:
     events = tmp_path / "alignment_events.tsv.gz"
     compact = tmp_path / "compact.tsv.gz"
     ortholog_support = tmp_path / "event_ortholog_support.tsv.gz"
-    support = tmp_path / "support.tsv.gz"
     fields = [
         "gene_id",
         "event_type",
@@ -304,20 +340,18 @@ def test_compact_taxonomic_alt_counts_use_numeric_site_order(tmp_path: Path) -> 
         ],
     )
 
-    compact_count, raw_count, support_count, ortholog_support_count = write_compact_events(
+    compact_count, raw_count, ortholog_support_count = write_compact_events(
         [events],
         compact,
         ortholog_support,
-        taxonomy_fixture(tmp_path),
-        support,
     )
 
-    assert (compact_count, raw_count, support_count, ortholog_support_count) == (3, 3, 3, 3)
-    with gzip.open(support, "rt", newline="") as handle:
-        support_rows = list(csv.DictReader(handle, delimiter="\t"))
+    assert (compact_count, raw_count, ortholog_support_count) == (3, 3, 3)
+    with gzip.open(compact, "rt", newline="") as handle:
+        compact_rows = list(csv.DictReader(handle, delimiter="\t"))
     assert [
         (row["gene_id"], row["strategy"], int(row["target_start0"]))
-        for row in support_rows
+        for row in compact_rows
     ] == [
         ("1", "s1", 1_016),
         ("1", "s1", 10_080),

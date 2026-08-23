@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import os
 import subprocess
 import sys
 import tempfile
@@ -11,25 +12,59 @@ from pathlib import Path
 BASE = Path(__file__).resolve().parent
 FIXTURES = BASE / "fixtures"
 ROOT = BASE.parent
+PROJECT_ROOT = ROOT.parents[1]
+TEST_PYTHONPATH = os.pathsep.join((str(PROJECT_ROOT), str(ROOT / "src")))
 sys.path.insert(0, str(ROOT / "src"))
 
-from cadd_validation.build_features import load_taxonomy_groups  # noqa: E402
+from cadd_validation.build_features import group_for_tax, load_taxonomy_groups  # noqa: E402
 
 
 class BuildFeaturesTest(unittest.TestCase):
-    def test_legacy_taxonomy_membership_flags_remain_readable(self) -> None:
+    def test_canonical_taxonomy_lineage_defines_groups(self) -> None:
+        groups = load_taxonomy_groups(FIXTURES / "taxonomy.tsv")
+
+        self.assertEqual(groups["9443"], "primates")
+        self.assertEqual(groups["10090"], "other_mammals")
+        self.assertEqual(groups["7955"], "non_mammal_vertebrates")
+
+    def test_noncanonical_taxonomy_columns_are_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             taxonomy = Path(tmp) / "taxonomy.tsv"
             taxonomy.write_text(
                 "tax_id\tis_primate\tis_mammal\tis_vertebrate\tparent_tax_ids\n"
                 "9598\ttrue\ttrue\ttrue\tnone\n"
-                "10090\tfalse\ttrue\ttrue\tnone\n"
             )
 
-            groups = load_taxonomy_groups(taxonomy)
+            with self.assertRaisesRegex(ValueError, "lineage_tax_ids"):
+                load_taxonomy_groups(taxonomy)
 
-        self.assertEqual(groups["9598"], "primates")
-        self.assertEqual(groups["10090"], "other_mammals")
+    def test_tax_id_absent_from_canonical_taxonomy_is_rejected(self) -> None:
+        with self.assertRaisesRegex(ValueError, "absent from canonical taxonomy"):
+            group_for_tax("999999", {"9598": "primates"})
+
+    def test_taxonomy_argument_is_required(self) -> None:
+        completed = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "cadd_validation.build_features",
+                "--variants-tsv",
+                str(FIXTURES / "variants.tsv"),
+                "--segments-tsv",
+                str(FIXTURES / "segments.tsv"),
+                "--events-tsv",
+                str(FIXTURES / "events.tsv"),
+                "--out-tsv",
+                "unused.tsv",
+            ],
+            cwd=ROOT,
+            env={"PYTHONPATH": TEST_PYTHONPATH},
+            capture_output=True,
+            text=True,
+        )
+
+        self.assertNotEqual(completed.returncode, 0)
+        self.assertIn("--taxonomy-tsv", completed.stderr)
 
     def test_counts_ref_alt_other_and_taxonomy_groups(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -56,7 +91,7 @@ class BuildFeaturesTest(unittest.TestCase):
                 "--summary-json",
                 str(summary),
             ]
-            subprocess.run(cmd, check=True, cwd=ROOT, env={"PYTHONPATH": str(ROOT / "src")})
+            subprocess.run(cmd, check=True, cwd=ROOT, env={"PYTHONPATH": TEST_PYTHONPATH})
             with out.open(newline="") as handle:
                 rows = list(csv.DictReader(handle, delimiter="\t"))
         self.assertEqual(len(rows), 2)

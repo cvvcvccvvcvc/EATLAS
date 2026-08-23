@@ -9,6 +9,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
 
+if __package__:
+    from .fetch_taxonomy import TAXONOMY_FIELDS
+else:
+    from fetch_taxonomy import TAXONOMY_FIELDS
+
 
 SCOPE_ANCESTORS = {
     "all": "",
@@ -80,27 +85,25 @@ def load_taxonomy_profiles(path: Path) -> dict[str, TaxonomyProfile]:
     profiles: dict[str, TaxonomyProfile] = {}
     with gzip.open(path, "rt", newline="") as handle:
         reader = csv.DictReader(handle, delimiter="\t")
-        fieldnames = set(reader.fieldnames or [])
-        required = {"tax_id", "species_id", "genus_id", "family_id", "order_id"}
-        missing = required - fieldnames
-        if missing:
+        fieldnames = reader.fieldnames or []
+        if fieldnames != TAXONOMY_FIELDS:
             raise ValueError(
-                f"Taxonomy table {path} missing required columns: {', '.join(sorted(missing))}"
+                f"Taxonomy table {path} must use exact canonical fields: "
+                + ", ".join(TAXONOMY_FIELDS)
             )
-        if not {"lineage_tax_ids", "parent_tax_ids"} & fieldnames:
-            raise ValueError(
-                f"Taxonomy table {path} must contain lineage_tax_ids "
-                "(or legacy parent_tax_ids)"
-            )
-        for row in reader:
-            tax_id = str(row.get("tax_id") or "")
+        for row_number, row in enumerate(reader, start=2):
+            tax_id = str(row.get("tax_id") or "").strip()
             if not tax_id:
-                continue
+                raise ValueError(f"Taxonomy table {path} has empty tax_id at row {row_number}")
             if tax_id in profiles:
                 raise ValueError(f"Duplicate taxonomy tax_id in {path}: {tax_id}")
-            lineage_value = str(
-                row.get("lineage_tax_ids") or row.get("parent_tax_ids") or ""
-            )
+            status = str(row.get("taxonomy_status") or "").strip()
+            if status not in {"resolved", "not_returned"}:
+                raise ValueError(
+                    f"Taxonomy table {path} has invalid taxonomy_status for tax_id {tax_id}: "
+                    f"{status!r}"
+                )
+            lineage_value = str(row.get("lineage_tax_ids") or "")
             profiles[tax_id] = TaxonomyProfile(
                 tax_id=tax_id,
                 ancestor_ids=frozenset(
@@ -123,10 +126,9 @@ def member_group_keys(
         return ()
     profile = profiles.get(tax_id)
     if profile is None:
-        return tuple(
-            f"all__{unit}="
-            f"{f'ortholog:{ortholog_gene_id}' if unit == 'ortholog' else f'{unit}:taxon:{tax_id or ortholog_gene_id}'}"
-            for unit in UNIT_ORDER
+        raise ValueError(
+            "Ortholog evidence references tax_id absent from canonical taxonomy: "
+            f"ortholog_gene_id={ortholog_gene_id!r}, tax_id={tax_id!r}"
         )
     return tuple(
         f"{scope}__{unit}={profile.unit_id(unit, ortholog_gene_id)}"
@@ -156,12 +158,30 @@ def build_taxonomy_summary_rows(
     profiles: dict[str, TaxonomyProfile],
 ) -> list[dict[str, object]]:
     members_by_gene: dict[str, list[tuple[str, str]]] = {}
-    for row in ortholog_rows:
+    selected_tax_ids: set[str] = set()
+    for row_number, row in enumerate(ortholog_rows, start=2):
         gene_id = str(row.get("query_gene_id") or "")
         ortholog_gene_id = str(row.get("ortholog_gene_id") or "")
-        tax_id = str(row.get("tax_id") or "")
+        tax_id = str(row.get("tax_id") or "").strip()
+        if not tax_id:
+            raise ValueError(
+                "Selected ortholog table has empty tax_id at row "
+                f"{row_number}: ortholog_gene_id={ortholog_gene_id!r}"
+            )
+        selected_tax_ids.add(tax_id)
         if gene_id and ortholog_gene_id:
             members_by_gene.setdefault(gene_id, []).append((ortholog_gene_id, tax_id))
+
+    taxonomy_tax_ids = set(profiles)
+    missing = selected_tax_ids - taxonomy_tax_ids
+    unexpected = taxonomy_tax_ids - selected_tax_ids
+    if missing or unexpected:
+        details = []
+        if missing:
+            details.append("missing taxonomy tax_id(s): " + ", ".join(sorted(missing)))
+        if unexpected:
+            details.append("unexpected taxonomy tax_id(s): " + ", ".join(sorted(unexpected)))
+        raise ValueError("Canonical taxonomy coverage mismatch; " + "; ".join(details))
 
     rows: list[dict[str, object]] = []
     for scope in SCOPE_ORDER:
@@ -174,17 +194,13 @@ def build_taxonomy_summary_rows(
                 selected_orthologs: set[str] = set()
                 selected_units: set[str] = set()
                 for ortholog_gene_id, tax_id in members:
-                    profile = profiles.get(tax_id)
-                    scopes = profile.scopes() if profile is not None else ("all",)
-                    if scope not in scopes:
+                    profile = profiles[tax_id]
+                    if scope not in profile.scopes():
                         continue
                     selected_orthologs.add(ortholog_gene_id)
                     if tax_id:
                         all_taxa.add(tax_id)
-                    if profile is None:
-                        group_id = f"{unit}:taxon:{tax_id or ortholog_gene_id}"
-                    else:
-                        group_id = profile.unit_id(unit, ortholog_gene_id)
+                    group_id = profile.unit_id(unit, ortholog_gene_id)
                     selected_units.add(group_id)
                     all_units.add(group_id)
                 ortholog_counts.append(len(selected_orthologs))

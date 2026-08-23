@@ -5,13 +5,16 @@ from __future__ import annotations
 
 import argparse
 import bisect
+import csv
 import json
 import math
 from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
 
-from .io import iter_tsv, read_tsv, write_tsv
+from bin.fetch_taxonomy import TAXONOMY_FIELDS
+
+from .io import iter_tsv, open_text, read_tsv, write_tsv
 
 
 GROUPS = ["all", "primates", "other_mammals", "non_mammal_vertebrates", "other_or_unknown"]
@@ -56,7 +59,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--out-tsv", required=True, type=Path)
     parser.add_argument("--summary-json", type=Path)
     parser.add_argument("--summaries-tsv", type=Path)
-    parser.add_argument("--taxonomy-tsv", type=Path)
+    parser.add_argument("--taxonomy-tsv", required=True, type=Path)
     parser.add_argument("--target-features-tsv", type=Path)
     parser.add_argument("--feature-coverage-tsv", type=Path)
     parser.add_argument("--strategies", help="Comma-separated strategy allow-list. Default: all observed strategies.")
@@ -290,35 +293,42 @@ def feature_coverage_for_variant(
     }
 
 
-def load_taxonomy_groups(path: Path | None) -> dict[str, str]:
+def load_taxonomy_groups(path: Path) -> dict[str, str]:
     groups: dict[str, str] = {}
-    if path is None:
-        return groups
-    for row in iter_tsv(path):
-        tax_id = row.get("tax_id", "")
-        if not tax_id:
-            continue
-        lineage = {
-            item.strip()
-            for item in (row.get("lineage_tax_ids") or row.get("parent_tax_ids") or "")
-            .replace(";", ",")
-            .split(",")
-            if item.strip()
-        }
-        if "9443" in lineage or truthy(row.get("is_primate", "")):
-            group = "primates"
-        elif "40674" in lineage or truthy(row.get("is_mammal", "")):
-            group = "other_mammals"
-        elif "7742" in lineage or truthy(row.get("is_vertebrate", "")):
-            group = "non_mammal_vertebrates"
-        else:
-            group = "other_or_unknown"
-        groups[tax_id] = group
+    with open_text(path) as handle:
+        reader = csv.DictReader(handle, delimiter="\t")
+        if (reader.fieldnames or []) != TAXONOMY_FIELDS:
+            raise ValueError(
+                f"Taxonomy table {path} must use exact canonical fields: "
+                + ", ".join(TAXONOMY_FIELDS)
+            )
+        for row_number, row in enumerate(reader, start=2):
+            tax_id = str(row.get("tax_id") or "").strip()
+            if not tax_id:
+                raise ValueError(f"Taxonomy table {path} has empty tax_id at row {row_number}")
+            if tax_id in groups:
+                raise ValueError(f"Duplicate taxonomy tax_id in {path}: {tax_id}")
+            status = str(row.get("taxonomy_status") or "").strip()
+            if status not in {"resolved", "not_returned"}:
+                raise ValueError(
+                    f"Taxonomy table {path} has invalid taxonomy_status for tax_id {tax_id}: "
+                    f"{status!r}"
+                )
+            lineage = {
+                item.strip()
+                for item in str(row.get("lineage_tax_ids") or "").split(",")
+                if item.strip()
+            }
+            if "9443" in lineage:
+                group = "primates"
+            elif "40674" in lineage:
+                group = "other_mammals"
+            elif "7742" in lineage:
+                group = "non_mammal_vertebrates"
+            else:
+                group = "other_or_unknown"
+            groups[tax_id] = group
     return groups
-
-
-def truthy(value: str) -> bool:
-    return str(value).strip().lower() in {"1", "true", "yes", "y"}
 
 
 def variant_index_by_gene(variants: list[Variant]) -> dict[str, tuple[list[int], list[Variant]]]:
@@ -351,7 +361,13 @@ def overlapping_variants(
 
 
 def group_for_tax(tax_id: str, taxonomy_groups: dict[str, str]) -> str:
-    return taxonomy_groups.get(tax_id, "other_or_unknown")
+    if not tax_id:
+        raise ValueError("Ortholog evidence row is missing tax_id")
+    if tax_id not in taxonomy_groups:
+        raise ValueError(
+            f"Ortholog evidence references tax_id absent from canonical taxonomy: {tax_id}"
+        )
+    return taxonomy_groups[tax_id]
 
 
 def add_grouped(
@@ -392,7 +408,7 @@ def collect_features(
     segments_tsv: Path,
     events_tsv: Path,
     summaries_tsv: Path | None,
-    taxonomy_tsv: Path | None,
+    taxonomy_tsv: Path,
     feature_coverage_tsv: Path | None,
     strategy_filter: set[str] | None,
 ) -> tuple[list[dict[str, object]], dict[str, object]]:

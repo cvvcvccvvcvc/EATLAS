@@ -18,7 +18,7 @@ from bin.taxonomic_evidence import (
 )
 
 
-CACHE_SCHEMA_VERSION = 1
+CACHE_SCHEMA_VERSION = 2
 CACHE_DIRNAME = "taxonomy_summary"
 CACHE_FILENAME = "taxonomy_summary.tsv.gz"
 

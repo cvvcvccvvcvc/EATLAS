@@ -14,6 +14,7 @@ from analytics.io.taxonomy_summary import (
     build_or_load_taxonomy_summary,
     resolve_taxonomy_summary_path,
 )
+from bin.fetch_taxonomy import TAXONOMY_FIELDS
 from bin.taxonomic_evidence import (
     build_taxonomy_summary_rows,
     load_taxonomy_profiles,
@@ -21,14 +22,6 @@ from bin.taxonomic_evidence import (
 )
 
 
-TAXONOMY_FIELDS = [
-    "tax_id",
-    "species_id",
-    "genus_id",
-    "family_id",
-    "order_id",
-    "lineage_tax_ids",
-]
 ORTHOLOG_FIELDS = ["query_gene_id", "ortholog_gene_id", "tax_id"]
 
 
@@ -54,6 +47,7 @@ def _write_taxonomy_inputs(fetch_dir: Path) -> tuple[Path, Path]:
         [
             {
                 "tax_id": "9598",
+                "taxonomy_status": "resolved",
                 "species_id": "9598",
                 "genus_id": "9596",
                 "family_id": "9604",
@@ -62,6 +56,7 @@ def _write_taxonomy_inputs(fetch_dir: Path) -> tuple[Path, Path]:
             },
             {
                 "tax_id": "10090",
+                "taxonomy_status": "resolved",
                 "species_id": "10090",
                 "genus_id": "10088",
                 "family_id": "10066",
@@ -132,6 +127,7 @@ def test_taxonomy_summary_cache_is_fingerprinted_by_both_inputs(tmp_path: Path) 
         ORTHOLOG_FIELDS,
         [
             {"query_gene_id": "1", "ortholog_gene_id": "chimp_1", "tax_id": "9598"},
+            {"query_gene_id": "1", "ortholog_gene_id": "mouse_2", "tax_id": "10090"},
         ],
     )
     build_or_load_taxonomy_summary(

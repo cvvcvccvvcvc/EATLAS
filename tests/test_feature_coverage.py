@@ -19,15 +19,20 @@ from feature_coverage import (  # noqa: E402
     write_snv_site_depth,
     write_snv_taxonomic_depth,
 )
+from fetch_taxonomy import TAXONOMY_FIELDS  # noqa: E402
 from taxonomic_evidence import COUNT_KEYS  # noqa: E402
 
 
 pytestmark = pytest.mark.skipif(shutil.which("bedtools") is None, reason="bedtools is not installed")
 
 
-def write_tsv_gz(path: Path, rows: list[dict[str, object]]) -> None:
+def write_tsv_gz(
+    path: Path,
+    rows: list[dict[str, object]],
+    fieldnames: list[str] | None = None,
+) -> None:
     with gzip.open(path, "wt", newline="") as handle:
-        writer = csv.DictWriter(handle, fieldnames=list(rows[0]), delimiter="\t")
+        writer = csv.DictWriter(handle, fieldnames=fieldnames or list(rows[0]), delimiter="\t")
         writer.writeheader()
         writer.writerows(rows)
 
@@ -261,6 +266,7 @@ def test_taxonomic_site_depth_collapses_members_by_rank(tmp_path: Path) -> None:
         [
             {
                 "tax_id": "11",
+                "taxonomy_status": "resolved",
                 "species_id": "11",
                 "genus_id": "10",
                 "family_id": "9",
@@ -269,6 +275,7 @@ def test_taxonomic_site_depth_collapses_members_by_rank(tmp_path: Path) -> None:
             },
             {
                 "tax_id": "12",
+                "taxonomy_status": "resolved",
                 "species_id": "12",
                 "genus_id": "10",
                 "family_id": "9",
@@ -276,6 +283,7 @@ def test_taxonomic_site_depth_collapses_members_by_rank(tmp_path: Path) -> None:
                 "lineage_tax_ids": "2759,33208,7742,32523,32524,40674,12",
             },
         ],
+        TAXONOMY_FIELDS,
     )
     segments = tmp_path / "segments.tsv.gz"
     write_tsv_gz(
@@ -321,6 +329,7 @@ def test_taxonomic_site_depth_sorts_gene_id_prefixes_by_output_columns(
         [
             {
                 "tax_id": "11",
+                "taxonomy_status": "resolved",
                 "species_id": "11",
                 "genus_id": "10",
                 "family_id": "9",
@@ -328,6 +337,7 @@ def test_taxonomic_site_depth_sorts_gene_id_prefixes_by_output_columns(
                 "lineage_tax_ids": "2759,33208,7742,32523,32524,40674,11",
             }
         ],
+        TAXONOMY_FIELDS,
     )
     segments = tmp_path / "segments.tsv.gz"
     write_tsv_gz(
