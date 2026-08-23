@@ -139,17 +139,17 @@ Fetch outputs:
 - `fetch/genes.tsv.gz` - target gene metadata.
 - `fetch/target_features.tsv.gz` - compact gene/exon/CDS/UTR/intron intervals.
 - `fetch/orthologs.selected.tsv.gz` - selected ortholog sequence metadata.
-- `fetch/taxonomy.tsv.gz` - canonical taxonomy metadata for selected ortholog tax IDs.
+- `fetch/taxonomy.tsv.gz` - canonical status, ordered lineage, and direct domain-through-species metadata for selected ortholog tax IDs.
 - `fetch/taxonomy_failures.tsv.gz` - missing taxonomy responses.
-- `fetch/taxonomy_summary.tsv.gz` - current compatibility summary consumed by downstream stages.
 - `fetch/failures.tsv.gz` - gene-level failures.
 - `fetch/sequences/targets/*.fa.gz` - GRCh38 target gene sequences.
 
 Alignment outputs:
 
 - `alignment/manifest.json` - strategies and row counts.
-- `alignment/strategy_summary.tsv.gz` - compact per-strategy aggregate.
-- `alignment/feature_coverage.tsv.gz` - coverage/depth by target feature and strategy.
+- `alignment/evidence/partitions/<partition_id>/` - normalized per-ortholog
+  summaries, segments, compact events, exact ortholog support, and the partition
+  manifest; gzip evidence files are retained without a global rewrite.
 - `alignment/failures.tsv.gz` - alignment-stage failures.
 
 Annotation outputs:
@@ -157,21 +157,24 @@ Annotation outputs:
 - `annotation/variant_annotations.tsv.gz` - compact unique variant-context rows
   with report-relevant ClinVar classification/review evidence and selected
   gnomAD AF/consequence fields.
-- `annotation/variant_strategy_support.tsv.gz` - compact per-strategy ALT-support
-  counts and, for SNVs, the distinct supporting genera plus the distinct
-  orthologs aligned at the variant site.
-- `annotation/variant_ortholog_support/*.parquet` - one row per normalized
-  variant, strategy, and supporting ortholog, with tax ID, taxname, and
-  observation count.
+- `annotation/event_variant_map/partitions/<partition_id>/event_variant_map.tsv.gz`
+  - one provenance row per compact alignment event, linking its partition-local
+  `event_group_id` to the canonical variant key and normalization status.
 - `annotation/manifest.json` - annotation input, source, row-count, cache, and diagnostic counters.
 - `annotation/failures.tsv.gz` - non-fatal external annotation lookup failures, such as gnomAD region fetch errors.
 
 Annotation accepts only concrete A/C/G/T event alleles for external variant
-lookup. Non-concrete legacy or external event rows are excluded before lookup
+lookup. Non-concrete event rows are excluded before lookup
 regions are built and counted in `annotation/manifest.json`.
 
-Standalone `--stage fetch` and `--stage align` runs publish the full handoff
-tables and ortholog FASTA required to start the following stage separately.
+The report derives strategy summaries, feature coverage, site depth, taxonomic
+evidence, and variant-strategy support under fingerprinted `analytics/` caches.
+These analytic tables are not pipeline outputs.
+
+Standalone `--stage fetch` additionally publishes ortholog FASTA required by a
+separate `--stage align` invocation. Standalone alignment and annotation use the
+same partitioned contracts as `--stage all`; there is no parallel full/legacy
+handoff.
 
 The target assembly is fixed to GRCh38.p14 (`GCF_000001405.40`). Ortholog
 retrieval always uses the complete NCBI ortholog set (`--ortholog all`).
@@ -197,13 +200,13 @@ directory or home quota.
 | 1 | `VALIDATE_IDS` | Read Entrez IDs, remove duplicates, split accepted IDs into chunks. | `fetch/input.ids.tsv`, `fetch/chunks.tsv` |
 | 2 | `FETCH_PARSE_CHUNK` | Download one NCBI gene package with `--ortholog all --include gene`; parse `data_report.jsonl` and `gene.fna`; select GRCh38 human target and one sequence per ortholog GeneID. Concurrent request starts are spaced by a fixed 5 seconds. | Per-chunk compressed FASTA/TSV files in `work/`; durable metrics in `fetch/chunk_metrics.tsv.gz` |
 | 3 | `BUILD_FETCH_DATASET` | Assemble chunk tables, selected per-gene FASTA files, and target structural features into the final fetch dataset. | `fetch/` |
-| 4 | `FETCH_TAXONOMY` | Fetch taxonomy once for the selected ortholog tax IDs. Alignment and reporting reuse this Stage 1 handoff without another taxonomy request. | `fetch/taxonomy.tsv.gz`, `fetch/taxonomy_failures.tsv.gz`, `fetch/taxonomy_summary.tsv.gz` |
-| 5 | `BUILD_ALIGNMENT_TASKS` | Validate fetch outputs and create per-gene alignment inputs with stable sequence IDs. | `alignment/alignment_tasks.tsv.gz` |
+| 4 | `FETCH_TAXONOMY` | Fetch canonical taxonomy once for the selected ortholog tax IDs. Analytics later consumes this Stage 1 handoff; alignment performs no taxonomy work. | `fetch/taxonomy.tsv.gz`, `fetch/taxonomy_failures.tsv.gz` |
+| 5 | `BUILD_ALIGNMENT_TASKS` | Validate fetch outputs and create temporary per-gene alignment inputs with stable sequence IDs. | Task metadata in `work/` |
 | 6 | `ALIGN_MINIMAP2` | Run the selected fixed asm10/asm20 baselines or opt-in map-ont long-pseudoread comparator. | Per-gene normalized evidence in `work/` |
 | 7 | `ALIGN_NUCMER_COMPARATOR` | Multi-query nucmer comparator without global one-to-one delta filtering. | Per-gene normalized evidence in `work/` |
 | 8 | `ALIGN_BWA_PSEUDOREADS` | Fixed pseudoread comparator evidence. | Per-gene normalized evidence in `work/` |
 | 9 | `BUILD_ENSEMBL_COMPARA_MAF_MANIFEST` | When selected, build a release-116 EPO Extended manifest covering target chromosomes. | Per-run manifest in `work/` |
 | 10 | `ALIGN_ENSEMBL_COMPARA_MAF_CHUNK` | When selected, stream each required MAF chunk once for all overlapping genes. | Per-gene fragments in `work/` |
 | 11 | `MERGE_ENSEMBL_COMPARA_MAF_GENE` | Consolidate all EPO fragments for one target gene. | Per-gene normalized evidence in `work/` |
-| 12 | `MERGE_ALIGNMENT_EVIDENCE` | Merge normalized alignment evidence and summarize feature coverage. | `alignment/` |
-| 13 | `ANNOTATE_EVENTS` | Normalize event keys and annotate with ClinVar/gnomAD evidence. | `annotation/` |
+| 12 | `MERGE_ALIGNMENT` | Compact raw observations within bounded partitions and publish normalized evidence without global recompression. | `alignment/evidence/partitions/`, manifest, failures |
+| 13 | `ANNOTATE_EVENTS_PARTITION` | Normalize event keys and annotate with ClinVar/gnomAD evidence; publish source annotation evidence only. | `annotation/variant_annotations.tsv.gz`, partitioned event map, manifest, failures |

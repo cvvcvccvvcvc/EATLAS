@@ -189,64 +189,72 @@ Standalone `--stage fetch` expected properties:
 - `target_feature_count` is greater than `target_gene_count`.
 - `failure_count` is 0, unless NCBI data changed or the request failed.
 - `orthologs.candidates.tsv.gz` has no rows with `tax_id=9606`.
-- `taxonomy.tsv.gz` has one row per unique selected ortholog `tax_id`.
-- `taxonomy_failures.tsv.gz` and `taxonomy_summary.tsv.gz` exist.
+- `taxonomy.tsv.gz` has one row per unique selected ortholog `tax_id`, explicit
+  `taxonomy_status`, direct domain-through-species ID/name columns, and ordered
+  `lineage_tax_ids`; current files do not contain derived `is_*` flags.
+- `taxonomy_failures.tsv.gz` exists; `taxonomy_summary.tsv.gz` does not, because
+  it is derived by analytics.
 
 Standalone `--stage align` expected properties:
 - `alignment/manifest.json` exists.
+- The manifest declares `stage=alignment` and
+  `schema=normalized_alignment_evidence_v1`.
 - `alignment/manifest.json` `gene_count` equals the length of `gene_ids`, and
   those IDs equal the union of genes eligible for the selected strategies in
-  `alignment_tasks.tsv.gz`. Ensembl requires `target_ready=true`; the other
-  strategies require `ortholog_ready=true`.
-- `strategy_eligible_gene_counts` reports the corresponding denominator for
-  every selected strategy.
-- `alignment/taxonomy.tsv.gz` has one row per unique ortholog tax_id.
-- `alignment/taxonomy_summary.tsv.gz` records run-level scope and evidence-unit
-  counts.
+  the Stage 1 selection. Ensembl requires a target sequence; the other
+  strategies require selected ortholog sequences.
 - The Nextflow trace contains no `FETCH_TAXONOMY` task; standalone alignment
-  consumes the taxonomy handoff from `--fetch_dir`.
-- `alignment/ortholog_alignment_summary.tsv.gz` has rows for each enabled strategy.
-- `alignment/alignment_segments.tsv.gz` and `alignment/alignment_events.tsv.gz`
-  are gzip TSV files with stable headers.
-- `alignment/snv_site_depth.tsv.gz` contains one row per observed concrete SNV
-  position and strategy, with positive distinct-ortholog depth.
-- `alignment/snv_taxonomic_depth.tsv.gz` and
-  `alignment/snv_alt_taxonomic_support.tsv.gz` contain the matching compact
-  taxonomy-aware denominator and ALT-support tables.
-- `alignment/feature_coverage.tsv.gz` has rows for each aligned gene, enabled
-  strategy, and target structural feature.
-- `alignment/native/` is absent unless `--keep_native_alignments true` was used.
+  neither receives nor republishes taxonomy.
+- `alignment/evidence/partitions/<partition_id>/` exists for every partition in
+  the manifest. Each contains exactly its manifest, per-ortholog summary,
+  segments, compact events, and exact event-ortholog support.
+- Partition manifests declare
+  `schema=normalized_alignment_evidence_partition_v1`; their gene sets are
+  non-empty and disjoint.
+- `event_group_id` is consecutive and partition-local, and support foreign keys
+  agree with compact-event counts.
+- Global alignment event, segment, summary, feature-coverage, site-depth,
+  taxonomy, task, and native-artifact files are absent.
 
-For default end-to-end `--stage all`, fetch and alignment publish only the
-analysis-ready subset documented in `docs/storage_model.md`. In that mode,
-verify `orthologs.selected.tsv.gz`, target FASTA, `strategy_summary.tsv.gz`,
-`feature_coverage.tsv.gz`, manifests, and failure tables instead of expecting
-the standalone handoff files.
+Default end-to-end `--stage all` must publish the same Stage 2 contract. Compare
+the layout and schemas, not a separate mode-specific file list. Also verify that
+`fetch/orthologs.selected.tsv.gz`, canonical taxonomy, target features, and
+target FASTA remain available for analytics and annotation, while
+`fetch/sequences/orthologs/` is absent from the completed end-to-end output.
 
 Annotation expected properties:
 - `annotation/variant_annotations.tsv.gz` exists for end-to-end runs.
-- `annotation/variant_strategy_support.tsv.gz` contains per-strategy ALT-support
-  counts, exact-ALT genus support, and site-aligned ortholog depth for SNVs.
-- `annotation/variant_ortholog_support/*.parquet` contains one row per normalized
-  variant, strategy, and supporting ortholog. Its distinct ortholog and summed
-  row counts agree with `variant_strategy_support.tsv.gz`; the annotation
-  manifest declares `variant_ortholog_support_format=parquet_dataset`.
-- `annotation/ortholog_evidence_summary.tsv.gz` contains bounded SNV evidence
-  histograms by strategy, target context, taxonomic scope, and evidence unit.
+- `annotation/event_variant_map/partitions/<partition_id>/event_variant_map.tsv.gz`
+  has one row per compact Stage 2 event. Its `event_group_id` values are
+  consecutive within the partition; non-concrete alleles have an empty
+  `variant_key` and retain their normalization status.
+- `annotation/manifest.json` declares `stage=annotation` and
+  `schema=normalized_annotation_evidence_v1`.
+- Pipeline-owned `variant_strategy_support`, `variant_ortholog_support`, and
+  `ortholog_evidence_summary` outputs are absent.
 - `annotation/manifest.json` records event and unique variant-context row counts,
-  source metadata, annotation counters, and per-partition phase timings with
-  summed task-runtime totals. These totals are not wall-clock elapsed time because
-  partitions can run concurrently.
-- End-to-end annotation records `partition_count`; compact TSV outputs are
-  assembled as concatenated gzip members, while exact-support Parquet parts are
-  copied into one dataset. Neither path decompresses and recompresses partition
-  rows. The manifest records
-  `large_tsv_format=concatenated_gzip_members_v1`.
+  source metadata, useful provider/cache diagnostics, and per-partition phase
+  timings.
+- `variant_annotations.tsv.gz` is assembled as concatenated gzip members; the
+  event map stays partitioned. Neither path globally rewrites source rows.
 - `annotation/failures.tsv.gz` records non-fatal external lookup failures.
 - `clinvar_*` columns are present and populated when matching ClinVar records exist;
   `clinvar_review_stars` is derived from the raw `clinvar_revstat` value.
 - `gnomad_*` columns are populated only for variants found in fetched gnomAD regions,
   including the selected AF, its source dataset, and consequence annotation.
+
+Analytics expected properties after the first report/preflight build:
+
+- `analytics/alignment_aggregates/` contains strategy summary and feature
+  coverage derived from partition summaries and segments.
+- `analytics/taxonomy_summary/` contains the taxonomy summary derived from
+  `fetch/taxonomy.tsv.gz` and `fetch/orthologs.selected.tsv.gz`.
+- `analytics/annotation_support/` contains variant-strategy support and
+  ortholog-evidence histograms derived from Stage 2 evidence and the Stage 3
+  event map.
+- Repeating the build without changing inputs is a cache hit. Removing or
+  changing any required canonical input fails or invalidates the cache; no old
+  pipeline aggregate is accepted instead.
 
 ## Quick Checks
 
@@ -275,21 +283,23 @@ for name in [
 PY
 ```
 
-Count alignment table rows:
+Count durable alignment evidence rows:
 
 ```bash
 python3 - <<'PY'
 import csv, gzip
 from pathlib import Path
-base = Path("results/run_001/alignment")
-for name in [
-    "strategy_summary.tsv.gz",
-    "feature_coverage.tsv.gz",
-    "failures.tsv.gz",
-]:
-    with gzip.open(base / name, "rt", newline="") as handle:
-        rows = list(csv.DictReader(handle, delimiter="\t"))
-    print(name, len(rows))
+base = Path("results/run_001/alignment/evidence/partitions")
+for partition in sorted(path for path in base.iterdir() if path.is_dir()):
+    for name in [
+        "ortholog_alignment_summary.tsv.gz",
+        "alignment_segments.tsv.gz",
+        "alignment_events.tsv.gz",
+        "event_ortholog_support.tsv.gz",
+    ]:
+        with gzip.open(partition / name, "rt", newline="") as handle:
+            count = sum(1 for _ in csv.DictReader(handle, delimiter="\t"))
+        print(partition.name, name, count)
 PY
 ```
 

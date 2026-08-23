@@ -111,9 +111,10 @@ cannot subtract one gene correctly.
 The large VEP partitions remain in their source runs and are scanned as one
 virtual DuckDB input. Compact tables and target-sequence links are assembled
 under `<cohort-root>/<cohort-id>/inputs/`; every scientific statistic is then
-recomputed over the union. Run-level taxonomy medians and distinct counts are
-not pooled because they are not additive. The resolved manifest records every
-member fingerprint and appears in report QC.
+recomputed over the union. Taxonomy medians and distinct counts are recomputed
+from the union of member `fetch/taxonomy.tsv.gz` and
+`fetch/orthologs.selected.tsv.gz`; they are never added across runs. The
+resolved manifest records every member fingerprint and appears in report QC.
 
 ```bash
 COHORT_MANIFEST="$GAPH_ROOT/cohorts/panel590.json"
@@ -201,12 +202,12 @@ submits a report job. Consequence plots retain those rows as a light-grey
 The gnomAD Stratification consequence view uses these same VEP groups and only
 completed gnomAD lookups (`found` or `not_found`).
 
-Basic-filter reports additionally require
-`annotation/variant_strategy_support.tsv.gz` to contain
-`alt_support_genus_count`. Runs produced before this contract must resume or
-rerun annotation before report generation; the report does not approximate
-per-allele genus support from the already aggregated ortholog-evidence
-histogram.
+Basic-filter reports use
+`analytics/annotation_support/variant_strategy_support.tsv.gz`, including
+`alt_support_genus_count`. The report builds this fingerprinted cache from the
+partitioned Stage 2 evidence, Stage 3 event-to-variant map, and canonical Stage
+1 taxonomy. Missing source evidence is a contract error; the report does not
+approximate genus support from a partial aggregate.
 
 ## Monitoring And Completion
 

@@ -82,8 +82,8 @@ whereas four CPUs consumed about 27% more than three. Minimap2 and Nucmer
 therefore request three CPUs by default. BWA and the other strategies were not
 changed by this benchmark.
 
-The two- and three-CPU outputs had identical summaries, feature coverage, and
-canonical segment/event evidence. Minimap2 initially differed only in
+The two- and three-CPU outputs had identical summaries, analytics-derived
+feature coverage, and canonical segment/event evidence. Minimap2 initially differed only in
 line-order-derived provenance identifiers; those identifiers are now derived
 from PAF content and remain stable across thread counts.
 
@@ -97,11 +97,12 @@ change the separate Ensembl MAF or annotation concurrency limits.
 In the same run, annotation partitions containing two genes used 0.38-5.6 GB
 RSS for 66,921-815,531 unique variant contexts. A later 590-gene run showed that
 memory is predicted more directly by exact ortholog-support rows than by gene
-count. Partitioned annotation therefore requests 32, 48, 64, or 96 GB initially
-for partitions with at most 15, 30, 40, or more than 40 million support rows,
-respectively. Each retry adds 32 GB. With four annotation forks, even four
-largest first attempts reserve 384 GB, below the verified 512 GB per-user
-Slurm memory limit; larger retries may queue rather than run simultaneously.
+count. Partitioned annotation requests 8 or 16 GB for small partitions with at
+most 1 or 5 million support rows, then 32, 48, 64, or 96 GB for partitions with
+at most 15, 30, 40, or more than 40 million rows. Each retry adds 32 GB. With
+four annotation forks, even four largest first attempts reserve 384 GB, below
+the verified 512 GB per-user Slurm memory limit; larger retries may queue rather
+than run simultaneously.
 
 Current memory requests are conservative initial bounds. Tune them from
 Nextflow trace `peak_rss` after representative cluster runs. Requesting the

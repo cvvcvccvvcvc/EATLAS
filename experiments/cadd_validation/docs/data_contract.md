@@ -35,13 +35,15 @@ are counted in the JSON summary and skipped.
 
 `build_features` reads these published GAPH outputs:
 
-- optional Stage 1 `taxonomy.tsv.gz`
+- required canonical Stage 1 `taxonomy.tsv.gz`
 - optional Stage 1 `target_features.tsv.gz`
 - `alignment_segments.tsv.gz`
 - `alignment_events.tsv.gz`
 - optional `ortholog_alignment_summary.tsv.gz`
 
 The feature builder accepts gzip or plain TSV files.
+Taxonomic groups are derived only from the canonical `lineage_tax_ids` column;
+missing taxonomy rows are treated as contract errors.
 
 ## Feature Output
 

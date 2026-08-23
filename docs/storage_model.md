@@ -63,16 +63,13 @@ For a default end-to-end `--stage all` run, `fetch/` contains:
 
 The report derives and fingerprint-caches strategy, feature-coverage, and
 taxonomy summaries under `analytics/`; Stage 2 does not publish duplicate
-global copies in an end-to-end run. Standalone `--stage align` temporarily
-retains its full compatibility handoff for standalone annotation.
+global copies. Standalone `--stage align` publishes the same partitioned
+evidence contract as an end-to-end run.
 
 `annotation/` contains:
 
 - the compressed unique variant-context annotation table
-- compact per-strategy ALT-support counts for every normalized variant
-- a partitioned Parquet dataset of concrete supporting ortholog identities and
-  taxonomy for every normalized variant
-- compact taxonomic ortholog-evidence histograms for report heatmaps
+- a partitioned event-to-canonical-variant lineage table
 - annotation manifest and diagnostic failure table
 
 The variant-context table intentionally stores one compact interpretation
@@ -89,46 +86,46 @@ regional responses are also stored in a shared reusable cache. The cache uses
 neither a run result nor Nextflow resume state: multiple pipeline and analytics
 runs may reuse it, and a run remains valid when the cache is absent.
 
-During `--stage all`, alignment partitions reduce segments to a compact
-`snv_site_depth.tsv.gz` table and temporary taxonomy-aware counts so the current
-annotation and report contracts remain unchanged. Those derived partition
-tables remain disposable. The normalized source evidence is copied byte for
-byte into `alignment/evidence/partitions/<partition_id>/`: the partition
-manifest, per-ortholog summary, segments, compact events, and exact ortholog
-support. Local `event_group_id` values are interpreted together with their
-directory `partition_id`; they are not globally rebased.
+Alignment compacts raw per-aligner event observations once within each bounded
+partition. The normalized evidence is copied byte for byte into
+`alignment/evidence/partitions/<partition_id>/`: the partition manifest,
+per-ortholog summary, segments, compact events, and exact ortholog support.
+Local `event_group_id` values are interpreted together with their directory
+`partition_id`; they are not globally rebased.
 
-Annotation also normalizes and locally aggregates positive support into
-`variant_ortholog_support/*.parquet`; finalization keeps the partition files
-instead of rewriting a global gzip TSV. It reduces the temporary taxonomy-aware
-counts to a bounded histogram. In a fresh successful run, only disposable
-inputs and pre-normalization intermediates are removed with that run's task
-work, including:
+Annotation reads those same partitions in every launch mode. It writes one
+canonical variant-context annotation table and preserves the partition-local
+event-to-variant mapping needed by analytics. It does not materialize
+variant-strategy, variant-ortholog, site-depth, or taxonomic histogram products.
+In a fresh successful run, disposable inputs and pre-normalization
+intermediates removed with task work include:
 
 - selected ortholog FASTA files
 - raw per-aligner event tables
-- partition-level site and taxonomic depth tables
+- native aligner files unless explicitly retained for debugging
 
-Standalone `--stage align` intentionally publishes the compact site-depth and
-taxonomy-aware handoff tables because a later `--stage annotate` run cannot
-depend on disposable `work/` state. It does not publish duplicate partition
-directories; the bounded partition outputs are merged once into the canonical
-alignment directory.
+The durable `variant_annotations.tsv.gz` is assembled from partition gzip
+members without row parsing or recompression. Event maps stay partitioned, so
+their local IDs need no global rewrite.
 
-The durable `variant_annotations.tsv.gz` and
-`variant_strategy_support.tsv.gz` files retain their public TSV/gzip contract,
-but their internal partition gzip members are copied into the final files
-without row parsing or recompression.
-For SNVs, the strategy-support table includes the exact-ALT genus count needed
-for allele-level basic filtering; this is derived before the temporary
-taxonomy-aware handoff tables are discarded.
+Standalone `--stage fetch` publishes the ortholog FASTA files required to start
+alignment in a later invocation. A completed end-to-end run keeps selected
+ortholog metadata and canonical taxonomy but does not retain those large FASTA
+files after alignment. Human target FASTA remains because annotation and
+reproducible target-context normalization need it. Stage 2 performs no taxonomy
+lookup and does not receive taxonomy as an input.
 
-Standalone `--stage fetch` and `--stage align` runs still publish their full
-handoff datasets because a later invocation needs those files. The Stage 2
-event handoff is always the compact `alignment_events.tsv.gz` table together
-with its exact `event_group_id`-keyed `event_ortholog_support.tsv.gz` sidecar.
-Taxonomy is fetched once while Stage 1 is assembled and is reused by standalone
-alignment; `--stage align` performs no taxonomy network request.
+Analytics owns the reproducible derived layer:
+
+- `analytics/alignment_aggregates/` — strategy summary and feature coverage;
+- `analytics/taxonomy_summary/` — scope/rank summary from selected orthologs and
+  canonical taxonomy;
+- `analytics/annotation_support/` — variant-strategy support and taxonomic
+  ortholog-evidence histograms.
+
+Each cache records the identities of its source inputs and is rebuilt when they
+change. A missing canonical input is an error; no old aggregate is accepted as
+a substitute.
 
 ## Execution Cache
 

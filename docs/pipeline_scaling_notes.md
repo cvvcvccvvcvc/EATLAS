@@ -10,39 +10,30 @@ For minimap2/nucmer/BWA the support unit is an ortholog; for Ensembl MAF it is a
 species row. These raw rows are an internal input to the bounded partition
 merge, not a public Stage 2 output.
 
-The partition merge always writes `alignment_events.tsv.gz` with one row per
-unique target event and strategy plus support counts. A separate
+The partition merge writes `alignment_events.tsv.gz` with one row per unique
+target event and strategy plus support counts. A separate
 `event_ortholog_support.tsv.gz` retains one positive row per supporting ortholog,
 keyed by the compact row's `event_group_id`. The partition merge writes both in
 one index-ordered pass, so it does not globally group and sort the almost
 unreduced event-by-ortholog relation. Native-record traceability is still
 dropped. Raw per-task event files remain recoverable through Nextflow `work/`
-while the cache is retained. Standalone `--stage align` publishes the compact
-pair, and standalone `--stage annotate` requires both files.
+while the cache is retained.
 
-End-to-end `--stage all` does not publish a global event table. Partition events
-remain in `work/` until annotation consumes them, and Stage 3 preserves compact
-per-strategy ALT-support counts in `variant_strategy_support.tsv.gz` plus exact
-positive supporters in the `variant_ortholog_support/` Parquet dataset. Exact
-support is aggregated inside each annotation partition using local integer IDs;
-finalization copies the Parquet parts without expanding and recompressing them.
-The two large TSV outputs are also not recompressed: annotation partitions write
-headerless gzip members, and finalization prepends one schema header before
-concatenating those members in partition order. The durable files remain
-standard `variant_annotations.tsv.gz` and `variant_strategy_support.tsv.gz`.
+End-to-end and standalone alignment publish the same partition tree and do not
+write a second global event table. Annotation consumes that tree directly. It
+publishes the unique `variant_annotations.tsv.gz` and a partitioned
+event-to-variant map, but not another event-by-ortholog relation. Analytics
+streams the event, segment, exact-support, and event-map relations to derive the
+smaller report tables only when requested.
 
 ## Partitioned Alignment Outputs
 
-Alignment merging is internally partitioned by genomic-order target groups. A
-partition is released as soon as all expected strategy results for its genes are
-ready. In `--stage all`, each partition retains only events needed by annotation
-plus strategy/coverage summaries and failures. The final alignment merge
-combines only those small summaries and records raw row counts from partition
-manifests. It does not rewrite a global event, segment, or per-ortholog summary
-table.
-
-Standalone `--stage align` preserves the full global handoff for a later
-annotation invocation.
+Alignment merging is partitioned by genomic-order target groups. A partition is
+released as soon as all expected strategy results for its genes are ready. Each
+partition retains per-ortholog summaries, segments, compact events, and exact
+support. The final alignment process validates and copies those gzip files
+without global sorting, recompression, or event-ID rebasing. Standalone and
+end-to-end modes share this exact path.
 
 ## BWA Pseudoreads
 

@@ -97,30 +97,32 @@ Runtime environments:
 
 - `bin/merge_ensembl_compara_maf_gene.py`
   - consolidates all source-chunk fragments for one gene
-  - recomputes union-based MAF summaries and gene-local feature coverage
+  - recomputes union-based MAF summaries and normalized segments/events
 
 - `bin/merge_alignment_results.py`
   - merges per-gene/per-strategy evidence into bounded genomic partitions
-  - keeps only annotation inputs in end-to-end partitions
-  - writes report-ready Stage 2 summaries without a global raw-event handoff
-  - requires and merges gene-local feature coverage from every aligner
-  - writes a canonical small per-strategy summary for downstream reports
+  - publishes the same canonical partition contract in every launch mode
   - writes compact events and their `event_group_id`-keyed positive ortholog
     handoff in one index-ordered pass
-  - copies optional native outputs only when enabled
+  - copies final partitions without global evidence recompression
 
 - `bin/annotate_events.py`
   - normalizes alignment events to VCF-style keys using target context
   - annotates events with ClinVar when a VCF is configured
-  - preserves distinct per-strategy ortholog support in a compact table
-  - aggregates exact supporters by local integer IDs and publishes partitioned
-    Parquet for each normalized variant
+  - emits one event-to-canonical-variant lineage row per compact event
   - streams event rows and fetches gnomAD regions within one bounded partition
 
 - `bin/finalize_annotation_partitions.py`
-  - concatenates compressed partition annotation members and assembles
-    exact-support Parquet parts without rewriting their rows
+  - concatenates compressed partition annotation members and copies event maps
+    without rewriting their rows
   - aggregates partition manifests without loading variant rows into memory
+
+- `analytics/io/alignment_aggregates.py`
+  - derives strategy summary and feature coverage from partition evidence
+
+- `analytics/io/annotation_support.py`
+  - derives variant-strategy and taxonomic ortholog-evidence report tables from
+    Stage 1 taxonomy, Stage 2 evidence, and Stage 3 event lineage
 
 ## Shared Domain Library
 

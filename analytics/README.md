@@ -197,9 +197,9 @@ the heatmaps summarize site-aligned and exact-ALT evidence units across the
 eligible CDS, UTR, and intron SNVs; these distributions include failed gnomAD
 lookups because gnomAD is not an evidence-depth eligibility criterion. Ensembl
 Compara MAF is marked unavailable because its species rows do not carry the NCBI
-taxonomy identifiers required by this calculation. Older runs remain reportable
-through the legacy all-ortholog view when site depth is present; otherwise the
-section is marked unavailable.
+taxonomy identifiers required by this calculation. Reports require the current
+evidence-first pipeline contract and do not reconstruct taxonomic evidence from
+partial aggregates.
 
 When an analysis needs durable intermediate tables, write them under
 `<run-dir>/analytics/`. The source tree does not keep a default scratch/work
@@ -231,12 +231,15 @@ unique genomic alleles; gene, target-context, and consequence statistics retain
 each allele-gene association. The compact final aggregation is cached as
 `<run-dir>/analytics/variant_summary.json.gz` and is reused while the input
 manifests and summary schema remain unchanged.
-Current runs load ortholog-evidence heatmaps from the compact
-`annotation/ortholog_evidence_summary.tsv.gz`; the report reconstructs those
-aggregates from `variant_strategy_support.tsv.gz` only for legacy runs that do
-not publish the compact table.
-The report requires the canonical `alignment/strategy_summary.tsv.gz`; it does
-not reconstruct that aggregate from a raw per-ortholog table.
+The report loads ortholog-evidence heatmaps from the fingerprinted analytics
+cache at
+`analytics/annotation_support/ortholog_evidence_summary.tsv.gz`. That cache is
+derived from normalized alignment evidence, annotation mappings, external
+lookup outcomes, and Stage 1 taxonomy. It is a required report input; there is
+no fallback to `variant_strategy_support.tsv.gz` or another partial aggregate.
+Strategy and feature-coverage tables likewise come from the fingerprinted
+`analytics/alignment_aggregates/` cache derived from normalized alignment
+evidence.
 
 `Basic Filtering` evaluates three deliberately simple thresholds within a
 selected strategy: exact-ALT ortholog count, number of calling strategies, and

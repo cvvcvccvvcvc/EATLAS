@@ -13,11 +13,11 @@ The current implemented scope is:
 Stage 1 produces:
 - human target gene sequences on GRCh38.p14 (`GCF_000001405.40`)
 - selected non-human ortholog gene sequences from NCBI Datasets
+- canonical taxonomy metadata for the selected ortholog taxa
 - compact metadata tables describing target genes, selected orthologs,
   rejected ortholog candidates, failures, and run constants
 
 Stage 2 produces:
-- compact taxonomy metadata for selected orthologs
 - normalized alignment segments
 - compact alignment events with exact ortholog support
 - per-ortholog alignment summaries for downstream variant-support logic
@@ -130,6 +130,9 @@ Agent workflow rules:
    autodetection, parallel old/new code paths, or speculative branching. Reject
    obsolete inputs with a concrete error. Add branches or abstractions only
    when required by a demonstrated current use case.
+24. Fetch external metadata once in its owning stage, publish it with a stable
+   reusable schema, and make downstream stages consume that handoff without
+   hidden network lookups.
 
 ## Progressive Disclosure
 

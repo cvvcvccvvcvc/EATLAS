@@ -25,10 +25,12 @@ Stage 2 consumes the normalized Stage 1 outputs:
 - `genes.tsv.gz`
 - `target_features.tsv.gz`
 - `orthologs.selected.tsv.gz`
-- `taxonomy.tsv.gz`
-- `taxonomy_failures.tsv.gz`
 - `sequences/targets/<gene_id>.fa.gz`
 - `sequences/orthologs/<gene_id>.fa.gz`
+
+`target_features.tsv.gz` is fingerprinted in the final alignment manifest for
+the later analytics join; it is not copied into aligner tasks. Taxonomy is not a
+Stage 2 input.
 
 Target FASTA records are already in plus genomic orientation on GRCh38.p14.
 Ortholog records are aligned as query sequences; aligners decide forward/reverse
@@ -88,11 +90,10 @@ inside aligner task outputs before the partition merge.
 
 Stage 1 requests the NCBI taxonomy summary once for the selected tax IDs and
 publishes status, ordered lineage, and direct named-rank identifiers from domain
-through species. Stage 2 consumes that handoff and never fetches taxonomy.
-These source fields support the current report's taxonomic scope and
-evidence-unit controls; they do not change aligner selection. Report-specific
-membership flags and counts are derived from the lineage rather than stored in
-the canonical taxonomy row. Alignment presets belong to the strategy registry,
+through species. Stage 2 neither consumes nor republishes that table. Analytics
+joins the Stage 1 taxonomy to Stage 2 exact ortholog support when a report needs
+taxonomic scopes or ranks. Report-specific membership flags and counts are
+derived from the lineage. Alignment presets belong to the strategy registry,
 not taxonomy.
 
 ## Alignment Granularity
@@ -169,8 +170,9 @@ The workflow first builds a small run-specific MAF chunk manifest directly from
 `genes.tsv.gz`. One alignment task streams each required source chunk once for
 all overlapping target genes and routes normalized rows into gene fragments.
 All fragments for a gene are then consolidated before the normal alignment
-merge; target intervals are unioned and feature coverage is recomputed from the
-complete gene evidence. Transient network and truncated-gzip read failures are
+merge; target intervals are unioned in the normalized summary. Feature coverage
+is derived later by analytics from the complete segment evidence. Transient
+network and truncated-gzip read failures are
 retried inside the same process with block-level continuation: already committed
 MAF blocks are skipped on the next network attempt. If a source still cannot be
 fully read after all attempts, the task records gene-level failure rows.
@@ -204,39 +206,34 @@ length denominator across all blocks, so consolidated MAF rows leave
 
 ## Durable Outputs
 
-Standalone `--stage align` publishes the full handoff contract:
+`--stage all` and standalone `--stage align` publish the same canonical
+partitioned evidence contract:
 
 | Path | Meaning |
 | --- | --- |
-| `manifest.json` | Exact selected-strategy-eligible `gene_ids`, per-strategy eligibility counts, enabled strategies, and output counts. |
-| `alignment_tasks.tsv.gz` | Per-gene task manifest with separate human-target and fetched-ortholog readiness checks. |
-| `taxonomy.tsv.gz` | Compact tax_id-to-lineage mapping. |
-| `taxonomy_failures.tsv.gz` | Taxonomy lookup warnings/failures. |
-| `ortholog_alignment_summary.tsv.gz` | One row per gene/ortholog/output strategy when that strategy emits summary evidence. |
-| `strategy_summary.tsv.gz` | Small canonical per-strategy aggregate derived from `ortholog_alignment_summary.tsv.gz` for reports and run inspection. |
-| `alignment_segments.tsv.gz` | Normalized alignment intervals. |
-| `snv_site_depth.tsv.gz` | Distinct aligned-ortholog depth for each observed concrete SNV position and strategy. |
-| `snv_taxonomic_depth.tsv.gz` | Taxonomy-aware aligned depth for each observed concrete SNV position and strategy. |
-| `snv_alt_taxonomic_support.tsv.gz` | Taxonomy-aware exact-ALT support for each observed concrete SNV and strategy. |
-| `feature_coverage.tsv.gz` | Per-gene, per-strategy coverage and depth over target structural intervals. |
-| `alignment_events.tsv.gz` | One compact row per unique target-coordinate event and strategy, keyed by consecutive `event_group_id`. |
-| `event_ortholog_support.tsv.gz` | Exact positive ortholog identities keyed by `event_group_id`. |
+| `manifest.json` | Dataset schema, exact selected-strategy-eligible `gene_ids`, enabled strategies, source-context fingerprints, evidence layout, and durable output counts. |
+| `evidence/partitions/<partition_id>/manifest.json` | Partition identity, exact gene set, strategies, and normalized evidence counts. |
+| `evidence/partitions/<partition_id>/ortholog_alignment_summary.tsv.gz` | One row per gene/ortholog/output strategy when that strategy emits summary evidence. |
+| `evidence/partitions/<partition_id>/alignment_segments.tsv.gz` | Normalized alignment intervals. |
+| `evidence/partitions/<partition_id>/alignment_events.tsv.gz` | One compact row per unique target-coordinate event and strategy, keyed by a partition-local consecutive `event_group_id`. |
+| `evidence/partitions/<partition_id>/event_ortholog_support.tsv.gz` | Exact positive ortholog identities keyed by the partition-local `event_group_id`. |
 | `failures.tsv.gz` | Alignment-stage failures. |
-| `native/` | Optional raw PAF/SAM files when enabled. |
 
-Native outputs are disabled by default.
+Stage 1 remains the owner of taxonomy, selected-ortholog metadata, target
+features, and sequences. Stage 2 references that source dataset but does not
+republish it. Native aligner outputs and analytic aggregates are not durable
+Stage 2 outputs.
 
-The standalone directory is an indivisible Stage 3 handoff. Annotation accepts
-the directory through `--alignment_dir`, validates its manifest and table
-counts, and verifies that its target-context fingerprints match the supplied
-`--fetch_dir`. Individual tables are not accepted as independent pipeline
-parameters.
+The alignment directory is an indivisible Stage 3 handoff. Annotation accepts
+it through `--alignment_dir`, requires `normalized_alignment_evidence_v1`,
+validates every declared partition and file, and verifies that its
+target-context fingerprints match the supplied `--fetch_dir`. Individual
+tables and pre-partitioned legacy layouts are not accepted as independent
+pipeline parameters.
 
-Every per-gene result and partition uses the same manifest keys: plural
-`gene_ids` and `strategies`, nested `strategy_parameters`, canonical output
-counts, and an explicit `alignment_event_mode`. Merge rejects missing or legacy
-singular fields. `feature_coverage.tsv.gz` is mandatory for every alignment
-result and is never reconstructed by a later fallback.
+Every per-gene result and partition uses plural `gene_ids` and `strategies`,
+nested `strategy_parameters`, canonical evidence counts, and an explicit
+`alignment_event_mode`. Merge rejects missing or legacy singular fields.
 
 The four normalized per-aligner tables have one exact ordered schema, defined
 in `bin/alignment_table_schema.py`: summaries, segments, raw events, and
@@ -253,28 +250,27 @@ fixed by the strategy manifest, or distinct taxon/name counts, which are
 reproducible from `event_ortholog_support.tsv.gz`. Exact taxonomic identities
 remain in that sidecar rather than being replaced by those counts.
 
-In an end-to-end `--stage all` run, each alignment partition writes normalized
-source evidence before Stage 3 consumes the same partition. The final alignment
-merge copies that evidence without parsing, recompression, or global event-ID
-rebasing into `alignment/evidence/partitions/<partition_id>/`. Each partition
-contains its manifest, `ortholog_alignment_summary.tsv.gz`,
-`alignment_segments.tsv.gz`, compact `alignment_events.tsv.gz`, and exact
-`event_ortholog_support.tsv.gz`. An `event_group_id` is local to one partition;
-the durable join identity is `(partition_id, event_group_id)`.
+At the final alignment boundary, the pipeline copies normalized partitions
+without parsing, recompression, or global event-ID rebasing. An
+`event_group_id` is local to one partition; its durable join identity is
+`(partition_id, event_group_id)`. `--stage annotate` discovers exactly this
+layout and materializes only the small target context required by each
+partition before annotation.
 
-The current Stage 3 compatibility path still consumes partition-level SNV site
-depth and taxonomy-aware counts so existing annotation tables and reports keep
-their established results. Those derived tables are not copied into the
-durable evidence dataset. End-to-end runs also do not publish the global
-`strategy_summary.tsv.gz` or `feature_coverage.tsv.gz`; analytics derives and
-caches them from the normalized evidence. The report's run-level taxonomy
-summary is likewise derived from the canonical Stage 1 taxonomy and
-selected-ortholog tables. Standalone `--stage align` retains its full legacy
-aggregate handoff until standalone annotation moves to partition evidence.
-Alignment failures remain operational evidence. The final alignment manifest
-describes the partitioned evidence layout in `normalized_evidence` and retains
-per-partition phase timings plus summed task-runtime totals. The totals are not
-wall-clock time because partitions can run concurrently.
+The alignment stage does not compute or publish strategy summaries, feature coverage,
+site depth, taxonomic depth, or ALT taxonomic counters. Analytics derives and
+caches those views from normalized segments, events, exact support, canonical
+Stage 1 taxonomy, and target features. Alignment failures remain operational
+evidence. Per-partition phase timings remain in the final manifest; they are
+task measurements, not a synthetic wall-clock total.
+
+Stage 3 follows the same evidence-first boundary. Its canonical
+`normalized_annotation_evidence_v1` output contains only
+`variant_annotations.tsv.gz`, the partitioned `event_variant_map`, annotation
+`failures.tsv.gz`, and `manifest.json`. The event map preserves the exact
+`(partition_id, event_group_id)` to canonical `variant_key` lineage needed to
+derive variant-strategy, exact-ortholog, taxonomy, and site-depth views in
+analytics. Those derived support tables are not Stage 3 outputs.
 
 For Minimap2 rows, `native_record_id` is derived from the PAF record content
 rather than its output line number. `event_id` combines the strategy, that
@@ -299,18 +295,16 @@ representations to the same variant-support edge, it keeps the metadata from
 the first support record while summing `support_row_count`. Alignment role is
 not duplicated in `qc_flags`.
 
-`strategy_summary.tsv.gz` contains `summary_row_count`, `gene_count`,
-`aligned_summary_row_count`, `event_count`, and `aligned_target_bp` for each
-enabled strategy. Reports must read this alignment-owned table, not mutable
-files from `reports/`.
+Strategy summaries are analytic views over
+`ortholog_alignment_summary.tsv.gz`, not alignment-owned source evidence.
 
 ## Why Segments And Events Are Separate
 
 `alignment_events.tsv.gz` records observed differences. It does not record where
 an ortholog matches the human target.
 
-`alignment_segments.tsv.gz` records coverage intervals. Stage 2 reduces those
-intervals to site-depth tables so Stage 3 can distinguish:
+`alignment_segments.tsv.gz` records coverage intervals. Together with compact
+events and exact supporters, it is sufficient for analytics to distinguish:
 
 ```text
 event present at position       -> ortholog supports observed alternative
@@ -319,23 +313,12 @@ position not covered            -> no-call
 bad/ambiguous alignment         -> filtered/no-call
 ```
 
-Both standalone Stage 2 and the end-to-end durable partition dataset keep
-segments as normalized alignment evidence. The current Stage 3 compatibility
-path consumes the already reduced `snv_site_depth.tsv.gz`; it does not recompute
-depth from segments. Both standalone and end-to-end runs derive that table at
-each alignment partition boundary. Rows are keyed by gene, strategy, and target
-position, so different ALT alleles at one site share the same denominator.
-For taxonomy-aware reporting, the same boundary also counts distinct aligned
-ortholog, species, genus, family, and order units within supported taxonomic
-scopes. Exact-ALT counts use the same unit definitions, so multiple orthologs
-from one selected taxon cannot inflate a collapsed unit.
-
-`feature_coverage.tsv.gz` intersects `alignment_segments.tsv.gz` with
-`target_features.tsv.gz`. Depth is summed after merging overlapping segments
-within each ortholog, so overlapping records from the same ortholog do not
-inflate the per-base depth. The implementation uses `bedtools merge`,
-`bedtools coverage`, and `bedtools intersect`; intermediate BED files are
-task-local temporary data and are removed after the summary is written.
+Both standalone Stage 2 and end-to-end runs keep segments in this same
+partitioned form. Analytics computes site depth and taxonomy-aware counts only
+when requested, using canonical Stage 1 taxonomy. Different ALT alleles at one
+site therefore share the same segment-derived denominator. Multiple overlapping
+segments from the same ortholog must be merged before depth is counted so one
+ortholog cannot inflate a per-base or per-feature depth statistic.
 
 ## Coordinate Convention
 
@@ -366,10 +349,9 @@ not one command-line argument per FASTA. It streams the required
 memory. A repeated, non-contiguous `query_gene_id` is a contract error; old
 ungrouped fetch outputs must be regenerated.
 
-The same preparation step partitions `target_features.tsv.gz` into one compact
-`target_features.tsv.gz` inside each ready gene task. Alignment jobs read only
-that gene-local feature file when computing coverage; the global feature table
-is not staged into every aligner job.
+Task preparation does not stage `target_features.tsv.gz` into aligner jobs.
+Feature coverage is an analytics-owned view derived later from durable segments
+and the canonical Stage 1 feature table.
 
 Task preparation also assigns a stable `partition_id` after sorting target genes
 by chromosome and genomic interval. `--alignment_partition_size` controls the
