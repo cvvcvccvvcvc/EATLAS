@@ -1,4 +1,4 @@
-"""Shared immutable cache for completed VEP variant/gene annotations."""
+"""Shared immutable cache for normalized VEP variant/gene annotations."""
 
 from __future__ import annotations
 

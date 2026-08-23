@@ -19,8 +19,8 @@ import pandas as pd
 
 from analytics.io.artifacts import path_metadata
 from genomics.variants import parse_variant_key
-from analytics.vep.annotator import annotate_vep_consequences, vep_result_cache_config
-from analytics.vep.result_cache import (
+from genomics.vep.annotator import annotate_vep_consequences, vep_result_cache_config
+from genomics.vep.result_cache import (
     ANNOTATION_COLUMNS,
     DEFAULT_TILE_SIZE_BP,
     VepResultCache,

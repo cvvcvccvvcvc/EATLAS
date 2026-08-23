@@ -7,7 +7,7 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
-from analytics.vep import annotator as vep
+from genomics.vep import annotator as vep
 
 
 def test_parse_record_selects_target_gene_and_most_severe_term() -> None:

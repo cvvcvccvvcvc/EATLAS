@@ -6,7 +6,7 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
-from analytics.vep.result_cache import VepResultCache
+from genomics.vep.result_cache import VepResultCache
 
 
 class _SynchronizedLookupCache(VepResultCache):

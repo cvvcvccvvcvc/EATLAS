@@ -46,8 +46,8 @@ from genomics.variants import (
     parse_variant_key,
     refseq_accession_to_chrom,
 )
-from analytics.vep.annotator import annotate_vep_consequences
-from analytics.vep.result_cache import DEFAULT_TILE_SIZE_BP
+from genomics.vep.annotator import annotate_vep_consequences
+from genomics.vep.result_cache import DEFAULT_TILE_SIZE_BP
 
 
 CONTROL_VERSION = 6

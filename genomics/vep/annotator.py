@@ -17,7 +17,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from .consequences import VEP_CONSEQUENCE_ORDER
+from .terms import VEP_CONSEQUENCE_ORDER
 from .result_cache import DEFAULT_TILE_SIZE_BP, VepResultCache
 
 
