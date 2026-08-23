@@ -44,15 +44,14 @@ try:
         ORTHOLOG_EVIDENCE_FIELDS,
         merge_ortholog_evidence,
     )
-    from merge_alignment_results import SNV_ALT_TAXONOMIC_SUPPORT_FIELDS
     from ortholog_evidence_summary import write_ortholog_evidence_summary
-    from taxonomic_evidence import count_member_groups, load_taxonomy_profiles
+    from taxonomic_evidence import COUNT_KEYS, count_member_groups, load_taxonomy_profiles
 finally:
     if _ADDED_BIN_PATH:
         sys.path.remove(str(_BIN_DIR))
 
 
-CACHE_SCHEMA_VERSION = 1
+CACHE_SCHEMA_VERSION = 2
 CACHE_DIRNAME = "annotation_support"
 VARIANT_SUPPORT_FILENAME = "variant_strategy_support.tsv.gz"
 ORTHOLOG_EVIDENCE_FILENAME = "ortholog_evidence_summary.tsv.gz"
@@ -61,6 +60,14 @@ SEGMENTS_FILENAME = "alignment_segments.tsv.gz"
 EVENT_SUPPORT_FILENAME = "event_ortholog_support.tsv.gz"
 EVENT_MAP_FILENAME = "event_variant_map.tsv.gz"
 DNA_BASES = frozenset("ACGT")
+SNV_ALT_TAXONOMIC_SUPPORT_FIELDS = [
+    "gene_id",
+    "strategy",
+    "target_start0",
+    "ref",
+    "alt",
+    *COUNT_KEYS,
+]
 
 
 @dataclass(frozen=True)
@@ -79,6 +86,14 @@ def resolve_annotation_support_paths(run_dir: Path) -> AnnotationSupportPaths:
             f"Missing annotation manifest required for analytics: {annotation_manifest_path}"
         )
     annotation_manifest = _read_json(annotation_manifest_path)
+    if annotation_manifest.get("stage") != "annotation":
+        raise ValueError(
+            f"Annotation manifest has invalid stage: {annotation_manifest_path}"
+        )
+    if annotation_manifest.get("schema") != "normalized_annotation_evidence_v1":
+        raise ValueError(
+            f"Annotation manifest has unsupported schema: {annotation_manifest_path}"
+        )
     map_contract = annotation_manifest.get("event_variant_map")
     if not isinstance(map_contract, dict):
         raise ValueError(
@@ -112,15 +127,34 @@ def resolve_annotation_support_paths(run_dir: Path) -> AnnotationSupportPaths:
         )
 
     alignment_manifest = _read_json(alignment_manifest_path)
+    if alignment_manifest.get("stage") != "alignment":
+        raise ValueError(f"Alignment manifest has invalid stage: {alignment_manifest_path}")
+    if alignment_manifest.get("schema") != "normalized_alignment_evidence_v1":
+        raise ValueError(f"Alignment manifest has unsupported schema: {alignment_manifest_path}")
     normalized_evidence = alignment_manifest.get("normalized_evidence")
     if not isinstance(normalized_evidence, dict):
         raise ValueError(
             f"Alignment manifest does not declare normalized_evidence: {alignment_manifest_path}"
         )
-    if normalized_evidence.get("event_group_id_scope") != "partition":
-        raise ValueError(
-            "Alignment normalized evidence must declare partition-local event_group_id"
-        )
+    expected_evidence = {
+        "layout": "partitioned",
+        "format": "tsv_gzip_v1",
+        "path": "evidence/partitions",
+        "event_group_id_scope": "partition",
+        "partition_files": [
+            "manifest.json",
+            "ortholog_alignment_summary.tsv.gz",
+            "alignment_segments.tsv.gz",
+            "alignment_events.tsv.gz",
+            "event_ortholog_support.tsv.gz",
+        ],
+    }
+    for field, value in expected_evidence.items():
+        if normalized_evidence.get(field) != value:
+            raise ValueError(
+                f"Alignment manifest has invalid normalized_evidence.{field}: "
+                f"{alignment_manifest_path}"
+            )
 
     partition_dirs = _resolve_partition_dirs(
         evidence_root,
@@ -128,6 +162,10 @@ def resolve_annotation_support_paths(run_dir: Path) -> AnnotationSupportPaths:
         annotation_manifest,
         map_contract,
     )
+    if normalized_evidence.get("partition_count") != len(partition_dirs):
+        raise ValueError(
+            "Alignment normalized_evidence.partition_count does not match durable partitions"
+        )
     return build_or_load_annotation_support(
         partition_dirs=partition_dirs,
         map_root=map_root,
@@ -153,7 +191,7 @@ def build_or_load_annotation_support(
     annotation_manifest: Path,
     analytics_dir: Path,
 ) -> AnnotationSupportPaths:
-    """Build exact legacy schemas without using pipeline-owned report aggregates."""
+    """Build report schemas without using pipeline-owned report aggregates."""
 
     if not partition_dirs:
         raise ValueError("Annotation support requires at least one evidence partition")

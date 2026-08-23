@@ -12,7 +12,12 @@ from analytics.analyses.basic_filtering import BasicFilteringAnalysis
 from analytics.analyses.matched_control import TargetSpaceNullAnalysis
 from analytics.annotation.consequences import UNANNOTATED_CONSEQUENCE
 from analytics.io import run_inputs as run_inputs_module
-from analytics.io.run_inputs import RunInputs, resolve_run_inputs, validate_report_inputs
+from analytics.io.run_inputs import (
+    RunInputs,
+    read_taxonomy_summary,
+    resolve_run_inputs,
+    validate_report_inputs,
+)
 from analytics.reporting.components import dataframe_records, format_table_dataframe
 from analytics.reporting.basic_filtering import basic_filtering_view
 from analytics.reporting.config import CONSEQUENCE_GROUP_COLORS
@@ -101,6 +106,32 @@ def test_report_preflight_accepts_compact_production_contract(tmp_path: Path) ->
             "alt_support_genus_count",
         ],
     )
+    evidence_columns = [
+        "strategy",
+        "target_context",
+        "taxonomic_scope",
+        "evidence_unit",
+        "site_aligned_count",
+        "alt_support_count",
+        "gnomad_found_count",
+        "gnomad_not_found_count",
+        "gnomad_lookup_failed_count",
+    ]
+    taxonomy_columns = [
+        "taxonomic_scope",
+        "evidence_unit",
+        "gene_count",
+        "ortholog_count",
+        "taxon_count",
+        "unit_count",
+        "orthologs_per_gene_median",
+        "units_per_gene_median",
+    ]
+    ortholog_evidence = write_table(
+        "ortholog_evidence_summary.tsv.gz",
+        evidence_columns,
+    )
+    taxonomy_summary = write_table("taxonomy_summary.tsv.gz", taxonomy_columns)
     targets = tmp_path / "targets"
     targets.mkdir()
     inputs = RunInputs(
@@ -111,16 +142,28 @@ def test_report_preflight_accepts_compact_production_contract(tmp_path: Path) ->
         target_sequences_dir=targets,
         variant_annotations_tsv=annotations,
         variant_strategy_support_tsv=support,
-        ortholog_evidence_summary_tsv=tmp_path / "ortholog_evidence_summary.tsv.gz",
+        ortholog_evidence_summary_tsv=ortholog_evidence,
         annotation_manifest_json=tmp_path / "annotation_manifest.json",
         annotation_failures_tsv=tmp_path / "annotation_failures.tsv.gz",
         feature_coverage_tsv=coverage,
         alignment_manifest_json=tmp_path / "alignment_manifest.json",
         strategy_summary_tsv=summary,
-        taxonomy_summary_tsv=tmp_path / "taxonomy_summary.tsv.gz",
+        taxonomy_summary_tsv=taxonomy_summary,
     )
 
     validate_report_inputs(inputs)
+    ortholog_evidence.unlink()
+    with pytest.raises(FileNotFoundError, match="ortholog_evidence_summary"):
+        validate_report_inputs(inputs)
+    write_table("ortholog_evidence_summary.tsv.gz", evidence_columns)
+    taxonomy_summary.unlink()
+    with pytest.raises(FileNotFoundError, match="taxonomy_summary"):
+        validate_report_inputs(inputs)
+
+
+def test_read_taxonomy_summary_requires_the_canonical_table(tmp_path: Path) -> None:
+    with pytest.raises(FileNotFoundError, match="Missing taxonomy summary"):
+        read_taxonomy_summary(tmp_path / "missing.tsv.gz")
 
 
 def test_report_inputs_use_matching_completed_vep_artifact(
@@ -419,7 +462,6 @@ def test_ortholog_evidence_section_renders_three_context_heatmaps() -> None:
         ]
     )
     summary = SimpleNamespace(
-        ortholog_evidence_available=True,
         ortholog_evidence_cells=cells,
         ortholog_evidence_distributions=distributions,
         strategies=["s1", "precomputed_ensembl_92_mammals_epo_extended"],
@@ -473,19 +515,6 @@ def test_ortholog_evidence_section_renders_three_context_heatmaps() -> None:
     assert "Median selected orthologs/gene: 50.0" in html
     assert "taxonomy unavailable" in html
     assert "Plotly.react('ortholog-evidence-plot'" in html
-
-
-def test_ortholog_evidence_section_explains_legacy_output() -> None:
-    summary = SimpleNamespace(
-        ortholog_evidence_available=False,
-        ortholog_evidence_cells=pd.DataFrame(),
-        ortholog_evidence_distributions=pd.DataFrame(),
-    )
-
-    html = "".join(build_ortholog_evidence_sections(summary))
-
-    assert "predates site-aligned ortholog depth" in html
-
 
 def test_overview_reports_strategy_gene_completeness_and_gnomad_eligible_denominator() -> None:
     summary = SimpleNamespace(

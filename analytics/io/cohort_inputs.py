@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import csv
 import gzip
 import hashlib
 import json
@@ -35,6 +36,11 @@ from analytics.io.variant_source import (
     resolve_pre_vep_variant_source,
     sql_string,
     variant_source_sql,
+)
+from bin.taxonomic_evidence import (
+    TAXONOMY_SUMMARY_FIELDS,
+    build_taxonomy_summary_rows,
+    load_taxonomy_profiles,
 )
 
 
@@ -141,12 +147,7 @@ def resolve_cohort_inputs(
         [member.inputs.strategy_summary_tsv for member in members],
         strategy_summary_tsv,
     )
-    if len(members) == 1 and members[0].inputs.taxonomy_summary_tsv.is_file():
-        _concatenate_tsv(
-            [members[0].inputs.taxonomy_summary_tsv], taxonomy_summary_tsv
-        )
-    else:
-        taxonomy_summary_tsv = inputs_dir / "taxonomy_summary.not_pooled.tsv.gz"
+    _aggregate_taxonomy_summary(members, taxonomy_summary_tsv)
     _link_target_sequences(members, target_sequences_dir)
 
     fetch_manifest_path = inputs_dir / "fetch_manifest.json"
@@ -184,9 +185,6 @@ def resolve_cohort_inputs(
             for member in members
         ],
         "limitations": {
-            "taxonomy_summary": (
-                "Not pooled: run-level medians and distinct counts are not additive."
-            ),
             "gene_overlap": (
                 "Rejected because current durable run aggregates cannot be subset by gene."
             ),
@@ -391,7 +389,7 @@ def _validate_compatibility(
         "ortholog_scope": "all",
         "alignment_event_mode": "compact_support",
         "event_ortholog_support_format": "event_group_id_v1",
-        "annotation_output_mode": "unique_variant_context",
+        "annotation_schema": "normalized_annotation_evidence_v1",
         "gnomad_dataset": "gnomad_r4",
     }
     incompatible_constants = [
@@ -435,7 +433,7 @@ def _member_compatibility(member: CohortMember) -> dict[str, object]:
         "strategy_parameters": alignment.get("strategy_parameters"),
         "alignment_event_mode": alignment.get("alignment_event_mode"),
         "event_ortholog_support_format": alignment.get("event_ortholog_support_format"),
-        "annotation_output_mode": annotation.get("output_mode"),
+        "annotation_schema": annotation.get("schema"),
         "gnomad_api_url": annotation.get("gnomad_api_url"),
         "gnomad_dataset": annotation.get("gnomad_dataset"),
         "vep_backend": vep_config.get("backend"),
@@ -473,6 +471,8 @@ def _scientific_file_records(inputs: RunInputs, run_dir: Path) -> Iterable[dict[
         run_dir / "fetch" / "input.ids.tsv",
         inputs.genes_tsv,
         inputs.target_features_tsv,
+        run_dir / "fetch" / "taxonomy.tsv.gz",
+        run_dir / "fetch" / "orthologs.selected.tsv.gz",
         inputs.alignment_manifest_json,
         inputs.feature_coverage_tsv,
         inputs.strategy_summary_tsv,
@@ -480,11 +480,10 @@ def _scientific_file_records(inputs: RunInputs, run_dir: Path) -> Iterable[dict[
         inputs.annotation_failures_tsv,
         inputs.variant_strategy_support_tsv,
         inputs.ortholog_evidence_summary_tsv,
+        inputs.taxonomy_summary_tsv,
         inputs.variant_annotations_tsv.parent / "plan.json",
         inputs.variant_annotations_tsv.parent / "manifest.json",
     ]
-    if inputs.taxonomy_summary_tsv.is_file():
-        paths.append(inputs.taxonomy_summary_tsv)
     paths.extend(sorted(inputs.target_sequences_dir.glob("*.fa.gz")))
     source = resolve_variant_aggregation_source(inputs.variant_annotations_tsv)
     paths.extend(source.paths)
@@ -627,6 +626,45 @@ def _aggregate_strategy_summaries(paths: list[Path], destination: Path) -> None:
     _write_tsv_gzip_atomic(destination, grouped[columns])
 
 
+def _aggregate_taxonomy_summary(
+    members: list[CohortMember],
+    destination: Path,
+) -> None:
+    profiles = {}
+    selected_paths = []
+    for member in members:
+        taxonomy_path = member.inputs.run_dir / "fetch" / "taxonomy.tsv.gz"
+        selected_path = member.inputs.run_dir / "fetch" / "orthologs.selected.tsv.gz"
+        member_profiles = load_taxonomy_profiles(taxonomy_path)
+        for tax_id, profile in member_profiles.items():
+            existing = profiles.get(tax_id)
+            if existing is not None and existing != profile:
+                raise ValueError(
+                    f"Cohort taxonomy disagrees for tax_id {tax_id}: {taxonomy_path}"
+                )
+            profiles[tax_id] = profile
+        selected_paths.append(selected_path)
+
+    def selected_rows() -> Iterable[dict[str, str]]:
+        required = {"query_gene_id", "ortholog_gene_id", "tax_id"}
+        for path in selected_paths:
+            with gzip.open(path, "rt", newline="") as handle:
+                reader = csv.DictReader(handle, delimiter="\t")
+                missing = required - set(reader.fieldnames or [])
+                if missing:
+                    raise ValueError(
+                        f"Selected ortholog table {path} is missing columns: "
+                        + ", ".join(sorted(missing))
+                    )
+                yield from reader
+
+    rows = build_taxonomy_summary_rows(selected_rows(), profiles)
+    _write_tsv_gzip_atomic(
+        destination,
+        pd.DataFrame(rows, columns=TAXONOMY_SUMMARY_FIELDS),
+    )
+
+
 def _link_target_sequences(members: list[CohortMember], destination: Path) -> None:
     destination.mkdir(parents=True, exist_ok=True)
     expected = {}
@@ -698,8 +736,9 @@ def _cohort_annotation_manifest(
 ) -> dict[str, object]:
     manifests = [member.annotation_manifest for member in members]
     return {
+        "stage": "annotation",
+        "schema": compatibility["annotation_schema"],
         "cohort": True,
-        "output_mode": compatibility["annotation_output_mode"],
         "gnomad_api_url": compatibility["gnomad_api_url"],
         "gnomad_dataset": compatibility["gnomad_dataset"],
         "failure_count": _sum_int(manifests, "failure_count"),

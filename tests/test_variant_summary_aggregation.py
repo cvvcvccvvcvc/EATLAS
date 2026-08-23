@@ -254,11 +254,32 @@ def test_variant_groups_keep_gene_specific_context_and_consequence(tmp_path: Pat
     assert s2_af["Count"] == 1
     assert s2_af["Median gnomAD AF"] == 0.005
 
-    duckdb_summary = _summary_from_grouped_aggregation(result, str, None, None)
+    ortholog_evidence = tmp_path / "ortholog_evidence_summary.tsv.gz"
+    pd.DataFrame(
+        columns=[
+            "strategy",
+            "target_context",
+            "taxonomic_scope",
+            "evidence_unit",
+            "site_aligned_count",
+            "alt_support_count",
+            "gnomad_found_count",
+            "gnomad_not_found_count",
+            "gnomad_lookup_failed_count",
+        ]
+    ).to_csv(ortholog_evidence, sep="\t", index=False, compression="gzip")
+
+    duckdb_summary = _summary_from_grouped_aggregation(
+        result,
+        str,
+        None,
+        ortholog_evidence,
+    )
     built_summary = build_variant_summary(
         path,
         tmp_path / "summary_work",
         str,
+        ortholog_evidence_summary_path=ortholog_evidence,
         target_features_path=features,
         genes_path=genes,
     )

@@ -256,7 +256,7 @@ def ortholog_evidence_distribution_stats(
 
 def build_ortholog_evidence_sections(
     variant_summary: VariantSummary,
-    taxonomy_summary: pd.DataFrame | None = None,
+    taxonomy_summary: pd.DataFrame,
 ) -> list[str]:
     sections = [
         "<h2>Ortholog Evidence</h2>",
@@ -264,18 +264,8 @@ def build_ortholog_evidence_sections(
         "at the variant site and carrying the exact ALT allele. Cell color is the "
         "gnomAD found fraction; failed lookups are excluded.</p>",
     ]
-    if not variant_summary.ortholog_evidence_available:
-        sections.append(
-            "<p class=\"analysis-note\">Unavailable for this run: "
-            "variant_strategy_support.tsv.gz predates site-aligned ortholog depth.</p>"
-        )
-        return sections
     cells = variant_summary.ortholog_evidence_cells
-    distributions = getattr(
-        variant_summary,
-        "ortholog_evidence_distributions",
-        pd.DataFrame(),
-    )
+    distributions = variant_summary.ortholog_evidence_distributions
     if cells.empty:
         sections.append("<p>No eligible SNVs with ortholog evidence and successful gnomAD lookup.</p>")
         return sections
@@ -291,7 +281,6 @@ def build_ortholog_evidence_sections(
     default_strategy = supported_strategies[0]
     quantile_options = {2: "Median", 4: "Quartiles", 10: "Deciles"}
     available_scopes = set(cells["taxonomic_scope"].astype(str))
-    taxonomy_summary = taxonomy_summary if taxonomy_summary is not None else pd.DataFrame()
     visible_scopes = []
     seen_scope_signatures = set()
     for scope in TAXONOMIC_SCOPE_ORDER:

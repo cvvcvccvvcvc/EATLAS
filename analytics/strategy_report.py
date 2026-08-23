@@ -288,11 +288,7 @@ def main() -> None:
             genes_path=inputs.genes_tsv,
             annotation_failures_path=inputs.annotation_failures_tsv,
             variant_strategy_support_path=inputs.variant_strategy_support_tsv,
-            ortholog_evidence_summary_path=(
-                inputs.ortholog_evidence_summary_tsv
-                if inputs.ortholog_evidence_summary_tsv.exists()
-                else None
-            ),
+            ortholog_evidence_summary_path=inputs.ortholog_evidence_summary_tsv,
             performance_profile=performance,
         )
         timing["details"] = "cache hit" if variant_summary.cache_hit else "cache miss"
@@ -518,12 +514,12 @@ def main() -> None:
                     failures,
                     annotation_manifest,
                     alignment_manifest,
-                    validation,
-                    conservation_analysis,
-                    negative_controls,
-                    performance.table_rows(),
                     taxonomy_summary,
-                    performance_path,
+                    validation=validation,
+                    conservation_analysis=conservation_analysis,
+                    negative_controls=negative_controls,
+                    report_timings=performance.table_rows(),
+                    report_profile_path=performance_path,
                     candidate_vep_manifest=candidate_vep_manifest,
                 ),
             ),

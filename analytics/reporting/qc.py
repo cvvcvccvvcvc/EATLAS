@@ -422,11 +422,11 @@ def build_methods_sections(
     failures: pd.DataFrame,
     annotation_manifest: dict,
     alignment_manifest: dict,
+    taxonomy_summary: pd.DataFrame,
     validation=None,
     conservation_analysis: ConservationAnalysis | None = None,
     negative_controls: TargetSpaceNullAnalysis | None = None,
     report_timings: list[dict[str, object]] | None = None,
-    taxonomy_summary: pd.DataFrame | None = None,
     report_profile_path: Path | None = None,
     candidate_vep_manifest: dict | None = None,
 ) -> list[str]:
@@ -548,7 +548,7 @@ def build_methods_sections(
     if not failures.empty:
         sections.append("<h3>Annotation Failures</h3>")
         sections.append(table_html(failures, classes="table table-sm table-striped", max_rows=50))
-    if taxonomy_summary is not None and not taxonomy_summary.empty:
+    if not taxonomy_summary.empty:
         shown = taxonomy_summary.copy()
         shown["Taxonomic scope"] = shown["taxonomic_scope"].map(
             lambda value: TAXONOMIC_SCOPE_LABELS.get(str(value), str(value))

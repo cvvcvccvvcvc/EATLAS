@@ -33,6 +33,7 @@ from bin.merge_alignment_results import (
     COMPACT_EVENT_FIELDS,
     EVENT_ORTHOLOG_SUPPORT_FIELDS,
 )
+from bin.fetch_taxonomy import TAXONOMY_FIELDS
 from bin.ortholog_evidence_summary import write_ortholog_evidence_summary
 from bin.taxonomic_evidence import (
     COUNT_KEYS,
@@ -53,14 +54,6 @@ TARGET_FEATURE_FIELDS = [
     "target_end0",
     "length_bp",
     "strand",
-]
-TAXONOMY_FIELDS = [
-    "tax_id",
-    "lineage_tax_ids",
-    "species_id",
-    "genus_id",
-    "family_id",
-    "order_id",
 ]
 SOURCE_ANNOTATION_FIELDS = [
     "variant_key",
@@ -236,6 +229,7 @@ def _write_source_contract(run_dir: Path) -> dict[str, object]:
         [
             {
                 "tax_id": "9598",
+                "taxonomy_status": "resolved",
                 "lineage_tax_ids": "2759,33208,7742,32523,32524,40674,9443",
                 "species_id": "9598",
                 "genus_id": "9596",
@@ -244,11 +238,21 @@ def _write_source_contract(run_dir: Path) -> dict[str, object]:
             },
             {
                 "tax_id": "10090",
+                "taxonomy_status": "resolved",
                 "lineage_tax_ids": "2759,33208,7742,32523,32524,40674",
                 "species_id": "10090",
                 "genus_id": "9596",
                 "family_id": "10066",
                 "order_id": "9989",
+            },
+            {
+                "tax_id": "999999",
+                "taxonomy_status": "not_returned",
+                "lineage_tax_ids": "",
+                "species_id": "",
+                "genus_id": "",
+                "family_id": "",
+                "order_id": "",
             },
         ],
     )
@@ -329,8 +333,20 @@ def _write_source_contract(run_dir: Path) -> dict[str, object]:
     alignment_manifest.write_text(
         json.dumps(
             {
+                "stage": "alignment",
+                "schema": "normalized_alignment_evidence_v1",
                 "normalized_evidence": {
                     "layout": "partitioned",
+                    "format": "tsv_gzip_v1",
+                    "path": "evidence/partitions",
+                    "partition_count": 1,
+                    "partition_files": [
+                        "manifest.json",
+                        "ortholog_alignment_summary.tsv.gz",
+                        "alignment_segments.tsv.gz",
+                        "alignment_events.tsv.gz",
+                        "event_ortholog_support.tsv.gz",
+                    ],
                     "event_group_id_scope": "partition",
                 }
             }
@@ -341,6 +357,8 @@ def _write_source_contract(run_dir: Path) -> dict[str, object]:
     annotation_manifest.write_text(
         json.dumps(
             {
+                "stage": "annotation",
+                "schema": "normalized_annotation_evidence_v1",
                 "partition_ids": [partition_id],
                 "event_variant_map": {
                     "layout": "partitioned",
@@ -579,13 +597,23 @@ def test_annotation_support_resolution_rejects_missing_or_incomplete_contract(
     with pytest.raises(FileNotFoundError, match="Missing annotation manifest"):
         resolve_annotation_support_paths(run_dir)
 
-    (annotation / "manifest.json").write_text(json.dumps({"status": "complete"}) + "\n")
+    (annotation / "manifest.json").write_text(
+        json.dumps(
+            {
+                "stage": "annotation",
+                "schema": "normalized_annotation_evidence_v1",
+            }
+        )
+        + "\n"
+    )
     with pytest.raises(ValueError, match="does not declare the required partitioned"):
         resolve_annotation_support_paths(run_dir)
 
     (annotation / "manifest.json").write_text(
         json.dumps(
             {
+                "stage": "annotation",
+                "schema": "normalized_annotation_evidence_v1",
                 "partition_ids": ["partition_000001"],
                 "event_variant_map": {
                     "layout": "partitioned",

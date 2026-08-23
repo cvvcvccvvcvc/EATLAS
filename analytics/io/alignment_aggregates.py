@@ -95,7 +95,7 @@ def build_or_load_alignment_aggregates(
     alignment_manifest: Path,
     analytics_dir: Path,
 ) -> AlignmentAggregatePaths:
-    """Build exact legacy aggregates from normalized evidence partitions."""
+    """Build report aggregates from normalized evidence partitions."""
 
     if not partition_dirs:
         raise ValueError("Alignment aggregates require at least one evidence partition")
@@ -109,7 +109,10 @@ def build_or_load_alignment_aggregates(
         feature_coverage_tsv=cache_dir / FEATURE_COVERAGE_FILENAME,
     )
     manifest_path = cache_dir / "manifest.json"
-    expected_strategies = _read_expected_strategies(alignment_manifest)
+    expected_strategies = _read_expected_strategies(
+        alignment_manifest,
+        partition_dirs,
+    )
     inputs = _input_identities(
         partition_dirs,
         target_features,
@@ -183,11 +186,38 @@ def build_or_load_alignment_aggregates(
     return outputs
 
 
-def _read_expected_strategies(path: Path) -> list[str]:
+def _read_expected_strategies(path: Path, partition_dirs: list[Path]) -> list[str]:
     try:
         manifest = json.loads(path.read_text())
     except json.JSONDecodeError as exc:
         raise ValueError(f"Invalid alignment manifest JSON: {path}") from exc
+    if manifest.get("stage") != "alignment":
+        raise ValueError(f"Alignment manifest has invalid stage: {path}")
+    if manifest.get("schema") != "normalized_alignment_evidence_v1":
+        raise ValueError(f"Alignment manifest has unsupported schema: {path}")
+    evidence = manifest.get("normalized_evidence")
+    expected_contract = {
+        "layout": "partitioned",
+        "format": "tsv_gzip_v1",
+        "path": "evidence/partitions",
+        "event_group_id_scope": "partition",
+        "partition_files": [
+            "manifest.json",
+            "ortholog_alignment_summary.tsv.gz",
+            "alignment_segments.tsv.gz",
+            "alignment_events.tsv.gz",
+            "event_ortholog_support.tsv.gz",
+        ],
+    }
+    if not isinstance(evidence, dict) or any(
+        evidence.get(field) != value for field, value in expected_contract.items()
+    ):
+        raise ValueError(f"Alignment manifest has invalid normalized_evidence: {path}")
+    if evidence.get("partition_count") != len(partition_dirs):
+        raise ValueError(
+            "Alignment manifest partition_count does not match evidence directories: "
+            f"{path}"
+        )
     strategies = manifest.get("strategies")
     if (
         not isinstance(strategies, list)

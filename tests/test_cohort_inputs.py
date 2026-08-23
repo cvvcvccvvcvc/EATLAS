@@ -18,6 +18,7 @@ from analytics.io.artifacts import file_identity, path_metadata
 from analytics.io.cohort_inputs import resolve_cohort_inputs
 from bin.alignment_table_schema import SEGMENT_FIELDS, SUMMARY_FIELDS
 from bin.annotate_events import EVENT_VARIANT_MAP_FIELDS
+from bin.fetch_taxonomy import TAXONOMY_FIELDS
 from bin.merge_alignment_results import (
     COMPACT_EVENT_FIELDS,
     EVENT_ORTHOLOG_SUPPORT_FIELDS,
@@ -162,6 +163,7 @@ def _make_run(
         [
             {
                 "tax_id": "9598",
+                "taxonomy_status": "resolved",
                 "lineage_tax_ids": "2759,33208,7742,32523,32524,40674,9443,9598",
                 "species_id": "9598",
                 "genus_id": "9596",
@@ -169,14 +171,7 @@ def _make_run(
                 "order_id": "9443",
             }
         ],
-        [
-            "tax_id",
-            "lineage_tax_ids",
-            "species_id",
-            "genus_id",
-            "family_id",
-            "order_id",
-        ],
+        TAXONOMY_FIELDS,
     )
     with gzip.open(targets / f"{gene_id}.fa.gz", "wt") as handle:
         handle.write(f">{gene_id}\nAAAAAAAAAA\n")
@@ -323,6 +318,7 @@ def _make_run(
         alignment / "manifest.json",
         {
             "stage": "alignment",
+            "schema": "normalized_alignment_evidence_v1",
             "gene_ids": [gene_id],
             "strategies": strategies,
             "strategy_parameters": {strategy: {"preset": "fixed"} for strategy in strategies},
@@ -330,6 +326,16 @@ def _make_run(
             "event_ortholog_support_format": "event_group_id_v1",
             "normalized_evidence": {
                 "layout": "partitioned",
+                "format": "tsv_gzip_v1",
+                "path": "evidence/partitions",
+                "partition_count": 1,
+                "partition_files": [
+                    "manifest.json",
+                    "ortholog_alignment_summary.tsv.gz",
+                    "alignment_segments.tsv.gz",
+                    "alignment_events.tsv.gz",
+                    "event_ortholog_support.tsv.gz",
+                ],
                 "event_group_id_scope": "partition",
             },
         },
@@ -374,7 +380,8 @@ def _make_run(
     _write_json(
         annotation / "manifest.json",
         {
-            "output_mode": "unique_variant_context",
+            "stage": "annotation",
+            "schema": "normalized_annotation_evidence_v1",
             "partition_ids": [partition_id],
             "event_variant_map": {
                 "layout": "partitioned",
@@ -498,7 +505,18 @@ def test_cohort_resolves_disjoint_runs_as_stable_virtual_union(tmp_path: Path) -
     strategy_summary = pd.read_csv(first.strategy_summary_tsv, sep="\t")
     assert strategy_summary.loc[0, "gene_count"] == 2
     assert strategy_summary.loc[0, "summary_row_count"] == 4
+    taxonomy_summary = pd.read_csv(first.taxonomy_summary_tsv, sep="\t")
+    all_orthologs = taxonomy_summary[
+        taxonomy_summary["taxonomic_scope"].eq("all")
+        & taxonomy_summary["evidence_unit"].eq("ortholog")
+    ].iloc[0]
+    assert int(all_orthologs["gene_count"]) == 2
+    assert int(all_orthologs["ortholog_count"]) == 4
+    assert int(all_orthologs["taxon_count"]) == 1
+    assert int(all_orthologs["unit_count"]) == 4
+    assert float(all_orthologs["orthologs_per_gene_median"]) == 2.0
     resolved = json.loads(first.cohort_manifest_json.read_text())
+    assert "taxonomy_summary" not in resolved["limitations"]
     scientific_paths = {
         record["path"]
         for member in resolved["members"]
@@ -508,6 +526,9 @@ def test_cohort_resolves_disjoint_runs_as_stable_virtual_union(tmp_path: Path) -
     assert "analytics/alignment_aggregates/feature_coverage.tsv.gz" in scientific_paths
     assert "analytics/annotation_support/variant_strategy_support.tsv.gz" in scientific_paths
     assert "analytics/annotation_support/ortholog_evidence_summary.tsv.gz" in scientific_paths
+    assert "analytics/taxonomy_summary/taxonomy_summary.tsv.gz" in scientific_paths
+    assert "fetch/taxonomy.tsv.gz" in scientific_paths
+    assert "fetch/orthologs.selected.tsv.gz" in scientific_paths
     assert "alignment/strategy_summary.tsv.gz" not in scientific_paths
     assert "annotation/variant_strategy_support.tsv.gz" not in scientific_paths
 

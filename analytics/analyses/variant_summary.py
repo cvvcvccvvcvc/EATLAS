@@ -48,7 +48,7 @@ VARIANT_USECOLS = [
     "vep_status",
     "vep_primary_consequence",
 ]
-SUMMARY_CACHE_VERSION = 15
+SUMMARY_CACHE_VERSION = 16
 SUMMARY_CACHE_NAME = "variant_summary.json.gz"
 SPECIAL_FLOAT_KEY = "__gaph_float__"
 ORTHOLOG_EVIDENCE_COLUMNS = [
@@ -112,7 +112,6 @@ class VariantSummary:
     consequence_counts: pd.DataFrame
     pathogenic_consequence_counts: pd.DataFrame
     pathogenic_rows: pd.DataFrame
-    ortholog_evidence_available: bool
     ortholog_evidence_cells: pd.DataFrame
     ortholog_evidence_distributions: pd.DataFrame
     cache_hit: bool = False
@@ -186,7 +185,7 @@ def _summary_payload(
     genes: Path | None,
     annotation_failures: Path | None,
     variant_strategy_support: Path | None,
-    ortholog_evidence_summary: Path | None,
+    ortholog_evidence_summary: Path,
     strategy_label: Callable[[str], str],
 ) -> dict[str, object]:
     overlap = None
@@ -228,11 +227,7 @@ def _summary_payload(
             if variant_strategy_support is not None
             else None
         ),
-        "ortholog_evidence_summary": (
-            _input_metadata(ortholog_evidence_summary)
-            if ortholog_evidence_summary is not None
-            else None
-        ),
+        "ortholog_evidence_summary": _input_metadata(ortholog_evidence_summary),
         "strategy_labels": {
             strategy: strategy_label(strategy)
             for strategy in summary.strategies
@@ -249,7 +244,6 @@ def _summary_payload(
             "gnomad_lookup_failed": summary.gnomad_lookup_failed,
             "pathogenic_variant_count": summary.pathogenic_variant_count,
             "consequence_source": summary.consequence_source,
-            "ortholog_evidence_available": summary.ortholog_evidence_available,
             "strategies": summary.strategies,
             "overlap": overlap,
             "frames": {
@@ -284,7 +278,6 @@ def _summary_from_payload(payload: dict[str, object]) -> VariantSummary:
         gnomad_lookup_failed=int(summary["gnomad_lookup_failed"]),
         pathogenic_variant_count=int(summary["pathogenic_variant_count"]),
         consequence_source=str(summary["consequence_source"]),
-        ortholog_evidence_available=bool(summary["ortholog_evidence_available"]),
         strategies=[str(value) for value in summary["strategies"]],
         strategy_stats=_frame_from_payload(frames["strategy_stats"]),
         unique_contribution=_frame_from_payload(frames["unique_contribution"]),
@@ -316,7 +309,7 @@ def _load_summary_cache(
     genes: Path | None,
     annotation_failures: Path | None,
     variant_strategy_support: Path | None,
-    ortholog_evidence_summary: Path | None,
+    ortholog_evidence_summary: Path,
     strategy_label: Callable[[str], str],
 ) -> VariantSummary | None:
     if not cache_path.exists():
@@ -346,11 +339,7 @@ def _load_summary_cache(
         )
         if payload.get("variant_strategy_support") != expected_support:
             return None
-        expected_ortholog_evidence = (
-            _input_metadata(ortholog_evidence_summary)
-            if ortholog_evidence_summary is not None
-            else None
-        )
+        expected_ortholog_evidence = _input_metadata(ortholog_evidence_summary)
         if payload.get("ortholog_evidence_summary") != expected_ortholog_evidence:
             return None
         labels = payload.get("strategy_labels", {})
@@ -369,7 +358,7 @@ def _write_summary_cache(
     genes: Path | None,
     annotation_failures: Path | None,
     variant_strategy_support: Path | None,
-    ortholog_evidence_summary: Path | None,
+    ortholog_evidence_summary: Path,
     strategy_label: Callable[[str], str],
 ) -> None:
     payload = _summary_payload(
@@ -527,8 +516,8 @@ def _ortholog_evidence_distributions(
 
 def read_taxonomic_ortholog_evidence(
     path: Path,
-) -> tuple[bool, pd.DataFrame, pd.DataFrame]:
-    """Bin a compact pipeline histogram for interactive report heatmaps."""
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Bin the compact analytics histogram for interactive report heatmaps."""
     empty = pd.DataFrame(columns=ORTHOLOG_EVIDENCE_COLUMNS)
     empty_distributions = pd.DataFrame(columns=ORTHOLOG_EVIDENCE_DISTRIBUTION_COLUMNS)
     required = {
@@ -549,7 +538,7 @@ def read_taxonomic_ortholog_evidence(
             f"Ortholog evidence summary {path} missing columns: {', '.join(sorted(missing))}"
         )
     if frame.empty:
-        return True, empty, empty_distributions
+        return empty, empty_distributions
     for column in (
         "site_aligned_count",
         "alt_support_count",
@@ -586,7 +575,7 @@ def read_taxonomic_ortholog_evidence(
     )
     frame = frame[frame["gnomad_eligible_count"].gt(0)]
     if frame.empty:
-        return True, empty, distributions
+        return empty, distributions
 
     cells = []
     group_columns = ["strategy", "target_context", "taxonomic_scope", "evidence_unit"]
@@ -629,7 +618,7 @@ def read_taxonomic_ortholog_evidence(
                         "gnomad_found_fraction": found / eligible,
                     }
                 )
-    return True, pd.DataFrame(cells, columns=ORTHOLOG_EVIDENCE_COLUMNS), distributions
+    return pd.DataFrame(cells, columns=ORTHOLOG_EVIDENCE_COLUMNS), distributions
 
 
 def _expand_strategy_masks(
@@ -647,67 +636,11 @@ def _expand_strategy_masks(
     return pd.DataFrame(rows)
 
 
-def _ortholog_evidence_from_grouped(
-    grouped: pd.DataFrame,
-    distribution_source: pd.DataFrame,
-) -> tuple[bool, pd.DataFrame, pd.DataFrame]:
-    empty = pd.DataFrame(columns=ORTHOLOG_EVIDENCE_COLUMNS)
-    distributions = _ortholog_evidence_distributions(
-        distribution_source.assign(taxonomic_scope="all", evidence_unit="ortholog"),
-        count_column="variant_count",
-        site_column="site_depth",
-        alt_column="alt_support",
-    )
-    if grouped.empty:
-        return not distribution_source.empty, empty, distributions
-    cells = []
-    for (strategy, context), subset in grouped.groupby(
-        ["strategy", "target_context"], sort=True
-    ):
-        for quantile_count in (2, 4, 10):
-            depth_bins = _weighted_quantile_bins(
-                subset["site_depth"], subset["gnomad_eligible_count"], quantile_count
-            )
-            alt_bins = _weighted_quantile_bins(
-                subset["alt_support"], subset["gnomad_eligible_count"], quantile_count
-            )
-            depth_labels = _bin_labels(
-                subset["site_depth"], depth_bins, quantile_count, percent=False
-            )
-            alt_labels = _bin_labels(
-                subset["alt_support"], alt_bins, quantile_count, percent=False
-            )
-            binned = subset.assign(depth_bin=depth_bins, alt_bin=alt_bins)
-            aggregated = binned.groupby(["depth_bin", "alt_bin"], as_index=False)[
-                ["gnomad_found_count", "gnomad_eligible_count"]
-            ].sum()
-            for row in aggregated.itertuples(index=False):
-                eligible = int(row.gnomad_eligible_count)
-                found = int(row.gnomad_found_count)
-                cells.append(
-                    {
-                        "strategy": str(strategy),
-                        "target_context": str(context),
-                        "taxonomic_scope": "all",
-                        "evidence_unit": "ortholog",
-                        "quantile_count": quantile_count,
-                        "depth_bin": int(row.depth_bin),
-                        "alt_bin": int(row.alt_bin),
-                        "depth_label": depth_labels[int(row.depth_bin)],
-                        "alt_label": alt_labels[int(row.alt_bin)],
-                        "gnomad_found_count": found,
-                        "gnomad_eligible_count": eligible,
-                        "gnomad_found_fraction": found / eligible,
-                    }
-                )
-    return True, pd.DataFrame(cells, columns=ORTHOLOG_EVIDENCE_COLUMNS), distributions
-
-
 def _summary_from_grouped_aggregation(
     grouped: VariantGroupedAggregation,
     strategy_label: Callable[[str], str],
     variant_strategy_support_path: Path | None,
-    ortholog_evidence_summary_path: Path | None,
+    ortholog_evidence_summary_path: Path,
 ) -> VariantSummary:
     strategies = list(grouped.masks.strategies)
     global_rows = _expand_strategy_masks(grouped.global_groups, grouped.masks.strategies)
@@ -854,17 +787,9 @@ def _summary_from_grouped_aggregation(
         }
     ).sort_values("Strategy")
 
-    if ortholog_evidence_summary_path is not None:
-        ortholog_available, ortholog_cells, ortholog_distributions = read_taxonomic_ortholog_evidence(
-            ortholog_evidence_summary_path
-        )
-    else:
-        ortholog_available, ortholog_cells, ortholog_distributions = (
-            _ortholog_evidence_from_grouped(
-                grouped.ortholog_evidence_grouped,
-                grouped.ortholog_distribution_source,
-            )
-        )
+    ortholog_cells, ortholog_distributions = read_taxonomic_ortholog_evidence(
+        ortholog_evidence_summary_path
+    )
 
     pathogenic_rows = _add_pathogenic_strategy_support(
         variant_strategy_support_path,
@@ -898,7 +823,6 @@ def _summary_from_grouped_aggregation(
         consequence_counts=consequence_counts,
         pathogenic_consequence_counts=pathogenic_consequence_counts,
         pathogenic_rows=pathogenic_rows,
-        ortholog_evidence_available=ortholog_available,
         ortholog_evidence_cells=ortholog_cells,
         ortholog_evidence_distributions=ortholog_distributions,
     )
@@ -908,15 +832,20 @@ def build_variant_summary(
     path: Path,
     work_dir: Path,
     strategy_label: Callable[[str], str],
+    *,
+    ortholog_evidence_summary_path: Path,
     target_features_path: Path | None = None,
     genes_path: Path | None = None,
     annotation_failures_path: Path | None = None,
     variant_strategy_support_path: Path | None = None,
-    ortholog_evidence_summary_path: Path | None = None,
     chunk_size: int = 100_000,
     performance_profile: PerformanceProfile | None = None,
 ) -> VariantSummary:
     """Aggregate a variant annotation table without retaining row-level data in memory."""
+    if not ortholog_evidence_summary_path.is_file():
+        raise FileNotFoundError(
+            f"Missing ortholog evidence summary: {ortholog_evidence_summary_path}"
+        )
     work_dir.mkdir(parents=True, exist_ok=True)
     cache_path = work_dir / SUMMARY_CACHE_NAME
     cache_stage = (
@@ -989,7 +918,7 @@ def _compute_variant_summary(
     genes_path: Path | None,
     annotation_failures_path: Path | None,
     variant_strategy_support_path: Path | None,
-    ortholog_evidence_summary_path: Path | None,
+    ortholog_evidence_summary_path: Path,
     strategy_label: Callable[[str], str],
     chunk_size: int,
     performance_profile: PerformanceProfile | None,
@@ -1007,9 +936,6 @@ def _compute_variant_summary(
             genes_path=genes_path,
             target_features_path=target_features_path,
             annotation_failures_path=annotation_failures_path,
-            variant_strategy_support_path=(
-                None if ortholog_evidence_summary_path is not None else variant_strategy_support_path
-            ),
             temp_dir=Path(temporary_dir),
         )
     if performance_profile is not None:

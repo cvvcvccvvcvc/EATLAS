@@ -188,25 +188,6 @@ def validate_report_inputs(inputs: RunInputs) -> None:
             "alt_support_ortholog_count",
             "alt_support_genus_count",
         },
-    }
-    for path, required in contracts.items():
-        if not path.exists():
-            raise FileNotFoundError(f"Missing report input: {path}")
-        if path == inputs.variant_annotations_tsv and path.suffix == ".json":
-            from analytics.analyses.variant_summary_aggregation import (
-                resolve_variant_aggregation_source,
-            )
-
-            header = set(resolve_variant_aggregation_source(path).columns)
-        else:
-            compression = "gzip" if path.suffix == ".gz" else None
-            header = set(pd.read_csv(path, sep="\t", compression=compression, nrows=0).columns)
-        missing = required - header
-        if missing:
-            raise ValueError(
-                f"Report input {path} is missing required columns: {', '.join(sorted(missing))}"
-            )
-    optional_contracts = {
         inputs.ortholog_evidence_summary_tsv: {
             "strategy",
             "target_context",
@@ -229,10 +210,18 @@ def validate_report_inputs(inputs: RunInputs) -> None:
             "units_per_gene_median",
         },
     }
-    for path, required in optional_contracts.items():
+    for path, required in contracts.items():
         if not path.exists():
-            continue
-        header = set(pd.read_csv(path, sep="\t", compression="gzip", nrows=0).columns)
+            raise FileNotFoundError(f"Missing report input: {path}")
+        if path == inputs.variant_annotations_tsv and path.suffix == ".json":
+            from analytics.analyses.variant_summary_aggregation import (
+                resolve_variant_aggregation_source,
+            )
+
+            header = set(resolve_variant_aggregation_source(path).columns)
+        else:
+            compression = "gzip" if path.suffix == ".gz" else None
+            header = set(pd.read_csv(path, sep="\t", compression=compression, nrows=0).columns)
         missing = required - header
         if missing:
             raise ValueError(
@@ -320,7 +309,7 @@ def read_failures(path: Path) -> pd.DataFrame:
 
 def read_taxonomy_summary(path: Path) -> pd.DataFrame:
     if not path.exists():
-        return pd.DataFrame()
+        raise FileNotFoundError(f"Missing taxonomy summary: {path}")
     summary = pd.read_csv(path, sep="\t", compression="gzip", keep_default_na=False)
     numeric_columns = [
         "gene_count",

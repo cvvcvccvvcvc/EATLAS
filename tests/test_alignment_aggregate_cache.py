@@ -179,12 +179,38 @@ def _write_evidence_run(run_dir: Path) -> tuple[list[Path], Path, Path]:
         json.dumps(
             {
                 "stage": "alignment",
+                "schema": "normalized_alignment_evidence_v1",
                 "strategies": ["s1", "s2", "s_zero"],
+                "normalized_evidence": {
+                    "layout": "partitioned",
+                    "format": "tsv_gzip_v1",
+                    "path": "evidence/partitions",
+                    "partition_count": 2,
+                    "partition_files": [
+                        "manifest.json",
+                        "ortholog_alignment_summary.tsv.gz",
+                        "alignment_segments.tsv.gz",
+                        "alignment_events.tsv.gz",
+                        "event_ortholog_support.tsv.gz",
+                    ],
+                    "event_group_id_scope": "partition",
+                },
             }
         )
         + "\n"
     )
     return [first, second], target_features, alignment_manifest
+
+
+def test_alignment_aggregate_rejects_noncanonical_manifest(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run"
+    _partitions, _target_features, alignment_manifest = _write_evidence_run(run_dir)
+    manifest = json.loads(alignment_manifest.read_text())
+    del manifest["schema"]
+    alignment_manifest.write_text(json.dumps(manifest) + "\n")
+
+    with pytest.raises(ValueError, match="unsupported schema"):
+        resolve_alignment_aggregate_paths(run_dir)
 
 
 def _read_text(path: Path) -> str:

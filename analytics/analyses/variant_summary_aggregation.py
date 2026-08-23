@@ -116,8 +116,6 @@ class VariantGroupedAggregation:
     allele_gene_groups: pd.DataFrame
     gnomad_af_summary: pd.DataFrame
     pathogenic_rows: pd.DataFrame
-    ortholog_evidence_grouped: pd.DataFrame
-    ortholog_distribution_source: pd.DataFrame
     timings: dict[str, float]
     diagnostics: dict[str, object]
 
@@ -384,7 +382,6 @@ def aggregate_variant_groups(
     genes_path: Path | None = None,
     target_features_path: Path | None = None,
     annotation_failures_path: Path | None = None,
-    variant_strategy_support_path: Path | None = None,
     threads: int | None = None,
     temp_dir: Path | None = None,
 ) -> VariantGroupedAggregation:
@@ -485,13 +482,6 @@ def aggregate_variant_groups(
         pathogenic_rows = _query_pathogenic_rows(connection, strategies)
         timings["pathogenic_rows"] = time.perf_counter() - started
 
-        started = time.perf_counter()
-        ortholog_grouped, ortholog_distributions = _query_ortholog_evidence(
-            connection,
-            variant_strategy_support_path,
-            strategies,
-        )
-        timings["ortholog_evidence"] = time.perf_counter() - started
         diagnostics["temp_storage_bytes_final"] = _directory_size(temp_dir)
 
         masks = StrategyMaskAggregation(
@@ -512,8 +502,6 @@ def aggregate_variant_groups(
             allele_gene_groups=allele_gene_groups,
             gnomad_af_summary=gnomad_af_summary,
             pathogenic_rows=pathogenic_rows,
-            ortholog_evidence_grouped=ortholog_grouped,
-            ortholog_distribution_source=ortholog_distributions,
             timings=timings,
             diagnostics=diagnostics,
         )
@@ -823,77 +811,6 @@ def _query_pathogenic_rows(
         if name not in rows:
             rows[name] = ""
     return rows[[*columns, "variant_id", "clinvar_category", "review_stars"]]
-
-
-def _query_ortholog_evidence(
-    connection,
-    path: Path | None,
-    strategies: tuple[str, ...],
-) -> tuple[pd.DataFrame, pd.DataFrame]:
-    grouped_columns = [
-        "strategy",
-        "target_context",
-        "site_depth",
-        "alt_support",
-        "gnomad_found_count",
-        "gnomad_eligible_count",
-    ]
-    distribution_columns = ["strategy", "site_depth", "alt_support", "variant_count"]
-    if path is None:
-        return pd.DataFrame(columns=grouped_columns), pd.DataFrame(columns=distribution_columns)
-    header = _read_header(path)
-    required = {
-        "variant_key",
-        "gene_id",
-        "strategy",
-        "alt_support_ortholog_count",
-        "site_aligned_ortholog_count",
-    }
-    if not required.issubset(header):
-        return pd.DataFrame(columns=grouped_columns), pd.DataFrame(columns=distribution_columns)
-    support_source = VariantAggregationSource(
-        paths=(path.resolve(),),
-        columns=tuple(header),
-        row_count=None,
-        partitioned=False,
-        identity={"input": path_metadata(path)},
-    )
-    bits = "CASE " + " ".join(
-        f"WHEN strategy = {_sql_string(strategy)} THEN {1 << index}"
-        for index, strategy in enumerate(strategies)
-    ) + " ELSE 0 END"
-    connection.execute(
-        "CREATE VIEW ortholog_support_rows AS SELECT variant_key AS variant_id, gene_id, strategy, "
-        "try_cast(alt_support_ortholog_count AS BIGINT) AS alt_support, "
-        "try_cast(site_aligned_ortholog_count AS BIGINT) AS site_depth, "
-        f"({bits})::UBIGINT AS strategy_bit FROM {_source_sql(support_source)}"
-    )
-    invalid = connection.execute(
-        "SELECT count(*) FROM ortholog_support_rows WHERE site_depth IS NULL OR site_depth <= 0 "
-        "OR alt_support IS NULL OR alt_support < 0 OR alt_support > site_depth"
-    ).fetchone()[0]
-    if int(invalid) > 0:
-        raise ValueError(f"Variant strategy support contains {invalid} invalid ortholog counts")
-    grouped = connection.execute(
-        "SELECT s.strategy, a.target_context, s.site_depth, s.alt_support, "
-        "count_if(a.gnomad_status = 'found') AS gnomad_found_count, "
-        "count(*) AS gnomad_eligible_count "
-        "FROM ortholog_support_rows s JOIN allele_gene_rows a "
-        "ON a.variant_id = s.variant_id AND a.gene_id = s.gene_id "
-        "AND a.strategy_mask & s.strategy_bit != 0 "
-        "WHERE a.event_type = 'snv' AND a.target_context IN ('cds','utr','intron') "
-        "AND a.gnomad_status IN ('found','not_found') "
-        "GROUP BY ALL ORDER BY ALL"
-    ).fetchdf()
-    distributions = connection.execute(
-        "SELECT s.strategy, s.site_depth, s.alt_support, count(*) AS variant_count "
-        "FROM ortholog_support_rows s JOIN allele_gene_rows a "
-        "ON a.variant_id = s.variant_id AND a.gene_id = s.gene_id "
-        "AND a.strategy_mask & s.strategy_bit != 0 "
-        "WHERE a.event_type = 'snv' AND a.target_context IN ('cds','utr','intron') "
-        "GROUP BY ALL ORDER BY ALL"
-    ).fetchdf()
-    return grouped, distributions
 
 
 def _pathogenic_source_columns() -> list[str]:
