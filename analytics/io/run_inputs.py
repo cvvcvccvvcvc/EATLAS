@@ -11,6 +11,7 @@ from pathlib import Path
 import pandas as pd
 
 from analytics.io.alignment_aggregates import resolve_alignment_aggregate_paths
+from analytics.io.annotation_support import resolve_annotation_support_paths
 from analytics.io.artifacts import file_identity, path_metadata
 from analytics.io.taxonomy_summary import resolve_taxonomy_summary_path
 
@@ -66,6 +67,7 @@ def resolve_run_inputs(run_dir: Path) -> RunInputs:
         source_annotations_tsv,
     )
     alignment_aggregates = resolve_alignment_aggregate_paths(run_dir)
+    annotation_support = resolve_annotation_support_paths(run_dir)
 
     inputs = RunInputs(
         run_dir=run_dir,
@@ -74,8 +76,8 @@ def resolve_run_inputs(run_dir: Path) -> RunInputs:
         target_features_tsv=run_dir / "fetch" / "target_features.tsv.gz",
         target_sequences_dir=run_dir / "fetch" / "sequences" / "targets",
         variant_annotations_tsv=variant_annotations_tsv,
-        variant_strategy_support_tsv=annotation_dir / "variant_strategy_support.tsv.gz",
-        ortholog_evidence_summary_tsv=annotation_dir / "ortholog_evidence_summary.tsv.gz",
+        variant_strategy_support_tsv=annotation_support.variant_strategy_support_tsv,
+        ortholog_evidence_summary_tsv=annotation_support.ortholog_evidence_summary_tsv,
         annotation_manifest_json=annotation_dir / "manifest.json",
         annotation_failures_tsv=annotation_dir / "failures.tsv.gz",
         feature_coverage_tsv=alignment_aggregates.feature_coverage_tsv,

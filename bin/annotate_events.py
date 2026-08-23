@@ -16,8 +16,6 @@ from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
 
-import pysam
-
 if __package__ in {None, ""}:
     runtime_root = Path.cwd()
     if not (runtime_root / "genomics").is_dir():
@@ -1343,6 +1341,8 @@ def main():
 
     # 4. Open ClinVar
     phase_started = start_phase("clinvar_lookup")
+    import pysam
+
     clinvar = pysam.VariantFile(str(args.clinvar_vcf))
     clinvar_cache, clinvar_key_status_counts = build_clinvar_cache(
         clinvar,
