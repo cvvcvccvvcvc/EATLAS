@@ -16,7 +16,7 @@ Production logic is in:
 
 `genomics/` is the shared domain library used by both pipeline commands and
 completed-run analytics. `analytics/` owns reproducible analyses and report
-generation. Standalone research experiments live under `experiments/`; they may
+generation. Standalone research experiments belong under `experiments/`; they may
 consume production outputs but keep their scratch data and generated reports
 inside their own package directories.
 

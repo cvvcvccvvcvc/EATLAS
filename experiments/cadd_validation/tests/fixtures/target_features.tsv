@@ -1,5 +1,0 @@
-gene_id	feature_type	feature_id	genomic_accession	genomic_start1	genomic_end1	target_start0	target_end0	length_bp	strand
-1	gene	gene:001	NC_000001.11	101	110	0	10	10	+
-1	cds	cds:001	NC_000001.11	101	105	0	5	5	+
-1	intron	intron:001	NC_000001.11	106	110	5	10	5	+
-

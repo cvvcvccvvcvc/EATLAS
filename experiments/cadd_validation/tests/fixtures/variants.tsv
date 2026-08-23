@@ -1,4 +1,0 @@
-variant_id	label	gene_id	genomic_accession	genomic_start1	ref	alt	target_start0
-var_alt	pathogenic	1	NC_000001.11	101	A	G	0
-var_ref	benign	1	NC_000001.11	102	C	T	1
-

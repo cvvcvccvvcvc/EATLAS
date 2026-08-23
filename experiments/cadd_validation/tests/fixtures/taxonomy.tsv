@@ -1,5 +1,0 @@
-tax_id	taxonomy_status	scientific_name	rank	group_name	domain_id	domain_name	kingdom_id	kingdom_name	phylum_id	phylum_name	class_id	class_name	order_id	order_name	family_id	family_name	genus_id	genus_name	species_id	species_name	lineage_tax_ids
-9443	resolved	Primates	ORDER	primates	2759	Eukaryota	33208	Metazoa	7711	Chordata	40674	Mammalia	9443	Primates							2759,33208,7711,7742,40674,9443
-10090	resolved	Mus musculus	SPECIES	rodents	2759	Eukaryota	33208	Metazoa	7711	Chordata	40674	Mammalia	9989	Rodentia	10066	Muridae	10088	Mus	10090	Mus musculus	2759,33208,7711,7742,40674,9989,10066,10088,10090
-10116	resolved	Rattus norvegicus	SPECIES	rodents	2759	Eukaryota	33208	Metazoa	7711	Chordata	40674	Mammalia	9989	Rodentia	10066	Muridae	10114	Rattus	10116	Rattus norvegicus	2759,33208,7711,7742,40674,9989,10066,10114,10116
-7955	resolved	Danio rerio	SPECIES	fishes	2759	Eukaryota	33208	Metazoa	7711	Chordata	186623	Actinopteri	7952	Cypriniformes	2743709	Danionidae	7954	Danio	7955	Danio rerio	2759,33208,7711,7742,186623,7952,2743709,7954,7955

@@ -1,6 +1,0 @@
-gene_id	ortholog_gene_id	tax_id	taxname	strategy	tool	preset	status	target_length	query_length	segment_count	primary_segment_count	secondary_segment_count	aligned_target_bp	aligned_query_bp	target_coverage	query_coverage	best_identity	mean_identity	event_count	qc_flags
-1	orth1	9443	primate	minimap2_asm20	minimap2	asm20	aligned	2	2	1	1	0	2	2	1	1	1	1	1	
-1	orth2	10090	mouse	minimap2_asm20	minimap2	asm20	aligned	2	2	1	1	0	2	2	1	1	1	1	1	
-1	orth3	7955	zebrafish	minimap2_asm20	minimap2	asm20	aligned	2	2	1	1	0	2	2	1	1	1	1	0	
-1	orth4	10116	rat	minimap2_asm20	minimap2	asm20	no_alignment	2	2	0	0	0	0	0	0	0	0	0	0	no_alignment
-
