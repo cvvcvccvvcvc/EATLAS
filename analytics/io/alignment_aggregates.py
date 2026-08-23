@@ -47,16 +47,15 @@ class AlignmentAggregatePaths:
 
 
 def resolve_alignment_aggregate_paths(run_dir: Path) -> AlignmentAggregatePaths:
-    """Prefer derived caches when durable partition evidence is available."""
+    """Require durable partition evidence and expose analytics-owned aggregates."""
 
     alignment_dir = run_dir / "alignment"
-    legacy = AlignmentAggregatePaths(
-        strategy_summary_tsv=alignment_dir / STRATEGY_SUMMARY_FILENAME,
-        feature_coverage_tsv=alignment_dir / FEATURE_COVERAGE_FILENAME,
-    )
     partitions_root = alignment_dir / "evidence" / "partitions"
     if not partitions_root.exists():
-        return legacy
+        raise FileNotFoundError(
+            "Missing normalized alignment evidence required for analytics: "
+            f"{partitions_root}"
+        )
     if not partitions_root.is_dir():
         raise NotADirectoryError(
             f"Alignment evidence partitions path is not a directory: {partitions_root}"

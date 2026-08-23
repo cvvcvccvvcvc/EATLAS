@@ -24,24 +24,22 @@ CACHE_FILENAME = "taxonomy_summary.tsv.gz"
 
 
 def resolve_taxonomy_summary_path(run_dir: Path) -> Path:
-    """Prefer an analytics cache for the new Stage 1 taxonomy contract."""
+    """Require the canonical Stage 1 taxonomy contract and derive its summary."""
 
     fetch_dir = run_dir / "fetch"
     taxonomy_tsv = fetch_dir / "taxonomy.tsv.gz"
     orthologs_tsv = fetch_dir / "orthologs.selected.tsv.gz"
-    if taxonomy_tsv.is_file():
-        if not orthologs_tsv.is_file():
-            raise FileNotFoundError(
-                "Incomplete Stage 1 taxonomy inputs: "
-                f"missing {orthologs_tsv}. fetch/taxonomy.tsv.gz requires "
-                "fetch/orthologs.selected.tsv.gz."
-            )
-        return build_or_load_taxonomy_summary(
-            taxonomy_tsv=taxonomy_tsv,
-            orthologs_tsv=orthologs_tsv,
-            analytics_dir=run_dir / "analytics",
+    missing = [path for path in (taxonomy_tsv, orthologs_tsv) if not path.is_file()]
+    if missing:
+        raise FileNotFoundError(
+            "Incomplete Stage 1 taxonomy contract required for analytics; missing: "
+            + ", ".join(str(path) for path in missing)
         )
-    return run_dir / "alignment" / CACHE_FILENAME
+    return build_or_load_taxonomy_summary(
+        taxonomy_tsv=taxonomy_tsv,
+        orthologs_tsv=orthologs_tsv,
+        analytics_dir=run_dir / "analytics",
+    )
 
 
 def build_or_load_taxonomy_summary(

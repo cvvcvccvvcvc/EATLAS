@@ -570,20 +570,18 @@ def test_annotation_support_cache_hit_and_failure_invalidation(tmp_path: Path) -
     assert second_manifest["inputs"] != first_manifest["inputs"]
 
 
-def test_annotation_support_resolution_uses_legacy_or_rejects_incomplete_contract(
+def test_annotation_support_resolution_rejects_missing_or_incomplete_contract(
     tmp_path: Path,
 ) -> None:
     run_dir = tmp_path / "run"
     annotation = run_dir / "annotation"
     annotation.mkdir(parents=True)
-    expected = AnnotationSupportPaths(
-        variant_strategy_support_tsv=annotation / "variant_strategy_support.tsv.gz",
-        ortholog_evidence_summary_tsv=annotation / "ortholog_evidence_summary.tsv.gz",
-    )
-    assert resolve_annotation_support_paths(run_dir) == expected
+    with pytest.raises(FileNotFoundError, match="Missing annotation manifest"):
+        resolve_annotation_support_paths(run_dir)
 
     (annotation / "manifest.json").write_text(json.dumps({"status": "complete"}) + "\n")
-    assert resolve_annotation_support_paths(run_dir) == expected
+    with pytest.raises(ValueError, match="does not declare the required partitioned"):
+        resolve_annotation_support_paths(run_dir)
 
     (annotation / "manifest.json").write_text(
         json.dumps(
@@ -646,6 +644,11 @@ def test_run_inputs_uses_resolved_annotation_support_paths(
         run_inputs_module,
         "resolve_annotation_support_paths",
         lambda _run_dir: annotation_support,
+    )
+    monkeypatch.setattr(
+        run_inputs_module,
+        "resolve_taxonomy_summary_path",
+        lambda _run_dir: run_dir / "analytics" / "taxonomy.tsv.gz",
     )
 
     inputs = run_inputs_module.resolve_run_inputs(run_dir)

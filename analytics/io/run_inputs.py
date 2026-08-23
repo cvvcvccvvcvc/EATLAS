@@ -29,7 +29,6 @@ class RunInputs:
     annotation_manifest_json: Path
     annotation_failures_tsv: Path
     feature_coverage_tsv: Path
-    alignment_segments_tsv: Path
     alignment_manifest_json: Path
     strategy_summary_tsv: Path
     taxonomy_summary_tsv: Path
@@ -81,7 +80,6 @@ def resolve_run_inputs(run_dir: Path) -> RunInputs:
         annotation_manifest_json=annotation_dir / "manifest.json",
         annotation_failures_tsv=annotation_dir / "failures.tsv.gz",
         feature_coverage_tsv=alignment_aggregates.feature_coverage_tsv,
-        alignment_segments_tsv=run_dir / "alignment" / "alignment_segments.tsv.gz",
         alignment_manifest_json=run_dir / "alignment" / "manifest.json",
         strategy_summary_tsv=alignment_aggregates.strategy_summary_tsv,
         taxonomy_summary_tsv=resolve_taxonomy_summary_path(run_dir),
@@ -295,7 +293,7 @@ def read_feature_coverage(path: Path) -> pd.DataFrame:
 
 def read_strategy_summary(path: Path) -> pd.DataFrame:
     if not path.exists():
-        raise FileNotFoundError("Missing alignment/strategy_summary.tsv.gz under --run-dir.")
+        raise FileNotFoundError(f"Missing resolved strategy-summary input: {path}")
     print(f"Reading {path}...")
     summary = pd.read_csv(path, sep="\t", compression="gzip", low_memory=False)
     required = {"strategy", "summary_row_count", "aligned_summary_row_count", "event_count"}

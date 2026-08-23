@@ -206,7 +206,6 @@ def resolve_cohort_inputs(
         annotation_manifest_json=annotation_manifest_path,
         annotation_failures_tsv=failures_tsv,
         feature_coverage_tsv=coverage_tsv,
-        alignment_segments_tsv=inputs_dir / "alignment_segments.not_available.tsv.gz",
         alignment_manifest_json=alignment_manifest_path,
         strategy_summary_tsv=strategy_summary_tsv,
         taxonomy_summary_tsv=taxonomy_summary_tsv,

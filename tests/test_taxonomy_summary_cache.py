@@ -4,6 +4,7 @@ import csv
 import gzip
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pandas as pd
 import pytest
@@ -144,21 +145,21 @@ def test_taxonomy_summary_cache_is_fingerprinted_by_both_inputs(tmp_path: Path) 
     assert second_manifest["inputs"] != first_manifest["inputs"]
 
 
-def test_taxonomy_summary_resolution_uses_legacy_when_fetch_taxonomy_is_absent(
+def test_taxonomy_summary_resolution_requires_canonical_fetch_contract(
     tmp_path: Path,
 ) -> None:
     run_dir = tmp_path / "run"
-    legacy = run_dir / "alignment" / "taxonomy_summary.tsv.gz"
     _write_tsv_gz(
         run_dir / "fetch" / "orthologs.selected.tsv.gz",
         ORTHOLOG_FIELDS,
         [],
     )
-    assert resolve_taxonomy_summary_path(run_dir) == legacy
+    with pytest.raises(FileNotFoundError, match="Incomplete Stage 1 taxonomy contract"):
+        resolve_taxonomy_summary_path(run_dir)
 
     (run_dir / "fetch" / "orthologs.selected.tsv.gz").unlink()
     _write_tsv_gz(run_dir / "fetch" / "taxonomy.tsv.gz", TAXONOMY_FIELDS, [])
-    with pytest.raises(FileNotFoundError, match="Incomplete Stage 1 taxonomy inputs"):
+    with pytest.raises(FileNotFoundError, match="Incomplete Stage 1 taxonomy contract"):
         resolve_taxonomy_summary_path(run_dir)
 
 
@@ -186,6 +187,22 @@ def test_run_inputs_exposes_new_taxonomy_summary_cache(
         run_inputs_module,
         "resolve_vep_variant_annotations",
         lambda _run_dir, source: source,
+    )
+    monkeypatch.setattr(
+        run_inputs_module,
+        "resolve_alignment_aggregate_paths",
+        lambda _run_dir: SimpleNamespace(
+            strategy_summary_tsv=run_dir / "analytics" / "strategy.tsv.gz",
+            feature_coverage_tsv=run_dir / "analytics" / "coverage.tsv.gz",
+        ),
+    )
+    monkeypatch.setattr(
+        run_inputs_module,
+        "resolve_annotation_support_paths",
+        lambda _run_dir: SimpleNamespace(
+            variant_strategy_support_tsv=run_dir / "analytics" / "support.tsv.gz",
+            ortholog_evidence_summary_tsv=run_dir / "analytics" / "evidence.tsv.gz",
+        ),
     )
 
     inputs = run_inputs_module.resolve_run_inputs(run_dir)

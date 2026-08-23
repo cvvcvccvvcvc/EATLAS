@@ -383,7 +383,7 @@ def feature_coverage_formula_table() -> pd.DataFrame:
             {
                 "Metric": "Per-feature breadth",
                 "Formula": "coverage_breadth = covered_bases / length_bp",
-                "Notes": "Read directly from alignment/feature_coverage.tsv.gz.",
+                "Notes": "Derived from normalized partitioned alignment evidence.",
             },
             {
                 "Metric": "Weighted breadth",
@@ -439,7 +439,6 @@ def build_methods_sections(
         ("Target Features", inputs.target_features_tsv),
         ("Target Sequences", inputs.target_sequences_dir),
         ("Feature Coverage", inputs.feature_coverage_tsv),
-        ("Alignment Segments", inputs.alignment_segments_tsv),
         ("Strategy Summary", inputs.strategy_summary_tsv),
         ("Taxonomy Summary", inputs.taxonomy_summary_tsv),
         ("Annotation Manifest", inputs.annotation_manifest_json),
@@ -769,7 +768,7 @@ def build_methods_sections(
     sections.append("</details>")
     sections.append("<details><summary>Feature coverage formulas</summary>")
     sections.append(
-        "<p class=\"lead\">Candidate Profile coverage plots use the normalized feature-level table emitted by the alignment stage.</p>"
+        "<p class=\"lead\">Candidate Profile coverage plots use the feature-level table derived from normalized partitioned alignment evidence.</p>"
     )
     sections.append(table_html(feature_coverage_formula_table(), classes="table table-sm table-striped"))
     sections.append("</details>")

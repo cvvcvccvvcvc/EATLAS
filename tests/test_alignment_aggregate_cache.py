@@ -5,6 +5,7 @@ import gzip
 import json
 import shutil
 from pathlib import Path
+from types import SimpleNamespace
 
 import pandas as pd
 import pytest
@@ -297,14 +298,10 @@ def test_alignment_aggregate_cache_hit_and_evidence_invalidation(tmp_path: Path)
     assert second_manifest["inputs"] != first_manifest["inputs"]
 
 
-def test_alignment_aggregate_resolution_falls_back_for_legacy_run(tmp_path: Path) -> None:
+def test_alignment_aggregate_resolution_requires_partitioned_evidence(tmp_path: Path) -> None:
     run_dir = tmp_path / "run"
-    paths = resolve_alignment_aggregate_paths(run_dir)
-
-    assert paths == AlignmentAggregatePaths(
-        strategy_summary_tsv=run_dir / "alignment" / "strategy_summary.tsv.gz",
-        feature_coverage_tsv=run_dir / "alignment" / "feature_coverage.tsv.gz",
-    )
+    with pytest.raises(FileNotFoundError, match="Missing normalized alignment evidence"):
+        resolve_alignment_aggregate_paths(run_dir)
 
     (run_dir / "alignment" / "evidence" / "partitions").mkdir(parents=True)
     with pytest.raises(ValueError, match="contains no partitions"):
@@ -343,6 +340,19 @@ def test_run_inputs_uses_resolved_alignment_aggregate_paths(
         run_inputs_module,
         "resolve_alignment_aggregate_paths",
         lambda _run_dir: resolved,
+    )
+    monkeypatch.setattr(
+        run_inputs_module,
+        "resolve_annotation_support_paths",
+        lambda _run_dir: SimpleNamespace(
+            variant_strategy_support_tsv=run_dir / "analytics" / "support.tsv.gz",
+            ortholog_evidence_summary_tsv=run_dir / "analytics" / "evidence.tsv.gz",
+        ),
+    )
+    monkeypatch.setattr(
+        run_inputs_module,
+        "resolve_taxonomy_summary_path",
+        lambda _run_dir: run_dir / "analytics" / "taxonomy.tsv.gz",
     )
 
     inputs = run_inputs_module.resolve_run_inputs(run_dir)

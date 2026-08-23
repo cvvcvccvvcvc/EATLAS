@@ -11,6 +11,7 @@ from analytics.analyses.candidate_conservation import CandidateConservation
 from analytics.analyses.basic_filtering import BasicFilteringAnalysis
 from analytics.analyses.matched_control import TargetSpaceNullAnalysis
 from analytics.annotation.consequences import UNANNOTATED_CONSEQUENCE
+from analytics.io import run_inputs as run_inputs_module
 from analytics.io.run_inputs import RunInputs, resolve_run_inputs, validate_report_inputs
 from analytics.reporting.components import dataframe_records, format_table_dataframe
 from analytics.reporting.basic_filtering import basic_filtering_view
@@ -114,7 +115,6 @@ def test_report_preflight_accepts_compact_production_contract(tmp_path: Path) ->
         annotation_manifest_json=tmp_path / "annotation_manifest.json",
         annotation_failures_tsv=tmp_path / "annotation_failures.tsv.gz",
         feature_coverage_tsv=coverage,
-        alignment_segments_tsv=tmp_path / "alignment_segments.tsv.gz",
         alignment_manifest_json=tmp_path / "alignment_manifest.json",
         strategy_summary_tsv=summary,
         taxonomy_summary_tsv=tmp_path / "taxonomy_summary.tsv.gz",
@@ -123,7 +123,10 @@ def test_report_preflight_accepts_compact_production_contract(tmp_path: Path) ->
     validate_report_inputs(inputs)
 
 
-def test_report_inputs_use_matching_completed_vep_artifact(tmp_path: Path) -> None:
+def test_report_inputs_use_matching_completed_vep_artifact(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     run_dir = tmp_path / "run"
     annotation_dir = run_dir / "annotation"
     artifact_dir = run_dir / "analytics" / "vep_consequences"
@@ -161,6 +164,27 @@ def test_report_inputs_use_matching_completed_vep_artifact(tmp_path: Path) -> No
                 },
             }
         )
+    )
+    monkeypatch.setattr(
+        run_inputs_module,
+        "resolve_alignment_aggregate_paths",
+        lambda _run_dir: SimpleNamespace(
+            strategy_summary_tsv=run_dir / "analytics" / "strategy.tsv.gz",
+            feature_coverage_tsv=run_dir / "analytics" / "coverage.tsv.gz",
+        ),
+    )
+    monkeypatch.setattr(
+        run_inputs_module,
+        "resolve_annotation_support_paths",
+        lambda _run_dir: SimpleNamespace(
+            variant_strategy_support_tsv=run_dir / "analytics" / "support.tsv.gz",
+            ortholog_evidence_summary_tsv=run_dir / "analytics" / "evidence.tsv.gz",
+        ),
+    )
+    monkeypatch.setattr(
+        run_inputs_module,
+        "resolve_taxonomy_summary_path",
+        lambda _run_dir: run_dir / "analytics" / "taxonomy.tsv.gz",
     )
 
     inputs = resolve_run_inputs(run_dir)

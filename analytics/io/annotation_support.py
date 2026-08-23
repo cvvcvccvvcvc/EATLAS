@@ -70,20 +70,21 @@ class AnnotationSupportPaths:
 
 
 def resolve_annotation_support_paths(run_dir: Path) -> AnnotationSupportPaths:
-    """Prefer analytics-owned products when the complete lineage contract exists."""
+    """Require the normalized lineage contract and expose analytics-owned products."""
 
     annotation_dir = run_dir / "annotation"
-    legacy = AnnotationSupportPaths(
-        variant_strategy_support_tsv=annotation_dir / VARIANT_SUPPORT_FILENAME,
-        ortholog_evidence_summary_tsv=annotation_dir / ORTHOLOG_EVIDENCE_FILENAME,
-    )
     annotation_manifest_path = annotation_dir / "manifest.json"
     if not annotation_manifest_path.is_file():
-        return legacy
+        raise FileNotFoundError(
+            f"Missing annotation manifest required for analytics: {annotation_manifest_path}"
+        )
     annotation_manifest = _read_json(annotation_manifest_path)
     map_contract = annotation_manifest.get("event_variant_map")
     if not isinstance(map_contract, dict):
-        return legacy
+        raise ValueError(
+            "Annotation manifest does not declare the required partitioned "
+            f"event_variant_map contract: {annotation_manifest_path}"
+        )
     _validate_map_contract(map_contract, annotation_manifest_path)
 
     alignment_dir = run_dir / "alignment"

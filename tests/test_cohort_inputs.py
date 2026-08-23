@@ -16,6 +16,12 @@ from analytics.analyses.variant_summary_aggregation import (
 )
 from analytics.io.artifacts import file_identity, path_metadata
 from analytics.io.cohort_inputs import resolve_cohort_inputs
+from bin.alignment_table_schema import SEGMENT_FIELDS, SUMMARY_FIELDS
+from bin.annotate_events import EVENT_VARIANT_MAP_FIELDS
+from bin.merge_alignment_results import (
+    COMPACT_EVENT_FIELDS,
+    EVENT_ORTHOLOG_SUPPORT_FIELDS,
+)
 
 
 BASE_COLUMNS = [
@@ -115,11 +121,62 @@ def _make_run(
             {
                 "gene_id": gene_id,
                 "feature_type": "gene",
+                "feature_id": f"gene_{gene_id}",
+                "genomic_accession": "NC_000001.11",
+                "genomic_start1": "1",
+                "genomic_end1": "10",
                 "target_start0": "0",
                 "target_end0": "10",
+                "length_bp": "10",
+                "strand": "+",
             }
         ],
-        ["gene_id", "feature_type", "target_start0", "target_end0"],
+        [
+            "gene_id",
+            "feature_type",
+            "feature_id",
+            "genomic_accession",
+            "genomic_start1",
+            "genomic_end1",
+            "target_start0",
+            "target_end0",
+            "length_bp",
+            "strand",
+        ],
+    )
+    ortholog_ids = [f"{gene_id}_o1", f"{gene_id}_o2"]
+    _write_gzip_table(
+        fetch / "orthologs.selected.tsv.gz",
+        [
+            {
+                "query_gene_id": gene_id,
+                "ortholog_gene_id": ortholog_gene_id,
+                "tax_id": "9598",
+            }
+            for ortholog_gene_id in ortholog_ids
+        ],
+        ["query_gene_id", "ortholog_gene_id", "tax_id"],
+    )
+    _write_gzip_table(
+        fetch / "taxonomy.tsv.gz",
+        [
+            {
+                "tax_id": "9598",
+                "lineage_tax_ids": "2759,33208,7742,32523,32524,40674,9443,9598",
+                "species_id": "9598",
+                "genus_id": "9596",
+                "family_id": "9604",
+                "order_id": "9443",
+            }
+        ],
+        [
+            "tax_id",
+            "lineage_tax_ids",
+            "species_id",
+            "genus_id",
+            "family_id",
+            "order_id",
+        ],
     )
     with gzip.open(targets / f"{gene_id}.fa.gz", "wt") as handle:
         handle.write(f">{gene_id}\nAAAAAAAAAA\n")
@@ -140,41 +197,127 @@ def _make_run(
     )
 
     strategy_text = ",".join(strategies)
+    partition_id = "partition_000001"
+    evidence = alignment / "evidence" / "partitions" / partition_id
+    map_partition = annotation / "event_variant_map" / "partitions" / partition_id
     _write_gzip_table(
-        alignment / "feature_coverage.tsv.gz",
+        evidence / "ortholog_alignment_summary.tsv.gz",
         [
             {
                 "gene_id": gene_id,
+                "ortholog_gene_id": ortholog_gene_id,
+                "tax_id": "9598",
+                "taxname": "Pan troglodytes",
                 "strategy": strategy,
-                "feature_type": "gene",
-                "length_bp": 10,
-                "covered_bases": 10,
+                "tool": "test",
+                "preset": "fixed",
+                "status": "aligned",
+                "target_length": 10,
+                "query_length": 10,
+                "segment_count": 1,
+                "primary_segment_count": 1,
+                "secondary_segment_count": 0,
+                "aligned_target_bp": 10,
+                "aligned_query_bp": 10,
+                "target_coverage": "1.000000",
+                "query_coverage": "1.000000",
+                "best_identity": "1.000000",
+                "mean_identity": "1.000000",
+                "event_count": 1,
+                "qc_flags": "",
             }
             for strategy in strategies
+            for ortholog_gene_id in ortholog_ids
         ],
-        ["gene_id", "strategy", "feature_type", "length_bp", "covered_bases"],
+        SUMMARY_FIELDS,
     )
     _write_gzip_table(
-        alignment / "strategy_summary.tsv.gz",
+        evidence / "alignment_segments.tsv.gz",
         [
             {
+                "gene_id": gene_id,
+                "ortholog_gene_id": ortholog_gene_id,
+                "tax_id": "9598",
+                "taxname": "Pan troglodytes",
                 "strategy": strategy,
-                "gene_count": 1,
-                "summary_row_count": 2,
-                "aligned_summary_row_count": 2,
-                "event_count": 1,
-                "aligned_target_bp": 10,
+                "tool": "test",
+                "preset": "fixed",
+                "sequence_id": ortholog_gene_id,
+                "target_id": f"target_{gene_id}",
+                "query_id": ortholog_gene_id,
+                "target_start0": 0,
+                "target_end0": 10,
+                "query_start0": 0,
+                "query_end0": 10,
+                "strand": "+",
+                "matches": 10,
+                "block_length": 10,
+                "identity": "1.000000",
+                "mapq": 60,
+                "is_primary": "true",
+                "divergence": "0.000000",
+                "gap_compressed_divergence": "0.000000",
+                "native_record_id": f"record_{strategy}_{ortholog_gene_id}",
+                "qc_flags": "",
             }
             for strategy in strategies
+            for ortholog_gene_id in ortholog_ids
         ],
-        [
-            "strategy",
-            "gene_count",
-            "summary_row_count",
-            "aligned_summary_row_count",
-            "event_count",
-            "aligned_target_bp",
-        ],
+        SEGMENT_FIELDS,
+    )
+    event_rows = []
+    support_rows = []
+    map_rows = []
+    for event_group_id, strategy in enumerate(strategies, start=1):
+        event_rows.append(
+            {
+                "event_group_id": event_group_id,
+                "gene_id": gene_id,
+                "event_type": "snv",
+                "target_start0": 0,
+                "target_end0": 1,
+                "genomic_accession": "NC_000001.11",
+                "genomic_start1": 100,
+                "genomic_end1": 100,
+                "ref": "A",
+                "alt": "G",
+                "strategy": strategy,
+                "support_row_count": 2,
+                "support_ortholog_count": 2,
+                "qc_flags": "",
+            }
+        )
+        support_rows.extend(
+            {
+                "event_group_id": event_group_id,
+                "ortholog_gene_id": ortholog_gene_id,
+                "tax_id": "9598",
+                "taxname": "Pan troglodytes",
+                "mapq": 60,
+                "native_alignment_type": "primary",
+                "support_row_count": 1,
+            }
+            for ortholog_gene_id in ortholog_ids
+        )
+        map_rows.append(
+            {
+                "event_group_id": event_group_id,
+                "variant_key": variant_key,
+                "normalization_status": "ok",
+            }
+        )
+    _write_gzip_table(
+        evidence / "alignment_events.tsv.gz", event_rows, COMPACT_EVENT_FIELDS
+    )
+    _write_gzip_table(
+        evidence / "event_ortholog_support.tsv.gz",
+        support_rows,
+        EVENT_ORTHOLOG_SUPPORT_FIELDS,
+    )
+    _write_gzip_table(
+        map_partition / "event_variant_map.tsv.gz",
+        map_rows,
+        EVENT_VARIANT_MAP_FIELDS,
     )
     _write_json(
         alignment / "manifest.json",
@@ -185,6 +328,10 @@ def _make_run(
             "strategy_parameters": {strategy: {"preset": "fixed"} for strategy in strategies},
             "alignment_event_mode": "compact_support",
             "event_ortholog_support_format": "event_group_id_v1",
+            "normalized_evidence": {
+                "layout": "partitioned",
+                "event_group_id_scope": "partition",
+            },
         },
     )
 
@@ -207,56 +354,6 @@ def _make_run(
     source = annotation / "variant_annotations.tsv.gz"
     _write_gzip_table(source, [base_row], BASE_COLUMNS)
     _write_gzip_table(
-        annotation / "variant_strategy_support.tsv.gz",
-        [
-            {
-                "variant_key": variant_key,
-                "gene_id": gene_id,
-                "strategy": strategy,
-                "alt_support_row_count": 2,
-                "alt_support_ortholog_count": 2,
-                "alt_support_genus_count": 1,
-            }
-            for strategy in strategies
-        ],
-        [
-            "variant_key",
-            "gene_id",
-            "strategy",
-            "alt_support_row_count",
-            "alt_support_ortholog_count",
-            "alt_support_genus_count",
-        ],
-    )
-    _write_gzip_table(
-        annotation / "ortholog_evidence_summary.tsv.gz",
-        [
-            {
-                "strategy": strategy,
-                "target_context": "cds",
-                "taxonomic_scope": "all",
-                "evidence_unit": "ortholog",
-                "site_aligned_count": 2,
-                "alt_support_count": 2,
-                "gnomad_found_count": 1,
-                "gnomad_not_found_count": 0,
-                "gnomad_lookup_failed_count": 0,
-            }
-            for strategy in strategies
-        ],
-        [
-            "strategy",
-            "target_context",
-            "taxonomic_scope",
-            "evidence_unit",
-            "site_aligned_count",
-            "alt_support_count",
-            "gnomad_found_count",
-            "gnomad_not_found_count",
-            "gnomad_lookup_failed_count",
-        ],
-    )
-    _write_gzip_table(
         annotation / "failures.tsv.gz",
         [
             {
@@ -278,6 +375,16 @@ def _make_run(
         annotation / "manifest.json",
         {
             "output_mode": "unique_variant_context",
+            "partition_ids": [partition_id],
+            "event_variant_map": {
+                "layout": "partitioned",
+                "format": "tsv_gzip_v1",
+                "path": "event_variant_map/partitions",
+                "partition_count": 1,
+                "row_count": len(map_rows),
+                "fields": EVENT_VARIANT_MAP_FIELDS,
+                "event_group_id_scope": "partition",
+            },
             "gnomad_api_url": "https://gnomad.test/graphql",
             "gnomad_dataset": "gnomad_r4",
             "clinvar_vcf": path_metadata(clinvar_vcf),
@@ -391,6 +498,18 @@ def test_cohort_resolves_disjoint_runs_as_stable_virtual_union(tmp_path: Path) -
     strategy_summary = pd.read_csv(first.strategy_summary_tsv, sep="\t")
     assert strategy_summary.loc[0, "gene_count"] == 2
     assert strategy_summary.loc[0, "summary_row_count"] == 4
+    resolved = json.loads(first.cohort_manifest_json.read_text())
+    scientific_paths = {
+        record["path"]
+        for member in resolved["members"]
+        for record in member["scientific_files"]
+    }
+    assert "analytics/alignment_aggregates/strategy_summary.tsv.gz" in scientific_paths
+    assert "analytics/alignment_aggregates/feature_coverage.tsv.gz" in scientific_paths
+    assert "analytics/annotation_support/variant_strategy_support.tsv.gz" in scientific_paths
+    assert "analytics/annotation_support/ortholog_evidence_summary.tsv.gz" in scientific_paths
+    assert "alignment/strategy_summary.tsv.gz" not in scientific_paths
+    assert "annotation/variant_strategy_support.tsv.gz" not in scientific_paths
 
     observed = build_or_load_observed_variant_store(
         variant_annotations_tsv=first.variant_annotations_tsv,
@@ -412,6 +531,29 @@ def test_cohort_rejects_overlapping_accepted_gene_ids(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="overlapping accepted gene IDs"):
         resolve_cohort_inputs(
             _manifest(tmp_path / "cohort.json", [("a", run_a), ("b", run_b)]),
+            cohort_root=tmp_path / "cohorts",
+            clinvar_vcf=clinvar,
+        )
+
+
+def test_cohort_rejects_member_without_normalized_alignment_evidence(
+    tmp_path: Path,
+) -> None:
+    clinvar = tmp_path / "clinvar.vcf.gz"
+    clinvar.write_bytes(b"clinvar")
+    Path(f"{clinvar}.tbi").write_bytes(b"index")
+    run = _make_run(tmp_path / "run", gene_id="1", clinvar_vcf=clinvar)
+    evidence = run / "alignment" / "evidence"
+    for path in sorted(evidence.rglob("*"), reverse=True):
+        if path.is_file():
+            path.unlink()
+        else:
+            path.rmdir()
+    evidence.rmdir()
+
+    with pytest.raises(FileNotFoundError, match="Missing normalized alignment evidence"):
+        resolve_cohort_inputs(
+            _manifest(tmp_path / "cohort.json", [("old", run)]),
             cohort_root=tmp_path / "cohorts",
             clinvar_vcf=clinvar,
         )
