@@ -13,7 +13,7 @@ from scipy.spatial.distance import squareform
 
 from analytics.analyses.candidate_conservation import CandidateConservation
 from analytics.analyses.variant_summary import StrategyOverlap, VariantSummary
-from analytics.annotation.consequences import display_consequence_group as consequence_group
+from analytics.vep.consequences import display_consequence_group as consequence_group
 from .components import compact_figure, fig_html, sort_by_metric, strategy_label
 from .config import (
     CLINVAR_COLORS,

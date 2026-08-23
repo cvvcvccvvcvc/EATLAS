@@ -12,6 +12,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 
+import duckdb
 import pandas as pd
 
 from .gnomad import select_af_metrics
@@ -125,7 +126,6 @@ class GnomadAlleleIndex:
             )
 
         parquet_files = sorted({str(coverage[tile]) for tile in covered_tiles})
-        duckdb = _import_duckdb()
         try:
             with duckdb.connect() as connection:
                 connection.register("gnomad_requests", covered[REQUEST_COLUMNS])
@@ -200,7 +200,6 @@ class GnomadAlleleIndex:
         for tile in candidates:
             candidates_by_chrom[tile.chrom].append(tile)
 
-        duckdb = _import_duckdb()
         built_tiles = 0
         raw_missing = 0
         indexed_variants = 0
@@ -634,13 +633,3 @@ def _json_sha256(payload: dict[str, object]) -> str:
     return hashlib.sha256(
         json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
     ).hexdigest()
-
-
-def _import_duckdb():
-    try:
-        import duckdb
-    except ImportError as exc:
-        raise RuntimeError(
-            "gnomAD allele indexing requires the python-duckdb package"
-        ) from exc
-    return duckdb

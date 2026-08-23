@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import re
-import sys
 from pathlib import Path
 from types import ModuleType
 
@@ -9,13 +8,13 @@ import pytest
 
 
 PROJECT_DIR = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(PROJECT_DIR / "bin"))
-
-import ensembl_compara_maf  # noqa: E402
-import run_bwa_pseudoreads  # noqa: E402
-import run_minimap2_alignment  # noqa: E402
-import run_nucmer_alignment  # noqa: E402
-from alignment_table_schema import (  # noqa: E402
+from bin import (
+    ensembl_compara_maf,
+    run_bwa_pseudoreads,
+    run_minimap2_alignment,
+    run_nucmer_alignment,
+)
+from bin.alignment_table_schema import (
     ALIGNER_OUTPUT_SCHEMAS,
     EVENT_FIELDS,
     FAILURE_FIELDS,

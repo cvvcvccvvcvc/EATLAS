@@ -11,31 +11,9 @@ import subprocess
 from pathlib import Path
 from typing import Iterable
 
+from genomics.taxonomy import TAXONOMY_FIELDS
+
 TSV_NULL = ""
-TAXONOMY_FIELDS = [
-    "tax_id",
-    "taxonomy_status",
-    "scientific_name",
-    "rank",
-    "group_name",
-    "domain_id",
-    "domain_name",
-    "kingdom_id",
-    "kingdom_name",
-    "phylum_id",
-    "phylum_name",
-    "class_id",
-    "class_name",
-    "order_id",
-    "order_name",
-    "family_id",
-    "family_name",
-    "genus_id",
-    "genus_name",
-    "species_id",
-    "species_name",
-    "lineage_tax_ids",
-]
 
 
 def parse_args() -> argparse.Namespace:

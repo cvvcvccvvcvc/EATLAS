@@ -32,6 +32,27 @@ def test_removed_stage_modes_are_not_public_parameters() -> None:
     assert "The pipeline has one end-to-end execution path" in main
 
 
+def test_strategy_default_and_native_output_contract_are_unambiguous() -> None:
+    main = (PROJECT_DIR / "main.nf").read_text()
+    config = (PROJECT_DIR / "nextflow.config").read_text()
+    schema = (PROJECT_DIR / "nextflow_schema.json").read_text()
+    runtime = "\n".join(
+        path.read_text()
+        for path in (
+            PROJECT_DIR / "bin/run_minimap2_alignment.py",
+            PROJECT_DIR / "bin/run_nucmer_alignment.py",
+            PROJECT_DIR / "bin/run_bwa_pseudoreads.py",
+        )
+    )
+
+    assert "alignment_strategies = 'default'" in config
+    assert "raw == 'default'" in main
+    assert "raw == 'all'" not in main
+    assert '"default": "default"' in schema
+    assert "keep_native_alignments" not in config + schema
+    assert "--keep-native" not in runtime
+
+
 def test_pipeline_modules_do_not_publish_derived_alignment_or_annotation_tables() -> None:
     module_paths = [
         PROJECT_DIR / "modules/local/align_minimap2.nf",
@@ -56,11 +77,42 @@ def test_pipeline_modules_do_not_publish_derived_alignment_or_annotation_tables(
         assert filename not in module_text
 
 
+def test_analytics_derivations_do_not_import_pipeline_entrypoints() -> None:
+    support_io = (PROJECT_DIR / "analytics/io/annotation_support.py").read_text()
+    aggregate_io = (PROJECT_DIR / "analytics/io/alignment_aggregates.py").read_text()
+
+    for source in (support_io, aggregate_io):
+        assert "sys.path" not in source
+        assert "from bin" not in source
+    assert "from analytics.derivations" in support_io
+    assert "from analytics.derivations" in aggregate_io
+
+
+def test_pipeline_python_modules_are_staged_packages_without_path_bridges() -> None:
+    module_text = "\n".join(
+        path.read_text() for path in (PROJECT_DIR / "modules/local").glob("*.nf")
+    )
+
+    assert "PYTHONPATH" not in module_text
+    for module_name in (
+        "bin.check_runtime",
+        "bin.run_minimap2_alignment",
+        "bin.run_nucmer_alignment",
+        "bin.run_bwa_pseudoreads",
+        "bin.build_ensembl_compara_maf_manifest",
+        "bin.prepare_ensembl_compara_maf_chunk_tasks",
+        "bin.run_ensembl_compara_maf_chunk_alignment",
+        "bin.merge_ensembl_compara_maf_gene",
+        "bin.merge_alignment_results",
+    ):
+        assert f"python3 -m {module_name}" in module_text
+
+
 def test_small_annotation_partitions_do_not_request_large_run_memory() -> None:
     main = (PROJECT_DIR / "main.nf").read_text()
 
-    assert "supportRowCount <= 1_000_000L" in main
-    assert "supportRowCount <= 5_000_000L" in main
+    assert "eventRowCount <= 1_000_000L" in main
+    assert "eventRowCount <= 5_000_000L" in main
     assert "return 8" in main
     assert "return 16" in main
 

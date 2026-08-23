@@ -13,7 +13,7 @@ from typing import Any
 import pysam
 
 
-logger = logging.getLogger("bam_filtering")
+logger = logging.getLogger(__name__)
 
 
 @dataclass

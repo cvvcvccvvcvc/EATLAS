@@ -32,9 +32,9 @@ DEFAULT_ALIGNMENT_STRATEGIES = ALIGNMENT_STRATEGY_REGISTRY
     .collect { it.name }
 
 def parseAlignmentStrategies(rawValue) {
-    def raw = rawValue == null ? 'all' : rawValue.toString().trim()
+    def raw = rawValue == null ? 'default' : rawValue.toString().trim()
     def selected = []
-    if (!raw || raw == 'all') {
+    if (!raw || raw == 'default') {
         selected = DEFAULT_ALIGNMENT_STRATEGIES
     } else {
         selected = raw.split(',')
@@ -45,7 +45,7 @@ def parseAlignmentStrategies(rawValue) {
     def unknown = selected.findAll { !AVAILABLE_ALIGNMENT_STRATEGIES.contains(it) }
     if (unknown) {
         throw new IllegalArgumentException(
-            "Unknown alignment_strategies value(s): ${unknown.join(', ')}. Available: ${AVAILABLE_ALIGNMENT_STRATEGIES.join(', ')}"
+            "Unknown alignment_strategies value(s): ${unknown.join(', ')}. Use 'default' or: ${AVAILABLE_ALIGNMENT_STRATEGIES.join(', ')}"
         )
     }
     if (!selected) {
@@ -55,26 +55,26 @@ def parseAlignmentStrategies(rawValue) {
 }
 
 
-def annotationBaseMemoryGbForSupportRows(rawSupportRowCount) {
-    def supportRowCount = rawSupportRowCount as Long
-    if (supportRowCount < 0) {
+def annotationBaseMemoryGbForEventRows(rawEventRowCount) {
+    def eventRowCount = rawEventRowCount as Long
+    if (eventRowCount < 0) {
         throw new IllegalArgumentException(
-            "event_ortholog_support_count must be non-negative: ${supportRowCount}"
+            "alignment_event_count must be non-negative: ${eventRowCount}"
         )
     }
-    if (supportRowCount <= 1_000_000L) {
+    if (eventRowCount <= 1_000_000L) {
         return 8
     }
-    if (supportRowCount <= 5_000_000L) {
+    if (eventRowCount <= 5_000_000L) {
         return 16
     }
-    if (supportRowCount <= 15_000_000L) {
+    if (eventRowCount <= 15_000_000L) {
         return 32
     }
-    if (supportRowCount <= 30_000_000L) {
+    if (eventRowCount <= 30_000_000L) {
         return 48
     }
-    if (supportRowCount <= 40_000_000L) {
+    if (eventRowCount <= 40_000_000L) {
         return 64
     }
     return 96
@@ -185,6 +185,11 @@ workflow FETCH_STAGE {
     fetch_script = file("${projectDir}/bin/fetch_parse_chunk.py")
     build_fetch_dataset_script = file("${projectDir}/bin/build_fetch_dataset.py")
     taxonomy_script = file("${projectDir}/bin/fetch_taxonomy.py")
+    bin_package_init = file("${projectDir}/bin/__init__.py")
+    taxonomy_sources = [
+        file("${projectDir}/genomics/__init__.py"),
+        file("${projectDir}/genomics/taxonomy.py"),
+    ]
     target_annotation_gff3 = file(params.target_annotation_gff3)
     request_throttle_dir = "${workflow.workDir}/.gaph/ncbi_fetch_throttle"
 
@@ -200,7 +205,12 @@ workflow FETCH_STAGE {
         target_annotation_gff3,
         build_fetch_dataset_script
     )
-    FETCH_TAXONOMY(BUILD_FETCH_DATASET.out.orthologs_selected, taxonomy_script)
+    FETCH_TAXONOMY(
+        BUILD_FETCH_DATASET.out.orthologs_selected,
+        taxonomy_script,
+        bin_package_init,
+        taxonomy_sources
+    )
     FINALIZE_FETCH_OUTPUT(
         BUILD_FETCH_DATASET.out.manifest,
         BUILD_FETCH_DATASET.out.input_ids,
@@ -214,18 +224,10 @@ workflow FETCH_STAGE {
     )
 
     emit:
-    manifest = BUILD_FETCH_DATASET.out.manifest
-    input_ids = BUILD_FETCH_DATASET.out.input_ids
-    chunks = BUILD_FETCH_DATASET.out.chunks
-    chunk_metrics = BUILD_FETCH_DATASET.out.chunk_metrics
     genes = BUILD_FETCH_DATASET.out.genes
     target_features = BUILD_FETCH_DATASET.out.target_features
     orthologs_selected = BUILD_FETCH_DATASET.out.orthologs_selected
-    orthologs_candidates = BUILD_FETCH_DATASET.out.orthologs_candidates
-    failures = BUILD_FETCH_DATASET.out.failures
     sequences = BUILD_FETCH_DATASET.out.sequences
-    taxonomy = FETCH_TAXONOMY.out.taxonomy
-    taxonomy_failures = FETCH_TAXONOMY.out.taxonomy_failures
 }
 
 workflow ALIGNMENT_STAGE {
@@ -240,13 +242,20 @@ workflow ALIGNMENT_STAGE {
     minimap2_script = file("${projectDir}/bin/run_minimap2_alignment.py")
     nucmer_script = file("${projectDir}/bin/run_nucmer_alignment.py")
     bwa_script = file("${projectDir}/bin/run_bwa_pseudoreads.py")
-    bam_filtering_script = file("${projectDir}/bin/bam_filtering_v1.py")
+    bwa_filter_source = file("${projectDir}/bin/bwa_pseudoread_filter.py")
     ensembl_compara_maf_manifest_script = file("${projectDir}/bin/build_ensembl_compara_maf_manifest.py")
     ensembl_compara_maf_chunk_tasks_script = file("${projectDir}/bin/prepare_ensembl_compara_maf_chunk_tasks.py")
     ensembl_compara_maf_chunk_script = file("${projectDir}/bin/run_ensembl_compara_maf_chunk_alignment.py")
     ensembl_compara_maf_gene_merge_script = file("${projectDir}/bin/merge_ensembl_compara_maf_gene.py")
     merge_script = file("${projectDir}/bin/merge_alignment_results.py")
+    bin_package_init = file("${projectDir}/bin/__init__.py")
     alignment_table_schema = file("${projectDir}/bin/alignment_table_schema.py")
+    alignment_task_io = file("${projectDir}/bin/alignment_task_io.py")
+    ensembl_compara_maf_source = file("${projectDir}/bin/ensembl_compara_maf.py")
+    alignment_bin_sources = [bin_package_init, alignment_table_schema, alignment_task_io]
+    bwa_bin_sources = [*alignment_bin_sources, bwa_filter_source]
+    ensembl_bin_sources = [bin_package_init, alignment_table_schema, ensembl_compara_maf_source]
+    merge_bin_sources = [bin_package_init, alignment_table_schema]
 
     BUILD_ALIGNMENT_TASKS(
         genes,
@@ -292,9 +301,6 @@ workflow ALIGNMENT_STAGE {
         .map { gene_id, dir, partition_id -> tuple(gene_id, partition_id, dir) }
     ortholog_task_dirs_by_gene = task_dirs_by_gene_unpartitioned
         .join(ortholog_task_partitions)
-        .map { gene_id, dir, partition_id -> tuple(gene_id, partition_id, dir) }
-    eligible_task_dirs_by_gene = task_dirs_by_gene_unpartitioned
-        .join(eligible_task_partitions)
         .map { gene_id, dir, partition_id -> tuple(gene_id, partition_id, dir) }
     target_fastas_by_gene = sequences.flatMap { seq_dir -> fastaFilesByGene(seq_dir, 'targets') }
     ortholog_fastas_by_gene = sequences.flatMap { seq_dir -> fastaFilesByGene(seq_dir, 'orthologs') }
@@ -344,12 +350,12 @@ workflow ALIGNMENT_STAGE {
     alignment_result_dirs = Channel.empty()
 
     if (!SELECTED_MINIMAP2_STRATEGIES.isEmpty()) {
-        ALIGN_MINIMAP2(minimap2_inputs, minimap2_script, alignment_table_schema)
+        ALIGN_MINIMAP2(minimap2_inputs, minimap2_script, alignment_bin_sources)
         alignment_result_dirs = alignment_result_dirs.mix(ALIGN_MINIMAP2.out.result_dirs)
     }
 
     if (SELECTED_ALIGNMENT_STRATEGIES.contains('nucmer')) {
-        ALIGN_NUCMER_COMPARATOR(alignment_inputs, nucmer_script, alignment_table_schema)
+        ALIGN_NUCMER_COMPARATOR(alignment_inputs, nucmer_script, alignment_bin_sources)
         alignment_result_dirs = alignment_result_dirs.mix(ALIGN_NUCMER_COMPARATOR.out.nucmer_result_dirs)
     }
 
@@ -357,8 +363,7 @@ workflow ALIGNMENT_STAGE {
         ALIGN_BWA_PSEUDOREADS(
             bwa_inputs,
             bwa_script,
-            bam_filtering_script,
-            alignment_table_schema
+            bwa_bin_sources
         )
         alignment_result_dirs = alignment_result_dirs.mix(ALIGN_BWA_PSEUDOREADS.out.bwa_result_dirs)
     }
@@ -374,13 +379,18 @@ workflow ALIGNMENT_STAGE {
         } else if (default_maf_manifest.exists()) {
             maf_manifest = Channel.value(default_maf_manifest)
         } else {
-            BUILD_ENSEMBL_COMPARA_MAF_MANIFEST(genes, ensembl_compara_maf_manifest_script)
+            BUILD_ENSEMBL_COMPARA_MAF_MANIFEST(
+                genes,
+                ensembl_compara_maf_manifest_script,
+                ensembl_bin_sources
+            )
             maf_manifest = BUILD_ENSEMBL_COMPARA_MAF_MANIFEST.out.maf_manifest
         }
         BUILD_ENSEMBL_COMPARA_MAF_CHUNK_TASKS(
             genes,
             maf_manifest,
-            ensembl_compara_maf_chunk_tasks_script
+            ensembl_compara_maf_chunk_tasks_script,
+            ensembl_bin_sources
         )
         maf_chunk_task_dirs = BUILD_ENSEMBL_COMPARA_MAF_CHUNK_TASKS.out.chunk_task_dirs.flatten().map { dir ->
             tuple([id: dir.baseName], dir)
@@ -388,7 +398,7 @@ workflow ALIGNMENT_STAGE {
         ALIGN_ENSEMBL_COMPARA_MAF_CHUNK(
             maf_chunk_task_dirs,
             ensembl_compara_maf_chunk_script,
-            alignment_table_schema
+            ensembl_bin_sources
         )
         maf_fragments_by_gene = ALIGN_ENSEMBL_COMPARA_MAF_CHUNK.out.ensembl_compara_maf_gene_fragments
             .flatMap { meta, dirs ->
@@ -411,7 +421,7 @@ workflow ALIGNMENT_STAGE {
         MERGE_ENSEMBL_COMPARA_MAF_GENE(
             maf_gene_merge_inputs,
             ensembl_compara_maf_gene_merge_script,
-            alignment_table_schema
+            ensembl_bin_sources
         )
         alignment_result_dirs = alignment_result_dirs.mix(
             MERGE_ENSEMBL_COMPARA_MAF_GENE.out.gene_result_dirs
@@ -458,7 +468,7 @@ workflow ALIGNMENT_STAGE {
         BUILD_ALIGNMENT_TASKS.out.alignment_tasks,
         SELECTED_ALIGNMENT_STRATEGIES.join(','),
         merge_script,
-        alignment_table_schema
+        merge_bin_sources
     )
 
     MERGE_ALIGNMENT(
@@ -468,13 +478,11 @@ workflow ALIGNMENT_STAGE {
         MERGE_ALIGNMENT_PARTITION.out.partition_dirs.map { meta, dir -> dir }.collect(),
         SELECTED_ALIGNMENT_STRATEGIES.join(','),
         merge_script,
-        alignment_table_schema
+        merge_bin_sources
     )
 
     emit:
-    manifest = MERGE_ALIGNMENT.out.manifest
     evidence = MERGE_ALIGNMENT.out.evidence
-    failures = MERGE_ALIGNMENT.out.failures
 }
 
 workflow PARTITIONED_ANNOTATION_STAGE {
@@ -488,6 +496,7 @@ workflow PARTITIONED_ANNOTATION_STAGE {
 
     main:
     annotate_script = file("${projectDir}/bin/annotate_events.py")
+    bin_package_init = file("${projectDir}/bin/__init__.py")
     prepare_contexts_script = file("${projectDir}/bin/prepare_annotation_contexts.py")
     genomics_sources = [
         file("${projectDir}/genomics/__init__.py"),
@@ -524,16 +533,16 @@ workflow PARTITIONED_ANNOTATION_STAGE {
                 error "Alignment partition ${partition_id} is missing manifest.json: ${alignment_partition}"
             }
             def partitionManifest = new JsonSlurper().parse(manifestPath.toFile())
-            if (partitionManifest.schema != 'normalized_alignment_evidence_partition_v1') {
+            if (partitionManifest.schema != 'normalized_alignment_evidence_partition_v2') {
                 error "Alignment partition ${partition_id} has unsupported schema=${partitionManifest.schema}"
             }
-            if (partitionManifest.event_ortholog_support_count == null) {
-                error "Alignment partition ${partition_id} manifest is missing event_ortholog_support_count"
+            if (partitionManifest.alignment_event_count == null) {
+                error "Alignment partition ${partition_id} manifest is missing alignment_event_count"
             }
-            def supportRowCount = partitionManifest.event_ortholog_support_count as Long
+            def eventRowCount = partitionManifest.alignment_event_count as Long
             def annotationMeta = meta + [
-                annotation_event_ortholog_support_count: supportRowCount,
-                annotation_memory_gb: annotationBaseMemoryGbForSupportRows(supportRowCount),
+                annotation_event_count: eventRowCount,
+                annotation_memory_gb: annotationBaseMemoryGbForEventRows(eventRowCount),
             ]
             def contextGenes = context_dir.resolve('genes.tsv.gz')
             def targetFastas = context_dir.resolve('targets').toFile().listFiles()
@@ -548,6 +557,7 @@ workflow PARTITIONED_ANNOTATION_STAGE {
     ANNOTATE_EVENTS_PARTITION(
         annotation_inputs,
         annotate_script,
+        bin_package_init,
         genomics_sources,
         clinvar_vcf,
         clinvar_vcf_tbi,
@@ -558,11 +568,6 @@ workflow PARTITIONED_ANNOTATION_STAGE {
         finalize_script
     )
 
-    emit:
-    variant_annotations = FINALIZE_ANNOTATION.out.variant_annotations
-    event_variant_map = FINALIZE_ANNOTATION.out.event_variant_map
-    manifest = FINALIZE_ANNOTATION.out.manifest
-    failures = FINALIZE_ANNOTATION.out.failures
 }
 
 workflow {
@@ -582,7 +587,12 @@ workflow {
     }
 
     runtime_check_script = file("${projectDir}/bin/check_runtime.py")
-    CHECK_RUNTIME(runtime_check_script, SELECTED_ALIGNMENT_STRATEGIES.join(','))
+    runtime_bin_package_init = file("${projectDir}/bin/__init__.py")
+    CHECK_RUNTIME(
+        runtime_check_script,
+        runtime_bin_package_init,
+        SELECTED_ALIGNMENT_STRATEGIES.join(',')
+    )
 
     clinvar_inputs = resolveClinvarInputs()
     log.info "Using ClinVar VCF: ${clinvar_inputs.path}"

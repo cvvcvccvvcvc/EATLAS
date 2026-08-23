@@ -317,12 +317,12 @@ def _make_run(
         alignment / "manifest.json",
         {
             "stage": "alignment",
-            "schema": "normalized_alignment_evidence_v1",
+            "schema": "normalized_alignment_evidence_v2",
             "gene_ids": [gene_id],
             "strategies": strategies,
             "strategy_parameters": {strategy: {"preset": "fixed"} for strategy in strategies},
             "alignment_event_mode": "compact_support",
-            "event_ortholog_support_format": "event_group_id_v1",
+            "event_ortholog_support_format": "event_group_id_v2",
             "normalized_evidence": {
                 "layout": "partitioned",
                 "format": "tsv_gzip_v1",
@@ -380,7 +380,7 @@ def _make_run(
         annotation / "manifest.json",
         {
             "stage": "annotation",
-            "schema": "normalized_annotation_evidence_v1",
+            "schema": "normalized_annotation_evidence_v2",
             "partition_ids": [partition_id],
             "event_variant_map": {
                 "layout": "partitioned",

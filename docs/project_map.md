@@ -124,6 +124,10 @@ Runtime environments:
   - derives variant-strategy and taxonomic ortholog-evidence report tables from
     Stage 1 taxonomy, Stage 2 evidence, and Stage 3 event lineage
 
+- `analytics/derivations/`
+  - deterministic strategy, coverage, taxonomy, and exact-support derivations
+    shared by analytics cache builders
+
 ## Shared Domain Library
 
 - `genomics/variants.py`
@@ -142,10 +146,12 @@ Runtime environments:
 
 - `analytics/strategy_report.py`
   - command-line contract and report orchestration
-- `analytics/annotation/`
+- `analytics/vep/`
   - VEP integration and consequence vocabularies
 - `analytics/analyses/`
   - scientific calculations and bounded-memory aggregation
+- `analytics/derivations/`
+  - reusable deterministic builders for source-evidence-derived tables
 - `analytics/io/`
   - run input resolution and atomic artifact contracts
 - `analytics/reporting/`

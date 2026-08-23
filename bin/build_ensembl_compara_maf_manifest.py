@@ -17,7 +17,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable, TextIO
 
-from ensembl_compara_maf import BASE_URL, RELEASE, SPECIES_SET
+from bin.ensembl_compara_maf import BASE_URL, RELEASE, SPECIES_SET
 
 
 FIELDS = [

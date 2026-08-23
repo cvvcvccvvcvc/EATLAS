@@ -10,7 +10,7 @@ import tempfile
 from pathlib import Path
 
 from analytics.io.artifacts import content_identity, write_json_atomic
-from bin.taxonomic_evidence import (
+from analytics.derivations.taxonomy import (
     TAXONOMY_SUMMARY_FIELDS,
     build_taxonomy_summary_rows,
     load_taxonomy_profiles,

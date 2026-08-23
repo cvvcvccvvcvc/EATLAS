@@ -9,7 +9,7 @@ from analytics.analyses.conservation_validation import (
     TARGET_CONTEXT_OPTIONS,
     VARIANT_TYPE_OPTIONS,
 )
-from analytics.annotation.consequences import (
+from analytics.vep.consequences import (
     VALIDATION_CONSEQUENCE_OPTIONS as CONSEQUENCE_OPTIONS,
 )
 from .components import dataframe_records, strategy_label

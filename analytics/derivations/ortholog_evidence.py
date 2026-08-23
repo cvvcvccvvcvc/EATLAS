@@ -9,20 +9,26 @@ from collections import defaultdict
 from collections.abc import Iterable, Mapping
 from pathlib import Path
 
-from taxonomic_evidence import COUNT_KEYS, SCOPE_ORDER, UNIT_ORDER
+from analytics.derivations.taxonomy import COUNT_KEYS, SCOPE_ORDER, UNIT_ORDER
 
 
 CONTEXT_PRIORITY = ("cds", "utr", "exon", "intron")
-SUMMARY_FIELDS = [
+ORTHOLOG_EVIDENCE_KEY_FIELDS = [
     "strategy",
     "target_context",
     "taxonomic_scope",
     "evidence_unit",
     "site_aligned_count",
     "alt_support_count",
+]
+ORTHOLOG_EVIDENCE_COUNT_FIELDS = [
     "gnomad_found_count",
     "gnomad_not_found_count",
     "gnomad_lookup_failed_count",
+]
+ORTHOLOG_EVIDENCE_FIELDS = [
+    *ORTHOLOG_EVIDENCE_KEY_FIELDS,
+    *ORTHOLOG_EVIDENCE_COUNT_FIELDS,
 ]
 
 
@@ -166,7 +172,12 @@ def write_ortholog_evidence_summary(
     unit_index = {unit: index for index, unit in enumerate(UNIT_ORDER)}
     row_count = 0
     with gzip.open(output, "wt", newline="") as handle:
-        writer = csv.DictWriter(handle, fieldnames=SUMMARY_FIELDS, delimiter="\t", lineterminator="\n")
+        writer = csv.DictWriter(
+            handle,
+            fieldnames=ORTHOLOG_EVIDENCE_FIELDS,
+            delimiter="\t",
+            lineterminator="\n",
+        )
         writer.writeheader()
         for group in sorted(
             totals,

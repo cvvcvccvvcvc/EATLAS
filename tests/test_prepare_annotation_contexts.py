@@ -25,7 +25,7 @@ def write_partition(root: Path, partition_id: str, gene_ids: list[str]) -> None:
     (partition / "manifest.json").write_text(
         json.dumps(
             {
-                "schema": "normalized_alignment_evidence_partition_v1",
+                "schema": "normalized_alignment_evidence_partition_v2",
                 "partition_id": partition_id,
                 "gene_count": len(gene_ids),
                 "gene_ids": gene_ids,

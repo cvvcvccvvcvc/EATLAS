@@ -14,7 +14,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Iterable, TextIO
 
-from alignment_table_schema import (
+from bin.alignment_table_schema import (
     EVENT_FIELDS,
     FAILURE_FIELDS,
     SEGMENT_FIELDS,

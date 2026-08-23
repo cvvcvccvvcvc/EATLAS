@@ -7,51 +7,42 @@ import gzip
 import hashlib
 import json
 import os
-import sys
 import tempfile
 from dataclasses import dataclass
 from itertools import zip_longest
 from pathlib import Path
 
+import duckdb
+
+from analytics.derivations.feature_coverage import (
+    iter_snv_event_sites,
+    load_snv_site_depth,
+    write_snv_site_depth,
+    write_snv_taxonomic_depth,
+)
+from analytics.derivations.ortholog_evidence import (
+    ORTHOLOG_EVIDENCE_FIELDS,
+    write_ortholog_evidence_summary,
+)
+from analytics.derivations.support import (
+    VARIANT_STRATEGY_SUPPORT_FIELDS,
+    EventOrthologSupportStream,
+    add_exact_strategy_support,
+    build_gnomad_statuses,
+    build_variant_strategy_support,
+    load_snv_alt_genus_support,
+    merge_ortholog_evidence,
+)
+from analytics.derivations.taxonomy import (
+    COUNT_KEYS,
+    count_member_groups,
+    load_taxonomy_profiles,
+)
 from analytics.io.artifacts import content_identity, file_identity, write_json_atomic
-from genomics.variants import parse_variant_key
+from genomics.variants import parse_variant_key, variant_aggregate_key
 
 
-# Pipeline process helpers still use sibling imports. Keep this path bridge local
-# so the scientific algorithms remain single-source.
-_BIN_DIR = Path(__file__).resolve().parents[2] / "bin"
-_ADDED_BIN_PATH = str(_BIN_DIR) not in sys.path
-if _ADDED_BIN_PATH:
-    sys.path.insert(0, str(_BIN_DIR))
-try:
-    from annotate_events import (
-        EVENT_VARIANT_MAP_FIELDS,
-        VARIANT_STRATEGY_SUPPORT_FIELDS,
-        EventOrthologSupportStream,
-        add_strategy_support,
-        build_gnomad_statuses,
-        build_variant_strategy_support,
-        load_snv_alt_genus_support,
-        variant_aggregate_key,
-    )
-    from feature_coverage import (
-        iter_snv_event_sites,
-        load_snv_site_depth,
-        write_snv_site_depth,
-        write_snv_taxonomic_depth,
-    )
-    from finalize_annotation_partitions import (
-        ORTHOLOG_EVIDENCE_FIELDS,
-        merge_ortholog_evidence,
-    )
-    from ortholog_evidence_summary import write_ortholog_evidence_summary
-    from taxonomic_evidence import COUNT_KEYS, count_member_groups, load_taxonomy_profiles
-finally:
-    if _ADDED_BIN_PATH:
-        sys.path.remove(str(_BIN_DIR))
-
-
-CACHE_SCHEMA_VERSION = 2
+CACHE_SCHEMA_VERSION = 3
 CACHE_DIRNAME = "annotation_support"
 VARIANT_SUPPORT_FILENAME = "variant_strategy_support.tsv.gz"
 ORTHOLOG_EVIDENCE_FILENAME = "ortholog_evidence_summary.tsv.gz"
@@ -59,6 +50,25 @@ EVENTS_FILENAME = "alignment_events.tsv.gz"
 SEGMENTS_FILENAME = "alignment_segments.tsv.gz"
 EVENT_SUPPORT_FILENAME = "event_ortholog_support.tsv.gz"
 EVENT_MAP_FILENAME = "event_variant_map.tsv.gz"
+EVENT_VARIANT_MAP_FIELDS = [
+    "event_group_id",
+    "variant_key",
+    "normalization_status",
+]
+COMPACT_EVENT_FIELDS = [
+    "event_group_id",
+    "gene_id",
+    "event_type",
+    "target_start0",
+    "target_end0",
+    "genomic_accession",
+    "genomic_start1",
+    "genomic_end1",
+    "ref",
+    "alt",
+    "strategy",
+    "qc_flags",
+]
 DNA_BASES = frozenset("ACGT")
 SNV_ALT_TAXONOMIC_SUPPORT_FIELDS = [
     "gene_id",
@@ -90,7 +100,7 @@ def resolve_annotation_support_paths(run_dir: Path) -> AnnotationSupportPaths:
         raise ValueError(
             f"Annotation manifest has invalid stage: {annotation_manifest_path}"
         )
-    if annotation_manifest.get("schema") != "normalized_annotation_evidence_v1":
+    if annotation_manifest.get("schema") != "normalized_annotation_evidence_v2":
         raise ValueError(
             f"Annotation manifest has unsupported schema: {annotation_manifest_path}"
         )
@@ -129,7 +139,7 @@ def resolve_annotation_support_paths(run_dir: Path) -> AnnotationSupportPaths:
     alignment_manifest = _read_json(alignment_manifest_path)
     if alignment_manifest.get("stage") != "alignment":
         raise ValueError(f"Alignment manifest has invalid stage: {alignment_manifest_path}")
-    if alignment_manifest.get("schema") != "normalized_alignment_evidence_v1":
+    if alignment_manifest.get("schema") != "normalized_alignment_evidence_v2":
         raise ValueError(f"Alignment manifest has unsupported schema: {alignment_manifest_path}")
     normalized_evidence = alignment_manifest.get("normalized_evidence")
     if not isinstance(normalized_evidence, dict):
@@ -230,14 +240,6 @@ def build_or_load_annotation_support(
     fingerprint = _fingerprint(inputs)
     if _cache_is_valid(manifest_path, outputs, inputs, fingerprint):
         return outputs
-
-    try:
-        import duckdb
-    except ImportError as exc:
-        raise RuntimeError(
-            "DuckDB is required to derive annotation support; "
-            "run analytics in envs/analytics.yml"
-        ) from exc
 
     cache_dir.mkdir(parents=True, exist_ok=True)
     profiles = load_taxonomy_profiles(taxonomy)
@@ -401,17 +403,6 @@ def _collapse_partition(
     """Join partition-local lineage streams while holding one exact-support group."""
 
     aggregates: dict[tuple, dict] = {}
-    event_required = {
-        "event_group_id",
-        "gene_id",
-        "strategy",
-        "event_type",
-        "target_start0",
-        "ref",
-        "alt",
-        "support_row_count",
-        "support_ortholog_count",
-    }
     with (
         gzip.open(events_path, "rt", newline="") as event_handle,
         gzip.open(event_map_path, "rt", newline="") as map_handle,
@@ -426,11 +417,10 @@ def _collapse_partition(
         )
         alt_writer.writeheader()
         event_reader = csv.DictReader(event_handle, delimiter="\t")
-        event_missing = event_required - set(event_reader.fieldnames or [])
-        if event_missing:
+        if event_reader.fieldnames != COMPACT_EVENT_FIELDS:
             raise ValueError(
-                f"Alignment events {events_path} missing columns: "
-                + ", ".join(sorted(event_missing))
+                f"Alignment events {events_path} have an invalid schema: "
+                f"expected {COMPACT_EVENT_FIELDS}, observed {event_reader.fieldnames}"
             )
         map_reader = csv.DictReader(map_handle, delimiter="\t")
         if map_reader.fieldnames != EVENT_VARIANT_MAP_FIELDS:
@@ -485,27 +475,12 @@ def _collapse_partition(
                     "ref": event_row.get("ref", ""),
                     "alt": event_row.get("alt", ""),
                     "lookup_status": map_row.get("normalization_status", ""),
-                    "support_row_count": 0,
                     "_lookup_key": lookup_key,
                     "_support_by_strategy": {},
                 }
                 aggregates[aggregate_key] = aggregate
-            aggregate["support_row_count"] += _positive_int(
-                event_row.get("support_row_count"),
-                f"support_row_count in {events_path}",
-            )
-            add_strategy_support(aggregate, event_row)
-            strategy = str(event_row.get("strategy") or "")
-            aggregate["_support_by_strategy"][strategy].orthologs.update(
-                str(row["ortholog_gene_id"]) for row in support_rows
-            )
+            add_exact_strategy_support(aggregate, event_row, support_rows)
         support_stream.finish()
-    for aggregate in aggregates.values():
-        for support in aggregate["_support_by_strategy"].values():
-            # add_strategy_support sees only the compact per-event hint. Exact
-            # event support is the canonical source of distinct orthologs after
-            # multiple raw events collapse to one normalized variant.
-            support.ortholog_count_hint = len(support.orthologs)
     return aggregates
 
 
@@ -550,7 +525,6 @@ def _validate_exact_event_support(
     path: Path,
 ) -> None:
     orthologs: set[str] = set()
-    row_count = 0
     for row in support_rows:
         ortholog_gene_id = str(row.get("ortholog_gene_id") or "")
         if not ortholog_gene_id:
@@ -561,24 +535,14 @@ def _validate_exact_event_support(
                 f"event_group_id={event_row.get('event_group_id')}: {ortholog_gene_id}"
             )
         orthologs.add(ortholog_gene_id)
-        row_count += _positive_int(
+        _positive_int(
             row.get("support_row_count"),
             f"support_row_count in {path}",
         )
-    expected_rows = _positive_int(
-        event_row.get("support_row_count"),
-        "support_row_count in compact event",
-    )
-    expected_orthologs = _positive_int(
-        event_row.get("support_ortholog_count"),
-        "support_ortholog_count in compact event",
-    )
-    if row_count != expected_rows or len(orthologs) != expected_orthologs:
+    if not orthologs:
         raise ValueError(
-            "Exact event support does not match compact event totals for "
-            f"event_group_id={event_row.get('event_group_id')}: "
-            f"rows={row_count}/{expected_rows}, "
-            f"orthologs={len(orthologs)}/{expected_orthologs}"
+            "Compact event has no exact ortholog support for "
+            f"event_group_id={event_row.get('event_group_id')}: {path}"
         )
 
 

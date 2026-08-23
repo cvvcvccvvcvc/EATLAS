@@ -9,7 +9,6 @@ import gzip
 import hashlib
 import json
 import re
-import shutil
 import subprocess
 import tempfile
 from bisect import bisect_left
@@ -18,13 +17,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
 
-from alignment_table_schema import (
+from bin.alignment_table_schema import (
     EVENT_FIELDS,
     FAILURE_FIELDS,
     SEGMENT_FIELDS,
     SUMMARY_FIELDS,
 )
-from alignment_task_io import (
+from bin.alignment_task_io import (
     iter_fasta,
     load_task_context,
     materialize_task_fastas,
@@ -72,12 +71,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--pseudoread-step", default=0, type=int)
     parser.add_argument("--minimap2-bin", default="minimap2")
     parser.add_argument("--threads", default=1, type=int)
-    parser.add_argument("--keep-native", default="false")
     return parser.parse_args()
-
-
-def truthy(value: str) -> bool:
-    return str(value).lower() in {"1", "true", "yes", "y"}
 
 
 def validate_query_mode(preset: str, pseudoread_len: int, pseudoread_step: int) -> None:
@@ -654,19 +648,12 @@ def finalize_summary(row: dict[str, object]) -> dict[str, object]:
     return row
 
 
-def gzip_copy(src: Path, dst: Path) -> None:
-    dst.parent.mkdir(parents=True, exist_ok=True)
-    with src.open("rb") as inp, gzip.open(dst, "wb") as out:
-        shutil.copyfileobj(inp, out)
-
-
 def main() -> None:
     args = parse_args()
     if args.threads < 1:
         raise ValueError("--threads must be at least 1")
     validate_query_mode(args.preset, args.pseudoread_len, args.pseudoread_step)
     args.outdir.mkdir(parents=True, exist_ok=True)
-    keep_native = truthy(args.keep_native)
 
     task, target_meta, ortholog_meta = load_task_context(args.task_dir)
     gene_id = task["gene_id"]
@@ -743,16 +730,6 @@ def main() -> None:
             )
             all_segments.extend(segments)
             all_events.extend(events)
-            if keep_native:
-                gzip_copy(
-                    paf_path,
-                    args.outdir / "native" / f"{gene_id}.{args.preset}.paf.gz",
-                )
-                if pseudoreads is not None:
-                    gzip_copy(
-                        query_fasta,
-                        args.outdir / "native" / f"{gene_id}.long_pseudoreads.fa.gz",
-                    )
         except Exception as exc:
             failures.append(
                 {
@@ -765,9 +742,6 @@ def main() -> None:
                 }
             )
             raise
-        finally:
-            if paf_path.exists() and not keep_native:
-                paf_path.unlink()
 
     summary_rows = [finalize_summary(row) for row in summaries.values()]
     write_tsv_gz(args.outdir / "alignment_segments.tsv.gz", SEGMENT_FIELDS, all_segments)
@@ -801,7 +775,6 @@ def main() -> None:
         "alignment_event_count": len(all_events),
         "failure_count": len(failures),
         "ortholog_count": len(ortholog_meta),
-        "keep_native": keep_native,
     }
     if pseudoreads is not None and backbone is not None:
         manifest.update(

@@ -13,26 +13,24 @@ import pytest
 BIN_DIR = Path(__file__).resolve().parents[1] / "bin"
 PROJECT_DIR = BIN_DIR.parent
 FINALIZE_SCRIPT = BIN_DIR / "finalize_annotation_partitions.py"
-sys.path.insert(0, str(BIN_DIR))
 
-from annotate_events import (  # noqa: E402
+from bin.annotate_events import (
     EVENT_VARIANT_MAP_FIELDS,
-    EventOrthologSupportStream,
     PARTITION_TSV_SHARD_FORMAT,
     VARIANT_ANNOTATION_FIELDS,
-    VARIANT_STRATEGY_SUPPORT_FIELDS,
-    add_strategy_support,
-    build_variant_strategy_support,
-    event_vcf_key,
     event_variant_map_row,
-    iter_variant_strategy_snv_sites,
-    load_snv_alt_genus_support,
     load_alignment_manifest,
-    resolve_target_feature_paths,
-    variant_aggregate_key,
     write_tsv_gz,
 )
-from finalize_annotation_partitions import (  # noqa: E402
+from analytics.derivations.support import (  # noqa: E402
+    VARIANT_STRATEGY_SUPPORT_FIELDS,
+    EventOrthologSupportStream,
+    add_exact_strategy_support,
+    build_variant_strategy_support,
+    load_snv_alt_genus_support,
+)
+from genomics.variants import event_vcf_key, variant_aggregate_key  # noqa: E402
+from bin.finalize_annotation_partitions import (
     COUNTER_FIELDS,
     COUNT_FIELDS,
     concatenate_tsv_gz_members,
@@ -48,7 +46,7 @@ def canonical_partition_manifest(partition_id: str) -> dict:
     return {
         "partition_id": partition_id,
         "stage": "annotation",
-        "schema": "normalized_annotation_evidence_partition_v1",
+        "schema": "normalized_annotation_evidence_partition_v2",
         **{field: 0 for field in COUNT_FIELDS},
         **{field: {} for field in COUNTER_FIELDS},
         "failure_count": 0,
@@ -63,9 +61,9 @@ def canonical_alignment_manifest(partition_id: str = "") -> dict:
     return {
         "stage": "alignment",
         "partition_id": partition_id,
-        "schema": "normalized_alignment_evidence_partition_v1",
+        "schema": "normalized_alignment_evidence_partition_v2",
         "alignment_event_mode": "compact_support",
-        "event_ortholog_support_format": "event_group_id_v1",
+        "event_ortholog_support_format": "event_group_id_v2",
         "alignment_event_count": 0,
         "event_ortholog_support_count": 0,
     }
@@ -80,20 +78,6 @@ def test_alignment_manifest_is_required_and_partition_bound(tmp_path: Path) -> N
         load_alignment_manifest(path, "partition_000002")
 
 
-def test_target_features_accept_one_canonical_table_or_partition_directory(
-    tmp_path: Path,
-) -> None:
-    table = tmp_path / "target_features.tsv.gz"
-    table.write_bytes(b"")
-    assert resolve_target_feature_paths(table) == [table]
-
-    directory = tmp_path / "target_features"
-    directory.mkdir()
-    partition = directory / "1.tsv.gz"
-    partition.write_bytes(b"")
-    assert resolve_target_feature_paths(directory) == [partition]
-
-
 def test_variant_annotation_schema_is_analysis_ready() -> None:
     assert VARIANT_ANNOTATION_FIELDS == [
         "variant_key",
@@ -102,8 +86,6 @@ def test_variant_annotation_schema_is_analysis_ready() -> None:
         "ref",
         "alt",
         "lookup_status",
-        "support_row_count",
-        "support_ortholog_count",
         "strategies",
         "clinvar_sig",
         "clinvar_revstat",
@@ -136,7 +118,6 @@ def test_annotation_entrypoints_accept_large_tsv_fields(
 
     probe = (
         "import csv,gzip,runpy,sys;"
-        "sys.path.insert(0,sys.argv[3]);"
         "runpy.run_path(sys.argv[1],run_name='csv_limit_probe');"
         "handle=gzip.open(sys.argv[2],'rt',newline='');"
         "print(len(next(csv.reader(handle,delimiter=chr(9)))[0]))"
@@ -148,7 +129,6 @@ def test_annotation_entrypoints_accept_large_tsv_fields(
             probe,
             str(BIN_DIR / entrypoint),
             str(source),
-            str(BIN_DIR),
         ],
         cwd=BIN_DIR.parent,
         text=True,
@@ -411,7 +391,7 @@ def test_finalizer_publishes_only_source_annotation_evidence(tmp_path: Path) -> 
     }
     final_manifest = json.loads((outdir / "manifest.json").read_text())
     assert final_manifest["stage"] == "annotation"
-    assert final_manifest["schema"] == "normalized_annotation_evidence_v1"
+    assert final_manifest["schema"] == "normalized_annotation_evidence_v2"
     forbidden_keys = {
         "variant_strategy_support_count",
         "variant_ortholog_support_count",
@@ -598,12 +578,10 @@ def test_variant_strategy_support_counts_distinct_orthologs() -> None:
         ("s1", "102"),
         ("s2", "101"),
     ]:
-        add_strategy_support(
+        add_exact_strategy_support(
             aggregate,
-            {
-                "strategy": strategy,
-                "ortholog_gene_id": ortholog,
-            },
+            {"strategy": strategy},
+            [{"ortholog_gene_id": ortholog, "support_row_count": "1"}],
         )
 
     rows, missing_key_count = build_variant_strategy_support([aggregate])
@@ -668,9 +646,10 @@ def test_variant_strategy_support_loads_exact_alt_genus_count(tmp_path: Path) ->
         "_support_by_strategy": {},
     }
     for ortholog in ("101", "102", "103"):
-        add_strategy_support(
+        add_exact_strategy_support(
             aggregate,
-            {"strategy": "s1", "ortholog_gene_id": ortholog},
+            {"strategy": "s1"},
+            [{"ortholog_gene_id": ortholog, "support_row_count": "1"}],
         )
 
     genus_supports = load_snv_alt_genus_support(path)
@@ -693,7 +672,6 @@ def test_event_ortholog_support_stream_reads_consecutive_compact_groups(
             "event_group_id",
             "ortholog_gene_id",
             "tax_id",
-            "taxname",
             "mapq",
             "native_alignment_type",
             "support_row_count",
@@ -703,7 +681,6 @@ def test_event_ortholog_support_stream_reads_consecutive_compact_groups(
                 "event_group_id": "1",
                 "ortholog_gene_id": "101",
                 "tax_id": "10090",
-                "taxname": "Mus musculus",
                 "mapq": "60",
                 "native_alignment_type": "P",
                 "support_row_count": "2",
@@ -712,7 +689,6 @@ def test_event_ortholog_support_stream_reads_consecutive_compact_groups(
                 "event_group_id": "2",
                 "ortholog_gene_id": "201",
                 "tax_id": "10116",
-                "taxname": "Rattus norvegicus",
                 "mapq": "10",
                 "native_alignment_type": "supplementary",
                 "support_row_count": "1",
@@ -734,7 +710,6 @@ def test_event_ortholog_support_stream_rejects_unmatched_group(tmp_path: Path) -
             "event_group_id",
             "ortholog_gene_id",
             "tax_id",
-            "taxname",
             "mapq",
             "native_alignment_type",
             "support_row_count",
@@ -744,7 +719,6 @@ def test_event_ortholog_support_stream_rejects_unmatched_group(tmp_path: Path) -
                 "event_group_id": "2",
                 "ortholog_gene_id": "201",
                 "tax_id": "10116",
-                "taxname": "Rattus norvegicus",
                 "mapq": "",
                 "native_alignment_type": "",
                 "support_row_count": "1",
@@ -766,18 +740,11 @@ def test_snv_support_uses_site_aligned_depth() -> None:
         "target_start0": "9",
         "_support_by_strategy": {},
     }
-    add_strategy_support(
+    add_exact_strategy_support(
         aggregate,
-        {"strategy": "s1", "ortholog_gene_id": "101"},
+        {"strategy": "s1"},
+        [{"ortholog_gene_id": "101", "support_row_count": "1"}],
     )
-
-    assert list(iter_variant_strategy_snv_sites([aggregate])) == [
-        {
-            "gene_id": "1",
-            "strategy": "s1",
-            "target_start0": "9",
-        }
-    ]
     rows, _missing_key_count = build_variant_strategy_support(
         [aggregate],
         {("1", "s1", 9): 4},
@@ -792,9 +759,13 @@ def test_snv_support_rejects_alt_count_above_site_depth() -> None:
         "event_type": "snv",
         "_support_by_strategy": {},
     }
-    add_strategy_support(
+    add_exact_strategy_support(
         aggregate,
-        {"strategy": "s1", "support_ortholog_count": "2"},
+        {"strategy": "s1"},
+        [
+            {"ortholog_gene_id": "101", "support_row_count": "1"},
+            {"ortholog_gene_id": "102", "support_row_count": "1"},
+        ],
     )
 
     with pytest.raises(ValueError, match="exceeds site-aligned"):
@@ -804,19 +775,20 @@ def test_snv_support_rejects_alt_count_above_site_depth() -> None:
         )
 
 
-def test_variant_strategy_support_accepts_single_strategy_compact_counts() -> None:
+def test_variant_strategy_support_uses_exact_edge_multiplicity() -> None:
     aggregate = {
         "variant_key": "1:100:A>G",
         "gene_id": "1",
         "_support_by_strategy": {},
     }
-    add_strategy_support(
+    add_exact_strategy_support(
         aggregate,
-        {
-            "strategy": "s1",
-            "support_row_count": "10",
-            "support_ortholog_count": "3",
-        },
+        {"strategy": "s1"},
+        [
+            {"ortholog_gene_id": "101", "support_row_count": "5"},
+            {"ortholog_gene_id": "102", "support_row_count": "3"},
+            {"ortholog_gene_id": "103", "support_row_count": "2"},
+        ],
     )
 
     rows, _missing_key_count = build_variant_strategy_support([aggregate])
@@ -833,13 +805,10 @@ def test_variant_strategy_support_requires_one_strategy() -> None:
     }
 
     with pytest.raises(ValueError, match="requires one alignment strategy"):
-        add_strategy_support(
+        add_exact_strategy_support(
             aggregate,
-            {
-                "strategies": "s1,s2",
-                "support_row_count": "10",
-                "support_ortholog_count": "3",
-            },
+            {"strategies": "s1,s2"},
+            [{"ortholog_gene_id": "101", "support_row_count": "1"}],
         )
 
 

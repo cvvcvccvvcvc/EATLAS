@@ -18,7 +18,7 @@ from pathlib import Path
 import pandas as pd
 
 from .consequences import VEP_CONSEQUENCE_ORDER
-from .vep_result_cache import DEFAULT_TILE_SIZE_BP, VepResultCache
+from .result_cache import DEFAULT_TILE_SIZE_BP, VepResultCache
 
 
 VEP_BASE_URL = "https://rest.ensembl.org"

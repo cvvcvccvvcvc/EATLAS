@@ -74,6 +74,26 @@ def variant_key_text(key: tuple[str, int, str, str] | None) -> str:
     return f"{chrom}:{pos}:{ref}>{alt}"
 
 
+def variant_aggregate_key(row: dict[str, str], variant_key: str) -> tuple:
+    """Return the stable identity used to collapse equivalent event rows."""
+
+    gene_id = row.get("gene_id", "")
+    if variant_key:
+        return "canonical", gene_id, variant_key
+    return (
+        "raw",
+        gene_id,
+        row.get("event_type", ""),
+        row.get("target_start0", ""),
+        row.get("target_end0", ""),
+        row.get("genomic_accession", ""),
+        row.get("genomic_start1", ""),
+        row.get("genomic_end1", ""),
+        row.get("ref", ""),
+        row.get("alt", ""),
+    )
+
+
 def parse_variant_key(value: object) -> tuple[str, int, str, str] | None:
     """Parse a canonical ``chrom:pos:ref>alt`` key."""
     chrom, separator, remainder = str(value or "").partition(":")
@@ -133,27 +153,6 @@ def read_failed_regions(path: Path | None, source: str) -> RegionIndex:
                 merged.append((start, end))
         index[chrom] = ([start for start, _end in merged], merged)
     return index
-
-
-def position_in_failed_region(index: RegionIndex, chrom: str, pos: int) -> bool:
-    starts, intervals = index.get(normalize_chrom(chrom) or "", ([], []))
-    interval_index = bisect.bisect_right(starts, int(pos)) - 1
-    return interval_index >= 0 and int(pos) <= intervals[interval_index][1]
-
-
-def gnomad_lookup_status(
-    *,
-    key: tuple[str, int, str, str] | None,
-    lookup_status: object,
-    found: bool,
-    failed_regions: RegionIndex,
-) -> str:
-    if found:
-        return "found"
-    if str(lookup_status or "") not in {"", "ok"} or key is None:
-        return "lookup_failed"
-    chrom, pos, _ref, _alt = key
-    return "lookup_failed" if position_in_failed_region(failed_regions, chrom, pos) else "not_found"
 
 
 def variant_type(ref: str, alt: str) -> str:

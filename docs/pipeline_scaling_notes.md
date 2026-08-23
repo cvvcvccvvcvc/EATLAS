@@ -11,7 +11,7 @@ species row. These raw rows are an internal input to the bounded partition
 merge, not a public Stage 2 output.
 
 The partition merge writes `alignment_events.tsv.gz` with one row per unique
-target event and strategy plus support counts. A separate
+target event and strategy. A separate
 `event_ortholog_support.tsv.gz` retains one positive row per supporting ortholog,
 keyed by the compact row's `event_group_id`. The partition merge writes both in
 one index-ordered pass, so it does not globally group and sort the almost
@@ -45,7 +45,7 @@ Current behavior:
 - `bwa_pseudoreads_150_75` extracts BAM/CIGAR-supported events with `pysam`;
 - `bwa mem` is streamed directly into `samtools sort`, avoiding durable SAM and
   unsorted BAM intermediates;
-- native BAM files are kept only with `--keep_native_alignments true`;
+- native BAM files remain temporary task data;
 - normalized segments, summaries, events, failures, and manifest files are
   emitted like the other aligner strategies.
 

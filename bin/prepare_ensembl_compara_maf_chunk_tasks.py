@@ -12,7 +12,7 @@ from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
 
-from ensembl_compara_maf import (
+from bin.ensembl_compara_maf import (
     STRATEGY_NAME,
     refseq_to_ensembl_seq_region,
     select_candidate_chunks,

@@ -13,12 +13,9 @@ from urllib.error import HTTPError
 import pytest
 
 
-BIN_DIR = Path(__file__).resolve().parents[1] / "bin"
-sys.path.insert(0, str(BIN_DIR))
-
-import ensembl_compara_maf as maf  # noqa: E402
-import run_ensembl_compara_maf_chunk_alignment as maf_chunk  # noqa: E402
-from ensembl_compara_maf import (  # noqa: E402
+from bin import ensembl_compara_maf as maf
+from bin import run_ensembl_compara_maf_chunk_alignment as maf_chunk
+from bin.ensembl_compara_maf import (
     AlignmentRow,
     EVENT_FIELDS,
     SEGMENT_FIELDS,

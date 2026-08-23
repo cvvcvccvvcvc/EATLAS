@@ -10,7 +10,7 @@ import pytest
 from analytics.analyses.candidate_conservation import CandidateConservation
 from analytics.analyses.basic_filtering import BasicFilteringAnalysis
 from analytics.analyses.matched_control import TargetSpaceNullAnalysis
-from analytics.annotation.consequences import UNANNOTATED_CONSEQUENCE
+from analytics.vep.consequences import UNANNOTATED_CONSEQUENCE
 from analytics.io import run_inputs as run_inputs_module
 from analytics.io.run_inputs import (
     RunInputs,

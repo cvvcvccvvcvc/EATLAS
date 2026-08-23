@@ -7,12 +7,9 @@ from pathlib import Path
 import pytest
 
 
-BIN_DIR = Path(__file__).resolve().parents[1] / "bin"
-sys.path.insert(0, str(BIN_DIR))
-
-import bam_filtering_v1  # noqa: E402
-import run_bwa_pseudoreads as bwa_runner  # noqa: E402
-from run_bwa_pseudoreads import (  # noqa: E402
+from bin import bwa_pseudoread_filter
+from bin import run_bwa_pseudoreads as bwa_runner
+from bin.run_bwa_pseudoreads import (
     expected_pseudoreads,
     generate_pseudoreads,
     pseudoread_starts,
@@ -249,7 +246,7 @@ def test_bam_filter_keeps_same_position_reads_after_strand_filter(tmp_path: Path
         bam.write(make_read("ortholog_101_pseudo_3_21-40", reverse=True))
     bwa_runner.pysam.index(str(input_bam))
 
-    result = bam_filtering_v1.filter_bam_for_gene(tmp_path)
+    result = bwa_pseudoread_filter.filter_bam_for_gene(tmp_path)
 
     with bwa_runner.pysam.AlignmentFile(result.output_bam, "rb") as bam:
         retained_names = [read.query_name for read in bam.fetch()]
@@ -269,7 +266,7 @@ def test_bam_filter_keeps_only_monotonic_pseudoread_order() -> None:
         {"read_key": ("last",), "actual_read_num": 2, "alignment_pos": 30, "is_reverse": False},
     ]
 
-    retained, stats = bam_filtering_v1._filter_homologue_reads(reads, "forward")
+    retained, stats = bwa_pseudoread_filter._filter_homologue_reads(reads, "forward")
 
     assert retained == {("first",), ("last",)}
     assert stats["filtered_by_order"] == 1
@@ -282,7 +279,7 @@ def test_bam_filter_uses_decreasing_order_on_reverse_strand() -> None:
         {"read_key": ("last",), "actual_read_num": 2, "alignment_pos": 30, "is_reverse": True},
     ]
 
-    retained, stats = bam_filtering_v1._filter_homologue_reads(reads, "reverse")
+    retained, stats = bwa_pseudoread_filter._filter_homologue_reads(reads, "reverse")
 
     assert retained == {("first",), ("last",)}
     assert stats["filtered_by_order"] == 1

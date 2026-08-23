@@ -32,7 +32,7 @@ from analytics.analyses.conservation_validation import (
     compute_fixed_band_enrichment,
     compute_unadjusted_enrichment,
 )
-from analytics.annotation.consequences import (
+from analytics.vep.consequences import (
     VALIDATION_CONSEQUENCE_OPTIONS as CONSEQUENCE_OPTIONS,
     validation_consequence_membership_mask as consequence_membership_mask,
     validation_consequence_memberships as consequence_memberships,

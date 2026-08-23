@@ -16,7 +16,7 @@ from analytics.analyses.conservation_validation import (
     VARIANT_TYPE_OPTIONS,
     ConservationValidation,
 )
-from analytics.annotation.consequences import (
+from analytics.vep.consequences import (
     VALIDATION_CONSEQUENCE_OPTIONS as CONSEQUENCE_OPTIONS,
 )
 from .components import compact_figure, dataframe_records, format_int, strategy_label

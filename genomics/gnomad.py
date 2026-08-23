@@ -1,4 +1,4 @@
-"""gnomAD GraphQL client and compact VCF serialization."""
+"""gnomAD GraphQL client."""
 
 import json
 import logging
@@ -6,7 +6,6 @@ import random
 import time
 import urllib.request
 from urllib.error import HTTPError, URLError
-from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
@@ -81,8 +80,6 @@ def select_af_metrics(variant: dict):
         return af_genome, "genome", af_exome, af_genome, af_joint, an_joint, ac_joint
     return None, None, af_exome, af_genome, af_joint, an_joint, ac_joint
 
-
-_select_af_metrics = select_af_metrics
 
 def execute_graphql(query: str, variables: dict) -> dict:
     req = urllib.request.Request(
@@ -165,76 +162,3 @@ def fetch_region_variants_recursive(
             delay,
         )
         time.sleep(delay)
-
-def write_vcf(variants: list, out_path: Path) -> None:
-    with open(out_path, "w") as vcf:
-        vcf.write("##fileformat=VCFv4.2\n")
-        vcf.write("##source=gnomAD_GraphQL_API\n")
-        vcf.write("##reference=GRCh38\n")
-        vcf.write('##INFO=<ID=GNOMAD_VID,Number=1,Type=String,Description="gnomAD variant identifier">\n')
-        vcf.write('##INFO=<ID=AF,Number=A,Type=Float,Description="Allele Frequency">\n')
-        vcf.write('##INFO=<ID=MAF,Number=1,Type=Float,Description="Minor Allele Frequency">\n')
-        vcf.write('##INFO=<ID=AF_SOURCE,Number=1,Type=String,Description="AF source priority">\n')
-        vcf.write('##INFO=<ID=AF_EXOME,Number=1,Type=Float,Description="Exome AF">\n')
-        vcf.write('##INFO=<ID=AF_GENOME,Number=1,Type=Float,Description="Genome AF">\n')
-        vcf.write('##INFO=<ID=AF_JOINT,Number=1,Type=Float,Description="Joint AF">\n')
-        vcf.write('##INFO=<ID=AN_JOINT,Number=1,Type=Integer,Description="Joint AN">\n')
-        vcf.write('##INFO=<ID=AC_JOINT,Number=1,Type=Integer,Description="Joint AC">\n')
-        vcf.write('##INFO=<ID=CSQ,Number=.,Type=String,Description="Consequence">\n')
-        vcf.write("#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n")
-
-        for v in variants:
-            chrom = v["chrom"]
-            pos = v["pos"]
-            ref = v["ref"]
-            alt = v["alt"]
-            vid = str(v.get("variant_id", "."))
-            af, af_source, af_exome, af_genome, af_joint, an_joint, ac_joint = _select_af_metrics(v)
-            maf = min(af, 1.0 - af) if af is not None else None
-
-            info_fields = []
-            if vid and vid != ".": info_fields.append(f"GNOMAD_VID={vid}")
-            if af_source: info_fields.append(f"AF_SOURCE={af_source}")
-            if af is not None: info_fields.append(f"AF={af:.6g}")
-            if maf is not None: info_fields.append(f"MAF={maf:.6g}")
-            if af_exome is not None: info_fields.append(f"AF_EXOME={af_exome:.6g}")
-            if af_genome is not None: info_fields.append(f"AF_GENOME={af_genome:.6g}")
-            if af_joint is not None: info_fields.append(f"AF_JOINT={af_joint:.6g}")
-            if an_joint is not None: info_fields.append(f"AN_JOINT={an_joint}")
-            if ac_joint is not None: info_fields.append(f"AC_JOINT={ac_joint}")
-            if v.get("consequence"): info_fields.append(f"CSQ={v['consequence']}")
-
-            info = ";".join(info_fields) if info_fields else "."
-            vcf.write(f"{chrom}\t{pos}\t{vid}\t{ref}\t{alt}\t.\tPASS\t{info}\n")
-
-def fetch_region_to_vcf(chrom: str, start: int, end: int, out_vcf: Path) -> int:
-    """Fetch one padded region, deduplicate records, and write a compact VCF."""
-
-    if chrom.startswith("chr"):
-        chrom = chrom[3:]
-    if chrom == "M":
-        chrom = "MT"
-
-    start, end = min(start, end), max(start, end)
-    logger.info("Fetching gnomAD variants for region %s:%s-%s", chrom, start, end)
-    start = max(1, start - 100)
-    end = end + 100
-
-    variants = fetch_region_variants_recursive(chrom, start, end)
-    seen = set()
-    deduped = []
-    for variant in variants:
-        key = (
-            variant.get("chrom"),
-            variant.get("pos"),
-            variant.get("ref"),
-            variant.get("alt"),
-        )
-        if key not in seen:
-            seen.add(key)
-            deduped.append(variant)
-
-    deduped.sort(key=lambda variant: (str(variant.get("chrom")), int(variant.get("pos"))))
-    write_vcf(deduped, out_vcf)
-    logger.info("Saved %s variants to %s", len(deduped), out_vcf)
-    return len(deduped)

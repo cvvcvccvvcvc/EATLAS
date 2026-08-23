@@ -27,7 +27,7 @@ def test_taxonomy_fetch_is_owned_by_stage_one() -> None:
     assert fetch_stage.count("FETCH_TAXONOMY(") == 1
     assert "FETCH_TAXONOMY(" not in alignment_stage
     for output in ("taxonomy", "taxonomy_failures"):
-        assert f"{output} = FETCH_TAXONOMY.out.{output}" in fetch_stage
+        assert f"FETCH_TAXONOMY.out.{output}" in fetch_stage
         assert output not in alignment_stage.split("main:", 1)[0]
     assert "taxonomy_summary" not in fetch_stage
     assert "taxonomy_summary" not in alignment_stage

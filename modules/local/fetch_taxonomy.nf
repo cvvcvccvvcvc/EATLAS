@@ -3,7 +3,9 @@ process FETCH_TAXONOMY {
 
     input:
     path orthologs_tsv
-    path taxonomy_script
+    path taxonomy_script, stageAs: 'bin/fetch_taxonomy.py'
+    path bin_package_init, stageAs: 'bin/__init__.py'
+    path taxonomy_sources, stageAs: 'genomics/*'
 
     output:
     path "taxonomy.tsv.gz", emit: taxonomy
@@ -17,7 +19,7 @@ process FETCH_TAXONOMY {
         set +a
     fi
 
-    python3 "${taxonomy_script}" \\
+    python3 -m bin.fetch_taxonomy \\
         --orthologs-tsv "${orthologs_tsv}" \\
         --outdir .
     """

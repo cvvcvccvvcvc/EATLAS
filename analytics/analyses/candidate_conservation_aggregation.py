@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 from typing import Iterator
 
+import duckdb
 import numpy as np
 import pandas as pd
 
@@ -36,7 +37,6 @@ class CandidateAlleleStore:
         annotation_failures_path: Path | None,
         temp_dir: Path,
     ) -> None:
-        duckdb = _import_duckdb()
         self.source = source
         self.strategies = strategies
         self.connection = duckdb.connect()
@@ -327,7 +327,6 @@ def available_cpu_count() -> int:
 
 
 def _read_strategies(source: CandidateAggregationSource) -> tuple[str, ...]:
-    duckdb = _import_duckdb()
     connection = duckdb.connect()
     try:
         return tuple(
@@ -341,13 +340,3 @@ def _read_strategies(source: CandidateAggregationSource) -> tuple[str, ...]:
         )
     finally:
         connection.close()
-
-
-def _import_duckdb():
-    try:
-        import duckdb
-    except ImportError as exc:  # pragma: no cover - analytics environment contract
-        raise RuntimeError(
-            "Candidate conservation aggregation requires the python-duckdb package"
-        ) from exc
-    return duckdb

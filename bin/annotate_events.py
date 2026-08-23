@@ -7,20 +7,13 @@ import json
 import gzip
 import logging
 import os
-import shutil
 import sys
 import time
 import concurrent.futures
-from collections.abc import Iterable, Iterator
 from collections import Counter, defaultdict
-from dataclasses import dataclass, field
 from pathlib import Path
 
-if __package__ in {None, ""}:
-    runtime_root = Path.cwd()
-    if not (runtime_root / "genomics").is_dir():
-        runtime_root = Path(__file__).resolve().parents[1]
-    sys.path.insert(0, str(runtime_root))
+import pysam
 
 from genomics.clinvar import review_stars as clinvar_review_stars
 from genomics.gnomad import GNOMAD_API_URL, fetch_region_variants_recursive, select_af_metrics
@@ -30,8 +23,8 @@ from genomics.variants import (
     build_context_index,
     event_vcf_key,
     load_target_contexts,
-    normalize_chrom,
     refseq_accession_to_chrom,
+    variant_aggregate_key,
     variant_key_text,
 )
 
@@ -80,23 +73,9 @@ VARIANT_ANNOTATION_FIELDS = [
     "ref",
     "alt",
     "lookup_status",
-    "support_row_count",
-    "support_ortholog_count",
     "strategies",
     *ANNOTATION_COLUMNS,
 ]
-
-VARIANT_STRATEGY_SUPPORT_FIELDS = [
-    "variant_key",
-    "gene_id",
-    "strategy",
-    "alt_support_row_count",
-    "alt_support_ortholog_count",
-    "alt_support_genus_count",
-    "site_aligned_ortholog_count",
-]
-
-ALT_SUPPORT_GENUS_COLUMN = "all__genus"
 
 EVENT_VARIANT_MAP_FIELDS = [
     "event_group_id",
@@ -112,18 +91,11 @@ PARTITION_TSV_SHARD_FIELDS = {
 FAILURE_FIELDS = ["source", "scope", "chrom", "start", "end", "failure_type", "message"]
 GNOMAD_DATASET = "gnomad_r4"
 
-@dataclass(slots=True)
-class StrategySupport:
-    row_count: int = 0
-    orthologs: set[str] = field(default_factory=set)
-    ortholog_count_hint: int = 0
-
 
 def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--alignment-manifest", required=True, type=Path)
     parser.add_argument("--events-tsv", required=True, type=Path)
-    parser.add_argument("--event-ortholog-support-tsv", required=True, type=Path)
     parser.add_argument("--genes-tsv", required=True, type=Path)
     parser.add_argument("--target-sequences-dir", required=True, type=Path)
     parser.add_argument("--clinvar-vcf", required=True, type=Path)
@@ -152,17 +124,6 @@ def cluster_positions(positions: list[int], max_gap: int = 100000) -> list[tuple
     return clusters
 
 
-def resolve_target_feature_paths(path: Path) -> list[Path]:
-    if path.is_file():
-        return [path]
-    if path.is_dir():
-        paths = sorted(path.glob("*.tsv.gz"))
-        if paths:
-            return paths
-        raise ValueError(f"No target feature tables found in {path}")
-    raise FileNotFoundError(f"Target features input not found: {path}")
-
-
 def manifest_count(manifest: dict, field: str) -> int:
     value = manifest.get(field)
     if isinstance(value, bool) or not isinstance(value, int) or value < 0:
@@ -181,11 +142,6 @@ def load_alignment_manifest(path: Path, partition_id: str) -> dict:
             "Annotation requires compact_support alignment events, observed "
             f"{manifest.get('alignment_event_mode')!r}"
         )
-    if manifest.get("event_ortholog_support_format") != "event_group_id_v1":
-        raise ValueError(
-            "Alignment manifest has unsupported event ortholog support format: "
-            f"{manifest.get('event_ortholog_support_format')!r}"
-        )
     observed_partition_id = str(manifest.get("partition_id") or "")
     if observed_partition_id != partition_id:
         raise ValueError(
@@ -194,30 +150,14 @@ def load_alignment_manifest(path: Path, partition_id: str) -> dict:
         )
     if not partition_id:
         raise ValueError("Annotation requires a partition-scoped alignment manifest")
-    expected_schema = "normalized_alignment_evidence_partition_v1"
+    expected_schema = "normalized_alignment_evidence_partition_v2"
     if manifest.get("schema") != expected_schema:
         raise ValueError(
             "Alignment manifest schema mismatch: "
             f"expected {expected_schema!r}, observed {manifest.get('schema')!r}"
         )
-    for field in (
-        "alignment_event_count",
-        "event_ortholog_support_count",
-    ):
-        manifest_count(manifest, field)
+    manifest_count(manifest, "alignment_event_count")
     return manifest
-
-
-def count_tsv_gz_rows(path: Path) -> int:
-    with gzip.open(path, "rt", newline="") as handle:
-        reader = csv.reader(handle, delimiter="\t")
-        if next(reader, None) is None:
-            raise ValueError(f"TSV has no header: {path}")
-        return sum(1 for _row in reader)
-
-
-def open_text(path: Path):
-    return gzip.open(path, "rt") if str(path).endswith(".gz") else path.open()
 
 
 def write_tsv_gz(
@@ -236,479 +176,11 @@ def write_tsv_gz(
     return len(rows)
 
 
-class EventOrthologSupportStream:
-    """Read the compact merge handoff one event group at a time."""
-
-    REQUIRED_FIELDS = {
-        "event_group_id",
-        "ortholog_gene_id",
-        "tax_id",
-        "taxname",
-        "mapq",
-        "native_alignment_type",
-        "support_row_count",
-    }
-
-    def __init__(self, path: Path):
-        self.path = path
-        self.handle = None
-        self.reader: Iterator[dict[str, str]] | None = None
-        self.current: dict[str, str] | None = None
-        self.row_count = 0
-
-    def __enter__(self) -> "EventOrthologSupportStream":
-        self.handle = open_text(self.path)
-        reader = csv.DictReader(self.handle, delimiter="\t")
-        missing = self.REQUIRED_FIELDS - set(reader.fieldnames or [])
-        if missing:
-            self.handle.close()
-            raise ValueError(
-                "Event ortholog support table missing required columns: "
-                + ", ".join(sorted(missing))
-            )
-        self.reader = iter(reader)
-        self.current = next(self.reader, None)
-        return self
-
-    def __exit__(self, *_args) -> None:
-        if self.handle is not None:
-            self.handle.close()
-
-    @staticmethod
-    def group_id(row: dict[str, str]) -> int:
-        try:
-            group_id = int(row["event_group_id"])
-        except (KeyError, TypeError, ValueError) as exc:
-            raise ValueError("event_group_id must be a positive integer") from exc
-        if group_id < 1:
-            raise ValueError("event_group_id must be a positive integer")
-        return group_id
-
-    def take(self, expected_group_id: int) -> list[dict[str, str]]:
-        rows: list[dict[str, str]] = []
-        if self.current is None:
-            return rows
-        observed_group_id = self.group_id(self.current)
-        if observed_group_id < expected_group_id:
-            raise ValueError(
-                "Event ortholog support is out of order or has no matching event: "
-                f"event_group_id={observed_group_id}"
-            )
-        if observed_group_id > expected_group_id:
-            return rows
-        while self.current is not None and self.group_id(self.current) == expected_group_id:
-            rows.append(self.current)
-            self.row_count += 1
-            if self.reader is None:
-                raise RuntimeError("Event ortholog support stream is not open")
-            self.current = next(self.reader, None)
-        return rows
-
-    def finish(self) -> None:
-        if self.current is not None:
-            raise ValueError(
-                "Event ortholog support has no matching compact event: "
-                f"event_group_id={self.group_id(self.current)}"
-            )
-
-
-class ExactSupportSpool:
-    """Encode exact supporters as narrow local integer IDs for DuckDB."""
-
-    def __init__(self, outdir: Path):
-        self.path = outdir / ".exact_support_rows.tsv"
-        self.handle = self.path.open("w", buffering=1024 * 1024)
-        self.strategy_ids: dict[str, int] = {}
-        self.strategy_names: list[str] = []
-        self.ortholog_ids: dict[tuple[str, str], int] = {}
-        self.ortholog_rows: list[dict[str, str | int]] = []
-        self.used_variant_ids: set[int] = set()
-        self.input_edge_count = 0
-        self.missing_key_count = 0
-
-    def close(self) -> None:
-        if not self.handle.closed:
-            self.handle.close()
-
-    def strategy_id(self, strategy: str) -> int:
-        strategy_id = self.strategy_ids.get(strategy)
-        if strategy_id is None:
-            strategy_id = len(self.strategy_names) + 1
-            self.strategy_ids[strategy] = strategy_id
-            self.strategy_names.append(strategy)
-        return strategy_id
-
-    def ortholog_id(self, gene_id: str, row: dict[str, str]) -> int:
-        ortholog_gene_id = str(row.get("ortholog_gene_id") or "")
-        if not ortholog_gene_id:
-            raise ValueError("Ortholog support row requires ortholog_gene_id")
-        key = (gene_id, ortholog_gene_id)
-        ortholog_id = self.ortholog_ids.get(key)
-        if ortholog_id is None:
-            ortholog_id = len(self.ortholog_rows) + 1
-            self.ortholog_ids[key] = ortholog_id
-            self.ortholog_rows.append(
-                {
-                    "ortholog_id": ortholog_id,
-                    "gene_id": gene_id,
-                    "ortholog_gene_id": ortholog_gene_id,
-                    "tax_id": str(row.get("tax_id") or ""),
-                    "taxname": str(row.get("taxname") or ""),
-                }
-            )
-            return ortholog_id
-
-        current = self.ortholog_rows[ortholog_id - 1]
-        for field in ("tax_id", "taxname"):
-            observed = str(row.get(field) or "")
-            previous = str(current.get(field) or "")
-            if previous and observed and previous != observed:
-                raise ValueError(
-                    f"Conflicting {field} for gene_id={gene_id}, "
-                    f"ortholog_gene_id={ortholog_gene_id}: {previous!r} != {observed!r}"
-                )
-            if not previous and observed:
-                current[field] = observed
-        return ortholog_id
-
-    def add_group(
-        self,
-        aggregate: dict,
-        event_row: dict[str, str],
-        support_rows: list[dict[str, str]],
-    ) -> None:
-        if not support_rows:
-            return
-        if not aggregate.get("variant_key"):
-            self.missing_key_count += len(support_rows)
-            return
-        strategy = str(event_row.get("strategy") or "")
-        if not strategy:
-            raise ValueError("Exact ortholog support requires one event strategy")
-        variant_context_id = int(aggregate["_variant_context_id"])
-        strategy_id = self.strategy_id(strategy)
-        gene_id = str(aggregate.get("gene_id") or "")
-        self.used_variant_ids.add(variant_context_id)
-        for row in support_rows:
-            support_row_count = int_or_default(row.get("support_row_count"), 0)
-            if support_row_count < 1:
-                raise ValueError("Ortholog support_row_count must be positive")
-            ortholog_id = self.ortholog_id(gene_id, row)
-            self.input_edge_count += 1
-            self.handle.write(
-                f"{variant_context_id}\t{strategy_id}\t{ortholog_id}\t{support_row_count}"
-                f"\t{row.get('mapq', '')}\t{row.get('native_alignment_type', '')}"
-                f"\t{self.input_edge_count}\n"
-            )
-
-
 def int_or_default(value, default: int = 0) -> int:
     try:
         return int(value)
     except (TypeError, ValueError):
         return default
-
-
-def add_strategy_support(aggregate: dict, row: dict[str, str]) -> None:
-    strategy = str(row.get("strategy") or "")
-    if not strategy:
-        raise ValueError("Event row requires one alignment strategy")
-    support_row_count = int_or_default(row.get("support_row_count"), 1)
-    ortholog_gene_id = row.get("ortholog_gene_id", "")
-    ortholog_count_hint = int_or_default(row.get("support_ortholog_count"), 0)
-    support_by_strategy = aggregate["_support_by_strategy"]
-    support = support_by_strategy.get(strategy)
-    if support is None:
-        support = StrategySupport()
-        support_by_strategy[strategy] = support
-    support.row_count += support_row_count
-    if ortholog_gene_id:
-        support.orthologs.add(ortholog_gene_id)
-    else:
-        support.ortholog_count_hint += ortholog_count_hint
-
-
-def sql_string(value: Path | str) -> str:
-    return "'" + str(value).replace("'", "''") + "'"
-
-
-def aggregate_exact_support(
-    spool: ExactSupportSpool,
-    aggregates_by_id: list[dict | None],
-) -> int:
-    """Validate exact event support and update variant-context support counts."""
-
-    try:
-        import duckdb
-    except ImportError as exc:
-        raise RuntimeError(
-            "DuckDB is required to aggregate exact ortholog support; "
-            "run annotation in the declared alignment environment"
-        ) from exc
-
-    spool.close()
-    work_dir = spool.path.parent
-    temp_dir = work_dir / ".exact_support_duckdb"
-    temp_dir.mkdir(parents=True, exist_ok=True)
-
-    memory_limit = os.environ.get("GAPH_ANNOTATION_DUCKDB_MEMORY_LIMIT", "4GB")
-    threads = max(1, int_or_default(os.environ.get("GAPH_ANNOTATION_DUCKDB_THREADS"), 1))
-    connection = duckdb.connect(
-        config={
-            "memory_limit": memory_limit,
-            "threads": str(threads),
-            "temp_directory": str(temp_dir),
-            "preserve_insertion_order": "false",
-        }
-    )
-    try:
-        if spool.input_edge_count == 0:
-            return 0
-
-        connection.execute(
-            f"""
-            CREATE TEMP TABLE exact_support AS
-            SELECT
-                variant_context_id,
-                strategy_id,
-                ortholog_id,
-                arg_min(mapq, edge_order) AS mapq,
-                arg_min(native_alignment_type, edge_order) AS native_alignment_type,
-                CAST(SUM(support_row_count) AS UBIGINT) AS support_row_count
-            FROM read_csv(
-                {sql_string(spool.path)},
-                delim = '\t',
-                header = false,
-                columns = {{
-                    'variant_context_id': 'UBIGINT',
-                    'strategy_id': 'UINTEGER',
-                    'ortholog_id': 'UBIGINT',
-                    'support_row_count': 'UBIGINT',
-                    'mapq': 'VARCHAR',
-                    'native_alignment_type': 'VARCHAR',
-                    'edge_order': 'UBIGINT'
-                }}
-            )
-            GROUP BY variant_context_id, strategy_id, ortholog_id
-            """
-        )
-
-        observed: set[tuple[int, str]] = set()
-        for variant_context_id, strategy_id, ortholog_count, row_count in connection.execute(
-            """
-            SELECT
-                variant_context_id,
-                strategy_id,
-                COUNT(*) AS ortholog_count,
-                SUM(support_row_count) AS row_count
-            FROM exact_support
-            GROUP BY variant_context_id, strategy_id
-            """
-        ).fetchall():
-            aggregate = aggregates_by_id[int(variant_context_id)]
-            if aggregate is None:
-                raise ValueError(f"Unknown variant_context_id: {variant_context_id}")
-            strategy = spool.strategy_names[int(strategy_id) - 1]
-            support = aggregate["_support_by_strategy"].get(strategy)
-            if support is None:
-                raise ValueError(
-                    "Exact ortholog support identifies a strategy absent from events: "
-                    f"variant_context_id={variant_context_id}, strategy={strategy}"
-                )
-            expected_ortholog_count = max(
-                len(support.orthologs),
-                support.ortholog_count_hint,
-            )
-            if (
-                int(row_count) != support.row_count
-                or int(ortholog_count) < 1
-                or int(ortholog_count) > expected_ortholog_count
-            ):
-                raise ValueError(
-                    "Exact ortholog support does not match event totals for "
-                    f"variant_context_id={variant_context_id}, strategy={strategy}: "
-                    f"orthologs={ortholog_count}/at-most-{expected_ortholog_count}, "
-                    f"rows={row_count}/{support.row_count}"
-                )
-            support.orthologs.clear()
-            support.ortholog_count_hint = int(ortholog_count)
-            support.row_count = int(row_count)
-            observed.add((int(variant_context_id), strategy))
-
-        for aggregate in aggregates_by_id[1:]:
-            if aggregate is None or not aggregate.get("variant_key"):
-                continue
-            variant_context_id = int(aggregate["_variant_context_id"])
-            for strategy, support in aggregate["_support_by_strategy"].items():
-                if support.row_count > 0 and (variant_context_id, strategy) not in observed:
-                    raise ValueError(
-                        "Event support has no exact ortholog rows for "
-                        f"variant_context_id={variant_context_id}, strategy={strategy}"
-                    )
-
-        for variant_context_id, ortholog_count in connection.execute(
-            """
-            SELECT variant_context_id, COUNT(DISTINCT ortholog_id)
-            FROM exact_support
-            GROUP BY variant_context_id
-            """
-        ).fetchall():
-            aggregate = aggregates_by_id[int(variant_context_id)]
-            if aggregate is not None:
-                aggregate["_exact_ortholog_count"] = int(ortholog_count)
-
-        return int(connection.execute("SELECT COUNT(*) FROM exact_support").fetchone()[0])
-    finally:
-        connection.close()
-        spool.path.unlink(missing_ok=True)
-        shutil.rmtree(temp_dir, ignore_errors=True)
-
-
-def build_variant_strategy_support(
-    aggregates: Iterable[dict],
-    site_depths: dict[tuple[str, str, int], int] | None = None,
-    genus_supports: dict[tuple[str, str, int, str, str], int] | None = None,
-) -> tuple[list[dict[str, object]], int]:
-    site_depths = site_depths or {}
-    rows: list[dict[str, object]] = []
-    missing_key_count = 0
-    for aggregate in aggregates:
-        variant_key = aggregate.get("variant_key", "")
-        support_by_strategy = aggregate["_support_by_strategy"]
-        if not variant_key:
-            missing_key_count += len(support_by_strategy)
-            continue
-        for strategy, support in support_by_strategy.items():
-            alt_support_count = max(
-                len(support.orthologs),
-                support.ortholog_count_hint,
-            )
-            site_depth: int | str = ""
-            genus_support: int | str = ""
-            if aggregate.get("event_type") == "snv":
-                depth_key = (
-                    str(aggregate.get("gene_id") or ""),
-                    strategy,
-                    int(aggregate.get("target_start0") or 0),
-                )
-                if depth_key not in site_depths:
-                    raise ValueError(f"Missing site ortholog depth for SNV {depth_key}")
-                site_depth = site_depths[depth_key]
-                if alt_support_count > site_depth:
-                    raise ValueError(
-                        "ALT-support ortholog count exceeds site-aligned ortholog count for "
-                        f"{depth_key}: {alt_support_count} > {site_depth}"
-                    )
-                if genus_supports is not None:
-                    genus_key = (
-                        str(aggregate.get("gene_id") or ""),
-                        strategy,
-                        int(aggregate.get("target_start0") or 0),
-                        str(aggregate.get("ref") or "").upper(),
-                        str(aggregate.get("alt") or "").upper(),
-                    )
-                    if genus_key not in genus_supports:
-                        raise ValueError(
-                            f"Missing genus ALT-support count for SNV {genus_key}"
-                        )
-                    genus_support = genus_supports[genus_key]
-                    if genus_support < 0 or genus_support > alt_support_count:
-                        raise ValueError(
-                            "Genus ALT-support count exceeds ortholog ALT-support count for "
-                            f"{genus_key}: {genus_support} > {alt_support_count}"
-                        )
-            rows.append(
-                {
-                    "variant_key": variant_key,
-                    "gene_id": aggregate.get("gene_id", ""),
-                    "strategy": strategy,
-                    "alt_support_row_count": support.row_count,
-                    "alt_support_ortholog_count": alt_support_count,
-                    "alt_support_genus_count": genus_support,
-                    "site_aligned_ortholog_count": site_depth,
-                }
-            )
-    rows.sort(
-        key=lambda row: (
-            int_or_default(row.get("gene_id"), 10**18),
-            row["variant_key"],
-            row["strategy"],
-        )
-    )
-    return rows, missing_key_count
-
-
-def load_snv_alt_genus_support(
-    path: Path,
-) -> dict[tuple[str, str, int, str, str], int]:
-    """Load exact-ALT genus counts keyed like the compact SNV support table."""
-
-    required = {
-        "gene_id",
-        "strategy",
-        "target_start0",
-        "ref",
-        "alt",
-        ALT_SUPPORT_GENUS_COLUMN,
-    }
-    counts: dict[tuple[str, str, int, str, str], int] = {}
-    with gzip.open(path, "rt", newline="") as handle:
-        reader = csv.DictReader(handle, delimiter="\t")
-        missing = required - set(reader.fieldnames or [])
-        if missing:
-            raise ValueError(
-                f"SNV ALT taxonomic support {path} missing columns: "
-                + ", ".join(sorted(missing))
-            )
-        for row in reader:
-            key = (
-                str(row["gene_id"]),
-                str(row["strategy"]),
-                int(row["target_start0"]),
-                str(row["ref"]).upper(),
-                str(row["alt"]).upper(),
-            )
-            if key in counts:
-                raise ValueError(f"Duplicate SNV ALT taxonomic support row: {key}")
-            value = int(row[ALT_SUPPORT_GENUS_COLUMN])
-            if value < 0:
-                raise ValueError(
-                    f"Negative SNV ALT genus support for {key}: {value}"
-                )
-            counts[key] = value
-    return counts
-
-
-def iter_variant_strategy_snv_sites(
-    aggregates: Iterable[dict],
-) -> Iterable[dict[str, object]]:
-    for aggregate in aggregates:
-        if aggregate.get("event_type") != "snv" or not aggregate.get("variant_key"):
-            continue
-        for strategy in aggregate["_support_by_strategy"]:
-            yield {
-                "gene_id": aggregate.get("gene_id", ""),
-                "strategy": strategy,
-                "target_start0": aggregate.get("target_start0", ""),
-            }
-
-
-def variant_aggregate_key(row: dict[str, str], variant_key: str) -> tuple:
-    gene_id = row.get("gene_id", "")
-    if variant_key:
-        return "canonical", gene_id, variant_key
-    return (
-        "raw",
-        gene_id,
-        row.get("event_type", ""),
-        row.get("target_start0", ""),
-        row.get("target_end0", ""),
-        row.get("genomic_accession", ""),
-        row.get("genomic_start1", ""),
-        row.get("genomic_end1", ""),
-        row.get("ref", ""),
-        row.get("alt", ""),
-    )
 
 
 def event_variant_map_row(
@@ -819,59 +291,6 @@ def gnomad_annotation_from_variant(variant: dict) -> dict[str, str]:
     }
 
 
-def build_gnomad_statuses(
-    aggregates: Iterable[dict],
-    gnomad_cache: dict[tuple[str, int, str, str], dict],
-    failures: Iterable[dict],
-) -> dict[tuple[str, int, str, str], str]:
-    failed_by_chrom: dict[str, list[tuple[int, int]]] = defaultdict(list)
-    for failure in failures:
-        if failure.get("source") != "gnomad" or failure.get("scope") != "region":
-            continue
-        chrom = normalize_chrom(str(failure.get("chrom") or ""))
-        try:
-            start = int(failure.get("start") or 0)
-            end = int(failure.get("end") or 0)
-        except (TypeError, ValueError):
-            continue
-        if chrom and start > 0 and end >= start:
-            failed_by_chrom[chrom].append((start, end))
-    for chrom in failed_by_chrom:
-        failed_by_chrom[chrom].sort()
-
-    statuses: dict[tuple[str, int, str, str], str] = {}
-    for aggregate in aggregates:
-        if aggregate.get("event_type") != "snv":
-            continue
-        target_key = (
-            str(aggregate.get("gene_id") or ""),
-            int(aggregate.get("target_start0") or 0),
-            str(aggregate.get("ref") or "").upper(),
-            str(aggregate.get("alt") or "").upper(),
-        )
-        lookup_key = aggregate.get("_lookup_key")
-        found = False
-        if lookup_key in gnomad_cache:
-            found = bool(gnomad_annotation_from_variant(gnomad_cache[lookup_key])["gnomad_af"])
-        if found:
-            status = "found"
-        elif aggregate.get("lookup_status") != "ok" or lookup_key is None:
-            status = "lookup_failed"
-        else:
-            chrom, position, _ref, _alt = lookup_key
-            status = "not_found"
-            for start, end in failed_by_chrom.get(normalize_chrom(chrom) or "", []):
-                if start <= position <= end:
-                    status = "lookup_failed"
-                    break
-                if start > position:
-                    break
-        previous = statuses.setdefault(target_key, status)
-        if previous != status:
-            raise ValueError(f"Conflicting gnomAD status for target SNV {target_key}")
-    return statuses
-
-
 def build_clinvar_cache(
     clinvar,
     accession_positions: dict[str, set[int]],
@@ -931,10 +350,6 @@ def main():
     event_variant_map_tsv = args.outdir / "event_variant_map.tsv.gz"
     failures_tsv = args.outdir / "failures.tsv.gz"
     manifest_json = args.outdir / "manifest.json"
-    if not args.event_ortholog_support_tsv.exists():
-        raise FileNotFoundError(
-            f"Event ortholog support TSV not found: {args.event_ortholog_support_tsv}"
-        )
     required_inputs = [
         args.genes_tsv,
         args.target_sequences_dir,
@@ -960,130 +375,88 @@ def main():
     accession_positions = defaultdict(set)
     event_key_status_counts = Counter()
     variant_aggregates: dict[tuple, dict] = {}
-    aggregates_by_id: list[dict | None] = [None]
     input_row_count = 0
-    support_stream = EventOrthologSupportStream(args.event_ortholog_support_tsv)
-    exact_spool = ExactSupportSpool(args.outdir)
-    collapse_complete = False
-    try:
-        support_stream.__enter__()
-        with gzip.open(event_variant_map_tsv, "wt", newline="") as map_handle:
-            map_writer = csv.DictWriter(
-                map_handle,
-                fieldnames=EVENT_VARIANT_MAP_FIELDS,
-                delimiter="\t",
-                lineterminator="\n",
-            )
-            map_writer.writeheader()
-            with gzip.open(args.events_tsv, "rt") as f:
-                reader = csv.DictReader(f, delimiter="\t")
-                header = reader.fieldnames
-                required = {
-                    "event_group_id",
-                    "gene_id",
-                    "event_type",
-                    "target_start0",
-                    "genomic_accession",
-                    "genomic_start1",
-                    "ref",
-                    "alt",
-                    "strategy",
-                }
-                missing = required - set(header or [])
-                if missing:
-                    raise ValueError(
-                        f"Events table missing required columns: {', '.join(sorted(missing))}"
-                    )
-                for row in reader:
-                    input_row_count += 1
-                    event_group_id = int_or_default(row.get("event_group_id"), 0)
-                    if event_group_id != input_row_count:
-                        raise ValueError(
-                            "Compact event_group_id values must be consecutive from 1; "
-                            f"expected {input_row_count}, observed {event_group_id}"
-                        )
-                    gene_id = str(row.get("gene_id") or "")
-                    if gene_id not in contexts:
-                        raise ValueError(
-                            f"Alignment event references gene {gene_id!r} outside the supplied target context"
-                        )
-                    exact_support_rows = support_stream.take(event_group_id)
-
-                    acc = row["genomic_accession"]
-                    lookup_key, status = event_vcf_key(row, contexts)
-                    event_key_status_counts[status] += 1
-                    map_writer.writerow(
-                        event_variant_map_row(event_group_id, lookup_key, status)
-                    )
-                    if status == "non_concrete_allele":
-                        exact_spool.missing_key_count += len(exact_support_rows)
-                        continue
-                    raw_pos = int_or_default(row.get("genomic_start1"), -1)
-                    if acc and raw_pos > 0:
-                        accession_positions[acc].add(raw_pos)
-                    if acc and lookup_key:
-                        accession_positions[acc].add(int(lookup_key[1]))
-
-                    variant_key = variant_key_text(lookup_key)
-                    aggregate_key = variant_aggregate_key(row, variant_key)
-                    aggregate = variant_aggregates.get(aggregate_key)
-                    if aggregate is None:
-                        variant_context_id = len(aggregates_by_id)
-                        aggregate = {
-                            "variant_key": variant_key,
-                            "gene_id": row.get("gene_id", ""),
-                            "event_type": row.get("event_type", ""),
-                            "target_start0": row.get("target_start0", ""),
-                            "ref": row.get("ref", ""),
-                            "alt": row.get("alt", ""),
-                            "lookup_status": status,
-                            "support_row_count": 0,
-                            "_lookup_key": lookup_key,
-                            "_variant_context_id": variant_context_id,
-                            "_exact_ortholog_count": 0,
-                            "_support_by_strategy": {},
-                        }
-                        variant_aggregates[aggregate_key] = aggregate
-                        aggregates_by_id.append(aggregate)
-
-                    aggregate["support_row_count"] += int_or_default(
-                        row.get("support_row_count"),
-                        1,
-                    )
-                    add_strategy_support(aggregate, row)
-                    exact_spool.add_group(aggregate, row, exact_support_rows)
-        support_stream.finish()
-        expected_event_count = manifest_count(alignment_manifest, "alignment_event_count")
-        if input_row_count != expected_event_count:
-            raise ValueError(
-                "Alignment event row count does not match alignment manifest: "
-                f"rows={input_row_count}, manifest={expected_event_count}"
-            )
-        expected_support_count = manifest_count(
-            alignment_manifest,
-            "event_ortholog_support_count",
+    with gzip.open(event_variant_map_tsv, "wt", newline="") as map_handle:
+        map_writer = csv.DictWriter(
+            map_handle,
+            fieldnames=EVENT_VARIANT_MAP_FIELDS,
+            delimiter="\t",
+            lineterminator="\n",
         )
-        if support_stream.row_count != expected_support_count:
-            raise ValueError(
-                "Event ortholog support row count does not match alignment manifest: "
-                f"rows={support_stream.row_count}, manifest={expected_support_count}"
-            )
-        collapse_complete = True
-    finally:
-        support_stream.__exit__(None, None, None)
-        exact_spool.close()
-        if not collapse_complete:
-            exact_spool.path.unlink(missing_ok=True)
+        map_writer.writeheader()
+        with gzip.open(args.events_tsv, "rt") as f:
+            reader = csv.DictReader(f, delimiter="\t")
+            required = {
+                "event_group_id",
+                "gene_id",
+                "event_type",
+                "target_start0",
+                "genomic_accession",
+                "genomic_start1",
+                "ref",
+                "alt",
+                "strategy",
+            }
+            missing = required - set(reader.fieldnames or [])
+            if missing:
+                raise ValueError(
+                    f"Events table missing required columns: {', '.join(sorted(missing))}"
+                )
+            for row in reader:
+                input_row_count += 1
+                event_group_id = int_or_default(row.get("event_group_id"), 0)
+                if event_group_id != input_row_count:
+                    raise ValueError(
+                        "Compact event_group_id values must be consecutive from 1; "
+                        f"expected {input_row_count}, observed {event_group_id}"
+                    )
+                gene_id = str(row.get("gene_id") or "")
+                if gene_id not in contexts:
+                    raise ValueError(
+                        f"Alignment event references gene {gene_id!r} outside the supplied target context"
+                    )
+
+                acc = row["genomic_accession"]
+                lookup_key, status = event_vcf_key(row, contexts)
+                event_key_status_counts[status] += 1
+                map_writer.writerow(event_variant_map_row(event_group_id, lookup_key, status))
+                if status == "non_concrete_allele":
+                    continue
+                raw_pos = int_or_default(row.get("genomic_start1"), -1)
+                if acc and raw_pos > 0:
+                    accession_positions[acc].add(raw_pos)
+                if acc and lookup_key:
+                    accession_positions[acc].add(int(lookup_key[1]))
+
+                variant_key = variant_key_text(lookup_key)
+                aggregate_key = variant_aggregate_key(row, variant_key)
+                aggregate = variant_aggregates.get(aggregate_key)
+                if aggregate is None:
+                    aggregate = {
+                        "variant_key": variant_key,
+                        "gene_id": row.get("gene_id", ""),
+                        "event_type": row.get("event_type", ""),
+                        "target_start0": row.get("target_start0", ""),
+                        "ref": row.get("ref", ""),
+                        "alt": row.get("alt", ""),
+                        "lookup_status": status,
+                        "_lookup_key": lookup_key,
+                        "_strategies": set(),
+                    }
+                    variant_aggregates[aggregate_key] = aggregate
+                strategy = str(row.get("strategy") or "")
+                if not strategy:
+                    raise ValueError("Alignment event requires one strategy")
+                aggregate["_strategies"].add(strategy)
+    expected_event_count = manifest_count(alignment_manifest, "alignment_event_count")
+    if input_row_count != expected_event_count:
+        raise ValueError(
+            "Alignment event row count does not match alignment manifest: "
+            f"rows={input_row_count}, manifest={expected_event_count}"
+        )
     logger.info(f"Event key normalization status: {dict(event_key_status_counts)}")
     logger.info(f"Collapsed {input_row_count} event row(s) to {len(variant_aggregates)} variant-context row(s).")
     finish_phase(timings_seconds, "collapse_events", phase_started)
-
-    phase_started = start_phase("aggregate_ortholog_support")
-    aggregate_exact_support(
-        exact_spool,
-        aggregates_by_id,
-    )
-    finish_phase(timings_seconds, "aggregate_ortholog_support", phase_started)
 
     # 2. Determine gnomAD clusters
     phase_started = start_phase("gnomad_lookup")
@@ -1154,8 +527,6 @@ def main():
 
     # 4. Open ClinVar
     phase_started = start_phase("clinvar_lookup")
-    import pysam
-
     clinvar = pysam.VariantFile(str(args.clinvar_vcf))
     clinvar_cache, clinvar_key_status_counts = build_clinvar_cache(
         clinvar,
@@ -1181,9 +552,7 @@ def main():
             gnomad_annotation = gnomad_annotation_from_variant(gnomad_cache[lookup_key])
 
         row = {field: aggregate.get(field, "") for field in VARIANT_ANNOTATION_FIELDS}
-        support_by_strategy = aggregate["_support_by_strategy"]
-        row["support_ortholog_count"] = aggregate["_exact_ortholog_count"]
-        row["strategies"] = ",".join(sorted(support_by_strategy))
+        row["strategies"] = ",".join(sorted(aggregate["_strategies"]))
         row.update(clinvar_annotation)
         row.update(gnomad_annotation)
         variant_rows.append(row)
@@ -1208,7 +577,7 @@ def main():
     finish_phase(timings_seconds, "write_failures", phase_started)
     manifest = {
         "stage": "annotation",
-        "schema": "normalized_annotation_evidence_partition_v1",
+        "schema": "normalized_annotation_evidence_partition_v2",
         "partition_id": args.partition_id,
         "event_row_count": input_row_count,
         "event_variant_map_count": input_row_count,

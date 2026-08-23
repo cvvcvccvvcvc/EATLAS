@@ -19,27 +19,27 @@ from analytics.io.annotation_support import (
     build_or_load_annotation_support,
     resolve_annotation_support_paths,
 )
+from analytics.derivations.ortholog_evidence import write_ortholog_evidence_summary
+from analytics.derivations.support import (
+    ORTHOLOG_EVIDENCE_FIELDS,
+    VARIANT_STRATEGY_SUPPORT_FIELDS,
+    merge_ortholog_evidence,
+)
+from analytics.derivations.taxonomy import (
+    COUNT_KEYS,
+    count_member_groups,
+    load_taxonomy_profiles,
+)
 from bin.alignment_table_schema import SEGMENT_FIELDS
 from bin.annotate_events import (
     EVENT_VARIANT_MAP_FIELDS,
     FAILURE_FIELDS,
-    VARIANT_STRATEGY_SUPPORT_FIELDS,
-)
-from bin.finalize_annotation_partitions import (
-    ORTHOLOG_EVIDENCE_FIELDS,
-    merge_ortholog_evidence,
 )
 from bin.merge_alignment_results import (
     COMPACT_EVENT_FIELDS,
     EVENT_ORTHOLOG_SUPPORT_FIELDS,
 )
 from bin.fetch_taxonomy import TAXONOMY_FIELDS
-from bin.ortholog_evidence_summary import write_ortholog_evidence_summary
-from bin.taxonomic_evidence import (
-    COUNT_KEYS,
-    count_member_groups,
-    load_taxonomy_profiles,
-)
 
 
 BEDTOOLS_AVAILABLE = shutil.which("bedtools") is not None
@@ -97,8 +97,6 @@ def _event(
     target_start0: int,
     ref: str,
     alt: str,
-    support_row_count: int,
-    support_ortholog_count: int,
 ) -> dict[str, object]:
     return {
         "event_group_id": event_group_id,
@@ -112,8 +110,6 @@ def _event(
         "ref": ref,
         "alt": alt,
         "strategy": "s1",
-        "support_row_count": support_row_count,
-        "support_ortholog_count": support_ortholog_count,
         "qc_flags": "",
     }
 
@@ -128,7 +124,6 @@ def _support(
         "event_group_id": event_group_id,
         "ortholog_gene_id": ortholog_gene_id,
         "tax_id": tax_id,
-        "taxname": f"taxon_{tax_id}",
         "mapq": 60,
         "native_alignment_type": "primary",
         "support_row_count": support_row_count,
@@ -171,12 +166,12 @@ def _write_source_contract(run_dir: Path) -> dict[str, object]:
     map_dir = map_root / partition_id
 
     events = [
-        _event(1, "snv", 2, "A", "G", 3, 2),
-        _event(2, "snv", 3, "C", "T", 1, 1),
-        _event(3, "snv", 4, "G", "A", 2, 2),
-        _event(4, "del", 5, "A", "", 2, 2),
-        _event(5, "del", 6, "A", "", 2, 1),
-        _event(6, "snv", 7, "N", "A", 1, 1),
+        _event(1, "snv", 2, "A", "G"),
+        _event(2, "snv", 3, "C", "T"),
+        _event(3, "snv", 4, "G", "A"),
+        _event(4, "del", 5, "A", ""),
+        _event(5, "del", 6, "A", ""),
+        _event(6, "snv", 7, "N", "A"),
     ]
     _write_tsv_gz(partition / "alignment_events.tsv.gz", COMPACT_EVENT_FIELDS, events)
     _write_tsv_gz(
@@ -334,7 +329,7 @@ def _write_source_contract(run_dir: Path) -> dict[str, object]:
         json.dumps(
             {
                 "stage": "alignment",
-                "schema": "normalized_alignment_evidence_v1",
+                "schema": "normalized_alignment_evidence_v2",
                 "normalized_evidence": {
                     "layout": "partitioned",
                     "format": "tsv_gzip_v1",
@@ -358,7 +353,7 @@ def _write_source_contract(run_dir: Path) -> dict[str, object]:
         json.dumps(
             {
                 "stage": "annotation",
-                "schema": "normalized_annotation_evidence_v1",
+                "schema": "normalized_annotation_evidence_v2",
                 "partition_ids": [partition_id],
                 "event_variant_map": {
                     "layout": "partitioned",
@@ -601,7 +596,7 @@ def test_annotation_support_resolution_rejects_missing_or_incomplete_contract(
         json.dumps(
             {
                 "stage": "annotation",
-                "schema": "normalized_annotation_evidence_v1",
+                "schema": "normalized_annotation_evidence_v2",
             }
         )
         + "\n"
@@ -613,7 +608,7 @@ def test_annotation_support_resolution_rejects_missing_or_incomplete_contract(
         json.dumps(
             {
                 "stage": "annotation",
-                "schema": "normalized_annotation_evidence_v1",
+                "schema": "normalized_annotation_evidence_v2",
                 "partition_ids": ["partition_000001"],
                 "event_variant_map": {
                     "layout": "partitioned",

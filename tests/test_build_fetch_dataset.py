@@ -1,15 +1,8 @@
 from __future__ import annotations
 
-import sys
-from pathlib import Path
-
 import pytest
 
-
-BIN_DIR = Path(__file__).resolve().parents[1] / "bin"
-sys.path.insert(0, str(BIN_DIR))
-
-import build_fetch_dataset as fetch_dataset  # noqa: E402
+from bin import build_fetch_dataset as fetch_dataset
 
 
 def test_validate_chunk_manifests_requires_every_expected_chunk() -> None:

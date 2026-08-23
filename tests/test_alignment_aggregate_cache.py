@@ -11,14 +11,16 @@ import pandas as pd
 import pytest
 
 from analytics.io import run_inputs as run_inputs_module
+from analytics.derivations.alignment_summary import (
+    concatenate_tsv_gz,
+    merge_strategy_summaries,
+    write_strategy_summary,
+)
+from analytics.derivations.feature_coverage import summarize_feature_coverage
 from analytics.io.alignment_aggregates import (
     AlignmentAggregatePaths,
     build_or_load_alignment_aggregates,
-    merge_strategy_summaries,
-    merge_tsv_gz,
     resolve_alignment_aggregate_paths,
-    summarize_feature_coverage,
-    write_strategy_summary,
 )
 from bin.alignment_table_schema import SEGMENT_FIELDS, SUMMARY_FIELDS
 
@@ -179,7 +181,7 @@ def _write_evidence_run(run_dir: Path) -> tuple[list[Path], Path, Path]:
         json.dumps(
             {
                 "stage": "alignment",
-                "schema": "normalized_alignment_evidence_v1",
+                "schema": "normalized_alignment_evidence_v2",
                 "strategies": ["s1", "s2", "s_zero"],
                 "normalized_evidence": {
                     "layout": "partitioned",
@@ -254,7 +256,7 @@ def test_alignment_aggregate_cache_exactly_matches_current_builders(
             coverage,
         )
         partition_coverages.append(coverage)
-    merge_tsv_gz(partition_coverages, expected_coverage)
+    concatenate_tsv_gz(partition_coverages, expected_coverage)
 
     assert _read_text(actual.strategy_summary_tsv) == _read_text(expected_strategy)
     assert _read_text(actual.feature_coverage_tsv) == _read_text(expected_coverage)

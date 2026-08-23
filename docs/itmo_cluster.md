@@ -461,7 +461,7 @@ du -sh "$RUN" "$GAPH_WORK_DIR"
 
 Then validate in this order:
 
-1. one gene with `--alignment_strategies all`
+1. one gene with `--alignment_strategies default`
 2. 10-20 representative large genes with all default-enabled strategies
 3. a medium scaling run whose trace is used to tune concurrency
 4. only then a production-scale panel

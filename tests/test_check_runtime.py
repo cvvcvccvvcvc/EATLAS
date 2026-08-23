@@ -4,10 +4,7 @@ import sys
 from pathlib import Path
 
 
-BIN_DIR = Path(__file__).resolve().parents[1] / "bin"
-sys.path.insert(0, str(BIN_DIR))
-
-import check_runtime  # noqa: E402
+from bin import check_runtime
 
 
 def test_map_ont_strategy_checks_minimap2_dependency(

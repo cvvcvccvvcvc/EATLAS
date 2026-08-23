@@ -50,7 +50,7 @@ def partition_gene_ids(partition: Path) -> list[str]:
             f"Alignment partition identity mismatch: directory={partition.name!r}, "
             f"manifest={partition_id!r}"
         )
-    if manifest.get("schema") != "normalized_alignment_evidence_partition_v1":
+    if manifest.get("schema") != "normalized_alignment_evidence_partition_v2":
         raise ValueError(f"Alignment partition has unsupported schema: {partition}")
     gene_ids = manifest.get("gene_ids")
     if (

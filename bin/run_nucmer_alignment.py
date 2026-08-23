@@ -7,7 +7,6 @@ import argparse
 import csv
 import gzip
 import json
-import shutil
 import subprocess
 import tempfile
 from pathlib import Path
@@ -15,13 +14,13 @@ from typing import Iterable
 
 import pysam
 
-from alignment_table_schema import (
+from bin.alignment_table_schema import (
     EVENT_FIELDS,
     FAILURE_FIELDS,
     SEGMENT_FIELDS,
     SUMMARY_FIELDS,
 )
-from alignment_task_io import load_task_context, materialize_task_fastas
+from bin.alignment_task_io import load_task_context, materialize_task_fastas
 
 
 TSV_NULL = ""
@@ -37,12 +36,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--outdir", required=True, type=Path)
     parser.add_argument("--nucmer-bin", default="nucmer")
     parser.add_argument("--threads", default=1, type=int)
-    parser.add_argument("--keep-native", default="false")
     return parser.parse_args()
-
-
-def truthy(value: str) -> bool:
-    return str(value).lower() in {"1", "true", "yes", "y"}
 
 
 def write_tsv_gz(path: Path, fields: list[str], rows: Iterable[dict[str, object]]) -> int:
@@ -462,18 +456,11 @@ def finalize_summary(row: dict[str, object]) -> dict[str, object]:
     return row
 
 
-def gzip_copy(src: Path, dst: Path) -> None:
-    dst.parent.mkdir(parents=True, exist_ok=True)
-    with src.open("rb") as inp, gzip.open(dst, "wb") as out:
-        shutil.copyfileobj(inp, out)
-
-
 def main() -> None:
     args = parse_args()
     if args.threads < 1:
         raise ValueError("--threads must be at least 1")
     args.outdir.mkdir(parents=True, exist_ok=True)
-    keep_native = truthy(args.keep_native)
 
     task, target_meta, ortholog_meta = load_task_context(args.task_dir)
     gene_id = task["gene_id"]
@@ -521,8 +508,6 @@ def main() -> None:
                 meta_by_sequence,
                 summaries,
             )
-            if keep_native:
-                gzip_copy(sam_path, args.outdir / "native" / f"{gene_id}.sam.gz")
         except Exception as exc:
             failures.append(
                 {
@@ -555,7 +540,6 @@ def main() -> None:
         "ambiguous_event_allele_count": ambiguous_event_allele_count,
         "failure_count": len(failures),
         "ortholog_count": len(ortholog_meta),
-        "keep_native": keep_native,
         "filtering": "no global one-to-one filtering; SAM/CIGAR records are evaluated per ortholog",
     }
     (args.outdir / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")

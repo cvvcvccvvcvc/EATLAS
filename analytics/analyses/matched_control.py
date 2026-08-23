@@ -19,6 +19,7 @@ import warnings
 from dataclasses import dataclass
 from pathlib import Path
 
+import duckdb
 import numpy as np
 import pandas as pd
 
@@ -45,8 +46,8 @@ from genomics.variants import (
     parse_variant_key,
     refseq_accession_to_chrom,
 )
-from analytics.annotation.vep import annotate_vep_consequences
-from analytics.annotation.vep_result_cache import DEFAULT_TILE_SIZE_BP
+from analytics.vep.annotator import annotate_vep_consequences
+from analytics.vep.result_cache import DEFAULT_TILE_SIZE_BP
 
 
 CONTROL_VERSION = 6
@@ -716,7 +717,6 @@ def _annotate_candidate_controls(
         "workspace_bytes": 0,
     }
     vep_cache_path.parent.mkdir(parents=True, exist_ok=True)
-    duckdb = _import_duckdb()
     with tempfile.TemporaryDirectory(
         prefix=".control_candidates.",
         dir=vep_cache_path.parent,
@@ -945,17 +945,6 @@ def _directory_size(path: Path) -> int:
         except FileNotFoundError:
             continue
     return total
-
-
-def _import_duckdb():
-    try:
-        import duckdb
-    except ImportError as exc:  # pragma: no cover - analytics environment contract
-        raise RuntimeError(
-            "Target-space control preparation requires the python-duckdb package"
-        ) from exc
-    return duckdb
-
 
 def _empty_vep_summary(
     release: str,

@@ -37,9 +37,9 @@ from genomics.variants import (
     variant_key_text,
     variant_type,
 )
-from analytics.annotation.consequences import VEP_CONSEQUENCE_ORDER
-from analytics.annotation.vep import annotate_vep_consequences
-from analytics.annotation.vep_result_cache import DEFAULT_TILE_SIZE_BP
+from analytics.vep.consequences import VEP_CONSEQUENCE_ORDER
+from analytics.vep.annotator import annotate_vep_consequences
+from analytics.vep.result_cache import DEFAULT_TILE_SIZE_BP
 from analytics.analyses.observed_variant_store import ObservedVariantStore
 
 

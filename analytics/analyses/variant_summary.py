@@ -33,8 +33,6 @@ VARIANT_USECOLS = [
     "alt",
     "lookup_status",
     "strategies",
-    "support_row_count",
-    "support_ortholog_count",
     "clinvar_id",
     "clinvar_allele_id",
     "clinvar_sig",

@@ -10,6 +10,9 @@ from pathlib import Path
 
 import pandas as pd
 
+from analytics.analyses.variant_summary_aggregation import (
+    resolve_variant_aggregation_source,
+)
 from analytics.io.alignment_aggregates import resolve_alignment_aggregate_paths
 from analytics.io.annotation_support import resolve_annotation_support_paths
 from analytics.io.artifacts import file_identity, path_metadata
@@ -59,7 +62,7 @@ def resolve_run_inputs(run_dir: Path) -> RunInputs:
     if not source_annotations_tsv.exists():
         raise FileNotFoundError(
             f"Missing variant_annotations.tsv.gz under {annotation_dir}. "
-            "Run the annotation stage before building this report."
+            "Complete the end-to-end pipeline before building this report."
         )
     variant_annotations_tsv = resolve_vep_variant_annotations(
         run_dir,
@@ -154,8 +157,6 @@ def validate_report_inputs(inputs: RunInputs) -> None:
             "alt",
             "lookup_status",
             "strategies",
-            "support_row_count",
-            "support_ortholog_count",
             "clinvar_id",
             "clinvar_sig",
             "clinvar_review_stars",
@@ -214,10 +215,6 @@ def validate_report_inputs(inputs: RunInputs) -> None:
         if not path.exists():
             raise FileNotFoundError(f"Missing report input: {path}")
         if path == inputs.variant_annotations_tsv and path.suffix == ".json":
-            from analytics.analyses.variant_summary_aggregation import (
-                resolve_variant_aggregation_source,
-            )
-
             header = set(resolve_variant_aggregation_source(path).columns)
         else:
             compression = "gzip" if path.suffix == ".gz" else None

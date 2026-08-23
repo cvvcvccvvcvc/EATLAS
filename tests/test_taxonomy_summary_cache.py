@@ -15,7 +15,7 @@ from analytics.io.taxonomy_summary import (
     resolve_taxonomy_summary_path,
 )
 from bin.fetch_taxonomy import TAXONOMY_FIELDS
-from bin.taxonomic_evidence import (
+from analytics.derivations.taxonomy import (
     build_taxonomy_summary_rows,
     load_taxonomy_profiles,
     write_taxonomy_summary,

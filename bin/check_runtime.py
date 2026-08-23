@@ -52,7 +52,6 @@ def main() -> None:
     if "nucmer" in strategies:
         require_executable("nucmer", "nucmer", errors)
     if any(strategy.startswith("bwa_pseudoreads_") for strategy in strategies):
-        require_python_module("bam_filtering_v1", errors)
         require_executable("bwa", "bwa", errors)
         require_executable("samtools", "samtools", errors)
 

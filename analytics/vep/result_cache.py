@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+import duckdb
 import pandas as pd
 
 from genomics.variants import normalize_chrom, parse_variant_key
@@ -103,7 +104,6 @@ class VepResultCache:
                 self._lookup_summary(len(wanted), 0, len(files_by_tile), 0),
             )
 
-        duckdb = _import_duckdb()
         with duckdb.connect() as connection:
             connection.register("vep_requests", wanted)
             connection.read_parquet(parquet_files).create_view("vep_cache_rows")
@@ -238,7 +238,6 @@ class VepResultCache:
             ) as handle:
                 temporary = Path(handle.name)
 
-            duckdb = _import_duckdb()
             with duckdb.connect() as connection:
                 connection.register("cache_fragment", rows)
                 connection.table("cache_fragment").write_parquet(
@@ -582,13 +581,3 @@ def _file_sha256(path: Path) -> str:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
-
-
-def _import_duckdb():
-    try:
-        import duckdb
-    except ImportError as exc:
-        raise RuntimeError(
-            "Shared VEP result caching requires the python-duckdb package"
-        ) from exc
-    return duckdb

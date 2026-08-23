@@ -14,9 +14,8 @@ import pytest
 PROJECT_DIR = Path(__file__).resolve().parents[1]
 FETCH_SCRIPT = PROJECT_DIR / "bin" / "fetch_parse_chunk.py"
 BUILD_SCRIPT = PROJECT_DIR / "bin" / "build_fetch_dataset.py"
-sys.path.insert(0, str(PROJECT_DIR / "bin"))
 
-import fetch_parse_chunk as fetch_chunk  # noqa: E402
+from bin import fetch_parse_chunk as fetch_chunk
 
 
 def read_tsv_gz(path: Path) -> list[dict[str, str]]:

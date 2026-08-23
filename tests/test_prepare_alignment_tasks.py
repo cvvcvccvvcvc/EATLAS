@@ -11,10 +11,9 @@ import pytest
 
 PROJECT_DIR = Path(__file__).resolve().parents[1]
 PREPARE_SCRIPT = PROJECT_DIR / "bin" / "prepare_alignment_tasks.py"
-sys.path.insert(0, str(PROJECT_DIR / "bin"))
 
-from alignment_task_io import load_task_context, materialize_task_fastas  # noqa: E402
-from prepare_alignment_tasks import iter_ortholog_groups  # noqa: E402
+from bin.alignment_task_io import load_task_context, materialize_task_fastas
+from bin.prepare_alignment_tasks import iter_ortholog_groups
 
 
 def write_tsv_gz(path: Path, fields: list[str], rows: list[dict[str, str]]) -> None:

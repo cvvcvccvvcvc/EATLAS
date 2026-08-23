@@ -14,7 +14,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from analytics.annotation.consequences import (
+from analytics.vep.consequences import (
     VALIDATION_CONSEQUENCE_BITS as CONSEQUENCE_BITS,
     VALIDATION_CONSEQUENCE_OPTIONS as CONSEQUENCE_OPTIONS,
     validation_consequence_membership_mask as consequence_membership_mask,

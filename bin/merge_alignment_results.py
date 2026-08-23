@@ -9,18 +9,15 @@ import gzip
 import hashlib
 import json
 import logging
-import os
 import shutil
 import sqlite3
-import subprocess
 import sys
-import tempfile
 import time
 from datetime import datetime, timezone
 from itertools import groupby
 from pathlib import Path
 
-from alignment_table_schema import ALIGNER_OUTPUT_SCHEMAS
+from bin.alignment_table_schema import ALIGNER_OUTPUT_SCHEMAS
 
 
 csv.field_size_limit(sys.maxsize)
@@ -63,15 +60,12 @@ COMPACT_EVENT_FIELDS = [
     "ref",
     "alt",
     "strategy",
-    "support_row_count",
-    "support_ortholog_count",
     "qc_flags",
 ]
 EVENT_ORTHOLOG_SUPPORT_FIELDS = [
     "event_group_id",
     "ortholog_gene_id",
     "tax_id",
-    "taxname",
     "mapq",
     "native_alignment_type",
     "support_row_count",
@@ -99,20 +93,10 @@ EVENT_STREAM_FIELDS = [
     *EVENT_KEY_FIELDS,
     "ortholog_gene_id",
     "tax_id",
-    "taxname",
     "mapq",
     "native_alignment_type",
     "qc_flags",
 ]
-STRATEGY_SUMMARY_FIELDS = [
-    "strategy",
-    "summary_row_count",
-    "gene_count",
-    "aligned_summary_row_count",
-    "event_count",
-    "aligned_target_bp",
-]
-
 ENSEMBL_COMPARA_STRATEGY = "precomputed_ensembl_92_mammals_epo_extended"
 ALIGNER_MANIFEST_COUNT_FIELDS = (
     "ortholog_alignment_summary_count",
@@ -332,240 +316,6 @@ def merge_tsv_gz(paths: list[Path], output: Path) -> int:
     return count
 
 
-def merge_sorted_tsv_gz(
-    paths: list[Path],
-    output: Path,
-    fields: list[str],
-    sort_keys: list[str],
-) -> int:
-    """Merge bounded partitions into one globally sorted compressed table."""
-    output.parent.mkdir(parents=True, exist_ok=True)
-    count = 0
-    with tempfile.TemporaryDirectory(prefix=f".{output.stem}.", dir=output.parent) as temp_name:
-        temp_dir = Path(temp_name)
-        unsorted_path = temp_dir / "rows.tsv"
-        sorted_path = temp_dir / "rows.sorted.tsv"
-        with unsorted_path.open("w", newline="") as out_handle:
-            writer = csv.writer(out_handle, delimiter="\t", lineterminator="\n")
-            for path in paths:
-                if not path.exists():
-                    raise FileNotFoundError(f"Missing required alignment table: {path}")
-                with gzip.open(path, "rt", newline="") as in_handle:
-                    reader = csv.reader(in_handle, delimiter="\t")
-                    header = next(reader, None)
-                    if header != fields:
-                        raise ValueError(
-                            f"Header mismatch while merging {path}: expected {fields}, observed {header}"
-                        )
-                    for row in reader:
-                        writer.writerow(row)
-                        count += 1
-
-        env = os.environ.copy()
-        env.update({"LC_ALL": "C", "TMPDIR": str(temp_dir)})
-        subprocess.run(
-            [
-                "sort",
-                "-S",
-                "128M",
-                *sort_keys,
-                "-T",
-                str(temp_dir),
-                "-o",
-                str(sorted_path),
-                str(unsorted_path),
-            ],
-            check=True,
-            env=env,
-        )
-        with gzip.open(output, "wt", newline="") as out_handle:
-            writer = csv.writer(out_handle, delimiter="\t", lineterminator="\n")
-            writer.writerow(fields)
-            if sorted_path.exists():
-                with sorted_path.open() as sorted_handle:
-                    shutil.copyfileobj(sorted_handle, out_handle)
-    return count
-
-
-def merge_compact_event_handoffs(
-    result_dirs: list[Path],
-    events_output: Path,
-    support_output: Path,
-) -> tuple[int, int]:
-    """Concatenate compact partitions while rebasing partition-local group IDs."""
-
-    event_count = 0
-    support_count = 0
-    with (
-        gzip.open(events_output, "wt", newline="") as event_handle,
-        gzip.open(support_output, "wt", newline="") as support_handle,
-    ):
-        event_writer = csv.DictWriter(
-            event_handle,
-            fieldnames=COMPACT_EVENT_FIELDS,
-            delimiter="\t",
-            lineterminator="\n",
-        )
-        support_writer = csv.DictWriter(
-            support_handle,
-            fieldnames=EVENT_ORTHOLOG_SUPPORT_FIELDS,
-            delimiter="\t",
-            lineterminator="\n",
-        )
-        event_writer.writeheader()
-        support_writer.writeheader()
-        for result_dir in result_dirs:
-            events_path = result_dir / "alignment_events.tsv.gz"
-            support_path = result_dir / "event_ortholog_support.tsv.gz"
-            with (
-                gzip.open(events_path, "rt", newline="") as partition_event_handle,
-                gzip.open(support_path, "rt", newline="") as partition_support_handle,
-            ):
-                event_reader = csv.DictReader(partition_event_handle, delimiter="\t")
-                support_reader = csv.DictReader(partition_support_handle, delimiter="\t")
-                current_support = next(support_reader, None)
-                local_event_count = 0
-                for event_row in event_reader:
-                    local_event_count += 1
-                    local_group_id = int(event_row["event_group_id"])
-                    if local_group_id != local_event_count:
-                        raise ValueError(
-                            f"Compact event_group_id values in {events_path} must be "
-                            f"consecutive from 1; expected {local_event_count}, "
-                            f"observed {local_group_id}"
-                        )
-                    event_count += 1
-                    event_row["event_group_id"] = str(event_count)
-                    event_writer.writerow(event_row)
-                    while current_support is not None:
-                        support_group_id = int(current_support["event_group_id"])
-                        if support_group_id < local_group_id:
-                            raise ValueError(
-                                f"Unmatched event ortholog support group {support_group_id} "
-                                f"in {support_path}"
-                            )
-                        if support_group_id > local_group_id:
-                            break
-                        current_support["event_group_id"] = str(event_count)
-                        support_writer.writerow(current_support)
-                        support_count += 1
-                        current_support = next(support_reader, None)
-                if current_support is not None:
-                    raise ValueError(
-                        f"Unmatched event ortholog support group "
-                        f"{current_support['event_group_id']} in {support_path}"
-                    )
-    return event_count, support_count
-
-
-def write_strategy_summary(
-    summary_paths: list[Path],
-    output: Path,
-    expected_strategies: list[str],
-) -> tuple[int, int]:
-    """Write small per-strategy aggregates from the canonical summary table."""
-    aggregates: dict[str, dict[str, int | set[str]]] = {}
-    summary_row_count = 0
-    for summaries_path in summary_paths:
-        with gzip.open(summaries_path, "rt", newline="") as handle:
-            reader = csv.DictReader(handle, delimiter="\t")
-            required = {"gene_id", "strategy", "status", "event_count", "aligned_target_bp"}
-            missing = required - set(reader.fieldnames or [])
-            if missing:
-                raise ValueError(
-                    f"Alignment summary {summaries_path} missing required columns: "
-                    + ", ".join(sorted(missing))
-                )
-            for row in reader:
-                summary_row_count += 1
-                strategy = row["strategy"]
-                aggregate = aggregates.setdefault(
-                    strategy,
-                    {
-                        "summary_row_count": 0,
-                        "gene_ids": set(),
-                        "aligned_summary_row_count": 0,
-                        "event_count": 0,
-                        "aligned_target_bp": 0,
-                    },
-                )
-                aggregate["summary_row_count"] += 1
-                aggregate["gene_ids"].add(row["gene_id"])
-                aggregate["aligned_summary_row_count"] += int(row["status"] == "aligned")
-                aggregate["event_count"] += int(row["event_count"] or 0)
-                aggregate["aligned_target_bp"] += int(row["aligned_target_bp"] or 0)
-
-    for strategy in expected_strategies:
-        aggregates.setdefault(
-            strategy,
-            {
-                "summary_row_count": 0,
-                "gene_ids": set(),
-                "aligned_summary_row_count": 0,
-                "event_count": 0,
-                "aligned_target_bp": 0,
-            },
-        )
-
-    output.parent.mkdir(parents=True, exist_ok=True)
-    with gzip.open(output, "wt", newline="") as handle:
-        writer = csv.DictWriter(handle, fieldnames=STRATEGY_SUMMARY_FIELDS, delimiter="\t")
-        writer.writeheader()
-        for strategy in sorted(aggregates):
-            aggregate = aggregates[strategy]
-            writer.writerow(
-                {
-                    "strategy": strategy,
-                    "summary_row_count": aggregate["summary_row_count"],
-                    "gene_count": len(aggregate["gene_ids"]),
-                    "aligned_summary_row_count": aggregate["aligned_summary_row_count"],
-                    "event_count": aggregate["event_count"],
-                    "aligned_target_bp": aggregate["aligned_target_bp"],
-                }
-            )
-    return summary_row_count, len(aggregates)
-
-
-def merge_strategy_summaries(
-    paths: list[Path],
-    output: Path,
-    expected_strategies: list[str],
-) -> int:
-    aggregates: dict[str, dict[str, int]] = {}
-    numeric_fields = [field for field in STRATEGY_SUMMARY_FIELDS if field != "strategy"]
-    for path in paths:
-        with gzip.open(path, "rt", newline="") as handle:
-            reader = csv.DictReader(handle, delimiter="\t")
-            missing = set(STRATEGY_SUMMARY_FIELDS) - set(reader.fieldnames or [])
-            if missing:
-                raise ValueError(
-                    f"Strategy summary {path} missing required columns: "
-                    + ", ".join(sorted(missing))
-                )
-            for row in reader:
-                strategy = row["strategy"]
-                aggregate = aggregates.setdefault(
-                    strategy,
-                    {field: 0 for field in numeric_fields},
-                )
-                for field in numeric_fields:
-                    aggregate[field] += int(row[field] or 0)
-
-    unexpected = sorted(set(aggregates) - set(expected_strategies))
-    if unexpected:
-        raise ValueError(f"Unexpected strategies in partition summaries: {unexpected}")
-    for strategy in expected_strategies:
-        aggregates.setdefault(strategy, {field: 0 for field in numeric_fields})
-
-    output.parent.mkdir(parents=True, exist_ok=True)
-    with gzip.open(output, "wt", newline="") as handle:
-        writer = csv.DictWriter(handle, fieldnames=STRATEGY_SUMMARY_FIELDS, delimiter="\t")
-        writer.writeheader()
-        for strategy in sorted(aggregates):
-            writer.writerow({"strategy": strategy, **aggregates[strategy]})
-    return len(aggregates)
-
-
 def create_compact_event_table(conn: sqlite3.Connection) -> None:
     conn.execute(
         """
@@ -582,7 +332,6 @@ def create_compact_event_table(conn: sqlite3.Connection) -> None:
             ortholog_gene_id TEXT,
             strategy TEXT,
             tax_id TEXT,
-            taxname TEXT,
             mapq TEXT,
             native_alignment_type TEXT,
             qc_flags TEXT
@@ -607,7 +356,6 @@ def insert_event_rows(conn: sqlite3.Connection, path: Path, batch_size: int = 10
         "ortholog_gene_id",
         "strategy",
         "tax_id",
-        "taxname",
         "mapq",
         "native_alignment_type",
         "qc_flags",
@@ -621,13 +369,13 @@ def insert_event_rows(conn: sqlite3.Connection, path: Path, batch_size: int = 10
             count += 1
             if len(batch) >= batch_size:
                 conn.executemany(
-                    "INSERT INTO events VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    "INSERT INTO events VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     batch,
                 )
                 batch.clear()
     if batch:
         conn.executemany(
-            "INSERT INTO events VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO events VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             batch,
         )
     return count
@@ -650,23 +398,21 @@ def merge_ortholog_metadata(
         orthologs[ortholog_gene_id] = {
             "ortholog_gene_id": ortholog_gene_id,
             "tax_id": row["tax_id"],
-            "taxname": row["taxname"],
             "mapq": row["mapq"],
             "native_alignment_type": row["native_alignment_type"],
             "support_row_count": 1,
         }
         return
 
-    for field in ("tax_id", "taxname"):
-        current = str(support[field] or "")
-        observed = row[field]
-        if current and observed and current != observed:
-            raise ValueError(
-                f"Conflicting {field} for ortholog_gene_id={ortholog_gene_id}: "
-                f"{current!r} != {observed!r}"
-            )
-        if not current and observed:
-            support[field] = observed
+    current_tax_id = str(support["tax_id"] or "")
+    observed_tax_id = row["tax_id"]
+    if current_tax_id and observed_tax_id and current_tax_id != observed_tax_id:
+        raise ValueError(
+            f"Conflicting tax_id for ortholog_gene_id={ortholog_gene_id}: "
+            f"{current_tax_id!r} != {observed_tax_id!r}"
+        )
+    if not current_tax_id and observed_tax_id:
+        support["tax_id"] = observed_tax_id
     for field in ("mapq", "native_alignment_type"):
         if not support[field] and row[field]:
             support[field] = row[field]
@@ -684,18 +430,14 @@ def compact_stream_group(
     }
     orthologs: dict[str, dict[str, object]] = {}
     qc_flags: list[str] = []
-    support_row_count = 0
     for values in rows:
         row = dict(zip(EVENT_STREAM_FIELDS, values))
-        support_row_count += 1
         merge_ortholog_metadata(orthologs, row)
         if row["qc_flags"]:
             qc_flags.append(row["qc_flags"])
 
     record.update(
         {
-            "support_row_count": support_row_count,
-            "support_ortholog_count": len(orthologs),
             "qc_flags": compact_event_flags(",".join(qc_flags)),
         }
     )
@@ -761,7 +503,6 @@ def write_compact_events(
                 alt,
                 ortholog_gene_id,
                 tax_id,
-                taxname,
                 mapq,
                 native_alignment_type,
                 qc_flags
@@ -825,24 +566,6 @@ def write_compact_events(
         conn.close()
         if db_path.exists():
             db_path.unlink()
-
-
-def copy_native(result_dirs: list[Path], outdir: Path) -> int:
-    copied = 0
-    native_root = outdir / "native"
-    for result_dir in result_dirs:
-        native_dir = result_dir / "native"
-        if not native_dir.exists():
-            continue
-        strategy_dir = native_root / result_dir.name
-        for src in sorted(native_dir.rglob("*")):
-            if not src.is_file():
-                continue
-            dst = strategy_dir / src.relative_to(native_dir)
-            dst.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(src, dst)
-            copied += 1
-    return copied
 
 
 def copy_partitioned_evidence(result_dirs: list[Path], outdir: Path) -> None:
@@ -1270,24 +993,16 @@ def main() -> None:
         alignment_event_mode = input_event_mode
     else:
         event_inputs = [path / "alignment_events.tsv.gz" for path in result_dirs]
-        if args.partition_id:
-            (
-                event_count,
-                raw_event_count,
-                event_ortholog_support_count,
-            ) = write_compact_events(
-                event_inputs,
-                args.outdir / "alignment_events.tsv.gz",
-                args.outdir / "event_ortholog_support.tsv.gz",
-                timings=timings_seconds,
-            )
-        else:
-            raw_event_count = sum_manifest_count(manifests, "raw_alignment_event_count")
-            event_count, event_ortholog_support_count = merge_compact_event_handoffs(
-                result_dirs,
-                args.outdir / "alignment_events.tsv.gz",
-                args.outdir / "event_ortholog_support.tsv.gz",
-            )
+        (
+            event_count,
+            raw_event_count,
+            event_ortholog_support_count,
+        ) = write_compact_events(
+            event_inputs,
+            args.outdir / "alignment_events.tsv.gz",
+            args.outdir / "event_ortholog_support.tsv.gz",
+            timings=timings_seconds,
+        )
         alignment_event_mode = "compact_support"
     failure_count = merge_tsv_gz(
         [path / "failures.tsv.gz" for path in result_dirs],
@@ -1298,9 +1013,9 @@ def main() -> None:
         "stage": "alignment",
         "partition_id": args.partition_id or "",
         "schema": (
-            "normalized_alignment_evidence_partition_v1"
+            "normalized_alignment_evidence_partition_v2"
             if args.partition_id
-            else "normalized_alignment_evidence_v1"
+            else "normalized_alignment_evidence_v2"
         ),
         "strategy_count": len(strategies),
         "strategies": strategies,
@@ -1311,7 +1026,7 @@ def main() -> None:
         "alignment_segment_count": segment_count,
         "alignment_event_mode": alignment_event_mode,
         "event_ortholog_support_format": (
-            "event_group_id_v1" if alignment_event_mode == "compact_support" else ""
+            "event_group_id_v2" if alignment_event_mode == "compact_support" else ""
         ),
         "raw_alignment_event_count": raw_event_count,
         "alignment_event_count": event_count,

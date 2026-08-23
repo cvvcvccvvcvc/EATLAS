@@ -40,8 +40,8 @@ orientation.
 ## Strategies
 
 Runnable strategies are registered in the workflow and can be selected with
-`--alignment_strategies`. The default value is `all`, meaning every strategy
-marked as default-enabled in that registry.
+`--alignment_strategies`. The value `default` selects every strategy marked as
+default-enabled in that registry.
 
 | Strategy | Tool | Policy |
 | --- | --- | --- |
@@ -63,7 +63,7 @@ later annotation/analysis layer.
 Example selections:
 
 ```bash
---alignment_strategies all
+--alignment_strategies default
 --alignment_strategies minimap2_asm20
 --alignment_strategies minimap2_asm10,nucmer
 --alignment_strategies bwa_pseudoreads_150_75
@@ -75,7 +75,7 @@ At least one strategy must be selected. Single-strategy runs are valid; compare
 or report layers must treat cross-strategy-only sections as not applicable or
 empty rather than failing.
 
-`all` selects `minimap2_asm10`, `minimap2_asm20`, `nucmer`, and
+`default` selects `minimap2_asm10`, `minimap2_asm20`, `nucmer`, and
 `bwa_pseudoreads_150_75`. The explicitly selected Ensembl strategy uses release 116,
 the `92_mammals.epo_extended` set, and at most three concurrent remote chunk
 tasks. These values are part of the strategy definition rather than separate
@@ -226,7 +226,7 @@ Stage 2 outputs.
 
 The alignment directory is an indivisible internal annotation handoff.
 Annotation receives it directly from the alignment workflow, requires
-`normalized_alignment_evidence_v1`, and validates every declared partition and
+`normalized_alignment_evidence_v2`, and validates every declared partition and
 file. Individual tables and prior layouts are not independent pipeline inputs.
 
 Every per-gene result and partition uses plural `gene_ids` and `strategies`,
@@ -242,11 +242,13 @@ input and be replaced with empty values. Final merge applies the same exact
 check to compact events and their `event_group_id`-linked ortholog-support
 sidecar. This validation does not change the valid Stage 2 output format.
 
-The compact event row contains event identity, raw/supporting-ortholog counts,
-and event-level QC flags. It does not repeat tool or preset metadata, which is
-fixed by the strategy manifest, or distinct taxon/name counts, which are
-reproducible from `event_ortholog_support.tsv.gz`. Exact taxonomic identities
-remain in that sidecar rather than being replaced by those counts.
+The compact event row contains event identity and event-level QC flags. It does
+not repeat tool or preset metadata, which is fixed by the strategy manifest, or
+support counters, which analytics derives from
+`event_ortholog_support.tsv.gz`. The sidecar retains each exact positive
+ortholog identity, its `tax_id`, representative alignment metadata, and the
+lossless raw-row multiplicity needed for later support metrics. Taxon names and
+lineage are joined once from the canonical Stage 1 taxonomy table.
 
 At the final alignment boundary, the pipeline copies normalized partitions
 without parsing, recompression, or global event-ID rebasing. An
@@ -262,7 +264,7 @@ evidence. Per-partition phase timings remain in the final manifest; they are
 task measurements, not a synthetic wall-clock total.
 
 Stage 3 follows the same evidence-first boundary. Its canonical
-`normalized_annotation_evidence_v1` output contains only
+`normalized_annotation_evidence_v2` output contains only
 `variant_annotations.tsv.gz`, the partitioned `event_variant_map`, annotation
 `failures.tsv.gz`, and `manifest.json`. The event map preserves the exact
 `(partition_id, event_group_id)` to canonical `variant_key` lineage needed to
@@ -287,10 +289,10 @@ leaves both fields empty because it has no equivalent native record metadata.
 interpretable within that strategy. Stage 2 applies no MAPQ cutoff and does not
 convert low-MAPQ records to no-calls. If primary and non-primary records from
 the same ortholog emit the same event, the existing representative-selection
-rule still prefers the primary record. If Stage 3 normalizes multiple raw
-representations to the same variant-support edge, it keeps the metadata from
-the first support record while summing `support_row_count`. Alignment role is
-not duplicated in `qc_flags`.
+rule still prefers the primary record while Stage 2 compaction sums
+`support_row_count`. If annotation normalizes multiple compact events to one
+canonical variant, analytics unions their ortholog identities and sums that
+lossless multiplicity. Alignment role is not duplicated in `qc_flags`.
 
 Strategy summaries are analytic views over
 `ortholog_alignment_summary.tsv.gz`, not alignment-owned source evidence.
@@ -331,8 +333,8 @@ ortholog cannot inflate a per-base or per-feature depth statistic.
 
 ## Storage Policy
 
-Alignment processes use scratch task space. Raw PAF/delta files are temporary and
-are removed unless `--keep_native_alignments true` is set.
+Alignment processes use scratch task space. Raw PAF/SAM/BAM files and generated
+pseudoreads are temporary task inputs and are never published as durable output.
 
 Per-gene alignment task directories contain only the task manifest and metadata
 needed to run a strategy. They do not copy the Stage 1 target or ortholog FASTA

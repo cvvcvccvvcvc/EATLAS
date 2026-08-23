@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable
 
+import duckdb
 import pandas as pd
 
 from analytics.analyses.variant_summary_aggregation import (
@@ -37,7 +38,7 @@ from analytics.io.variant_source import (
     sql_string,
     variant_source_sql,
 )
-from bin.taxonomic_evidence import (
+from analytics.derivations.taxonomy import (
     TAXONOMY_SUMMARY_FIELDS,
     build_taxonomy_summary_rows,
     load_taxonomy_profiles,
@@ -386,8 +387,8 @@ def _validate_compatibility(
         "target_assembly_name": "GRCh38.p14",
         "ortholog_scope": "all",
         "alignment_event_mode": "compact_support",
-        "event_ortholog_support_format": "event_group_id_v1",
-        "annotation_schema": "normalized_annotation_evidence_v1",
+        "event_ortholog_support_format": "event_group_id_v2",
+        "annotation_schema": "normalized_annotation_evidence_v2",
         "gnomad_dataset": "gnomad_r4",
     }
     incompatible_constants = [
@@ -508,10 +509,6 @@ def _validate_shared_allele_evidence(variant_descriptor: Path) -> None:
         variant_descriptor,
         required_columns=required,
     )
-    try:
-        import duckdb
-    except ImportError as exc:  # pragma: no cover - analytics environment contract
-        raise RuntimeError("Cohort validation requires duckdb") from exc
     candidate_checks = {
         "gnomad_af": "try_cast(nullif(gnomad_af, '') AS DOUBLE)",
         "gnomad_af_source": "nullif(gnomad_af_source, '')",

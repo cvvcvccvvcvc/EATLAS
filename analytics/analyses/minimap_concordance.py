@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
+import duckdb
 import pandas as pd
 
 from analytics.io.performance import PerformanceProfile
@@ -73,7 +74,6 @@ def build_minimap_concordance_analysis(
 
 
 def compute_minimap_candidate_summary(score_path: Path) -> pd.DataFrame:
-    duckdb = _import_duckdb()
     predicates = {
         ASM10: "has_asm10",
         ASM20: "has_asm20",
@@ -223,11 +223,3 @@ def combine_minimap_validation(
         distributions,
         {**base.r_versions, **synthetic.r_versions},
     )
-
-
-def _import_duckdb():
-    try:
-        import duckdb
-    except ImportError as exc:  # pragma: no cover
-        raise RuntimeError("Minimap2 concordance requires python-duckdb") from exc
-    return duckdb

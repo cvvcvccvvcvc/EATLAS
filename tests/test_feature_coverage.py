@@ -3,24 +3,20 @@ from __future__ import annotations
 import csv
 import gzip
 import shutil
-import sys
 from pathlib import Path
 
 import pytest
 
 
-BIN_DIR = Path(__file__).resolve().parents[1] / "bin"
-sys.path.insert(0, str(BIN_DIR))
-
-from feature_coverage import (  # noqa: E402
+from analytics.derivations.feature_coverage import (
     load_snv_site_depth,
     summarize_feature_coverage,
     summarize_feature_coverage_rows,
     write_snv_site_depth,
     write_snv_taxonomic_depth,
 )
-from fetch_taxonomy import TAXONOMY_FIELDS  # noqa: E402
-from taxonomic_evidence import COUNT_KEYS  # noqa: E402
+from analytics.derivations.taxonomy import COUNT_KEYS
+from genomics.taxonomy import TAXONOMY_FIELDS
 
 
 pytestmark = pytest.mark.skipif(shutil.which("bedtools") is None, reason="bedtools is not installed")

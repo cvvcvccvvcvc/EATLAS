@@ -21,7 +21,7 @@ RUN="results/run_default_strategies_$(date +%Y%m%d_%H%M%S)"
 nextflow run . \
   --ids_file assets/inputs/gene_ids/panel_10_genes.txt \
   --outdir "$RUN" \
-  --alignment_strategies all
+  --alignment_strategies default
 ```
 
 Every run uses the declared `envs/*.yml` task environments through Micromamba;
@@ -73,7 +73,7 @@ nextflow run . \
   --outdir "$GAPH_ROOT/results/run_001"
 ```
 
-By default, `--alignment_strategies all` runs `minimap2_asm10`,
+By default, `--alignment_strategies default` runs `minimap2_asm10`,
 `minimap2_asm20`, `nucmer`, and `bwa_pseudoreads_150_75`. Both the precomputed
 Ensembl strategy and `minimap2_map_ont_pseudoreads_30000_15000` remain available
 only when named explicitly. Use a comma-separated list to select a different set:
@@ -161,8 +161,8 @@ clean their task work by default; failed or interrupted work remains available
 for recovery. See `docs/storage_model.md` for resumed-run cleanup details.
 
 Raw NCBI zip files, unpacked `gene.fna`, minimap2 PAF, MUMmer delta/coords
-files, and external Ensembl Compara MAF chunks are not published by default.
-Set `--keep_native_alignments true` only for targeted debug or benchmark runs.
+files, and external Ensembl Compara MAF chunks are not published. Inspect a
+retained failed/interrupted task work directory when native debugging is needed.
 
 For cluster runs, keep `-work-dir` on scratch storage, not in the project
 directory or home quota.
@@ -171,7 +171,7 @@ directory or home quota.
 
 | Step | Process | What Happens | Durable Output |
 | --- | --- | --- | --- |
-| 1 | `VALIDATE_IDS` | Read Entrez IDs, remove duplicates, split accepted IDs into chunks. | `fetch/input.ids.tsv`, `fetch/chunks.tsv` |
+| 1 | `VALIDATE_IDS` | Read Entrez IDs, remove duplicates, split accepted IDs into chunks. | `fetch/input.ids.tsv`; chunk plans remain in `work/` |
 | 2 | `FETCH_PARSE_CHUNK` | Download one NCBI gene package with `--ortholog all --include gene`; parse `data_report.jsonl` and `gene.fna`; select GRCh38 human target and one sequence per ortholog GeneID. Concurrent request starts are spaced by a fixed 5 seconds. | Per-chunk compressed FASTA/TSV files in `work/` |
 | 3 | `BUILD_FETCH_DATASET` | Assemble chunk tables, selected per-gene FASTA files, and target structural features into the final fetch dataset. | `fetch/` |
 | 4 | `FETCH_TAXONOMY` | Fetch canonical taxonomy once for the selected ortholog tax IDs. Analytics later consumes this Stage 1 handoff; alignment performs no taxonomy work. | `fetch/taxonomy.tsv.gz`, `fetch/taxonomy_failures.tsv.gz` |

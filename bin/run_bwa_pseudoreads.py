@@ -7,7 +7,6 @@ import argparse
 import csv
 import gzip
 import json
-import shutil
 import subprocess
 import tempfile
 from collections import defaultdict
@@ -16,14 +15,14 @@ from pathlib import Path
 
 import pysam
 
-from alignment_table_schema import (
+from bin.alignment_table_schema import (
     EVENT_FIELDS,
     FAILURE_FIELDS,
     SEGMENT_FIELDS,
     SUMMARY_FIELDS,
 )
-from alignment_task_io import load_task_context, materialize_task_fastas
-import bam_filtering_v1
+from bin.alignment_task_io import load_task_context, materialize_task_fastas
+from bin import bwa_pseudoread_filter
 
 EventKey = tuple[str, int, int, str, str]
 EventSupport = dict[EventKey, dict[str, dict[str, object]]]
@@ -48,14 +47,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--pseudoread-len", required=True, type=int)
     parser.add_argument("--pseudoread-step", required=True, type=int)
     parser.add_argument("--pseudoread-phred", required=True, type=int)
-    parser.add_argument("--keep-native", default="false")
     return parser.parse_args()
-
-
-def truthy(raw: str | bool) -> bool:
-    if isinstance(raw, bool):
-        return raw
-    return raw.strip().lower() in {"1", "true", "yes", "y", "on"}
 
 
 def run_checked(cmd: list[str], *, stdout=None) -> None:
@@ -563,26 +555,8 @@ def make_summary_rows(
     return summaries
 
 
-def keep_native_outputs(work_dir: Path, outdir: Path) -> None:
-    native_dir = outdir / "native"
-    native_dir.mkdir(parents=True, exist_ok=True)
-    for name in [
-        "pseudo_reads.fastq",
-        "aln.sorted.bam",
-        "aln.sorted.bam.bai",
-        "aln.filtered.lis.bam",
-        "aln.filtered.lis.bam.bai",
-        "bam_filtering_stats.json",
-        "bam_filtering_overall.json",
-    ]:
-        src = work_dir / name
-        if src.exists():
-            shutil.copy2(src, native_dir / name)
-
-
 def main() -> None:
     args = parse_args()
-    keep_native = truthy(args.keep_native)
     task_dir = args.task_dir
     outdir = args.outdir
     outdir.mkdir(parents=True, exist_ok=True)
@@ -623,7 +597,7 @@ def main() -> None:
             args.threads,
         )
 
-        bam_filtering_v1.filter_bam_for_gene(work_dir)
+        bwa_pseudoread_filter.filter_bam_for_gene(work_dir)
         filtered_bam = work_dir / "aln.filtered.lis.bam"
 
         base_segments, event_support = scan_bam(filtered_bam, target_seq)
@@ -658,9 +632,6 @@ def main() -> None:
         write_tsv_gz(outdir / "alignment_events.tsv.gz", EVENT_FIELDS, event_rows)
         write_tsv_gz(outdir / "ortholog_alignment_summary.tsv.gz", SUMMARY_FIELDS, summary_rows)
         write_tsv_gz(outdir / "failures.tsv.gz", FAILURE_FIELDS, [])
-        if keep_native:
-            keep_native_outputs(work_dir, outdir)
-
         manifest_out = {
             "gene_ids": [gene_id],
             "strategies": [args.strategy],
@@ -680,7 +651,6 @@ def main() -> None:
             "failure_count": 0,
             "ortholog_count": len(ortholog_meta),
             "pseudoread_count": pseudoreads.total_reads,
-            "keep_native": keep_native,
         }
         (outdir / "manifest.json").write_text(json.dumps(manifest_out, indent=2, sort_keys=True) + "\n")
 

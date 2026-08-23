@@ -5,16 +5,15 @@ process MERGE_ALIGNMENT_PARTITION {
     tuple val(meta), path(result_dirs, stageAs: 'results/*')
     path alignment_tasks
     val expected_strategies
-    path merge_script
-    path alignment_table_schema
+    path merge_script, stageAs: 'bin/merge_alignment_results.py'
+    path bin_sources, stageAs: 'bin/*'
 
     output:
     tuple val(meta), path("${meta.partition_id}"), emit: partition_dirs
 
     script:
     """
-    export PYTHONPATH="\$PWD:\${PYTHONPATH:-}"
-    python3 "${merge_script}" \\
+    python3 -m bin.merge_alignment_results \\
         --result-root results \\
         --partition-id "${meta.partition_id}" \\
         --alignment-tasks "${alignment_tasks}" \\

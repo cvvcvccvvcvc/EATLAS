@@ -50,23 +50,6 @@ GNOMAD_SHARED_CACHE_IDENTITY_FIELDS = [
     "reference_genome",
     "tile_size_bp",
 ]
-ORTHOLOG_EVIDENCE_KEY_FIELDS = [
-    "strategy",
-    "target_context",
-    "taxonomic_scope",
-    "evidence_unit",
-    "site_aligned_count",
-    "alt_support_count",
-]
-ORTHOLOG_EVIDENCE_COUNT_FIELDS = [
-    "gnomad_found_count",
-    "gnomad_not_found_count",
-    "gnomad_lookup_failed_count",
-]
-ORTHOLOG_EVIDENCE_FIELDS = [
-    *ORTHOLOG_EVIDENCE_KEY_FIELDS,
-    *ORTHOLOG_EVIDENCE_COUNT_FIELDS,
-]
 EVENT_VARIANT_MAP_FIELDS = [
     "event_group_id",
     "variant_key",
@@ -153,7 +136,7 @@ def validate_partition_manifests(partitions: list[tuple[Path, dict]]) -> None:
             raise ValueError(f"Annotation partition has unexpected stage: {partition}")
         if (
             manifest_string(manifest, "schema", partition)
-            != "normalized_annotation_evidence_partition_v1"
+            != "normalized_annotation_evidence_partition_v2"
         ):
             raise ValueError(f"Annotation partition has unexpected schema: {partition}")
         for field in [*COUNT_FIELDS, "failure_count"]:
@@ -424,76 +407,6 @@ def merge_partition_timings(
     return dict(sorted(by_partition.items()))
 
 
-def merge_ortholog_evidence(
-    partitions: list[tuple[Path, dict]],
-    output: Path,
-) -> int:
-    totals: dict[tuple[str, ...], Counter] = {}
-    for partition, manifest in partitions:
-        path = partition / "ortholog_evidence_summary.tsv.gz"
-        if not path.exists():
-            raise FileNotFoundError(
-                f"Annotation partition missing ortholog_evidence_summary.tsv.gz: {partition}"
-            )
-        with gzip.open(path, "rt", newline="") as handle:
-            reader = csv.DictReader(handle, delimiter="\t")
-            missing = set(ORTHOLOG_EVIDENCE_FIELDS) - set(reader.fieldnames or [])
-            if missing:
-                raise ValueError(
-                    f"Ortholog evidence summary {path} missing columns: "
-                    f"{', '.join(sorted(missing))}"
-                )
-            partition_row_count = 0
-            for row in reader:
-                partition_row_count += 1
-                key = tuple(row[field] for field in ORTHOLOG_EVIDENCE_KEY_FIELDS)
-                counter = totals.setdefault(key, Counter())
-                counter.update(
-                    {
-                        field: int(row[field])
-                        for field in ORTHOLOG_EVIDENCE_COUNT_FIELDS
-                    }
-                )
-        expected_count = manifest_count(
-            manifest,
-            "ortholog_evidence_summary_count",
-            partition,
-        )
-        if partition_row_count != expected_count:
-            raise ValueError(
-                "Ortholog evidence row count does not match partition manifest: "
-                f"partition={partition}, rows={partition_row_count}, "
-                f"manifest={expected_count}"
-            )
-
-    with gzip.open(output, "wt", newline="") as handle:
-        writer = csv.DictWriter(
-            handle,
-            fieldnames=ORTHOLOG_EVIDENCE_FIELDS,
-            delimiter="\t",
-            lineterminator="\n",
-        )
-        writer.writeheader()
-        for key in sorted(
-            totals,
-            key=lambda item: (
-                item[0],
-                item[1],
-                item[2],
-                item[3],
-                int(item[4]),
-                int(item[5]),
-            ),
-        ):
-            writer.writerow(
-                {
-                    **dict(zip(ORTHOLOG_EVIDENCE_KEY_FIELDS, key)),
-                    **totals[key],
-                }
-            )
-    return len(totals)
-
-
 def main() -> None:
     args = parse_args()
     args.outdir.mkdir(parents=True, exist_ok=True)
@@ -547,7 +460,7 @@ def main() -> None:
     manifest = {
         "created_at": utc_now(),
         "stage": "annotation",
-        "schema": "normalized_annotation_evidence_v1",
+        "schema": "normalized_annotation_evidence_v2",
         "partition_count": len(partitions),
         "partition_ids": [manifest_string(item, "partition_id", path) for path, item in partitions],
         **counts,

@@ -196,7 +196,7 @@ Fetch-boundary expected properties:
 Alignment-boundary expected properties:
 - `alignment/manifest.json` exists.
 - The manifest declares `stage=alignment` and
-  `schema=normalized_alignment_evidence_v1`.
+  `schema=normalized_alignment_evidence_v2`.
 - `alignment/manifest.json` `gene_count` equals the length of `gene_ids`, and
   those IDs equal the union of genes eligible for the selected strategies in
   the Stage 1 selection. Ensembl requires a target sequence; the other
@@ -207,7 +207,7 @@ Alignment-boundary expected properties:
   the manifest. Each contains exactly its manifest, per-ortholog summary,
   segments, compact events, and exact event-ortholog support.
 - Partition manifests declare
-  `schema=normalized_alignment_evidence_partition_v1`; their gene sets are
+  `schema=normalized_alignment_evidence_partition_v2`; their gene sets are
   non-empty and disjoint.
 - `event_group_id` is consecutive and partition-local, and support foreign keys
   agree with compact-event counts.
@@ -226,7 +226,7 @@ Annotation expected properties:
   consecutive within the partition; non-concrete alleles have an empty
   `variant_key` and retain their normalization status.
 - `annotation/manifest.json` declares `stage=annotation` and
-  `schema=normalized_annotation_evidence_v1`.
+  `schema=normalized_annotation_evidence_v2`.
 - Pipeline-owned `variant_strategy_support`, `variant_ortholog_support`, and
   `ortholog_evidence_summary` outputs are absent.
 - `annotation/manifest.json` records event and unique variant-context row counts,

@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterator
 
+import duckdb
 import pandas as pd
 
 from analytics.io.artifacts import path_metadata, write_json_atomic
@@ -75,7 +76,6 @@ class ObservedVariantStore:
         )
         if not selected or genes.empty:
             return
-        duckdb = _import_duckdb()
         with tempfile.TemporaryDirectory(
             prefix=".focal_sampling.",
             dir=self.allele_gene_path.parent,
@@ -138,7 +138,6 @@ class ObservedVariantStore:
         )
         if keys.empty or selected_mask == 0:
             return set()
-        duckdb = _import_duckdb()
         with duckdb.connect() as connection:
             connection.register("requested_variants", keys)
             rows = connection.execute(
@@ -237,7 +236,6 @@ def _build_store(
     expected_inputs: dict[str, object],
     strategies: tuple[str, ...],
 ) -> dict[str, object]:
-    duckdb = _import_duckdb()
     with duckdb.connect() as connection:
         connection.execute(f"SET threads={available_cpu_count()}")
         connection.execute("SET preserve_insertion_order=false")
@@ -399,7 +397,6 @@ def _write_parquet_atomic(
 
 
 def _validate_parquet(path: Path, expected_columns: list[str], expected_rows: int) -> None:
-    duckdb = _import_duckdb()
     with duckdb.connect() as connection:
         relation = connection.read_parquet(str(path))
         if relation.columns != expected_columns:
@@ -432,13 +429,3 @@ def available_cpu_count() -> int:
     if allocated and allocated.isdigit() and int(allocated) > 0:
         return int(allocated)
     return os.cpu_count() or 1
-
-
-def _import_duckdb():
-    try:
-        import duckdb
-    except ImportError as exc:  # pragma: no cover - analytics environment contract
-        raise RuntimeError(
-            "Observed-variant store requires the python-duckdb package"
-        ) from exc
-    return duckdb

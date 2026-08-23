@@ -10,10 +10,11 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
+import duckdb
 import numpy as np
 import pandas as pd
 
-from analytics.annotation.consequences import (
+from analytics.vep.consequences import (
     VALIDATION_CONSEQUENCE_OPTIONS as CONSEQUENCE_OPTIONS,
 )
 from analytics.io.artifacts import path_metadata, write_json_atomic
@@ -187,7 +188,6 @@ def _build_filter_score_store(
     score_path: Path,
     temp_dir: Path,
 ) -> int:
-    duckdb = _import_duckdb()
     thread_count = available_cpu_count()
     with tempfile.NamedTemporaryFile(
         dir=score_path.parent,
@@ -281,7 +281,6 @@ def _build_filter_score_store(
 
 
 def read_filter_score_histograms(score_path: Path) -> pd.DataFrame:
-    duckdb = _import_duckdb()
     unions = []
     for filter_key, _label, column in FILTER_OPTIONS:
         eligibility = " AND genus_support IS NOT NULL" if filter_key == "genus" else ""
@@ -365,7 +364,6 @@ def read_clinvar_filter_scores(score_path: Path, cohort: pd.DataFrame) -> pd.Dat
     keys = pd.DataFrame(
         {"variant_key": sorted(set(cohort["variant_key"].astype(str)))}
     )
-    duckdb = _import_duckdb()
     with duckdb.connect() as connection:
         connection.register("clinvar_keys", keys)
         return connection.execute(
@@ -681,7 +679,6 @@ def _read_header(path: Path) -> list[str]:
 
 
 def _validate_score_store(path: Path, expected_rows: int) -> None:
-    duckdb = _import_duckdb()
     with duckdb.connect() as connection:
         relation = connection.read_parquet(str(path))
         if relation.columns != FILTER_SCORE_COLUMNS:
@@ -694,11 +691,3 @@ def _validate_score_store(path: Path, expected_rows: int) -> None:
             raise ValueError(
                 f"Basic-filter score row count changed: {observed} != {expected_rows}"
             )
-
-
-def _import_duckdb():
-    try:
-        import duckdb
-    except ImportError as exc:  # pragma: no cover - analytics environment contract
-        raise RuntimeError("Basic filtering requires the python-duckdb package") from exc
-    return duckdb

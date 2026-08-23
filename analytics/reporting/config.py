@@ -1,7 +1,7 @@
 """Display order, labels, and colors used across the analytics report."""
 
 from genomics.clinvar import CLINVAR_CLASS_ORDER
-from analytics.annotation.consequences import (
+from analytics.vep.consequences import (
     DISPLAY_CONSEQUENCE_GROUP_ORDER,
     DISPLAY_CONSEQUENCE_GROUP_TERMS,
 )
@@ -65,13 +65,9 @@ CONSEQUENCE_GROUP_TERMS = DISPLAY_CONSEQUENCE_GROUP_TERMS
 
 STRATEGY_LABELS = {
     "bwa_pseudoreads_150_75": "BWA pseudo 150/75",
-    # Display-only compatibility for completed runs from before the strategy rename.
-    "bwa_pseudoreads": "BWA pseudo",
     "minimap2_asm10": "minimap2 asm10",
     "minimap2_asm20": "minimap2 asm20",
     "minimap2_map_ont_pseudoreads_30000_15000": "minimap2 map-ont pseudo 30k/15k",
-    # Display-only compatibility for completed runs from before this strategy was retired.
-    "minimap2_taxonomy_adaptive": "minimap2 adaptive",
     "nucmer": "nucmer",
     "precomputed_ensembl_92_mammals_epo_extended": "Ensembl EPO",
 }

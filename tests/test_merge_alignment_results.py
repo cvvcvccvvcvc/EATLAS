@@ -11,10 +11,8 @@ import pytest
 
 
 PROJECT_DIR = Path(__file__).resolve().parents[1]
-MERGE_SCRIPT = PROJECT_DIR / "bin" / "merge_alignment_results.py"
-sys.path.insert(0, str(PROJECT_DIR / "bin"))
 
-from alignment_table_schema import (  # noqa: E402
+from bin.alignment_table_schema import (
     EVENT_FIELDS,
     FAILURE_FIELDS,
     SEGMENT_FIELDS,
@@ -44,7 +42,6 @@ EVENT_ORTHOLOG_SUPPORT_HEADER = [
     "event_group_id",
     "ortholog_gene_id",
     "tax_id",
-    "taxname",
     "mapq",
     "native_alignment_type",
     "support_row_count",
@@ -61,8 +58,6 @@ COMPACT_EVENT_HEADER = [
     "ref",
     "alt",
     "strategy",
-    "support_row_count",
-    "support_ortholog_count",
     "qc_flags",
 ]
 def write_tsv_gz(path: Path, header: list[str], rows: list[list[str]] | None = None) -> None:
@@ -159,7 +154,7 @@ def write_compact_result_dir(root: Path, name: str, manifest: dict) -> Path:
         EVENT_ORTHOLOG_SUPPORT_HEADER,
     )
     partition_manifest = json.loads((result_dir / "manifest.json").read_text())
-    partition_manifest["schema"] = "normalized_alignment_evidence_partition_v1"
+    partition_manifest["schema"] = "normalized_alignment_evidence_partition_v2"
     for field in (
         "strategy_summary_count",
         "snv_site_depth_count",
@@ -178,7 +173,7 @@ def write_compact_result_dir(root: Path, name: str, manifest: dict) -> Path:
 
 def run_merge(arguments: list[str]) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
-        [sys.executable, str(MERGE_SCRIPT), *arguments],
+        [sys.executable, "-m", "bin.merge_alignment_results", *arguments],
         cwd=PROJECT_DIR,
         text=True,
         capture_output=True,
@@ -503,7 +498,7 @@ def test_partition_merge_publishes_only_normalized_evidence(tmp_path: Path) -> N
         "ortholog_alignment_summary.tsv.gz",
     }
     manifest = json.loads((outdir / "manifest.json").read_text())
-    assert manifest["schema"] == "normalized_alignment_evidence_partition_v1"
+    assert manifest["schema"] == "normalized_alignment_evidence_partition_v2"
     assert manifest["alignment_segment_count"] == 2
     assert {
         "strategy_summary_count",
@@ -579,7 +574,6 @@ def test_compact_events_preserve_strategy_specific_support(tmp_path: Path) -> No
         assert reader.fieldnames == COMPACT_EVENT_HEADER
         rows = list(reader)
     assert [row["strategy"] for row in rows] == ["s1", "s2"]
-    assert [row["support_ortholog_count"] for row in rows] == ["1", "1"]
     with gzip.open(
         tmp_path / "merged" / "event_ortholog_support.tsv.gz",
         "rt",
@@ -948,8 +942,6 @@ def test_final_merge_preserves_precompacted_ortholog_support(tmp_path: Path) -> 
                     ref="A",
                     alt="G",
                     strategy="s1",
-                    support_row_count="1",
-                    support_ortholog_count="1",
                 )
             ],
         )
@@ -961,7 +953,8 @@ def test_final_merge_preserves_precompacted_ortholog_support(tmp_path: Path) -> 
                     "1",
                     ortholog_gene_id,
                     "10090",
-                    "Mus musculus",
+                    "",
+                    "",
                     "1",
                 ]
             ],
@@ -1024,8 +1017,6 @@ def test_final_merge_publishes_partitioned_normalized_evidence(
                     "A",
                     "G",
                     "s1",
-                    "1",
-                    "1",
                     "",
                 ]
             ],
@@ -1038,7 +1029,6 @@ def test_final_merge_publishes_partitioned_normalized_evidence(
                     "1",
                     f"ortholog_{gene_id}",
                     gene_id,
-                    f"species_{gene_id}",
                     "60",
                     "P",
                     "1",
@@ -1078,7 +1068,7 @@ def test_final_merge_publishes_partitioned_normalized_evidence(
         "manifest.json",
     }
     manifest = json.loads((outdir / "manifest.json").read_text())
-    assert manifest["schema"] == "normalized_alignment_evidence_v1"
+    assert manifest["schema"] == "normalized_alignment_evidence_v2"
     assert manifest["ortholog_alignment_summary_count"] == 8
     assert manifest["alignment_segment_count"] == 10
     assert manifest["alignment_event_count"] == 12

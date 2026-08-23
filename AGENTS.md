@@ -42,6 +42,8 @@ Core files:
 - `bin/annotate_events.py` - event key normalization and ClinVar/gnomAD annotation.
 - `genomics/` - shared variant, ClinVar, and gnomAD domain logic.
 - `analytics/strategy_report.py` - completed-run analytics and HTML report entrypoint.
+- `analytics/vep/` - report-side VEP consequence annotation and cache.
+- `analytics/derivations/` - deterministic tables derived from durable evidence.
 - `analytics/analyses/` - bounded-memory scientific analyses.
 - `analytics/reporting/` - report sections and HTML composition.
 - `run_archiving/` - isolated CLI and Slurm wrapper for verified run archival.
@@ -71,8 +73,8 @@ Agent workflow rules:
 4. Do not publish raw NCBI zip files or unpacked `gene.fna` as final outputs.
 5. Preserve fixed stage-1 constants unless the user explicitly changes the design:
    GRCh38.p14 (`GCF_000001405.40`) and NCBI `--ortholog all`.
-6. Stage 2 native aligner outputs are debug artifacts; do not publish them by
-   default.
+6. Stage 2 native aligner outputs are temporary debug artifacts in task work;
+   do not publish them as durable results.
 7. Prefer small, focused changes and validate with a small local Nextflow smoke run.
    Task environments from `envs/*.yml` are mandatory for every run; local runs
    need no profile, while cluster runs use `-profile slurm`.
@@ -80,10 +82,12 @@ Agent workflow rules:
    or smoke outputs in production paths. Use `/tmp`, `/private/tmp`, `work/`,
    or documented test fixtures.
 9. Preserve modular boundaries: Nextflow owns orchestration and process wiring;
-   Python owns deterministic parsing/merging/report generation.
+   Python owns deterministic parsing/merging/report generation. Stage internal
+   Python packages explicitly and run them with `python -m`; do not inject the
+   repository through `PYTHONPATH`.
 10. Prefer registry/config-driven feature selection over scattered booleans.
-    Defaults such as alignment strategy selection should mean "all registered"
-    rather than a duplicated literal list.
+    Defaults such as alignment strategy selection must come from registry
+    metadata rather than a duplicated literal list.
 11. Make contracts explicit in schema/docs/tests when changing user-facing
     parameters or output table shapes.
 12. Do not silently accept missing inputs, mismatched table headers, or empty

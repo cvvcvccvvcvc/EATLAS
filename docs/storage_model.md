@@ -72,10 +72,11 @@ global copies.
 - annotation manifest and diagnostic failure table
 
 The variant-context table intentionally stores one compact interpretation
-layer: canonical key, gene/event, raw alleles, normalization status, aggregate
-support, strategy membership, ClinVar classification/review fields, and the
-selected gnomAD AF/source/consequence. Provider fields not used by the report
-are not duplicated into durable output.
+layer: canonical key, gene/event, raw alleles, normalization status, strategy
+membership, ClinVar classification/review fields, and the selected gnomAD
+AF/source/consequence. Support metrics remain derivable from the alignment
+evidence and event map rather than being copied into this table. Provider fields
+not used by the report are not duplicated into durable output.
 
 This layer should be kept.
 
@@ -101,7 +102,7 @@ intermediates removed with task work include:
 
 - selected ortholog FASTA files
 - raw per-aligner event tables
-- native aligner files unless explicitly retained for debugging
+- native aligner files
 
 The durable `variant_annotations.tsv.gz` is assembled from partition gzip
 members without row parsing or recompression. Event maps stay partitioned, so
@@ -213,10 +214,11 @@ Rejected ortholog candidate sequences and candidate metadata remain disposable
 fetch intermediates; selected-ortholog provenance is retained in
 `fetch/orthologs.selected.tsv.gz`.
 
-Raw aligner outputs are also not retained by default:
+Raw aligner outputs are not retained as durable results:
 
 - minimap2 `.paf`
 - nucmer `.sam`
 - Ensembl Compara MAF chunks used by precomputed alignment strategies
 
-Set `--keep_native_alignments true` only for targeted debug/benchmark runs.
+For debugging, inspect the task directory of a retained failed or interrupted
+run before removing its Nextflow work cache.

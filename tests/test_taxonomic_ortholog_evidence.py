@@ -3,24 +3,21 @@ from __future__ import annotations
 import csv
 import gzip
 import json
-import sys
 from pathlib import Path
 
 import pytest
 
-PROJECT_DIR = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(PROJECT_DIR / "bin"))
-
-from fetch_taxonomy import TAXONOMY_FIELDS, fetch_taxonomy_records, taxonomy_row
-from finalize_annotation_partitions import merge_ortholog_evidence
-from merge_alignment_results import write_compact_events
-from ortholog_evidence_summary import write_ortholog_evidence_summary
-from taxonomic_evidence import (
+from bin.fetch_taxonomy import fetch_taxonomy_records, taxonomy_row
+from bin.merge_alignment_results import write_compact_events
+from analytics.derivations.ortholog_evidence import write_ortholog_evidence_summary
+from analytics.derivations.support import merge_ortholog_evidence
+from analytics.derivations.taxonomy import (
     COUNT_KEYS,
     build_taxonomy_summary_rows,
     count_member_groups,
     load_taxonomy_profiles,
 )
+from genomics.taxonomy import TAXONOMY_FIELDS
 
 
 def write_tsv_gz(path: Path, fields: list[str], rows: list[dict[str, object]]) -> None:
@@ -188,7 +185,7 @@ def test_taxonomy_batch_request_does_not_use_single_taxon_parents_flag(
         stdout.write(json.dumps({"taxonomy": {"tax_id": 9598}}) + "\n")
         return type("Result", (), {"returncode": 0, "stderr": ""})()
 
-    monkeypatch.setattr("fetch_taxonomy.subprocess.run", fake_run)
+    monkeypatch.setattr("bin.fetch_taxonomy.subprocess.run", fake_run)
 
     records = fetch_taxonomy_records(["9598"], "datasets", tmp_path)
 

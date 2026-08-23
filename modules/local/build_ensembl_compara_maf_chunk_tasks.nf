@@ -4,7 +4,8 @@ process BUILD_ENSEMBL_COMPARA_MAF_CHUNK_TASKS {
     input:
     path genes_tsv
     path maf_manifest
-    path chunk_task_script
+    path chunk_task_script, stageAs: 'bin/prepare_ensembl_compara_maf_chunk_tasks.py'
+    path bin_sources, stageAs: 'bin/*'
 
     output:
     path "maf_chunk_tasks/*", emit: chunk_task_dirs
@@ -13,8 +14,7 @@ process BUILD_ENSEMBL_COMPARA_MAF_CHUNK_TASKS {
 
     script:
     """
-    export PYTHONPATH="${projectDir}/bin:\${PYTHONPATH:-}"
-    python3 "${chunk_task_script}" \\
+    python3 -m bin.prepare_ensembl_compara_maf_chunk_tasks \\
         --maf-manifest "${maf_manifest}" \\
         --outdir . \\
         --genes-tsv "${genes_tsv}"

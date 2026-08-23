@@ -12,10 +12,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+import duckdb
 import pandas as pd
 
 from analytics.analyses.target_context import read_disjoint_contexts
-from analytics.annotation.consequences import UNANNOTATED_CONSEQUENCE
+from analytics.vep.consequences import UNANNOTATED_CONSEQUENCE
 from analytics.io.artifacts import file_identity, path_metadata
 from analytics.io.variant_source import cohort_variant_paths
 from genomics.variants import read_failed_regions
@@ -295,7 +296,6 @@ def aggregate_strategy_masks(
 ) -> StrategyMaskAggregation:
     """Aggregate global alleles and allele-gene rows without strategy expansion."""
 
-    duckdb = _import_duckdb()
     thread_count = available_cpu_count() if threads is None else threads
     if thread_count < 1:
         raise ValueError("DuckDB thread count must be >= 1")
@@ -387,7 +387,6 @@ def aggregate_variant_groups(
 ) -> VariantGroupedAggregation:
     """Build compact global-allele and allele-gene grouped relations."""
 
-    duckdb = _import_duckdb()
     thread_count = available_cpu_count() if threads is None else threads
     if thread_count < 1:
         raise ValueError("DuckDB thread count must be >= 1")
@@ -822,8 +821,6 @@ def _pathogenic_source_columns() -> list[str]:
         "alt",
         "lookup_status",
         "strategies",
-        "support_row_count",
-        "support_ortholog_count",
         "clinvar_id",
         "clinvar_allele_id",
         "clinvar_sig",
@@ -923,13 +920,3 @@ def _directory_size(path: Path | None) -> int:
 
 def _sql_string(value: object) -> str:
     return "'" + str(value).replace("'", "''") + "'"
-
-
-def _import_duckdb():
-    try:
-        import duckdb
-    except ImportError as exc:  # pragma: no cover - environment contract
-        raise RuntimeError(
-            "Variant summary aggregation requires the python-duckdb package"
-        ) from exc
-    return duckdb

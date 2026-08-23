@@ -1,15 +1,11 @@
 from __future__ import annotations
 
-import sys
 from pathlib import Path
 
 import pysam
 
 
-BIN_DIR = Path(__file__).resolve().parents[1] / "bin"
-sys.path.insert(0, str(BIN_DIR))
-
-from run_nucmer_alignment import (  # noqa: E402
+from bin.run_nucmer_alignment import (
     empty_summary,
     parse_sam,
     query_interval,

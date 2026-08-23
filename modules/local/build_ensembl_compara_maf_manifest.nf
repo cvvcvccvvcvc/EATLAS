@@ -3,7 +3,8 @@ process BUILD_ENSEMBL_COMPARA_MAF_MANIFEST {
 
     input:
     path genes
-    path manifest_script
+    path manifest_script, stageAs: 'bin/build_ensembl_compara_maf_manifest.py'
+    path bin_sources, stageAs: 'bin/*'
 
     output:
     path "ensembl_compara_maf_manifest.tsv.gz", emit: maf_manifest
@@ -12,8 +13,7 @@ process BUILD_ENSEMBL_COMPARA_MAF_MANIFEST {
 
     script:
     """
-    export PYTHONPATH="${projectDir}/bin:\${PYTHONPATH:-}"
-    python3 "${manifest_script}" \\
+    python3 -m bin.build_ensembl_compara_maf_manifest \\
         --genes-tsv "${genes}" \\
         --outdir .
     """

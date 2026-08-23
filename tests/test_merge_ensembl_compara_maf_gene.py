@@ -2,14 +2,9 @@ from __future__ import annotations
 
 import csv
 import gzip
-import sys
 from pathlib import Path
 
-
-BIN_DIR = Path(__file__).resolve().parents[1] / "bin"
-sys.path.insert(0, str(BIN_DIR))
-
-from merge_ensembl_compara_maf_gene import merge_tsv_gz  # noqa: E402
+from bin.merge_ensembl_compara_maf_gene import merge_tsv_gz
 
 
 def test_merge_tsv_gz_accepts_large_fields(tmp_path: Path) -> None:

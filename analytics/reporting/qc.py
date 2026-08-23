@@ -11,7 +11,7 @@ from analytics.analyses.conservation_validation import SPLINE_DF
 from analytics.analyses.conservation_analysis import ConservationAnalysis
 from analytics.analyses.matched_control import TargetSpaceNullAnalysis
 from analytics.analyses.variant_summary import VariantSummary
-from analytics.annotation.consequences import (
+from analytics.vep.consequences import (
     VALIDATION_CONSEQUENCE_OPTIONS as CONSEQUENCE_OPTIONS,
     VALIDATION_CONSEQUENCE_TERMS as CONSEQUENCE_TERMS,
 )

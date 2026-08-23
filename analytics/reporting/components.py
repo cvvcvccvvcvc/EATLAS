@@ -37,28 +37,6 @@ def format_percent(value, digits: int = 1) -> str:
     return f"{float(value) * 100:.{digits}f}%"
 
 
-def format_pvalue(value) -> str:
-    if pd.isna(value):
-        return ""
-    value = float(value)
-    if value == 0:
-        return "0"
-    if value < 0.001:
-        return f"{value:.2e}"
-    return f"{value:.3g}"
-
-
-def format_ratio(value) -> str:
-    if pd.isna(value):
-        return ""
-    value = float(value)
-    if np.isposinf(value):
-        return "inf"
-    if np.isneginf(value):
-        return "-inf"
-    return format_float(value, 3)
-
-
 def format_table_dataframe(df: pd.DataFrame) -> pd.DataFrame:
     shown = df.copy()
     for column in shown.columns:
@@ -150,9 +128,3 @@ def dataframe_records(frame: pd.DataFrame) -> list[dict[str, object]]:
             elif isinstance(value, (float, np.floating)) and math.isinf(float(value)):
                 row[key] = "inf" if float(value) > 0 else "-inf"
     return records
-
-
-def format_ci(low, high) -> str:
-    if pd.isna(low) or pd.isna(high):
-        return ""
-    return f"{format_ratio(low)}-{format_ratio(high)}"

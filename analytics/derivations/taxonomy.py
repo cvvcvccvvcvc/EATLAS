@@ -9,10 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
 
-if __package__:
-    from .fetch_taxonomy import TAXONOMY_FIELDS
-else:
-    from fetch_taxonomy import TAXONOMY_FIELDS
+from genomics.taxonomy import TAXONOMY_FIELDS
 
 
 SCOPE_ANCESTORS = {

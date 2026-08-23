@@ -14,13 +14,13 @@ from collections import OrderedDict, defaultdict
 from dataclasses import dataclass
 from pathlib import Path
 
-from alignment_table_schema import (
+from bin.alignment_table_schema import (
     EVENT_FIELDS,
     FAILURE_FIELDS,
     SEGMENT_FIELDS,
     SUMMARY_FIELDS,
 )
-from ensembl_compara_maf import (
+from bin.ensembl_compara_maf import (
     DOWNLOAD_ATTEMPTS,
     METHOD,
     OUTPUT_GZIP_COMPRESSLEVEL,

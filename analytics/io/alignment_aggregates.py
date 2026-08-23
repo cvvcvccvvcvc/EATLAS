@@ -4,32 +4,21 @@ from __future__ import annotations
 
 import hashlib
 import json
-import sys
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
 from analytics.io.artifacts import content_identity, file_identity, write_json_atomic
-
-
-# The pipeline scripts are importable helpers, but process entrypoints still use
-# sibling imports. Keep this path bridge local instead of duplicating their
-# scientific algorithms.
-_BIN_DIR = Path(__file__).resolve().parents[2] / "bin"
-_ADDED_BIN_PATH = str(_BIN_DIR) not in sys.path
-if _ADDED_BIN_PATH:
-    sys.path.insert(0, str(_BIN_DIR))
-try:
-    from feature_coverage import FEATURE_COVERAGE_FIELDS, summarize_feature_coverage
-    from merge_alignment_results import (
-        STRATEGY_SUMMARY_FIELDS,
-        merge_strategy_summaries,
-        merge_tsv_gz,
-        write_strategy_summary,
-    )
-finally:
-    if _ADDED_BIN_PATH:
-        sys.path.remove(str(_BIN_DIR))
+from analytics.derivations.alignment_summary import (
+    STRATEGY_SUMMARY_FIELDS,
+    concatenate_tsv_gz,
+    merge_strategy_summaries,
+    write_strategy_summary,
+)
+from analytics.derivations.feature_coverage import (
+    FEATURE_COVERAGE_FIELDS,
+    summarize_feature_coverage,
+)
 
 
 CACHE_SCHEMA_VERSION = 1
@@ -156,7 +145,7 @@ def build_or_load_alignment_aggregates(
             strategy_output,
             expected_strategies,
         )
-        feature_coverage_count = merge_tsv_gz(partition_coverages, feature_output)
+        feature_coverage_count = concatenate_tsv_gz(partition_coverages, feature_output)
 
         strategy_output.chmod(0o644)
         feature_output.chmod(0o644)
@@ -193,7 +182,7 @@ def _read_expected_strategies(path: Path, partition_dirs: list[Path]) -> list[st
         raise ValueError(f"Invalid alignment manifest JSON: {path}") from exc
     if manifest.get("stage") != "alignment":
         raise ValueError(f"Alignment manifest has invalid stage: {path}")
-    if manifest.get("schema") != "normalized_alignment_evidence_v1":
+    if manifest.get("schema") != "normalized_alignment_evidence_v2":
         raise ValueError(f"Alignment manifest has unsupported schema: {path}")
     evidence = manifest.get("normalized_evidence")
     expected_contract = {

@@ -11,7 +11,11 @@ import tempfile
 from collections.abc import Iterable, Iterator
 from pathlib import Path
 
-from taxonomic_evidence import COUNT_KEYS, load_taxonomy_profiles, member_group_keys
+from analytics.derivations.taxonomy import (
+    COUNT_KEYS,
+    load_taxonomy_profiles,
+    member_group_keys,
+)
 
 
 FEATURE_COVERAGE_FIELDS = [

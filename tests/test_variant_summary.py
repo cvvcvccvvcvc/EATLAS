@@ -7,7 +7,7 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
-from analytics.annotation.consequences import UNANNOTATED_CONSEQUENCE
+from analytics.vep.consequences import UNANNOTATED_CONSEQUENCE
 from analytics.analyses.variant_summary import (
     VARIANT_USECOLS,
     _categorize_clinvar,
