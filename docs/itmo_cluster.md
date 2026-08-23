@@ -342,7 +342,7 @@ seconds from the shared local file (about 108x); the complete local annotation
 pass took 10.184 seconds with about 269 MiB peak RSS. This comparison covers
 the phyloP annotation pass, not the rest of report generation.
 
-## Local VEP For Analytics
+## Local VEP For Pipeline And Analytics
 
 Verified on 2026-07-29:
 
@@ -376,8 +376,8 @@ cache. The archive is intentionally still present; remove it only as a separate
 explicit storage decision.
 
 Basic consequence annotation uses `--offline`, `--cache`, `--refseq`,
-`--use_given_ref`, and `--assembly GRCh38`. No FASTA is installed because the current
-analytics contract does not request HGVS or reference checking. The
+`--use_given_ref`, and `--assembly GRCh38`. No FASTA is installed because the
+current shared VEP contract does not request HGVS or reference checking. The
 `--use_given_ref` flag is required for this BAM-edited RefSeq cache; without it,
 VEP automatically requests transcript reference sequences and fails without a
 FASTA.
@@ -388,16 +388,17 @@ empty value. Consequence terms, selected RefSeq transcript, canonical/MANE
 fields, impact, and variant class agreed for all six variants. Local VEP wrote
 the six results in about 3.3 seconds.
 
-Run full-candidate VEP through `analytics.vep_annotation` in Slurm, not on
-`sphinx`. The 590-gene annotation contains 118,549,428 rows, which produces 475
-partitions at the default 250,000 rows. Benchmark one representative partition
-before choosing Slurm-array concurrency: each task uses four VEP workers, and
-concurrent tasks also share the same network-backed 25 GB cache. Completed
-partition outputs are the resume boundary; no full-candidate SQLite cache is
-kept. Completed variant/gene results are additionally reused across runs from
-`$GAPH_VEP_RESULT_CACHE_DIR`. This is a sparse Parquet cache separate from the
+The end-to-end Nextflow pipeline runs candidate VEP in bounded Slurm tasks; do
+not run it directly on `sphinx`. A 118,549,428-row candidate dataset would
+produce 475 shards at the fixed 250,000-row bound. Benchmark a representative
+shard before increasing annotation concurrency: each task uses four VEP workers,
+and concurrent tasks share the same network-backed 25 GB reference cache.
+Completed shard tasks are the `-resume` boundary; the finalizer publishes their
+gzip outputs without constructing a global candidate table or full-candidate
+SQLite cache. Completed variant/gene results are additionally reused across runs
+from `$GAPH_VEP_RESULT_CACHE_DIR`. This sparse Parquet cache is separate from the
 official indexed VEP reference cache in `$GAPH_VEP_CACHE_DIR`; incomplete
-network results are not stored in it.
+results are not stored in it.
 
 A 500,000-row benchmark sampled evenly from 40 of the 590-gene artifact's 475
 partitions. One-megabase and five-megabase tiles had the same 1.88 MB size and
@@ -423,7 +424,7 @@ exit
 This is a connectivity and mount check only. It does not replace the pipeline
 smoke test because the real workflow uses several different remote services.
 
-## Staged Pipeline Validation
+## End-to-End Pipeline Validation
 
 Run Nextflow from `sphinx`. Use `tmux` or another cluster-approved persistent
 terminal mechanism so an SSH disconnect does not terminate the controller.
@@ -461,7 +462,7 @@ Verify the run before increasing scope:
 test -s "$RUN/fetch/manifest.json"
 test -s "$RUN/alignment/manifest.json"
 test -s "$RUN/annotation/manifest.json"
-test -s "$RUN/annotation/variant_annotations.tsv.gz"
+test -s "$RUN/annotation/variant_annotations/manifest.json"
 du -sh "$RUN" "$WORK" 2>/dev/null || du -sh "$RUN"
 ```
 

@@ -269,12 +269,13 @@ evidence. Per-partition phase timings remain in the final manifest; they are
 task measurements, not a synthetic wall-clock total.
 
 Stage 3 follows the same evidence-first boundary. Its canonical
-`normalized_annotation_evidence_v2` output contains only
-`variant_annotations.tsv.gz`, the partitioned `event_variant_map`, annotation
+`normalized_annotation_evidence_v3` output contains the partitioned
+ClinVar/gnomAD/VEP variant dataset, partitioned `event_variant_map`, annotation
 `failures.tsv.gz`, and `manifest.json`. The event map preserves the exact
 `(partition_id, event_group_id)` to canonical `variant_key` lineage needed to
 derive variant-strategy, exact-ortholog, taxonomy, and site-depth views in
-analytics. Those derived support tables are not Stage 3 outputs.
+analytics. Those derived support tables are not Stage 3 outputs. The complete
+annotation contract is documented in `docs/stage3_annotation_contract.md`.
 
 For Minimap2 rows, `native_record_id` is derived from the PAF record content
 rather than its output line number. `event_id` combines the strategy, that

@@ -1,7 +1,7 @@
 # Run And Validation
 
-Use this when validating the current end-to-end fetch + alignment + annotation
-workflow.
+Use this when validating the current end-to-end fetch + alignment +
+ClinVar/gnomAD/VEP annotation workflow.
 
 For an ordinary ITMO launch or resume, start with the shorter
 `docs/pipeline_launch.md`. Use this document for smoke tests, contract checks,
@@ -36,6 +36,11 @@ export GAPH_TARGET_ANNOTATION_GFF3=/path/to/genomic.gff.gz
 export CLINVAR_VCF=/path/to/clinvar.vcf.gz
 export GAPH_WORK_DIR=/path/to/scratch/gaph_v2_work
 export GAPH_GNOMAD_CACHE_DIR=/path/to/scratch/gaph_v2_cache/gnomad
+export GAPH_VEP_BACKEND=local
+export GAPH_VEP_RELEASE=116
+export GAPH_VEP_EXECUTABLE=/path/to/gaph-vep116
+export GAPH_VEP_CACHE_DIR=/path/to/vep-cache
+export GAPH_VEP_RESULT_CACHE_DIR=/path/to/shared/vep-results
 ```
 
 When neither `--target_annotation_gff3` nor `GAPH_TARGET_ANNOTATION_GFF3` is
@@ -149,25 +154,34 @@ target FASTA remain available for analytics and annotation, while
 `fetch/sequences/orthologs/` is absent from the completed end-to-end output.
 
 Annotation expected properties:
-- `annotation/variant_annotations.tsv.gz` exists for end-to-end runs.
+- `annotation/variant_annotations/manifest.json` exists and declares
+  `schema=gaph_variant_annotation_dataset_v1`, a complete partitioned headered
+  gzip dataset, exact fields/counts, VEP configuration, and VEP status counts.
+- Every declared
+  `annotation/variant_annotations/partitions/<partition_id>/<shard_id>.tsv.gz`
+  exists, has the declared compressed size/header, and contains no more than
+  250,000 rows.
 - `annotation/event_variant_map/partitions/<partition_id>/event_variant_map.tsv.gz`
   has one row per compact Stage 2 event. Its `event_group_id` values are
   consecutive within the partition; non-concrete alleles have an empty
   `variant_key` and retain their normalization status.
 - `annotation/manifest.json` declares `stage=annotation` and
-  `schema=normalized_annotation_evidence_v2`.
+  `schema=normalized_annotation_evidence_v3`; its `variant_annotations`
+  descriptor exactly matches the child dataset manifest.
 - Pipeline-owned `variant_strategy_support`, `variant_ortholog_support`, and
   `ortholog_evidence_summary` outputs are absent.
 - `annotation/manifest.json` records event and unique variant-context row counts,
   source metadata, useful provider/cache diagnostics, and per-partition phase
   timings.
-- `variant_annotations.tsv.gz` is assembled as concatenated gzip members; the
-  event map stays partitioned. Neither path globally rewrites source rows.
+- VEP-enriched shards are copied to the durable dataset byte for byte; no
+  duplicate global variant table is built. The event map also stays partitioned.
 - `annotation/failures.tsv.gz` records non-fatal external lookup failures.
 - `clinvar_*` columns are present and populated when matching ClinVar records exist;
   `clinvar_review_stars` is derived from the raw `clinvar_revstat` value.
 - `gnomad_*` columns are populated only for variants found in fetched gnomAD regions,
   including the selected AF, its source dataset, and consequence annotation.
+- `vep_*` columns and explicit per-row `vep_status` are present. The dataset
+  release/backend match the requested or cluster-configured VEP contract.
 
 Analytics expected properties after the first report/preflight build:
 
@@ -189,6 +203,7 @@ Inspect manifests:
 ```bash
 jq . results/run_001/fetch/manifest.json
 jq . results/run_001/alignment/manifest.json
+jq . results/run_001/annotation/variant_annotations/manifest.json
 ```
 
 Count fetch table rows:
@@ -251,8 +266,8 @@ segments, events, or support.
 
 Every report writes a progressive profile under
 `<run>/analytics/performance/<report-name>.json`. Compare a cold report with an
-immediate identical rerun: the second run should reuse the finalized VEP input
-and report cache hits for completed derived alignment, taxonomy, support, and
+immediate identical rerun: the second run should scan the same pipeline-owned
+VEP shards and report cache hits for completed derived alignment, taxonomy, support, and
 analysis artifacts. Investigate a regression only when it reproduces on the
 same workload; do not add a new storage format or cache from an unmeasured
 hypothesis.

@@ -10,7 +10,7 @@ Production logic is in:
 - `lib/*.groovy`
 - `modules/local/*.nf`
 - `bin/*.py`
-- `genomics/*.py`
+- `genomics/`
 - `analytics/`
 - `envs/*.yml`
 
@@ -29,7 +29,7 @@ runs.
 - Workflow entrypoint: `main.nf`
 - Runtime configuration: `nextflow.config`
 - Analytics report: `python -m analytics.strategy_report --run-dir <run-dir>`
-- Bulk VEP annotation: `python -m analytics.vep_annotation`
+- Combined cluster run and report: `scripts/slurm/run_and_report.sh`
 - Run archive: `python -m run_archiving`
 - Local execution: no profile required
 - Cluster run profile: `-profile slurm`
@@ -37,7 +37,8 @@ runs.
 Runtime environments:
 - `envs/controller.yml` - Nextflow, Java, and Micromamba for the login/controller host.
 - `envs/fetch.yml` - Stage 1 task dependencies.
-- `envs/alignment.yml` - alignment and annotation task dependencies.
+- `envs/alignment.yml` - alignment and ClinVar/gnomAD annotation dependencies.
+- `envs/vep.yml` - bounded pipeline VEP task dependencies.
 - `envs/analytics.yml` - completed-run analytics and report dependencies.
 
 ## Core Modules
@@ -121,14 +122,17 @@ Runtime environments:
   - emits one event-to-canonical-variant lineage row per compact event
   - streams event rows and fetches gnomAD regions within one bounded partition
 
+- `bin/annotate_vep_partition.py`
+  - adds one declared VEP consequence record to each valid variant/gene row
+  - preserves source order and writes one independently resumable enriched shard
+
 - `bin/prepare_annotation_contexts.py`
   - validates partition membership and materializes only each partition's
     target metadata and FASTA context
 
 - `bin/finalize_annotation_partitions.py`
-  - concatenates compressed partition annotation members and copies event maps
-    without rewriting their rows
-  - aggregates partition manifests without loading variant rows into memory
+  - validates the exact base/VEP shard relation and semantic VEP configuration
+  - copies enriched shards and event maps without a global variant-table rewrite
 
 - `analytics/io/alignment_aggregates.py`
   - derives strategy summary and feature coverage from partition evidence
@@ -156,15 +160,16 @@ Runtime environments:
   - preserves complete-tile coverage so absence remains distinct from failure
 - `genomics/taxonomy.py`
   - canonical taxonomy schema, normalization, and lineage/rank access
+- `genomics/vep/`
+  - shared VEP provider integration, release-pinned semantics, and immutable
+    cross-run result cache
 
 ## Analytics Package
 
 - `analytics/strategy_report.py`
   - command-line contract and report orchestration
-- `analytics/vep_annotation.py`
-  - resumable bulk-VEP prepare, annotate, finalize, and cache-seeding command
 - `analytics/vep/`
-  - VEP integration and consequence vocabularies
+  - report-facing consequence vocabularies and grouping rules
 - `analytics/analyses/`
   - scientific calculations and bounded-memory aggregation
 - `analytics/derivations/`
@@ -234,11 +239,11 @@ environment variables are not set.
 Each operational question has one primary document:
 
 - ordinary pipeline launch or resume: `docs/pipeline_launch.md`
-- ordinary bulk-VEP/report launch: `docs/report_generation.md`
+- ordinary report or combined pipeline/report launch: `docs/report_generation.md`
 - smoke tests and failure investigation: `docs/run_validation.md`
 - first-time ITMO setup: `docs/itmo_cluster.md`
 - durable-versus-temporary data: `docs/storage_model.md`
-- fetch and alignment data semantics: the two stage contract documents
+- fetch, alignment, and annotation semantics: the three stage contract documents
 
 README files provide navigation and package boundaries; they do not duplicate
 complete runbooks. Historical experiment notes describe the run that produced

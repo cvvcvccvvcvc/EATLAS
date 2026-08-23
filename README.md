@@ -5,7 +5,7 @@ three internal workflow boundaries:
 
 1. fetch human target gene loci and NCBI ortholog gene sequences for Entrez Gene IDs
 2. align selected ortholog gene sequences against the fixed human target loci
-3. annotate emitted alignment events with ClinVar and gnomAD evidence
+3. annotate emitted alignment events with ClinVar, gnomAD, and Ensembl VEP evidence
 
 The pipeline is implemented with Nextflow DSL2. It keeps raw NCBI packages and
 native aligner outputs in temporary task work directories by default and
@@ -35,6 +35,11 @@ export ENTREZ_API_KEY=your_ncbi_api_key
 export GAPH_TARGET_ANNOTATION_GFF3=/path/to/genomic.gff.gz
 export ENSEMBL_COMPARA_MAF_MANIFEST=/path/to/ensembl_compara_maf_manifest.tsv.gz
 export CLINVAR_VCF=/path/to/clinvar.vcf.gz
+export GAPH_VEP_BACKEND=local
+export GAPH_VEP_RELEASE=116
+export GAPH_VEP_EXECUTABLE=/path/to/gaph-vep116
+export GAPH_VEP_CACHE_DIR=/path/to/vep-cache
+export GAPH_VEP_RESULT_CACHE_DIR=/path/to/shared/vep-results
 ```
 
 For local runs, these values can also be stored in an ignored `.env` file using
@@ -54,6 +59,9 @@ If `--clinvar_vcf` and `CLINVAR_VCF` are unset, annotation uses
 `assets/reference/clinvar/clinvar.vcf.gz` when present. Annotation requires a
 ClinVar VCF and matching `.tbi`; the workflow fails early when neither the
 parameter, environment variable, nor default asset is available.
+Candidate VEP annotation is part of the same workflow. Small local runs default
+to the REST backend. Production cluster runs use the release-pinned local VEP
+configuration from the cluster environment.
 
 For Slurm, use the `slurm` profile and put `work/`, results, and environment
 caches under the assigned shared scratch allocation.
@@ -72,7 +80,8 @@ nextflow run . \
   -profile slurm \
   --ids_file /path/to/gene_ids.txt \
   --gnomad_cache_dir "$GAPH_GNOMAD_CACHE_DIR" \
-  --outdir "$GAPH_ROOT/results/run_001"
+  --outdir "$GAPH_ROOT/results/run_001" \
+  -resume
 ```
 
 By default, `--alignment_strategies default` runs `minimap2_asm10`,
@@ -131,9 +140,10 @@ Alignment outputs:
 
 Annotation outputs:
 
-- `annotation/variant_annotations.tsv.gz` - compact unique variant-context rows
-  with report-relevant ClinVar classification/review evidence and selected
-  gnomAD AF/consequence fields.
+- `annotation/variant_annotations/manifest.json` and
+  `annotation/variant_annotations/partitions/<partition_id>/<shard_id>.tsv.gz`
+  - compact unique variant-context rows with ClinVar, gnomAD, and VEP evidence;
+  headered bounded shards are published once without a duplicate global table.
 - `annotation/event_variant_map/partitions/<partition_id>/event_variant_map.tsv.gz`
   - one provenance row per compact alignment event, linking its partition-local
   `event_group_id` to the canonical variant key and normalization status.
@@ -183,16 +193,19 @@ directory or home quota.
 | 7 | `MERGE_ALIGNMENT_PARTITION` | Compact raw observations into event, exact-support, segment, and summary relations. | Intermediate bounded partitions |
 | 8 | `MERGE_ALIGNMENT` | Validate and copy partitions without global recompression or ID rebasing. | `alignment/` |
 | 9 | `PREPARE_ANNOTATION_CONTEXTS` | Materialize only each partition's target context. | Intermediate annotation context |
-| 10 | `ANNOTATE_EVENTS_PARTITION` | Normalize event keys and annotate unique variant contexts with ClinVar/gnomAD. | Intermediate annotation partitions |
-| 11 | `FINALIZE_ANNOTATION` | Validate and publish annotations plus event-to-variant lineage. | `annotation/` |
+| 10 | `ANNOTATE_EVENTS_PARTITION` | Normalize event keys and annotate unique variant contexts with ClinVar/gnomAD. | Intermediate source shards |
+| 11 | `ANNOTATE_VEP_PARTITION` | Add release-declared VEP evidence to bounded source shards. | Resumable enriched shards |
+| 12 | `FINALIZE_ANNOTATION` | Validate and publish the partitioned variant dataset plus event-to-variant lineage. | `annotation/` |
 
 ## Documentation
 
 - `docs/pipeline_launch.md` — ordinary ITMO launch or resume.
-- `docs/report_generation.md` — bulk VEP and report launch.
+- `docs/report_generation.md` — report-only and combined pipeline/report launch.
 - `docs/run_validation.md` — smoke tests, contract checks, and failure diagnosis.
 - `docs/stage1_fetch_contract.md` and `docs/stage2_alignment_contract.md` —
   normalized data contracts and their rationale.
+- `docs/stage3_annotation_contract.md` — annotation ownership, VEP, and durable
+  variant-shard contract.
 - `docs/storage_model.md` — durable evidence, resume cache, and disk policy.
 - `docs/itmo_cluster.md` — first-time cluster setup and verified infrastructure.
 - `docs/project_map.md` — code ownership and repository navigation.

@@ -67,14 +67,17 @@ duplicate global copies.
 
 `annotation/` contains:
 
-- the compressed unique variant-context annotation table
+- the partitioned unique variant-context dataset with ClinVar, gnomAD, and VEP
+  evidence
 - a partitioned event-to-canonical-variant lineage table
 - annotation manifest and diagnostic failure table
 
-The variant-context table intentionally stores one compact interpretation
+The variant-context shards intentionally store one compact interpretation
 layer: canonical key, gene/event, alleles, external lookup status, strategy
-membership, ClinVar classification/review fields, and the selected gnomAD
-AF/source/consequence. Per-event normalization status stays in the event map.
+membership, ClinVar classification/review fields, selected gnomAD fields, and
+declared VEP consequence fields. Per-event normalization status stays in the
+event map.
+
 Support metrics remain derivable from the alignment evidence and event map
 rather than being copied into this table. Provider fields not used by the
 report are not duplicated into durable output.
@@ -88,6 +91,11 @@ regional responses are also stored in a shared reusable cache. The cache uses
 neither a run result nor Nextflow resume state: multiple pipeline and analytics
 runs may reuse it, and a run remains valid when the cache is absent.
 
+`GAPH_VEP_RESULT_CACHE_DIR` is a second reusable infrastructure cache. It keeps
+only complete release/config-matched variant/gene results and is distinct from
+the official indexed VEP reference cache. Neither cache replaces the durable
+enriched shards inside a completed run.
+
 Alignment compacts raw per-aligner event observations once within each bounded
 partition. The normalized evidence is copied byte for byte into
 `alignment/evidence/partitions/<partition_id>/`: the partition manifest,
@@ -96,8 +104,8 @@ Local `event_group_id` values are interpreted together with their directory
 `partition_id`; they are not globally rebased.
 
 Annotation reads those same partitions in the end-to-end dataflow. It writes
-one canonical variant-context annotation table and preserves the partition-local
-event-to-variant mapping needed by analytics. It does not materialize
+one canonical partitioned variant-context dataset and preserves the
+partition-local event-to-variant mapping needed by analytics. It does not materialize
 variant-strategy, variant-ortholog, site-depth, or taxonomic histogram products.
 In a fresh successful run, disposable inputs and pre-normalization
 intermediates removed with task work include:
@@ -106,9 +114,10 @@ intermediates removed with task work include:
 - raw per-aligner event tables
 - native aligner files
 
-The durable `variant_annotations.tsv.gz` is assembled from partition gzip
-members without row parsing or recompression. Event maps stay partitioned, so
-their local IDs need no global rewrite.
+Pre-VEP annotation rows are bounded temporary shards. Completed VEP shards are
+copied once into `annotation/variant_annotations/partitions/<partition_id>/`
+without a global merge or recompression. Event maps stay partitioned, so their
+local IDs need no global rewrite.
 
 Selected ortholog FASTA files pass directly from fetch to alignment through the
 Nextflow execution cache and are not copied into durable results. A completed
@@ -198,8 +207,7 @@ Keep:
 - `<run>/run_manifest.json`
 - `<run>/fetch/`, `<run>/alignment/`, and `<run>/annotation/`
 - `<run>/reports/nextflow/` for execution trace and resource review
-- finalized report HTML, performance profile, and matching bulk-VEP artifact
-  when the report is a retained result
+- finalized report HTML and performance profile when the report is retained
 
 The small `<run>/analytics/alignment_aggregates/`, `taxonomy_summary/`, and
 `annotation_support/` directories are fingerprinted derived caches. They can

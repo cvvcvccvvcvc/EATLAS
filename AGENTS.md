@@ -8,7 +8,7 @@ GAPH v2 is one end-to-end Nextflow pipeline with three internal boundaries:
 
 1. fetch normalized target, selected-ortholog, feature, and taxonomy data;
 2. align ortholog sequences and preserve normalized row-level evidence;
-3. annotate alignment events with ClinVar and gnomAD evidence.
+3. annotate alignment events with ClinVar, gnomAD, and Ensembl VEP evidence.
 
 Completed-run analytics is a separate consumer. It derives scientific counts,
 taxonomic views, coverage, support summaries, and reports from durable pipeline
@@ -47,6 +47,8 @@ evidence.
 11. Large annotation runs reuse the shared gnomAD regional cache. On ITMO use
     `$GAPH_ROOT/cache/gnomad` through `--gnomad_cache_dir` or
     `GAPH_GNOMAD_CACHE_DIR`.
+12. Pipeline candidate VEP is part of annotation and publishes one partitioned
+    durable dataset. Do not recreate a separate bulk-VEP/report precompute.
 
 ## Engineering Method
 
@@ -123,11 +125,12 @@ ITMO runs use `-profile slurm`.
 
 - `README.md` — human overview, quick start, outputs, and document index.
 - `docs/pipeline_launch.md` — ordinary ITMO launch or resume.
-- `docs/report_generation.md` — ordinary bulk-VEP and report launch.
+- `docs/report_generation.md` — ordinary report or combined pipeline/report launch.
 - `docs/run_validation.md` — smoke tests and failure investigation.
 - `docs/project_map.md` — repository structure and ownership.
 - `docs/stage1_fetch_contract.md` — fetch selection and durable data contract.
 - `docs/stage2_alignment_contract.md` — alignment evidence contract.
+- `docs/stage3_annotation_contract.md` — external annotation and variant-shard contract.
 - `docs/storage_model.md` — durable data, resume cache, and disk policy.
 - `docs/itmo_cluster.md` — first-time ITMO setup and verified infrastructure.
 - `run_archiving/README.md` — verified archive, restore, and removal operations.

@@ -1,75 +1,33 @@
 # Report Generation
 
-Use this runbook when the user asks to generate an analytics report for one
-completed GAPH run or a compatible cohort of completed runs. It is the
-complete operational path; do not read the wider cluster or analytics
-documentation unless this path fails with a concrete error.
+Use this runbook to create an analytics report for one completed current run or
+a compatible cohort. VEP annotation of pipeline candidates is already part of
+the end-to-end Nextflow run; there is no separate candidate-VEP preparation
+step.
 
-## Required User Inputs
+## One Run
 
-The launcher requires:
-
-- exactly one source: an absolute completed-run directory or an absolute cohort
-  manifest;
-- a new report name containing only letters, digits, `.`, `_`, or `-`.
-
-Pass every report option stated by the user unchanged. When the user does not
-specify an option, retain the Python CLI default. Do not interpret words such as
-"full" as permission to enable optional analyses; ask which optional analyses
-the user wants.
-
-## Standard Cluster Launch
-
-Publish completed local changes through GitHub before updating the cluster. Do
-not transfer tracked code with `rsync`, Git bundles, or ad hoc copies.
+On the ITMO controller, update the checkout and load the cluster environment:
 
 ```bash
-git push origin main
-
-ssh -i ~/.ssh/itmo ilunegov@ctlab.itmo.ru
-ssh sphinx
-
 cd /nfs/home/$USER/gaph_v2
 git pull --ff-only
 source "$HOME/.gaph_v2_cluster_env.sh"
 
 RUN="$GAPH_ROOT/results/<run-name>"
 
-bash analytics/slurm/submit_vep_annotation.sh \
-  --run-dir "$RUN"
-
-# After bulk VEP has finalized:
 bash analytics/slurm/submit_strategy_report.sh \
   --run-dir "$RUN" \
-  --report-name strategy_compare_new
+  --report-name strategy_compare
 ```
 
-Bulk VEP is a required, resumable precompute for every report. Its launcher
-submits `prepare -> bounded annotation array -> finalize`, pins the repository
-commit, and writes logs under
-`<run>/analytics/vep_consequences/slurm/`. The defaults are 250,000 rows per
-partition, 4 CPUs and 8 GB per annotation task, and at most 4 simultaneous
-tasks. Override them only after measuring a representative partition:
+The launcher requires an absolute run path and a report name containing only
+letters, digits, `.`, `_`, or `-`. It rejects a run unless the current
+`annotation/manifest.json` and partitioned
+`annotation/variant_annotations/manifest.json` contracts are complete.
 
-```bash
-bash analytics/slurm/submit_vep_annotation.sh \
-  --run-dir "$RUN" \
-  --max-parallel 8 \
-  --slurm-memory 12G
-```
-
-Repeating the same command resumes at completed partition boundaries. The
-finalizer runs after the array stops and succeeds only when every declared
-partition is complete and matches one VEP configuration. Do not submit the
-HTML report until both files exist and are non-empty:
-
-```bash
-test -s "$RUN/analytics/vep_consequences/manifest.json"
-test -s "$RUN/analytics/vep_consequences/variant_annotations.vep.tsv.gz"
-```
-
-The default command keeps `--target-space-null` disabled because that is the
-`analytics.strategy_report` default. Enable it only when requested:
+Pass report CLI arguments unchanged after `--`. For example, the optional
+consequence-matched target-space null is enabled with:
 
 ```bash
 bash analytics/slurm/submit_strategy_report.sh \
@@ -81,13 +39,48 @@ bash analytics/slurm/submit_strategy_report.sh \
   --target-space-null-resamples 500
 ```
 
-Arguments after `--` are passed unchanged to `analytics.strategy_report`.
+Options not supplied by the user keep the `analytics.strategy_report` default.
+Use the CLI as the source of truth:
+
+```bash
+micromamba run -p "$GAPH_ROOT/envs/analytics" \
+  python -m analytics.strategy_report --help
+```
+
+## Pipeline And Report In One Command
+
+For a new run that should immediately submit a report after successful
+Nextflow completion, use the combined launcher inside `tmux`:
+
+```bash
+IDS="$GAPH_ROOT/inputs/panel.ids"
+RUN="$GAPH_ROOT/results/run_name"
+WORK="$GAPH_ROOT/work/run_name"
+
+bash scripts/slurm/run_and_report.sh \
+  --ids-file "$IDS" \
+  --run-dir "$RUN" \
+  --work-dir "$WORK" \
+  --report-name strategy_compare \
+  -- \
+  --target-space-null \
+  --target-space-null-sample-size 5000
+```
+
+Arguments before `--` belong to the operational launcher. Arguments after `--`
+go unchanged to the report. Omit `--` when no report overrides are needed. The
+launcher always uses `-profile slurm` and `-resume`, preserves the registry
+alignment default unless `--alignment-strategies` is supplied, and never submits
+the report after a failed pipeline run.
+
+Optional report-job resource flags are `--slurm-cpus`, `--slurm-memory`,
+`--slurm-time`, and `--slurm-partition`. They use the same defaults as the
+report-only launcher when omitted.
 
 ## Multi-run Cohort
 
-A cohort manifest makes any positive number of completed runs one analytical
-cohort. A one-member cohort is valid. Paths may be absolute or relative to the
-manifest:
+A cohort manifest contains one or more completed runs. Paths may be absolute or
+relative to the manifest:
 
 ```json
 {
@@ -99,25 +92,8 @@ manifest:
 }
 ```
 
-Every member must be a successful current end-to-end run with a finalized
-bulk-VEP artifact. Before creating analytics artifacts, the report
-requires the same pipeline revision, target assembly and GFF contract,
-strategy set and parameters, event/support contracts, ClinVar contents,
-gnomAD dataset/API contract, and VEP release/backend/columns. Accepted gene IDs
-must be disjoint. An overlap is reported with the conflicting genes and run
-labels; it is not silently deduplicated because concatenating overlapping runs
-would count the same accepted input more than once.
-
-The large VEP partitions remain in their source runs and are scanned as one
-virtual DuckDB input. Compact tables and target-sequence links are assembled
-under `<cohort-root>/<cohort-id>/inputs/`; every scientific statistic is then
-recomputed over the union. Taxonomy medians and distinct counts are recomputed
-from the union of member `fetch/taxonomy.tsv.gz` and
-`fetch/orthologs.selected.tsv.gz`; they are never added across runs. The
-resolved manifest records every member fingerprint and appears in report QC.
-
 ```bash
-COHORT_MANIFEST="$GAPH_ROOT/cohorts/panel590.json"
+COHORT_MANIFEST="$GAPH_ROOT/cohorts/panel.json"
 COHORT_ROOT="$GAPH_ROOT/cohort_reports"
 
 bash analytics/slurm/submit_strategy_report.sh \
@@ -126,128 +102,69 @@ bash analytics/slurm/submit_strategy_report.sh \
   --report-name strategy_compare
 ```
 
-The default root is `<cohort-manifest-dir>/cohorts`. Reports, cohort caches,
-performance profiles, and temporary spill data stay under the stable cohort ID;
-source runs are read-only.
+Members must use the same current pipeline contracts, target/reference inputs,
+strategy configuration, ClinVar and gnomAD contracts, VEP backend/release and
+variant-table columns. Accepted Gene IDs must be disjoint. Overlap and
+incompatible evidence fail explicitly; rows are never silently deduplicated.
 
-GAPH Browser cumulative releases are dissemination catalogs, not scientific
-report inputs. A cohort manifest may describe the same membership, but every
-analysis source must resolve to the completed `gaph_v2` run artifacts above.
+The cohort keeps large variant shards in the source runs and exposes them as one
+virtual DuckDB input. Compact tables, target-sequence links, derived caches, and
+the resolved cohort manifest live under the stable cohort output directory.
+Taxonomy distinct counts and medians are recomputed from the union of member
+Stage 1 evidence rather than added across reports.
 
-## Launcher Arguments
+## Report Data Boundary
 
-### Bulk-VEP launcher
+The report reads pipeline evidence and builds fingerprinted derived caches under
+`analytics/`:
 
-| Argument | Default | Meaning |
-|---|---:|---|
-| `--run-dir PATH` | required | Absolute completed-run directory. |
-| `--partition-size N` | `250000` | Deterministic VEP input rows per array task. A resumed artifact must use the same value. |
-| `--max-parallel N` | `4` | Maximum simultaneous VEP array tasks. |
-| `--slurm-cpus N` | `4` | CPUs reserved per VEP array task. |
-| `--slurm-memory SIZE` | `8G` | Memory per VEP array task. |
-| `--slurm-time D-HH:MM:SS` | `01:00:00` | Time limit per VEP array task. |
-| `--slurm-partition NAME` | `main` | Slurm partition for every step. |
+- strategy summary and feature coverage from Stage 2 summaries/segments;
+- taxonomy summary from selected orthologs and canonical Stage 1 taxonomy;
+- variant-strategy support and taxonomic depth/support from exact Stage 2
+  evidence plus the Stage 3 event-to-variant map;
+- scientific analysis tables used by the HTML sections.
 
-### Report launcher
+These caches do not replace pipeline evidence. Missing source partitions,
+mismatched schemas, or changed files are errors. There are no old aggregate or
+separate bulk-VEP fallback paths.
 
-| Argument | Default | Meaning |
-|---|---:|---|
-| `--run-dir PATH` | mutually exclusive | Absolute completed-run directory visible on compute nodes. |
-| `--cohort-manifest PATH` | mutually exclusive | Absolute JSON manifest containing the cohort runs. |
-| `--cohort-root PATH` | `<manifest-dir>/cohorts` | Root containing stable cohort-ID output directories. Valid only with `--cohort-manifest`. |
-| `--report-name NAME` | required | HTML stem and Slurm log stem. The HTML is written under the selected analysis root. |
-| `--slurm-cpus N` | `8` | CPUs reserved for the report job. |
-| `--slurm-memory SIZE` | `128G` | Slurm memory reservation. The 590-gene aggregation exceeded the effective DuckDB budget of a 32 GB job and used about 65 GB RSS with the larger allocation. |
-| `--slurm-time D-HH:MM:SS` | `06:00:00` | Slurm wall-time limit. |
-| `--slurm-partition NAME` | `main` | Slurm partition. |
-| `--help` | — | Show launcher help without submitting. |
-| `--` | — | End launcher arguments; pass all remaining arguments to the report CLI. |
-
-The launcher does not choose scientific settings. It establishes the analytics
-environment, records the Git commit, assigns Slurm resources, and submits the
-batch job.
-
-## Report Contract
-
-The input selector and `--report-name` are supplied by the launcher. Put every
-other `analytics.strategy_report` argument after `--`. Use the CLI as the source
-of truth for current defaults and allowed values:
-
-```bash
-micromamba run -p "$GAPH_ROOT/envs/analytics" \
-  python -m analytics.strategy_report --help
-```
-
-The consequence-matched target-space null is disabled by default. It is the
-main optional analysis that can add substantial VEP, gnomAD, CPU, and elapsed
-time, so enable it only when explicitly requested.
-
-The report requires a finalized bulk-VEP artifact under
-`<run>/analytics/vep_consequences` that matches `<run>/annotation`. It verifies
-the manifest before expensive analysis and fails with the VEP preparation and
-finalization commands when the artifact is missing. Non-`ok` per-row VEP
-statuses are valid in a finalized artifact and are reported in QC. The Slurm
-launcher checks that the final manifest and joined VEP table exist before it
-submits a report job. Consequence plots retain those rows as a light-grey
-`Not annotated` group instead of excluding them from the plotted denominator.
-The gnomAD Stratification consequence view uses these same VEP groups and only
-completed gnomAD lookups (`found` or `not_found`).
-
-Basic-filter reports use
-`<run>/analytics/annotation_support/variant_strategy_support.tsv.gz`, including
-`alt_support_genus_count`. The report builds this fingerprinted cache from the
-partitioned Stage 2 evidence, Stage 3 event-to-variant map, and canonical Stage
-1 taxonomy. Missing source evidence is a contract error; the report does not
-approximate genus support from a partial aggregate.
+Rows with a non-`ok` pipeline VEP status remain explicit and appear as
+`Not annotated` where consequence plots need a complete denominator. The
+target-space null can make additional VEP and gnomAD requests for generated
+control alleles; this is why it remains opt-in.
 
 ## Monitoring And Completion
 
-The bulk-VEP preparation log prints the annotation-array and finalizer job IDs:
-
-```bash
-squeue -u "$USER"
-tail -n 30 "$RUN/analytics/vep_consequences/slurm/prepare.<job-id>.out"
-tail -n 30 "$RUN/analytics/vep_consequences/slurm/annotate.<array-id>_<task-id>.err"
-tail -n 30 "$RUN/analytics/vep_consequences/slurm/finalize.<job-id>.err"
-```
-
-The preparation job, every array task, and the finalizer must finish with
-Slurm state `COMPLETED` and exit code `0:0`. A failed array causes finalization
-to fail on the missing partition rather than publishing a partial artifact;
-rerun the launcher to retry only incomplete partitions.
-
-After bulk VEP is finalized, confirm that the report itself starts and passes
-its initial preflight:
-
-The report launcher prints the job ID and exact log paths:
+The report launcher prints the Slurm job ID and log paths:
 
 ```bash
 JOB_ID=<printed-job-id>
 squeue -j "$JOB_ID"
 tail -n 40 "$RUN/reports/slurm/<report-name>.$JOB_ID.out"
 tail -n 40 "$RUN/reports/slurm/<report-name>.$JOB_ID.err"
+sacct -j "$JOB_ID" --format=JobID,State,Elapsed,MaxRSS,ExitCode
 ```
 
-A successful job must satisfy all of the following:
+A successful single-run report has:
 
 ```bash
-sacct -j "$JOB_ID" --format=JobID,State,Elapsed,MaxRSS,ExitCode
 test -s "$RUN/reports/<report-name>.html"
 test -s "$RUN/analytics/performance/<report-name>.json"
 ```
 
-The Slurm state must be `COMPLETED` with exit code `0:0`. The performance JSON
-is written progressively and is the first place to inspect after a failure.
-Repeating the same submission reuses valid run-local and shared caches.
+Slurm must report `COMPLETED` and exit code `0:0`. The performance JSON is
+written progressively and is the first artifact to inspect after a report
+failure. Repeating an identical report reuses valid fingerprinted caches.
 
-## Known Launch Failures
+The report launcher defaults to 8 CPUs, 128 GB, six hours, and the `main`
+partition. The large memory default reflects a measured 590-gene aggregation;
+change it only after measuring a representative report.
 
-- `Rscript was not found`: the analytics environment was not added to `PATH`.
-  Use the launcher; do not invoke its Python interpreter directly without the
-  environment `bin` directory on `PATH`.
-- DuckDB `Disk quota exceeded` during Variant Summary on the 590-gene artifact:
-  a 32 GB job gave DuckDB only about 16 GB and forced excessive spill. The
-  launcher therefore defaults to 128 GB. Increase `--slurm-memory` only when a
-  measured run still requires it.
+## Common Failures
+
+- `Rscript was not found`: submit through the launcher so the declared
+  analytics environment is active.
 - `Repository commit changed after submission`: the cluster checkout changed
-  while the job was queued. Resubmit from the intended checked-out commit.
+  while the job was queued; resubmit from the intended commit.
+- DuckDB disk or memory errors: inspect the performance profile and Slurm
+  `MaxRSS`; keep spill and results on the shared scratch allocation.

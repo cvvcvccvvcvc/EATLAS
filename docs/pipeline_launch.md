@@ -13,6 +13,11 @@ Obtain or identify:
 - a dedicated Nextflow work directory retained while resume may be needed;
 - any explicitly requested alignment strategies or concurrency overrides.
 
+The cluster environment must also declare the release-pinned local VEP
+executable, indexed cache, and optional shared result cache described in
+`docs/itmo_cluster.md`. Candidate VEP is part of annotation, not a later report
+precompute.
+
 When an option is not specified, keep the Nextflow/config default. The pipeline
 always runs end to end, and the default strategy selection runs
 `minimap2_asm10`, `minimap2_asm20`, `nucmer`, and `bwa_pseudoreads_150_75`. The
@@ -85,6 +90,25 @@ Detach without stopping Nextflow with `Ctrl-b d`. Reattach with:
 ```bash
 tmux attach -t gaph_run_name
 ```
+
+## Run And Report Together
+
+When a report should be submitted immediately after a successful pipeline run,
+use the combined launcher in the persistent session:
+
+```bash
+bash scripts/slurm/run_and_report.sh \
+  --ids-file "$IDS" \
+  --run-dir "$RUN" \
+  --work-dir "$WORK" \
+  --report-name strategy_compare \
+  -- \
+  --target-space-null
+```
+
+Everything after `--` is a report argument and is forwarded unchanged. Omit
+the target-space-null option unless the user requested it. See
+`docs/report_generation.md` for report and cohort details.
 
 ## Resume
 

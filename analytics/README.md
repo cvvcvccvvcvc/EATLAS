@@ -12,8 +12,7 @@ use `docs/report_generation.md`.
 ```text
 analytics/
   strategy_report.py     report CLI and orchestration
-  vep_annotation.py      resumable bulk-VEP CLI
-  vep/                   VEP execution, consequence rules, shared result cache
+  vep/                   report consequence vocabularies and grouping rules
   derivations/           deterministic tables built from pipeline evidence
   io/                    input validation and fingerprinted artifact contracts
   analyses/              scientific calculations
@@ -32,11 +31,12 @@ non-overlapping runs. Each run must provide:
 
 - canonical Stage 1 target, selected-ortholog, feature, and taxonomy evidence;
 - partitioned Stage 2 summaries, segments, compact events, and exact support;
-- Stage 3 variant annotations and the partitioned event-to-variant map;
-- a finalized bulk-VEP artifact matching the current Stage 3 annotation file.
+- the Stage 3 partitioned ClinVar/gnomAD/VEP variant dataset and
+  event-to-variant map.
 
-Missing evidence, stale VEP output, or an obsolete schema is a contract error.
-There is no fallback to old pipeline aggregates.
+Missing evidence, an incomplete shard set, or an obsolete schema is a contract
+error. There is no fallback to old pipeline aggregates or a separate bulk-VEP
+artifact.
 
 ## Derived Data
 
@@ -49,7 +49,6 @@ analytics/
   alignment_aggregates/  strategy summary and feature coverage
   taxonomy_summary/      selected-ortholog taxonomy summary
   annotation_support/    variant support and ortholog-evidence views
-  vep_consequences/      resumable full-candidate VEP artifact
   performance/           progressive timing, memory, I/O, and disk profiles
 ```
 
@@ -76,7 +75,7 @@ Synchronize an existing named environment after the YAML changes:
 micromamba install --yes -n gaph-v2-analytics -f envs/analytics.yml
 ```
 
-After bulk VEP has been finalized as described in the report runbook:
+After the end-to-end pipeline has completed:
 
 ```bash
 micromamba run -n gaph-v2-analytics python -m analytics.strategy_report \
@@ -92,8 +91,7 @@ micromamba run -n gaph-v2-analytics python -m analytics.strategy_report \
   --target-space-null
 ```
 
-Use `python -m analytics.strategy_report --help` and
-`python -m analytics.vep_annotation --help` for the current CLI contract.
+Use `python -m analytics.strategy_report --help` for the current CLI contract.
 
 The same environment runs the Python suite:
 
