@@ -8,6 +8,7 @@ Production logic is in:
 - `main.nf`
 - `nextflow.config`
 - `lib/*.groovy`
+- `modules/local/*.nf`
 - `bin/*.py`
 - `genomics/*.py`
 - `analytics/`
@@ -37,6 +38,7 @@ Runtime environments:
 - `envs/controller.yml` - Nextflow, Java, and Micromamba for the login/controller host.
 - `envs/fetch.yml` - Stage 1 task dependencies.
 - `envs/alignment.yml` - alignment and annotation task dependencies.
+- `envs/analytics.yml` - completed-run analytics and report dependencies.
 
 ## Core Modules
 
@@ -56,7 +58,7 @@ Runtime environments:
 
 - `bin/build_fetch_dataset.py`
   - merges per-chunk TSV files
-  - copies target and ortholog FASTA files into the final layout
+  - copies target and ortholog FASTA files into the internal fetch handoff
   - derives collapsed target structural features from the configured local target assembly GFF3
   - writes final `manifest.json`
 
@@ -70,6 +72,9 @@ Runtime environments:
   - rewrites per-gene FASTA inputs with stable short sequence IDs
   - writes per-gene task directories and `alignment_tasks.tsv.gz`
 
+- `bin/alignment_table_schema.py` and `bin/alignment_task_io.py`
+  - define exact aligner output schemas and shared task I/O validation
+
 - `bin/run_minimap2_alignment.py`
   - runs fixed-preset minimap2 on complete orthologs or deterministic long pseudo-reads
   - reduces long-read placements to a dominant-strand monotonic backbone
@@ -80,6 +85,10 @@ Runtime environments:
   - runs multi-query nucmer comparator without global one-to-one filtering
   - parses SAM-long alignment records and emits CIGAR-normalized events
   - writes the same normalized alignment evidence schema
+
+- `bin/run_bwa_pseudoreads.py` and `bin/bwa_pseudoread_filter.py`
+  - generate the fixed BWA pseudoread comparator and retain its monotonic
+    target-order alignment backbone
 
 - `bin/build_ensembl_compara_maf_manifest.py`
   - builds a small run-specific manifest of Ensembl Compara MAF chunks for the
@@ -112,6 +121,10 @@ Runtime environments:
   - emits one event-to-canonical-variant lineage row per compact event
   - streams event rows and fetches gnomAD regions within one bounded partition
 
+- `bin/prepare_annotation_contexts.py`
+  - validates partition membership and materializes only each partition's
+    target metadata and FASTA context
+
 - `bin/finalize_annotation_partitions.py`
   - concatenates compressed partition annotation members and copies event maps
     without rewriting their rows
@@ -141,11 +154,15 @@ Runtime environments:
 - `genomics/gnomad_index.py`
   - derived immutable Parquet fragments for exact-allele analytics lookups
   - preserves complete-tile coverage so absence remains distinct from failure
+- `genomics/taxonomy.py`
+  - canonical taxonomy schema, normalization, and lineage/rank access
 
 ## Analytics Package
 
 - `analytics/strategy_report.py`
   - command-line contract and report orchestration
+- `analytics/vep_annotation.py`
+  - resumable bulk-VEP prepare, annotate, finalize, and cache-seeding command
 - `analytics/vep/`
   - VEP integration and consequence vocabularies
 - `analytics/analyses/`
@@ -181,6 +198,9 @@ results/run_001/
   fetch/
   alignment/
   annotation/
+  reports/
+    nextflow/
+  analytics/       # after completed-run analytics is built
 ```
 
 Temporary files that must not be treated as final outputs:
@@ -209,11 +229,17 @@ under `assets/reference/` can be Git-tracked through `.gitignore` exceptions.
 The workflow uses these paths as defaults when matching explicit parameters or
 environment variables are not set.
 
-## Design Direction
+## Documentation Ownership
 
-This repository uses Nextflow for orchestration and Python for small parsing
-utilities. Keep that separation: Nextflow owns task graph, resources, retry, and
-resume; Python owns deterministic file parsing and table generation.
+Each operational question has one primary document:
 
-See `docs/pipeline_scaling_notes.md` for known scaling risks and future
-large-run refactoring directions.
+- ordinary pipeline launch or resume: `docs/pipeline_launch.md`
+- ordinary bulk-VEP/report launch: `docs/report_generation.md`
+- smoke tests and failure investigation: `docs/run_validation.md`
+- first-time ITMO setup: `docs/itmo_cluster.md`
+- durable-versus-temporary data: `docs/storage_model.md`
+- fetch and alignment data semantics: the two stage contract documents
+
+README files provide navigation and package boundaries; they do not duplicate
+complete runbooks. Historical experiment notes describe the run that produced
+them and are not current production contracts.

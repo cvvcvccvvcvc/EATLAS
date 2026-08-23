@@ -10,7 +10,7 @@ Obtain or identify:
 
 - the input Gene ID file;
 - the durable result directory;
-- the durable Nextflow work directory;
+- a dedicated Nextflow work directory retained while resume may be needed;
 - any explicitly requested alignment strategies or concurrency overrides.
 
 When an option is not specified, keep the Nextflow/config default. The pipeline

@@ -1,4 +1,8 @@
-# Data Contract
+# Archived Data Contract
+
+This document describes the historical `build_features` CLI. The implementation
+expects global Stage 2 tables and is not a contract for current evidence-first
+runs. See the experiment README for the required migration.
 
 ## Input Variants
 
@@ -33,7 +37,7 @@ are counted in the JSON summary and skipped.
 
 ## GAPH Inputs
 
-`build_features` reads these published GAPH outputs:
+`build_features` currently reads these historical global GAPH outputs:
 
 - required canonical Stage 1 `taxonomy.tsv.gz`
 - optional Stage 1 `target_features.tsv.gz`
@@ -41,7 +45,13 @@ are counted in the JSON summary and skipped.
 - `alignment_events.tsv.gz`
 - optional `ortholog_alignment_summary.tsv.gz`
 
-The feature builder accepts gzip or plain TSV files.
+Current pipeline runs do not publish those global alignment or feature-coverage
+tables. They publish partitioned segments, compact events, exact event support,
+and an event-to-canonical-variant map. Until the experiment joins those sources
+and reuses current analytics derivations, its CLI must fail rather than be fed
+hand-built compatibility files.
+
+The historical feature builder accepts gzip or plain TSV files.
 Taxonomic groups are derived only from the canonical `lineage_tax_ids` column;
 missing taxonomy rows are treated as contract errors.
 

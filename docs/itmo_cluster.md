@@ -87,7 +87,7 @@ feature coverage, and canonical segment/event evidence. Minimap2 initially diffe
 line-order-derived provenance identifiers; those identifiers are now derived
 from PAF content and remain stable across thread counts.
 
-A 20-gene all-strategies run completed without task retries or scheduler
+A 20-gene default-strategy run completed without task retries or scheduler
 resource failures with `--alignment_max_forks 4`. Minimap2 used 2.32-2.53 CPUs
 per task at the median, Nucmer used 2.04, and peak RSS stayed below 2.4 GB for
 all sequence aligners. Four concurrent tasks per alignment process are
@@ -95,14 +95,12 @@ therefore the default on the verified cluster setup; this setting does not
 change the separate Ensembl MAF or annotation concurrency limits.
 
 In the same run, annotation partitions containing two genes used 0.38-5.6 GB
-RSS for 66,921-815,531 unique variant contexts. A later 590-gene run showed that
-memory is predicted more directly by exact ortholog-support rows than by gene
-count. Partitioned annotation requests 8 or 16 GB for small partitions with at
-most 1 or 5 million support rows, then 32, 48, 64, or 96 GB for partitions with
-at most 15, 30, 40, or more than 40 million rows. Each retry adds 32 GB. With
-four annotation forks, even four largest first attempts reserve 384 GB, below
-the verified 512 GB per-user Slurm memory limit; larger retries may queue rather
-than run simultaneously.
+RSS for 66,921-815,531 unique variant contexts. The current resource function
+uses each partition's compact `alignment_event_count`: 8 or 16 GB at up to 1 or
+5 million events, then 32, 48, 64, or 96 GB at up to 15, 30, 40, or more than
+40 million events. Each retry adds 32 GB. With four annotation forks, even four
+largest first attempts reserve 384 GB, below the verified 512 GB per-user Slurm
+memory limit; larger retries may queue rather than run simultaneously.
 
 Current memory requests are conservative initial bounds. Tune them from
 Nextflow trace `peak_rss` after representative cluster runs. Requesting the
@@ -266,8 +264,13 @@ micromamba create --yes \
   --prefix "$GAPH_ROOT/envs/controller" \
   --file envs/controller.yml
 
+micromamba create --yes \
+  --prefix "$GAPH_ROOT/envs/analytics" \
+  --file envs/analytics.yml
+
 micromamba run -p "$GAPH_ROOT/envs/controller" nextflow -version
 micromamba run -p "$GAPH_ROOT/envs/controller" java -version
+micromamba run -p "$GAPH_ROOT/envs/analytics" python -m analytics.strategy_report --help
 micromamba info
 ```
 
@@ -436,7 +439,9 @@ First run one strategy with all concurrency set to one:
 
 ```bash
 cd "$GAPH_CODE"
-RUN="$GAPH_ROOT/results/slurm_smoke_1gene_asm20_$(date +%Y%m%d_%H%M%S)"
+SMOKE_ID="slurm_smoke_1gene_asm20_$(date +%Y%m%d_%H%M%S)"
+RUN="$GAPH_ROOT/results/$SMOKE_ID"
+WORK="$GAPH_ROOT/work/$SMOKE_ID"
 
 micromamba run -p "$GAPH_ROOT/envs/controller" nextflow run . \
   -profile slurm \
@@ -446,7 +451,8 @@ micromamba run -p "$GAPH_ROOT/envs/controller" nextflow run . \
   --alignment_strategies minimap2_asm20 \
   --fetch_max_forks 1 \
   --alignment_max_forks 1 \
-  --annotation_max_forks 1
+  --annotation_max_forks 1 \
+  -work-dir "$WORK"
 ```
 
 Verify the run before increasing scope:
@@ -456,7 +462,7 @@ test -s "$RUN/fetch/manifest.json"
 test -s "$RUN/alignment/manifest.json"
 test -s "$RUN/annotation/manifest.json"
 test -s "$RUN/annotation/variant_annotations.tsv.gz"
-du -sh "$RUN" "$GAPH_WORK_DIR"
+du -sh "$RUN" "$WORK" 2>/dev/null || du -sh "$RUN"
 ```
 
 Then validate in this order:
@@ -469,20 +475,6 @@ Then validate in this order:
 Do not start with 20,000 genes. The local tests validate pipeline behavior, but
 the Slurm scheduler, cluster network, shared filesystem, and external services
 must be measured together before production scaling.
-
-A two-gene align-only regression exposed and verified a multi-gene partition
-merge fix. Both genes now reach `MERGE_ALIGNMENT_PARTITION` and
-`MERGE_ALIGNMENT`; the AFDN/BRCA1 Minimap2 ASM20 plus Nucmer run produced
-1,411,399 raw events, 2,750 ortholog-strategy summaries, no failures, and a
-24 MB durable alignment dataset.
-
-Annotation of the two-gene, seven-strategy AFDN/BRCA1 dataset collapsed
-4,379,013 support rows to 470,359 variant contexts in 2m54s and used 3.3 GB
-peak RSS. That historical run predated the current support-row-aware resource
-model. Annotation partitions now request 32, 48, 64, or 96 GB initially, as
-described in the Resource Model above, and add 32 GB per retry. Tune those
-bounds from representative trace `peak_rss` measurements rather than restoring
-the former fixed 8 GB request.
 
 ## Monitoring And Analytics
 
@@ -499,5 +491,5 @@ du -sh "$GAPH_ROOT/work" "$RUN"
 ```
 
 Run large analytics reports through a Slurm allocation, not directly on
-`sphinx`. The analytics environment is defined separately in
-`envs/analytics.yml`.
+`sphinx`. The launchers use `$GAPH_ROOT/envs/analytics`, created from
+`envs/analytics.yml` during setup.

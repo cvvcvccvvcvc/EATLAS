@@ -50,11 +50,13 @@ variants share annotations, gene context, and sometimes label ascertainment.
 
 ## GAPH Feature Rationale
 
-Stage 2 emits two complementary tables:
+The current pipeline preserves three complementary Stage 2 evidence relations
+inside each partition:
 
 - `alignment_segments.tsv.gz`: which orthologs cover target intervals
-- `alignment_events.tsv.gz`: observed non-reference events in target-local and
-  GRCh38 coordinates
+- `alignment_events.tsv.gz`: compact observed non-reference events in
+  target-local and GRCh38 coordinates
+- `event_ortholog_support.tsv.gz`: the exact positive supporters of each event
 
 For a candidate variant, this lets us distinguish:
 
@@ -64,6 +66,10 @@ ortholog covers position with no event           -> ortholog supports human REF
 ortholog covers position with another event      -> ortholog supports other
 ortholog does not cover position                 -> no-call
 ```
+
+Canonical variant identity is supplied by the Stage 3 event map; taxonomy is
+joined from the canonical Stage 1 table. The archived feature builder predates
+this contract and must be migrated before the experiment is rerun.
 
 This is different from a pure conservation score because the features can encode
 allele direction, clade distribution, and alignment support. Without explicit

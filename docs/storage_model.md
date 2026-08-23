@@ -31,16 +31,16 @@ results/run_001/
   fetch/
   alignment/
   annotation/
+  reports/nextflow/
+  analytics/          # after analytics artifacts are built
 ```
 
 `run_manifest.json` is written when the workflow starts and atomically finalized
 when Nextflow terminates. It records the launch-time Git commit and dirty state,
-selected profiles, schema-declared resolved parameters with secret-like values
+selected profiles, schema-declared launch parameters with secret-like values
 redacted, and the workflow completion status. A manifest left in `running`
 state identifies an interrupted run whose completion handler did not execute.
-Archival tools must treat this file as the provenance source of truth. For
-legacy runs without it, the producing commit is unknown and must not be inferred
-from the current checkout.
+Archival tools must treat this file as the provenance source of truth.
 
 For an end-to-end run, `fetch/` contains:
 
@@ -61,9 +61,9 @@ For an end-to-end run, `fetch/` contains:
 - alignment failures
 - `manifest.json`
 
-The report derives and fingerprint-caches strategy, feature-coverage, and
-taxonomy summaries under `analytics/`; alignment does not publish duplicate
-global copies.
+The report derives and fingerprint-caches strategy, feature-coverage, support,
+and taxonomy summaries under `analytics/`; the pipeline does not publish
+duplicate global copies.
 
 `annotation/` contains:
 
@@ -72,13 +72,15 @@ global copies.
 - annotation manifest and diagnostic failure table
 
 The variant-context table intentionally stores one compact interpretation
-layer: canonical key, gene/event, raw alleles, normalization status, strategy
+layer: canonical key, gene/event, alleles, external lookup status, strategy
 membership, ClinVar classification/review fields, and the selected gnomAD
-AF/source/consequence. Support metrics remain derivable from the alignment
-evidence and event map rather than being copied into this table. Provider fields
-not used by the report are not duplicated into durable output.
+AF/source/consequence. Per-event normalization status stays in the event map.
+Support metrics remain derivable from the alignment evidence and event map
+rather than being copied into this table. Provider fields not used by the
+report are not duplicated into durable output.
 
-This layer should be kept.
+The fetch, alignment, and annotation directories together form the durable
+pipeline evidence layer and should be kept as one run.
 
 When `GAPH_GNOMAD_CACHE_DIR` or `--gnomad_cache_dir` is set, complete gnomAD
 regional responses are also stored in a shared reusable cache. The cache uses
@@ -117,10 +119,10 @@ input.
 
 Analytics owns the reproducible derived layer:
 
-- `analytics/alignment_aggregates/` — strategy summary and feature coverage;
-- `analytics/taxonomy_summary/` — scope/rank summary from selected orthologs and
+- `<run>/analytics/alignment_aggregates/` — strategy summary and feature coverage;
+- `<run>/analytics/taxonomy_summary/` — scope/rank summary from selected orthologs and
   canonical taxonomy;
-- `analytics/annotation_support/` — variant-strategy support and taxonomic
+- `<run>/analytics/annotation_support/` — variant-strategy support and taxonomic
   ortholog-evidence histograms.
 
 Each cache records the identities of its source inputs and is rebuilt when they
@@ -172,7 +174,7 @@ During a run, peak disk usage can exceed final result size because Nextflow keep
 task outputs in `work/` for resume.
 
 Control peak disk with:
-- smaller `--chunk_size`
+- smaller `--chunk_size` when fetch packages dominate
 - lower `--fetch_max_forks`
 - `-work-dir` on scratch storage
 - `GAPH_WORK_DIR=/path/to/scratch/gaph_v2_work`
@@ -185,12 +187,6 @@ The repository's `slurm` profile disables task-local scratch so staged task data
 stays under the assigned shared work allocation. Local execution retains
 task-local scratch for fetch and alignment processes.
 
-Recommended starting point for large runs:
-
-```bash
---chunk_size 10 --fetch_max_forks 2
-```
-
 Lower `--fetch_max_forks` if the target cluster, network, scratch filesystem, or
 NCBI behavior becomes unstable. Increase only after measuring on the target
 cluster. Request starts are always spaced by 5 seconds inside the fetch
@@ -199,11 +195,16 @@ implementation.
 ## What To Keep
 
 Keep:
-- `results/.../run_manifest.json`
-- `results/.../manifest.json`
-- `results/.../*.tsv.gz`
-- `results/.../sequences/targets/*.fa.gz`
-- `results/.../target_features.tsv.gz`
+- `<run>/run_manifest.json`
+- `<run>/fetch/`, `<run>/alignment/`, and `<run>/annotation/`
+- `<run>/reports/nextflow/` for execution trace and resource review
+- finalized report HTML, performance profile, and matching bulk-VEP artifact
+  when the report is a retained result
+
+The small `<run>/analytics/alignment_aggregates/`, `taxonomy_summary/`, and
+`annotation_support/` directories are fingerprinted derived caches. They can
+be rebuilt from the durable pipeline evidence, but retaining them makes
+repeated reports faster. Do not delete pipeline evidence in their place.
 
 Usually remove after validation:
 - Nextflow `work/`

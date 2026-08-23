@@ -1,6 +1,6 @@
 # Run And Validation
 
-Use this when running or validating the current end-to-end fetch + alignment + annotation
+Use this when validating the current end-to-end fetch + alignment + annotation
 workflow.
 
 For an ordinary ITMO launch or resume, start with the shorter
@@ -25,7 +25,7 @@ uses an in-memory lookup bounded to each genomic partition. Set
 responses across runs and analytics reports. When `GAPH_ROOT` is set, the cache
 defaults to `$GAPH_ROOT/cache/gnomad`. End-to-end runs may process up to
 `--annotation_max_forks` partitions concurrently (default: 4). Initial memory
-is selected from the partition's exact ortholog-support row count; retries add
+is selected from the partition's compact alignment-event count; retries add
 32 GB per attempt.
 
 For persistent local paths, environment variables keep machine-specific values
@@ -52,92 +52,19 @@ The NCBI Datasets CLI and aligners come from their declared task environments.
 
 ## Cluster Run
 
-The `slurm` profile changes the executor and scratch policy; the declared
-`envs/*.yml` environments are already mandatory globally. Every Python process
-has an explicit environment, so compute nodes do not depend on system Python.
+Use `docs/pipeline_launch.md` for an ordinary launch or resume. Use
+`docs/itmo_cluster.md` only for first-time environment/reference setup,
+compute-node preflight, or infrastructure diagnosis.
 
-For a new account, keep reusable environments and run data in the assigned
-scratch area. From the repository, create the controller environment once:
+The `slurm` profile changes the executor and disables task-local scratch; task
+environments remain mandatory. Keep the work directory, run results, task
+environment cache, and shared gnomAD cache under the assigned shared scratch
+allocation. Do not run pipeline computation directly on the controller host.
 
-```bash
-export GAPH_ROOT="/mnt/tank/scratch/$USER/gaph_v2"
-mkdir -p "$GAPH_ROOT"/{envs,work,conda,results,micromamba,nextflow}
-
-export CONDA_PKGS_DIRS="$GAPH_ROOT/conda/controller-pkgs"
-export MAMBA_ROOT_PREFIX="$GAPH_ROOT/micromamba"
-export NXF_HOME="$GAPH_ROOT/nextflow"
-
-conda env create --prefix "$GAPH_ROOT/envs/controller" -f envs/controller.yml
-conda activate "$GAPH_ROOT/envs/controller"
-nextflow -version
-java -version
-micromamba --version
-```
-
-Both Nextflow work and its Conda cache must be on storage shared by the Slurm
-controller and compute nodes. For the ITMO CT cluster, use the assigned scratch
-directory rather than the home quota:
-
-```bash
-export GAPH_ROOT="/mnt/tank/scratch/$USER/gaph_v2"
-export GAPH_WORK_DIR="$GAPH_ROOT/work"
-export GAPH_GNOMAD_CACHE_DIR="$GAPH_ROOT/cache/gnomad"
-export NXF_CONDA_CACHEDIR="$GAPH_ROOT/conda/envs"
-export MAMBA_ROOT_PREFIX="$GAPH_ROOT/micromamba"
-export NXF_HOME="$GAPH_ROOT/nextflow"
-
-RUN="$GAPH_ROOT/results/run_001"
-nextflow run . \
-  -profile slurm \
-  --ids_file /path/to/gene_ids.txt \
-  --gnomad_cache_dir "$GAPH_GNOMAD_CACHE_DIR" \
-  --outdir "$RUN"
-```
-
-`GAPH_WORK_DIR` supplies the default Nextflow work path. An explicit
-`-work-dir "$GAPH_ROOT/work/run_001"` is also valid and takes precedence.
-`NXF_CONDA_CACHEDIR` is intentionally outside the run directory so environments
-are built once and reused across runs. `MAMBA_ROOT_PREFIX` keeps downloaded
-package and repodata caches out of the home quota. `NXF_HOME` does the same for
-Nextflow runtime and plugin files.
-
-The `slurm` profile disables the process-level `scratch` directive. Tasks run in
-the shared Nextflow work directory under `GAPH_WORK_DIR` instead of staging
-large inputs and outputs through compute-node `/tmp`. This keeps pipeline data
-inside the assigned `/mnt/tank/scratch/$USER` allocation. Local profiles retain
-their existing task-scratch behavior.
-
-On the ITMO CT cluster, submit Nextflow from `sphinx`; do not run calculations
-there directly. The documented `main` partition is the default, and the cluster
-instructions do not require a Slurm account or QOS for ordinary jobs, so the
-profile does not invent `account`, `queue`, or `clusterOptions` values. Add a QOS
-only when the administrators explicitly grant and request one.
-
-See `docs/itmo_cluster.md` for the verified host layout, environment bootstrap,
-reference transfer, preflight checks, and staged smoke-test procedure.
-
-Conservative starting parameters:
-
-```bash
---chunk_size 10 --fetch_max_forks 2 --alignment_max_forks 4 --annotation_max_forks 4
-```
-
-`fetch_max_forks` controls local fetch concurrency. The fetch implementation
-always spaces request starts by 5 seconds and gives each download up to 4
-retries after its initial attempt, with exponential backoff starting at 30
-seconds. Tune concurrency only after measuring disk, runtime, NCBI behavior,
-and alignment task memory on the target cluster.
-
-In the `slurm` profile, `executor.queueSize` limits how many jobs Nextflow keeps
-submitted to Slurm at once. It does not affect local runs, task CPU count, or
-threads inside an aligner process.
-
-The default storage policy retains process cache for recovery from a failed or
-interrupted run and cleans task work created by a successful execution session.
-Resume requires the original work directory and Nextflow execution metadata. A
-fresh successful run has no task cache to reuse; a resumed run can retain task
-directories from its earlier failed session, which can be removed after recovery
-when the work path is dedicated to that run.
+Tune concurrency only after a representative run. `fetch_max_forks` controls
+NCBI request concurrency, while each alignment process has its own
+`alignment_max_forks` limit and `executor.queueSize` bounds submitted Slurm
+jobs. These settings are not one global worker count.
 
 ## End-To-End Smoke Test
 
@@ -174,9 +101,11 @@ Expected layout:
 
 ```text
 /tmp/gaph_v2_smoke_run/
+  run_manifest.json
   fetch/
   alignment/
   annotation/
+  reports/nextflow/
 ```
 
 Fetch-boundary expected properties:
@@ -242,11 +171,11 @@ Annotation expected properties:
 
 Analytics expected properties after the first report/preflight build:
 
-- `analytics/alignment_aggregates/` contains strategy summary and feature
+- `<run>/analytics/alignment_aggregates/` contains strategy summary and feature
   coverage derived from partition summaries and segments.
-- `analytics/taxonomy_summary/` contains the taxonomy summary derived from
+- `<run>/analytics/taxonomy_summary/` contains the taxonomy summary derived from
   `fetch/taxonomy.tsv.gz` and `fetch/orthologs.selected.tsv.gz`.
-- `analytics/annotation_support/` contains variant-strategy support and
+- `<run>/analytics/annotation_support/` contains variant-strategy support and
   ortholog-evidence histograms derived from Stage 2 evidence and the Stage 3
   event map.
 - Repeating the build without changing inputs is a cache hit. Removing or
@@ -300,6 +229,34 @@ for partition in sorted(path for path in base.iterdir() if path.is_dir()):
 PY
 ```
 
+## Speed And Disk Checks
+
+Use a representative gene panel and compare runs with the same inputs,
+strategies, references, cache state, and Slurm resources. A faster warm-cache
+run is not comparable to a cold-cache run.
+
+Nextflow already publishes the task-level measurements needed for pipeline
+review:
+
+```bash
+column -t -s $'\t' results/run_001/reports/nextflow/trace.txt | less -S
+du -sh results/run_001/{fetch,alignment,annotation,reports}
+du -sh /path/to/dedicated/work/run_001
+```
+
+Review `realtime`, `%cpu`, `peak_rss`, `rchar`, and `wchar` in the
+trace. Check the largest partitions rather than only totals. Durable alignment
+must contain one partition tree, not duplicate global copies of summaries,
+segments, events, or support.
+
+Every report writes a progressive profile under
+`<run>/analytics/performance/<report-name>.json`. Compare a cold report with an
+immediate identical rerun: the second run should reuse the finalized VEP input
+and report cache hits for completed derived alignment, taxonomy, support, and
+analysis artifacts. Investigate a regression only when it reproduces on the
+same workload; do not add a new storage format or cache from an unmeasured
+hypothesis.
+
 ## Resume A Failed Boundary
 
 Re-run the same end-to-end command with the same `-work-dir` and `-resume`.
@@ -310,12 +267,7 @@ stage-selection parameters.
 
 ## After Validation
 
-After a successful run is validated, clean temporary Nextflow work files if disk
-space matters:
-
-```bash
-nextflow clean -f -keep-logs
-```
-
-If a custom `-work-dir` was used and no resume is needed, it can also be removed
-manually after validation.
+Successful sessions use the repository's automatic Nextflow cleanup policy.
+Failed or interrupted task work is retained for `-resume`. Remove a dedicated
+work directory only after the run is verified and recovery is no longer needed;
+see `docs/storage_model.md` for the durable/cache boundary.

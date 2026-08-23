@@ -1,7 +1,7 @@
 # GAPH v2
 
-GAPH v2 currently implements three stages of the gene-level comparative variant
-pipeline:
+GAPH v2 implements one end-to-end gene-level comparative variant pipeline with
+three internal workflow boundaries:
 
 1. fetch human target gene loci and NCBI ortholog gene sequences for Entrez Gene IDs
 2. align selected ortholog gene sequences against the fixed human target loci
@@ -63,6 +63,7 @@ The ITMO-specific bootstrap and validation procedure is documented in
 ```bash
 export GAPH_ROOT="/mnt/tank/scratch/$USER/gaph_v2"
 export GAPH_WORK_DIR="$GAPH_ROOT/work"
+export GAPH_GNOMAD_CACHE_DIR="$GAPH_ROOT/cache/gnomad"
 export NXF_CONDA_CACHEDIR="$GAPH_ROOT/conda/envs"
 export MAMBA_ROOT_PREFIX="$GAPH_ROOT/micromamba"
 export NXF_HOME="$GAPH_ROOT/nextflow"
@@ -70,6 +71,7 @@ export NXF_HOME="$GAPH_ROOT/nextflow"
 nextflow run . \
   -profile slurm \
   --ids_file /path/to/gene_ids.txt \
+  --gnomad_cache_dir "$GAPH_GNOMAD_CACHE_DIR" \
   --outdir "$GAPH_ROOT/results/run_001"
 ```
 
@@ -94,13 +96,15 @@ The long-pseudoread comparator is selected with:
 
 ## Outputs
 
-Default output layout:
+Default durable output layout:
 
 ```text
 results/run_test/
+  run_manifest.json
   fetch/
   alignment/
   annotation/
+  reports/nextflow/
 ```
 
 The published end-to-end output is intentionally compact.
@@ -144,11 +148,10 @@ The report derives strategy summaries, feature coverage, site depth, taxonomic
 evidence, and variant-strategy support under fingerprinted `analytics/` caches.
 These analytic tables are not pipeline outputs.
 
-Fetch, alignment, and annotation remain explicit internal workflow boundaries,
-but they are not separate CLI modes. Recovery uses Nextflow `-resume` with the
-same inputs, result directory, and work directory.
-Removed `--stage`, `--fetch_dir`, and `--alignment_dir` parameters fail with a
-clear error instead of being ignored.
+Fetch, alignment, and annotation are internal workflow boundaries, not separate
+CLI modes. Recovery uses Nextflow `-resume` with the same inputs, result
+directory, and work directory. Removed stage-selection parameters are rejected
+instead of being ignored.
 
 The target assembly is fixed to GRCh38.p14 (`GCF_000001405.40`). Ortholog
 retrieval always uses the complete NCBI ortholog set (`--ortholog all`).
@@ -156,7 +159,7 @@ retrieval always uses the complete NCBI ortholog set (`--ortholog all`).
 ## Storage Model
 
 Nextflow `work/` is the execution cache used by `-resume`. Published `results/`
-is the durable data layer for downstream stages. Successful execution sessions
+is the durable data layer for analytics and archival. Successful execution sessions
 clean their task work by default; failed or interrupted work remains available
 for recovery. See `docs/storage_model.md` for resumed-run cleanup details.
 
@@ -167,20 +170,29 @@ retained failed/interrupted task work directory when native debugging is needed.
 For cluster runs, keep `-work-dir` on scratch storage, not in the project
 directory or home quota.
 
-## Stage Steps
+## Internal Workflow Steps
 
-| Step | Process | What Happens | Durable Output |
+| Step | Process | What Happens | Output Role |
 | --- | --- | --- | --- |
-| 1 | `VALIDATE_IDS` | Read Entrez IDs, remove duplicates, split accepted IDs into chunks. | `fetch/input.ids.tsv`; chunk plans remain in `work/` |
-| 2 | `FETCH_PARSE_CHUNK` | Download one NCBI gene package with `--ortholog all --include gene`; parse `data_report.jsonl` and `gene.fna`; select GRCh38 human target and one sequence per ortholog GeneID. Concurrent request starts are spaced by a fixed 5 seconds. | Per-chunk compressed FASTA/TSV files in `work/` |
-| 3 | `BUILD_FETCH_DATASET` | Assemble chunk tables, selected per-gene FASTA files, and target structural features into the final fetch dataset. | `fetch/` |
-| 4 | `FETCH_TAXONOMY` | Fetch canonical taxonomy once for the selected ortholog tax IDs. Analytics later consumes this Stage 1 handoff; alignment performs no taxonomy work. | `fetch/taxonomy.tsv.gz`, `fetch/taxonomy_failures.tsv.gz` |
-| 5 | `BUILD_ALIGNMENT_TASKS` | Validate fetch outputs and create temporary per-gene alignment inputs with stable sequence IDs. | Task metadata in `work/` |
-| 6 | `ALIGN_MINIMAP2` | Run the selected fixed asm10/asm20 baselines or opt-in map-ont long-pseudoread comparator. | Per-gene normalized evidence in `work/` |
-| 7 | `ALIGN_NUCMER_COMPARATOR` | Multi-query nucmer comparator without global one-to-one delta filtering. | Per-gene normalized evidence in `work/` |
-| 8 | `ALIGN_BWA_PSEUDOREADS` | Fixed pseudoread comparator evidence. | Per-gene normalized evidence in `work/` |
-| 9 | `BUILD_ENSEMBL_COMPARA_MAF_MANIFEST` | When selected, build a release-116 EPO Extended manifest covering target chromosomes. | Per-run manifest in `work/` |
-| 10 | `ALIGN_ENSEMBL_COMPARA_MAF_CHUNK` | When selected, stream each required MAF chunk once for all overlapping genes. | Per-gene fragments in `work/` |
-| 11 | `MERGE_ENSEMBL_COMPARA_MAF_GENE` | Consolidate all EPO fragments for one target gene. | Per-gene normalized evidence in `work/` |
-| 12 | `MERGE_ALIGNMENT` | Compact raw observations within bounded partitions and publish normalized evidence without global recompression. | `alignment/evidence/partitions/`, manifest, failures |
-| 13 | `ANNOTATE_EVENTS_PARTITION` | Normalize event keys and annotate with ClinVar/gnomAD evidence; publish source annotation evidence only. | `annotation/variant_annotations.tsv.gz`, partitioned event map, manifest, failures |
+| 1 | `VALIDATE_IDS` | Normalize Entrez IDs and plan deterministic fetch chunks. | Intermediate plan |
+| 2 | `FETCH_PARSE_CHUNK` | Fetch NCBI gene packages and normalize target/ortholog records. | Intermediate chunk evidence |
+| 3 | `BUILD_FETCH_DATASET`, `FETCH_TAXONOMY` | Assemble sequence/metadata handoffs and fetch canonical taxonomy once. | Intermediate fetch dataset |
+| 4 | `FINALIZE_FETCH_OUTPUT` | Validate and publish the compact durable fetch layer. | `fetch/` |
+| 5 | `BUILD_ALIGNMENT_TASKS` | Create stable per-gene tasks and genomic partitions. | Intermediate task metadata |
+| 6 | alignment strategy processes | Run selected minimap2, nucmer, BWA, and opt-in Ensembl evidence producers. | Per-gene normalized evidence |
+| 7 | `MERGE_ALIGNMENT_PARTITION` | Compact raw observations into event, exact-support, segment, and summary relations. | Intermediate bounded partitions |
+| 8 | `MERGE_ALIGNMENT` | Validate and copy partitions without global recompression or ID rebasing. | `alignment/` |
+| 9 | `PREPARE_ANNOTATION_CONTEXTS` | Materialize only each partition's target context. | Intermediate annotation context |
+| 10 | `ANNOTATE_EVENTS_PARTITION` | Normalize event keys and annotate unique variant contexts with ClinVar/gnomAD. | Intermediate annotation partitions |
+| 11 | `FINALIZE_ANNOTATION` | Validate and publish annotations plus event-to-variant lineage. | `annotation/` |
+
+## Documentation
+
+- `docs/pipeline_launch.md` — ordinary ITMO launch or resume.
+- `docs/report_generation.md` — bulk VEP and report launch.
+- `docs/run_validation.md` — smoke tests, contract checks, and failure diagnosis.
+- `docs/stage1_fetch_contract.md` and `docs/stage2_alignment_contract.md` —
+  normalized data contracts and their rationale.
+- `docs/storage_model.md` — durable evidence, resume cache, and disk policy.
+- `docs/itmo_cluster.md` — first-time cluster setup and verified infrastructure.
+- `docs/project_map.md` — code ownership and repository navigation.

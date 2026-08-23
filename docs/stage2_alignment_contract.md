@@ -12,7 +12,8 @@ Production execution is a single end-to-end workflow:
 Entrez IDs
   -> Stage 1 fetch
   -> Stage 2 alignment
-  -> later variant/support stages
+  -> Stage 3 annotation
+  -> analytics
 ```
 
 The stage boundary is internal to the single pipeline execution path. Nextflow
@@ -21,13 +22,17 @@ standalone alignment CLI mode.
 
 ## Inputs
 
-Stage 2 consumes the normalized Stage 1 outputs:
+Stage 2 consumes the normalized Stage 1 handoff:
 
 - `genes.tsv.gz`
 - `target_features.tsv.gz`
 - `orthologs.selected.tsv.gz`
 - `sequences/targets/<gene_id>.fa.gz`
 - `sequences/orthologs/<gene_id>.fa.gz`
+
+The ortholog FASTA directory is an internal Nextflow handoff from fetch to
+alignment. It is not part of the completed run's durable `fetch/` directory;
+selected-ortholog metadata remains durable there.
 
 `target_features.tsv.gz` is fingerprinted in the final alignment manifest for
 the later analytics join; it is not copied into aligner tasks. Taxonomy is not a
@@ -231,7 +236,7 @@ file. Individual tables and prior layouts are not independent pipeline inputs.
 
 Every per-gene result and partition uses plural `gene_ids` and `strategies`,
 nested `strategy_parameters`, canonical evidence counts, and an explicit
-`alignment_event_mode`. Merge rejects missing or legacy singular fields.
+`alignment_event_mode`. Merge rejects any other schema.
 
 The four normalized per-aligner tables have one exact ordered schema, defined
 in `bin/alignment_table_schema.py`: summaries, segments, raw events, and

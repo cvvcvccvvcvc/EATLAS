@@ -3,6 +3,8 @@
 Date: 2026-06-29
 
 This is a first real-data sanity check, not the final CADD-additive validation.
+It was produced with the pre-partition pipeline and is retained as a historical
+result, not as an executable current runbook.
 
 ## Data
 

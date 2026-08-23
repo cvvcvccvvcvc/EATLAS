@@ -7,10 +7,10 @@ documentation unless this path fails with a concrete error.
 
 ## Required User Inputs
 
-The launcher requires exactly one input selector:
+The launcher requires:
 
-- the absolute completed-run directory; or
-- an absolute cohort-manifest path;
+- exactly one source: an absolute completed-run directory or an absolute cohort
+  manifest;
 - a new report name containing only letters, digits, `.`, `_`, or `-`.
 
 Pass every report option stated by the user unchanged. When the user does not
@@ -33,7 +33,7 @@ cd /nfs/home/$USER/gaph_v2
 git pull --ff-only
 source "$HOME/.gaph_v2_cluster_env.sh"
 
-RUN="$GAPH_ROOT/results/slurm_panel590_all_20260720_221912"
+RUN="$GAPH_ROOT/results/<run-name>"
 
 bash analytics/slurm/submit_vep_annotation.sh \
   --run-dir "$RUN"
@@ -99,14 +99,14 @@ manifest:
 }
 ```
 
-Every member must be a successful, clean, current end-to-end run with a
-finalized bulk-VEP artifact. Before creating analytics artifacts, the report
+Every member must be a successful current end-to-end run with a finalized
+bulk-VEP artifact. Before creating analytics artifacts, the report
 requires the same pipeline revision, target assembly and GFF contract,
 strategy set and parameters, event/support contracts, ClinVar contents,
 gnomAD dataset/API contract, and VEP release/backend/columns. Accepted gene IDs
 must be disjoint. An overlap is reported with the conflicting genes and run
-labels; it is not silently deduplicated because current durable run summaries
-cannot subtract one gene correctly.
+labels; it is not silently deduplicated because concatenating overlapping runs
+would count the same accepted input more than once.
 
 The large VEP partitions remain in their source runs and are scanned as one
 virtual DuckDB input. Compact tables and target-sequence links are assembled
@@ -167,29 +167,20 @@ The launcher does not choose scientific settings. It establishes the analytics
 environment, records the Git commit, assigns Slurm resources, and submits the
 batch job.
 
-## Report CLI Arguments
+## Report Contract
 
-The input selector and `--report-name` are supplied by the launcher. Put every other
-report argument after `--`.
+The input selector and `--report-name` are supplied by the launcher. Put every
+other `analytics.strategy_report` argument after `--`. Use the CLI as the source
+of truth for current defaults and allowed values:
 
-| Argument | Default and allowed values | Meaning |
-|---|---|---|
-| `--clinvar-vcf PATH` | `assets/reference/clinvar/clinvar.vcf.gz` | Indexed ClinVar VCF used for validation. |
-| `--out-html PATH` | unset | Explicit output path. When set, it takes precedence over the launcher-provided report name. |
-| `--target-space-null` / `--no-target-space-null` | disabled | Enable or disable the consequence-matched target-space null analysis. It can invoke VEP and gnomAD and can take hours on a cold cache. |
-| `--target-space-null-sample-size N` | `25000`, minimum `1` | Maximum deterministic focal-SNV sample per strategy. It is a cap, not necessarily the final cohort size. |
-| `--target-space-null-resamples N` | `1000`, minimum `100` | Matched-set bootstrap resampling iterations. |
-| `--target-space-null-seed N` | `20260721` | Deterministic target-space-null sampling seed. |
-| `--gnomad-cache-dir PATH` | `$GAPH_GNOMAD_CACHE_DIR`, otherwise unset | Shared resumable gnomAD regional cache. |
-| `--phylop-bigwig PATH` | `$GAPH_PHYLOP_BIGWIG`; otherwise `$GAPH_ROOT/reference/ucsc/hg38.phyloP100way.bw` when present | Local hg38 phyloP100way BigWig. A supplied path must exist. |
-| `--vep-backend {rest,local}` | `$GAPH_VEP_BACKEND`, otherwise `rest` | VEP execution backend. `local` requires a release and cache directory. |
-| `--vep-release RELEASE` | `$GAPH_VEP_RELEASE`, otherwise detected from a matching bulk-VEP artifact or REST | Pinned Ensembl VEP release. Required for local VEP and reports using bulk-VEP consequences. |
-| `--vep-executable PATH` | `$GAPH_VEP_EXECUTABLE`, otherwise `vep` | Local VEP executable or container wrapper. Used only by the local backend. |
-| `--vep-cache-dir PATH` | `$GAPH_VEP_CACHE_DIR`, otherwise unset | Indexed local VEP cache root. Required by the local backend. |
-| `--vep-result-cache-dir PATH` | `$GAPH_VEP_RESULT_CACHE_DIR`; otherwise `$GAPH_ROOT/cache/vep_results` | Sparse cross-run cache of completed VEP results. |
-| `--vep-result-cache-tile-size-bp N` | `$GAPH_VEP_RESULT_CACHE_TILE_SIZE_BP`, otherwise `1000000`; minimum `1` | Genomic tile size for the shared VEP result cache. |
-| `--vep-forks N` | `$GAPH_VEP_FORKS`, otherwise `4`; minimum `1` | Local VEP worker processes for the ClinVar universe and optional target-space null. |
-| `--firth-workers N` | `$GAPH_FIRTH_WORKERS`; otherwise allocated Slurm CPUs capped at `8`; minimum `1` | Parallel independent Firth models. |
+```bash
+micromamba run -p "$GAPH_ROOT/envs/analytics" \
+  python -m analytics.strategy_report --help
+```
+
+The consequence-matched target-space null is disabled by default. It is the
+main optional analysis that can add substantial VEP, gnomAD, CPU, and elapsed
+time, so enable it only when explicitly requested.
 
 The report requires a finalized bulk-VEP artifact under
 `<run>/analytics/vep_consequences` that matches `<run>/annotation`. It verifies
@@ -203,7 +194,7 @@ The gnomAD Stratification consequence view uses these same VEP groups and only
 completed gnomAD lookups (`found` or `not_found`).
 
 Basic-filter reports use
-`analytics/annotation_support/variant_strategy_support.tsv.gz`, including
+`<run>/analytics/annotation_support/variant_strategy_support.tsv.gz`, including
 `alt_support_genus_count`. The report builds this fingerprinted cache from the
 partitioned Stage 2 evidence, Stage 3 event-to-variant map, and canonical Stage
 1 taxonomy. Missing source evidence is a contract error; the report does not
@@ -231,6 +222,7 @@ its initial preflight:
 The report launcher prints the job ID and exact log paths:
 
 ```bash
+JOB_ID=<printed-job-id>
 squeue -j "$JOB_ID"
 tail -n 40 "$RUN/reports/slurm/<report-name>.$JOB_ID.out"
 tail -n 40 "$RUN/reports/slurm/<report-name>.$JOB_ID.err"

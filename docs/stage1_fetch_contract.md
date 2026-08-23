@@ -1,7 +1,7 @@
 # Stage 1 Fetch Contract
 
 Stage 1 turns a list of Entrez Gene IDs into normalized target and ortholog
-sequence data for downstream pseudo-read generation and variant calling.
+sequence data for downstream alignment and annotation.
 
 ## Fixed Constants
 
@@ -96,9 +96,9 @@ comes from the mandatory task environment.
      `taxonomy_failures.tsv.gz`; a failed batch request is retried by Nextflow
      and prevents finalization after retries are exhausted.
 
-Taxonomy is acquired only in the fetch boundary. Alignment does not consume it;
-annotation and report generation reuse the published metadata and do not issue
-another taxonomy request.
+Taxonomy is acquired only in the fetch boundary. Alignment and annotation do
+not consume it or issue taxonomy requests; analytics joins it to durable
+alignment evidence when taxonomic views are requested.
 
 ## Final Output Files
 
