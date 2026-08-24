@@ -21,8 +21,8 @@ precompute.
 When an option is not specified, keep the Nextflow/config default. The pipeline
 always runs end to end, and the default strategy selection runs
 `minimap2_asm10`, `minimap2_asm20`, `nucmer`, and `bwa_pseudoreads_150_75`. The
-long-pseudoread `minimap2_map_ont_pseudoreads_30000_15000` and precomputed
-Ensembl strategies must be selected explicitly.
+long-pseudoread `minimap2_map_ont_pseudoreads_30000_15000` must be selected
+explicitly.
 
 ## Connect And Update
 

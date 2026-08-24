@@ -514,7 +514,7 @@ def test_ortholog_evidence_section_renders_three_context_heatmaps() -> None:
     summary = SimpleNamespace(
         ortholog_evidence_cells=cells,
         ortholog_evidence_distributions=distributions,
-        strategies=["s1", "precomputed_ensembl_92_mammals_epo_extended"],
+        strategies=["s1", "minimap2_asm20"],
     )
     taxonomy_summary = pd.DataFrame(
         [

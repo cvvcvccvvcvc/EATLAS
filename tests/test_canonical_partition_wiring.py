@@ -99,10 +99,6 @@ def test_pipeline_python_modules_are_staged_packages_without_path_bridges() -> N
         "bin.run_minimap2_alignment",
         "bin.run_nucmer_alignment",
         "bin.run_bwa_pseudoreads",
-        "bin.build_ensembl_compara_maf_manifest",
-        "bin.prepare_ensembl_compara_maf_chunk_tasks",
-        "bin.run_ensembl_compara_maf_chunk_alignment",
-        "bin.merge_ensembl_compara_maf_gene",
         "bin.merge_alignment_results",
     ):
         assert f"python3 -m {module_name}" in module_text
@@ -129,7 +125,6 @@ def test_small_annotation_partitions_do_not_request_large_run_memory() -> None:
         PROJECT_DIR / "bin/run_minimap2_alignment.py",
         PROJECT_DIR / "bin/run_nucmer_alignment.py",
         PROJECT_DIR / "bin/run_bwa_pseudoreads.py",
-        PROJECT_DIR / "bin/merge_ensembl_compara_maf_gene.py",
     ]
     aligner_text = "\n".join(path.read_text() for path in aligner_scripts)
     assert "feature_coverage.tsv.gz" not in aligner_text

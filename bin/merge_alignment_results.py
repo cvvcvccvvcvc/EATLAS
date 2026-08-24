@@ -97,7 +97,6 @@ EVENT_STREAM_FIELDS = [
     "native_alignment_type",
     "qc_flags",
 ]
-ENSEMBL_COMPARA_STRATEGY = "precomputed_ensembl_92_mammals_epo_extended"
 ALIGNER_MANIFEST_COUNT_FIELDS = (
     "ortholog_alignment_summary_count",
     "alignment_segment_count",
@@ -185,13 +184,13 @@ def parse_expected_values(raw: str | None, label: str) -> list[str]:
 
 def read_alignment_capabilities(
     path: Path,
-) -> tuple[int, dict[str, tuple[bool, bool]]]:
-    """Return target/ortholog readiness for every alignment task gene."""
+) -> tuple[int, dict[str, bool]]:
+    """Return ortholog readiness for every alignment task gene."""
     task_count = 0
-    capabilities: dict[str, tuple[bool, bool]] = {}
+    capabilities: dict[str, bool] = {}
     with gzip.open(path, "rt", newline="") as handle:
         reader = csv.DictReader(handle, delimiter="\t")
-        required = {"gene_id", "target_ready", "ortholog_ready"}
+        required = {"gene_id", "ortholog_ready"}
         missing = required - set(reader.fieldnames or [])
         if missing:
             raise ValueError(
@@ -205,15 +204,12 @@ def read_alignment_capabilities(
                 continue
             if gene_id in capabilities:
                 raise ValueError(f"Alignment tasks {path} contain duplicate gene_id {gene_id}")
-            capabilities[gene_id] = (
-                str(row["target_ready"]).lower() == "true",
-                str(row["ortholog_ready"]).lower() == "true",
-            )
+            capabilities[gene_id] = str(row["ortholog_ready"]).lower() == "true"
     return task_count, capabilities
 
 
 def expected_gene_strategy_pairs(
-    capabilities: dict[str, tuple[bool, bool]],
+    capabilities: dict[str, bool],
     gene_ids: list[str],
     strategies: list[str],
 ) -> set[tuple[str, str]]:
@@ -225,11 +221,8 @@ def expected_gene_strategy_pairs(
             + ", ".join(sorted_gene_ids(missing_genes))
         )
     for gene_id in gene_ids:
-        target_ready, ortholog_ready = capabilities[gene_id]
-        for strategy in strategies:
-            eligible = target_ready if strategy == ENSEMBL_COMPARA_STRATEGY else ortholog_ready
-            if eligible:
-                pairs.add((gene_id, strategy))
+        if capabilities[gene_id]:
+            pairs.update((gene_id, strategy) for strategy in strategies)
     return pairs
 
 

@@ -55,11 +55,10 @@ default-enabled in that registry.
 | `minimap2_map_ont_pseudoreads_30000_15000` | minimap2 | Error-free 30 kb long pseudo-reads at a 15 kb step, aligned with `map-ont` and reduced to a dominant-strand monotonic backbone. |
 | `nucmer` | MUMmer/nucmer | Independent comparator using multi-query nucmer output. |
 | `bwa_pseudoreads_150_75` | BWA/samtools/pysam | Pseudoread comparator using 150-base reads at a 75-base step. |
-| `precomputed_ensembl_92_mammals_epo_extended` | Ensembl Compara MAF | Uses release-pinned precomputed `92_mammals.epo_extended` whole-genome MSA blocks overlapping the human target gene interval. |
 
 The two assembly-mode minimap2 strategies, nucmer, and BWA pseudoreads are
-default-enabled. The long-pseudoread and precomputed Ensembl strategies are
-runnable only when named explicitly.
+default-enabled. The long-pseudoread strategy is runnable only when named
+explicitly.
 
 No LASTZ, consensus calling, or production variant filtering is part of Stage 2.
 Conservation scores such as GERP are not part of alignment; they belong to the
@@ -73,7 +72,6 @@ Example selections:
 --alignment_strategies minimap2_asm10,nucmer
 --alignment_strategies bwa_pseudoreads_150_75
 --alignment_strategies minimap2_map_ont_pseudoreads_30000_15000
---alignment_strategies minimap2_asm20,precomputed_ensembl_92_mammals_epo_extended
 ```
 
 At least one strategy must be selected. Single-strategy runs are valid; compare
@@ -81,10 +79,7 @@ or report layers must treat cross-strategy-only sections as not applicable or
 empty rather than failing.
 
 `default` selects `minimap2_asm10`, `minimap2_asm20`, `nucmer`, and
-`bwa_pseudoreads_150_75`. The explicitly selected Ensembl strategy uses release 116,
-the `92_mammals.epo_extended` set, and at most three concurrent remote chunk
-tasks. These values are part of the strategy definition rather than separate
-user options.
+`bwa_pseudoreads_150_75`.
 
 Each bounded partition merge reduces raw per-ortholog observations to one
 compact row per unique event and strategy. Every compact row receives a
@@ -166,50 +161,6 @@ coordinate order. Reads are not deduplicated merely because they share an
 alignment position. There are no mapped-fraction, filtered-fraction, retained-
 fraction, or whole-ortholog rejection thresholds.
 
-For Ensembl Compara MAF:
-
-```text
-precomputed whole-genome MSA blocks overlapping the human target gene interval
-```
-
-The workflow first builds a small run-specific MAF chunk manifest directly from
-`genes.tsv.gz`. One alignment task streams each required source chunk once for
-all overlapping target genes and routes normalized rows into gene fragments.
-All fragments for a gene are then consolidated before the normal alignment
-merge; target intervals are unioned in the normalized summary. Feature coverage
-is derived later by analytics from the complete segment evidence. Transient
-network and truncated-gzip read failures are
-retried inside the same process with block-level continuation: already committed
-MAF blocks are skipped on the next network attempt. If a source still cannot be
-fully read after all attempts, the task records gene-level failure rows.
-Unexpected process failures terminate the
-workflow rather than silently producing incomplete gene evidence. Full MAF
-chunks are not published as durable outputs.
-
-Before coordinates and events are derived, dot placeholders in non-reference
-MAF rows are resolved against the human alignment row. A dot opposite a human
-base is treated as that matching base; a dot opposite a human gap is treated as
-a gap. This prevents placeholders from becoming artificial insertions or
-advancing query coordinates. Indels containing other non-ACGT symbols are kept
-out of `alignment_events.tsv.gz` and marked in the ortholog summary QC flags.
-
-The MAF chunk manifest can be supplied with `--ensembl_compara_maf_manifest` or
-`ENSEMBL_COMPARA_MAF_MANIFEST`. If neither is set, the workflow checks
-`assets/reference/ensembl/compara/release-116/92_mammals.epo_extended/ensembl_compara_maf_manifest.tsv.gz`;
-if that file is absent, it builds the manifest during the run.
-
-This strategy is not based on NCBI ortholog GeneIDs. Its support unit is the
-species row in the precomputed MSA. Consequently, `ortholog_gene_id` contains
-the species name for this strategy, and support-count reports should interpret
-it as species support.
-
-When one gene spans multiple MAF source chunks, Stage 2 consolidates those
-fragments before downstream merge. Target coverage is calculated from the union
-of target intervals. A species-level MSA does not provide one meaningful query
-length denominator across all blocks, so consolidated MAF rows leave
-`query_length` and `query_coverage` empty and add
-`maf_query_coverage_not_applicable`; `aligned_query_bp` remains available.
-
 ## Durable Outputs
 
 Alignment publishes one canonical partitioned evidence contract:
@@ -288,8 +239,7 @@ alignment records. Raw event rows and exact ortholog support carry nullable
 `mapq` and `native_alignment_type`; the compact event aggregate does not copy
 these record-level fields. Minimap2 preserves the literal PAF `tp` value (`P`,
 `S`, `I`, or `i`). Nucmer and BWA use the SAM flags to report `primary`,
-`secondary`, `supplementary`, or `secondary_supplementary`. Ensembl Compara MAF
-leaves both fields empty because it has no equivalent native record metadata.
+`secondary`, `supplementary`, or `secondary_supplementary`.
 
 `mapq` is the integer reported by the strategy's aligner and is only
 interpretable within that strategy. Stage 2 applies no MAPQ cutoff and does not
@@ -374,19 +324,14 @@ while preserving the Stage 2 logical evidence.
 
 Both merge levels fail closed. A partition must contain exactly one result for
 every eligible gene/strategy pair, required TSV inputs must exist with valid
-headers, and genes cannot occur in multiple partitions. Ensembl Compara is
-eligible when the human target is ready; minimap2, nucmer, and BWA additionally
-require fetched ortholog inputs. The final merge compares the union of partition
+headers, and genes cannot occur in multiple partitions. Every strategy requires
+fetched ortholog inputs. The final merge compares the union of partition
 `gene_ids` with the genes eligible for at least one selected strategy in
 `alignment_tasks.tsv.gz`; incomplete output is an error rather than a smaller
 successful dataset.
 
 Durable output is limited to compressed normalized TSV files so large runs do
 not duplicate sequence data and native aligner output in `results/`.
-
-For precomputed MAF strategies, the source MAF files are streamed or read from a
-configured local directory. They are treated as external inputs/cache, not final
-pipeline results.
 
 Nextflow `work/` remains a resume cache. After validating a run, it can be
 cleaned according to `docs/storage_model.md`.

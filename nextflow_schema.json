@@ -26,7 +26,7 @@
                 "alignment_strategies": {
                     "type": "string",
                     "default": "default",
-                    "description": "Comma-separated alignment strategies to run, or 'default' for the registry-defined default set. The precomputed Ensembl strategy is explicit opt-in."
+                    "description": "Comma-separated alignment strategies to run, or 'default' for the registry-defined default set."
                 },
                 "clinvar_vcf": {
                     "type": "string",
@@ -121,16 +121,6 @@
                     "description": "CPUs and local VEP forks reserved for each bounded VEP annotation task."
                 }
             }
-        },
-        "precomputed_alignment_options": {
-            "title": "Precomputed Alignment Options",
-            "type": "object",
-            "properties": {
-                "ensembl_compara_maf_manifest": {
-                    "type": "string",
-                    "description": "Optional release-116 92-mammals EPO Extended chunk manifest. Defaults to ENSEMBL_COMPARA_MAF_MANIFEST, then the matching asset path; otherwise it is built during the run."
-                }
-            }
         }
     },
     "allOf": [
@@ -145,9 +135,6 @@
         },
         {
             "$ref": "#/definitions/annotation_options"
-        },
-        {
-            "$ref": "#/definitions/precomputed_alignment_options"
         }
     ]
 }

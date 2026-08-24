@@ -9,7 +9,6 @@ import pytest
 
 PROJECT_DIR = Path(__file__).resolve().parents[1]
 from bin import (
-    ensembl_compara_maf,
     run_bwa_pseudoreads,
     run_minimap2_alignment,
     run_nucmer_alignment,
@@ -29,7 +28,6 @@ STRATEGY_PRODUCERS = {
     "minimap2_map_ont_pseudoreads_30000_15000": run_minimap2_alignment,
     "nucmer": run_nucmer_alignment,
     "bwa_pseudoreads_150_75": run_bwa_pseudoreads,
-    "precomputed_ensembl_92_mammals_epo_extended": ensembl_compara_maf,
 }
 
 
@@ -43,13 +41,6 @@ def registered_strategy_names() -> set[str]:
     assert registry is not None
     registry_body = registry.group(1)
     literal_names = set(re.findall(r"\bname:\s*'([^']+)'", registry_body))
-    ensembl_name = re.search(
-        r"ENSEMBL_COMPARA_STRATEGY\s*=\s*'([^']+)'",
-        workflow,
-    )
-    assert ensembl_name is not None
-    if "name: ENSEMBL_COMPARA_STRATEGY" in registry_body:
-        literal_names.add(ensembl_name.group(1))
     return literal_names
 
 

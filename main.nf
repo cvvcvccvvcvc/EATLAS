@@ -5,7 +5,6 @@ import RunManifest
 
 include { validateParameters; paramsHelp } from 'plugin/nf-validation'
 
-ENSEMBL_COMPARA_STRATEGY = 'precomputed_ensembl_92_mammals_epo_extended'
 ALIGNMENT_STRATEGY_REGISTRY = [
     [name: 'minimap2_asm10', default_enabled: true, minimap2_preset: 'asm10'],
     [name: 'minimap2_asm20', default_enabled: true, minimap2_preset: 'asm20'],
@@ -24,7 +23,6 @@ ALIGNMENT_STRATEGY_REGISTRY = [
         bwa_pseudoread_step: 75,
         bwa_pseudoread_phred: 30,
     ],
-    [name: ENSEMBL_COMPARA_STRATEGY, default_enabled: false],
 ]
 AVAILABLE_ALIGNMENT_STRATEGIES = ALIGNMENT_STRATEGY_REGISTRY.collect { it.name }
 DEFAULT_ALIGNMENT_STRATEGIES = ALIGNMENT_STRATEGY_REGISTRY
@@ -157,9 +155,6 @@ if (params.vep_backend == 'local') {
 }
 
 SELECTED_ALIGNMENT_STRATEGIES = parseAlignmentStrategies(params.alignment_strategies)
-SELECTED_ORTHOLOG_ALIGNMENT_STRATEGIES = SELECTED_ALIGNMENT_STRATEGIES.findAll {
-    it != ENSEMBL_COMPARA_STRATEGY
-}
 SELECTED_MINIMAP2_STRATEGIES = ALIGNMENT_STRATEGY_REGISTRY.findAll {
     it.minimap2_preset && SELECTED_ALIGNMENT_STRATEGIES.contains(it.name)
 }
@@ -179,10 +174,6 @@ include { MERGE_ALIGNMENT } from './modules/local/merge_alignment.nf'
 include { MERGE_ALIGNMENT_PARTITION } from './modules/local/merge_alignment_partition.nf'
 include { ALIGN_NUCMER_COMPARATOR } from './modules/local/align_nucmer_comparator.nf'
 include { ALIGN_BWA_PSEUDOREADS } from './modules/local/align_bwa_pseudoreads.nf'
-include { BUILD_ENSEMBL_COMPARA_MAF_MANIFEST } from './modules/local/build_ensembl_compara_maf_manifest.nf'
-include { BUILD_ENSEMBL_COMPARA_MAF_CHUNK_TASKS } from './modules/local/build_ensembl_compara_maf_chunk_tasks.nf'
-include { ALIGN_ENSEMBL_COMPARA_MAF_CHUNK } from './modules/local/align_ensembl_compara_maf_chunk.nf'
-include { MERGE_ENSEMBL_COMPARA_MAF_GENE } from './modules/local/merge_ensembl_compara_maf_gene.nf'
 include { ANNOTATE_EVENTS_PARTITION } from './modules/local/annotate_events_partition.nf'
 include { ANNOTATE_VEP_PARTITION } from './modules/local/annotate_vep_partition.nf'
 include { FINALIZE_ANNOTATION } from './modules/local/finalize_annotation.nf'
@@ -255,18 +246,12 @@ workflow ALIGNMENT_STAGE {
     nucmer_script = file("${projectDir}/bin/run_nucmer_alignment.py")
     bwa_script = file("${projectDir}/bin/run_bwa_pseudoreads.py")
     bwa_filter_source = file("${projectDir}/bin/bwa_pseudoread_filter.py")
-    ensembl_compara_maf_manifest_script = file("${projectDir}/bin/build_ensembl_compara_maf_manifest.py")
-    ensembl_compara_maf_chunk_tasks_script = file("${projectDir}/bin/prepare_ensembl_compara_maf_chunk_tasks.py")
-    ensembl_compara_maf_chunk_script = file("${projectDir}/bin/run_ensembl_compara_maf_chunk_alignment.py")
-    ensembl_compara_maf_gene_merge_script = file("${projectDir}/bin/merge_ensembl_compara_maf_gene.py")
     merge_script = file("${projectDir}/bin/merge_alignment_results.py")
     bin_package_init = file("${projectDir}/bin/__init__.py")
     alignment_table_schema = file("${projectDir}/bin/alignment_table_schema.py")
     alignment_task_io = file("${projectDir}/bin/alignment_task_io.py")
-    ensembl_compara_maf_source = file("${projectDir}/bin/ensembl_compara_maf.py")
     alignment_bin_sources = [bin_package_init, alignment_table_schema, alignment_task_io]
     bwa_bin_sources = [*alignment_bin_sources, bwa_filter_source]
-    ensembl_bin_sources = [bin_package_init, alignment_table_schema, ensembl_compara_maf_source]
     merge_bin_sources = [bin_package_init, alignment_table_schema]
 
     BUILD_ALIGNMENT_TASKS(
@@ -286,33 +271,20 @@ workflow ALIGNMENT_STAGE {
             tuple(
                 row.gene_id as String,
                 row.partition_id as String,
-                (row.target_ready as String) == 'true',
                 (row.ortholog_ready as String) == 'true'
             )
         }
-    target_task_partitions = task_capabilities
-        .filter { gene_id, partition_id, target_ready, ortholog_ready -> target_ready }
-        .map { gene_id, partition_id, target_ready, ortholog_ready -> tuple(gene_id, partition_id) }
-    ortholog_task_partitions = task_capabilities
-        .filter { gene_id, partition_id, target_ready, ortholog_ready -> ortholog_ready }
-        .map { gene_id, partition_id, target_ready, ortholog_ready -> tuple(gene_id, partition_id) }
     eligible_task_partitions = task_capabilities
-        .filter { gene_id, partition_id, target_ready, ortholog_ready ->
-            (SELECTED_ALIGNMENT_STRATEGIES.contains(ENSEMBL_COMPARA_STRATEGY) && target_ready) ||
-            (!SELECTED_ORTHOLOG_ALIGNMENT_STRATEGIES.isEmpty() && ortholog_ready)
-        }
-        .map { gene_id, partition_id, target_ready, ortholog_ready -> tuple(gene_id, partition_id) }
+        .filter { gene_id, partition_id, ortholog_ready -> ortholog_ready }
+        .map { gene_id, partition_id, ortholog_ready -> tuple(gene_id, partition_id) }
     eligible_genes_by_partition = eligible_task_partitions
         .map { gene_id, partition_id -> tuple(partition_id, gene_id) }
         .groupTuple()
         .map { partition_id, gene_ids ->
             tuple(partition_id, gene_ids.unique().sort())
         }
-    target_task_dirs_by_gene = task_dirs_by_gene_unpartitioned
-        .join(target_task_partitions)
-        .map { gene_id, dir, partition_id -> tuple(gene_id, partition_id, dir) }
     ortholog_task_dirs_by_gene = task_dirs_by_gene_unpartitioned
-        .join(ortholog_task_partitions)
+        .join(eligible_task_partitions)
         .map { gene_id, dir, partition_id -> tuple(gene_id, partition_id, dir) }
     target_fastas_by_gene = sequences.flatMap { seq_dir -> fastaFilesByGene(seq_dir, 'targets') }
     ortholog_fastas_by_gene = sequences.flatMap { seq_dir -> fastaFilesByGene(seq_dir, 'orthologs') }
@@ -378,66 +350,6 @@ workflow ALIGNMENT_STAGE {
             bwa_bin_sources
         )
         alignment_result_dirs = alignment_result_dirs.mix(ALIGN_BWA_PSEUDOREADS.out.bwa_result_dirs)
-    }
-
-    if (SELECTED_ALIGNMENT_STRATEGIES.contains(ENSEMBL_COMPARA_STRATEGY)) {
-        default_maf_manifest = file("${projectDir}/assets/reference/ensembl/compara/release-116/92_mammals.epo_extended/ensembl_compara_maf_manifest.tsv.gz")
-        configured_maf_manifest = params.ensembl_compara_maf_manifest ? file(params.ensembl_compara_maf_manifest) : null
-        if (configured_maf_manifest && !configured_maf_manifest.exists()) {
-            error "Configured Ensembl Compara MAF manifest not found: ${params.ensembl_compara_maf_manifest}"
-        }
-        if (configured_maf_manifest) {
-            maf_manifest = Channel.value(configured_maf_manifest)
-        } else if (default_maf_manifest.exists()) {
-            maf_manifest = Channel.value(default_maf_manifest)
-        } else {
-            BUILD_ENSEMBL_COMPARA_MAF_MANIFEST(
-                genes,
-                ensembl_compara_maf_manifest_script,
-                ensembl_bin_sources
-            )
-            maf_manifest = BUILD_ENSEMBL_COMPARA_MAF_MANIFEST.out.maf_manifest
-        }
-        BUILD_ENSEMBL_COMPARA_MAF_CHUNK_TASKS(
-            genes,
-            maf_manifest,
-            ensembl_compara_maf_chunk_tasks_script,
-            ensembl_bin_sources
-        )
-        maf_chunk_task_dirs = BUILD_ENSEMBL_COMPARA_MAF_CHUNK_TASKS.out.chunk_task_dirs.flatten().map { dir ->
-            tuple([id: dir.baseName], dir)
-        }
-        ALIGN_ENSEMBL_COMPARA_MAF_CHUNK(
-            maf_chunk_task_dirs,
-            ensembl_compara_maf_chunk_script,
-            ensembl_bin_sources
-        )
-        maf_fragments_by_gene = ALIGN_ENSEMBL_COMPARA_MAF_CHUNK.out.ensembl_compara_maf_gene_fragments
-            .flatMap { meta, dirs ->
-                def fragmentDirs = dirs instanceof List ? dirs : [dirs]
-                fragmentDirs.collect { dir ->
-                    def geneId = dir.baseName.replaceFirst(/^gene_/, '').replaceFirst(/__chunk_.*$/, '')
-                    tuple(geneId, dir)
-                }
-            }
-            .groupTuple()
-        maf_gene_merge_inputs = target_task_dirs_by_gene
-            .join(maf_fragments_by_gene)
-            .map { gene_id, partition_id, task_dir, fragment_dirs ->
-                tuple(
-                    [id: "task_${gene_id}", gene_id: gene_id, partition_id: partition_id],
-                    task_dir,
-                    fragment_dirs
-                )
-            }
-        MERGE_ENSEMBL_COMPARA_MAF_GENE(
-            maf_gene_merge_inputs,
-            ensembl_compara_maf_gene_merge_script,
-            ensembl_bin_sources
-        )
-        alignment_result_dirs = alignment_result_dirs.mix(
-            MERGE_ENSEMBL_COMPARA_MAF_GENE.out.gene_result_dirs
-        )
     }
 
     gene_result_dirs = alignment_result_dirs

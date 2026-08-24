@@ -97,24 +97,6 @@ Runtime environments:
   - generate the fixed BWA pseudoread comparator and retain its monotonic
     target-order alignment backbone
 
-- `bin/build_ensembl_compara_maf_manifest.py`
-  - builds a small run-specific manifest of Ensembl Compara MAF chunks for the
-    human chromosomes present in `genes.tsv.gz`
-  - reads MAF directory listings and first human rows, not whole MAF files
-
-- `bin/ensembl_compara_maf.py`
-  - owns the fixed release-116 EPO Extended strategy constants
-  - provides shared MAF parsing, coordinate conversion, and normalized schemas
-
-- `bin/run_ensembl_compara_maf_chunk_alignment.py`
-  - streams one selected MAF chunk for all overlapping target genes
-  - clips MSA evidence to each target interval and writes per-gene fragments
-  - uses species rows as the alignment support units
-
-- `bin/merge_ensembl_compara_maf_gene.py`
-  - consolidates all source-chunk fragments for one gene
-  - recomputes union-based MAF summaries and normalized segments/events
-
 - `bin/merge_alignment_results.py`
   - merges per-gene/per-strategy evidence into bounded genomic partitions
   - publishes the canonical partition contract
@@ -235,7 +217,6 @@ provider, and resource family:
 assets/inputs/gene_ids/
 assets/reference/clinvar/
 assets/reference/ncbi/refseq/GCF_000001405.40_GRCh38.p14/genomic.gff.gz
-assets/reference/ensembl/compara/release-116/92_mammals.epo_extended/
 ```
 
 `assets/inputs/gene_ids/` contains reusable input lists for local runs.

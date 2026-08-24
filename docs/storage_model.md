@@ -241,7 +241,6 @@ Raw aligner outputs are not retained as durable results:
 
 - minimap2 `.paf`
 - nucmer `.sam`
-- Ensembl Compara MAF chunks used by precomputed alignment strategies
 
 For debugging, inspect the task directory of a retained failed or interrupted
 run before removing its Nextflow work cache.

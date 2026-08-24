@@ -133,8 +133,8 @@ Alignment-boundary expected properties:
   `schema=normalized_alignment_evidence_v2`.
 - `alignment/manifest.json` `gene_count` equals the length of `gene_ids`, and
   those IDs equal the union of genes eligible for the selected strategies in
-  the Stage 1 selection. Ensembl requires a target sequence; the other
-  strategies require selected ortholog sequences.
+  the Stage 1 selection. Every alignment strategy requires selected ortholog
+  sequences.
 - The Nextflow trace contains exactly one `FETCH_TAXONOMY` task owned by fetch;
   alignment neither receives nor republishes taxonomy.
 - `alignment/evidence/partitions/<partition_id>/` exists for every partition in

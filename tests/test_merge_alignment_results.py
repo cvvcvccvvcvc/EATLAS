@@ -347,8 +347,7 @@ def test_partition_merge_rejects_legacy_singular_manifest(tmp_path: Path) -> Non
     assert "invalid gene_ids" in completed.stderr
 
 
-def test_partition_merge_uses_strategy_specific_gene_eligibility(tmp_path: Path) -> None:
-    ensembl = "precomputed_ensembl_92_mammals_epo_extended"
+def test_partition_merge_rejects_gene_without_ortholog_inputs(tmp_path: Path) -> None:
     alignment_tasks = tmp_path / "alignment_tasks.tsv.gz"
     write_tsv_gz(
         alignment_tasks,
@@ -358,27 +357,24 @@ def test_partition_merge_uses_strategy_specific_gene_eligibility(tmp_path: Path)
             ["2", "missing_ortholog_fasta", "true", "false"],
         ],
     )
-    result_dirs = [
-        write_result_dir(tmp_path, "gene_1_local", {"gene_id": "1", "strategy": "s1"}),
-        write_result_dir(tmp_path, "gene_1_ensembl", {"gene_id": "1", "strategy": ensembl}),
-        write_result_dir(tmp_path, "gene_2_ensembl", {"gene_id": "2", "strategy": ensembl}),
-    ]
-    outdir = tmp_path / "merged"
+    result_dir = write_result_dir(
+        tmp_path,
+        "gene_1_s1",
+        {"gene_id": "1", "strategy": "s1"},
+    )
 
     completed = run_merge(
         partition_arguments(
-            result_dirs,
-            outdir,
+            [result_dir],
+            tmp_path / "merged",
             gene_ids="1,2",
-            strategies=f"s1,{ensembl}",
+            strategies="s1",
             alignment_tasks=alignment_tasks,
         )
     )
 
-    assert completed.returncode == 0, completed.stderr
-    manifest = json.loads((outdir / "manifest.json").read_text())
-    assert manifest["gene_ids"] == ["1", "2"]
-    assert manifest["strategies"] == [ensembl, "s1"]
+    assert completed.returncode != 0
+    assert "not eligible for any selected strategy: 2" in completed.stderr
 
 
 def test_partition_merge_always_publishes_compact_events(tmp_path: Path) -> None:
@@ -595,7 +591,7 @@ def test_compact_events_preserve_strategy_specific_support(tmp_path: Path) -> No
 
 
 def test_compact_events_accept_large_allele_fields(tmp_path: Path) -> None:
-    strategy = "precomputed_ensembl_92_mammals_epo_extended"
+    strategy = "s1"
     result_dir = write_result_dir(
         tmp_path,
         "partition_000041",
@@ -614,11 +610,11 @@ def test_compact_events_accept_large_allele_fields(tmp_path: Path) -> None:
             schema_row(
                 EVENT_FIELDS,
                 gene_id="3492",
-                ortholog_gene_id="pongo_abelii",
+                ortholog_gene_id="101",
                 tax_id="9601",
                 taxname="Pongo abelii",
                 strategy=strategy,
-                tool="ensembl_compara",
+                tool="test_aligner",
                 event_type="ins",
                 target_start0=431282,
                 target_end0=431282,
@@ -857,55 +853,6 @@ def test_final_merge_writes_exact_gene_manifest(tmp_path: Path) -> None:
     manifest = json.loads((outdir / "manifest.json").read_text())
     assert manifest["gene_count"] == 2
     assert manifest["gene_ids"] == ["1", "2"]
-
-
-def test_final_merge_reports_strategy_specific_eligible_gene_counts(tmp_path: Path) -> None:
-    ensembl = "precomputed_ensembl_92_mammals_epo_extended"
-    partition_dirs = [
-        write_compact_result_dir(
-            tmp_path,
-            "partition_000001",
-            {
-                "partition_id": "partition_000001",
-                "gene_count": 1,
-                "gene_ids": ["1"],
-                "strategies": ["s1", ensembl],
-            },
-        ),
-        write_compact_result_dir(
-            tmp_path,
-            "partition_000002",
-            {
-                "partition_id": "partition_000002",
-                "gene_count": 1,
-                "gene_ids": ["2"],
-                "strategies": [ensembl],
-            },
-        ),
-    ]
-    inputs = write_final_inputs(
-        tmp_path,
-        [
-            ["1", "ready", "true", "true"],
-            ["2", "missing_ortholog_fasta", "true", "false"],
-        ],
-        ["gene_id", "status", "target_ready", "ortholog_ready"],
-    )
-    outdir = tmp_path / "merged"
-
-    completed = run_merge(
-        final_arguments(
-            partition_dirs,
-            outdir,
-            inputs,
-            strategies=f"s1,{ensembl}",
-        )
-    )
-
-    assert completed.returncode == 0, completed.stderr
-    manifest = json.loads((outdir / "manifest.json").read_text())
-    assert manifest["gene_ids"] == ["1", "2"]
-    assert manifest["strategies"] == [ensembl, "s1"]
 
 
 def test_final_merge_preserves_precompacted_ortholog_support(tmp_path: Path) -> None:

@@ -33,7 +33,6 @@ variables when needed:
 export ENTREZ_EMAIL=you@example.org
 export ENTREZ_API_KEY=your_ncbi_api_key
 export GAPH_TARGET_ANNOTATION_GFF3=/path/to/genomic.gff.gz
-export ENSEMBL_COMPARA_MAF_MANIFEST=/path/to/ensembl_compara_maf_manifest.tsv.gz
 export CLINVAR_VCF=/path/to/clinvar.vcf.gz
 export GAPH_VEP_BACKEND=local
 export GAPH_VEP_RELEASE=116
@@ -51,10 +50,6 @@ auditability.
 If `--target_annotation_gff3` and `GAPH_TARGET_ANNOTATION_GFF3` are unset, the
 fetch stage uses
 `assets/reference/ncbi/refseq/GCF_000001405.40_GRCh38.p14/genomic.gff.gz`.
-If `--ensembl_compara_maf_manifest` and `ENSEMBL_COMPARA_MAF_MANIFEST` are
-unset, an explicitly selected precomputed Ensembl strategy uses the matching
-manifest under `assets/reference/ensembl/compara/` when present, otherwise it
-builds one during the run.
 If `--clinvar_vcf` and `CLINVAR_VCF` are unset, annotation uses
 `assets/reference/clinvar/clinvar.vcf.gz` when present. Annotation requires a
 ClinVar VCF and matching `.tbi`; the workflow fails early when neither the
@@ -85,9 +80,9 @@ nextflow run . \
 ```
 
 By default, `--alignment_strategies default` runs `minimap2_asm10`,
-`minimap2_asm20`, `nucmer`, and `bwa_pseudoreads_150_75`. Both the precomputed
-Ensembl strategy and `minimap2_map_ont_pseudoreads_30000_15000` remain available
-only when named explicitly. Use a comma-separated list to select a different set:
+`minimap2_asm20`, `nucmer`, and `bwa_pseudoreads_150_75`.
+`minimap2_map_ont_pseudoreads_30000_15000` remains available only when named
+explicitly. Use a comma-separated list to select a different set:
 
 ```bash
 nextflow run . \
@@ -174,8 +169,8 @@ is the durable data layer for analytics and archival. Successful execution sessi
 clean their task work by default; failed or interrupted work remains available
 for recovery. See `docs/storage_model.md` for resumed-run cleanup details.
 
-Raw NCBI zip files, unpacked `gene.fna`, minimap2 PAF, MUMmer delta/coords
-files, and external Ensembl Compara MAF chunks are not published. Inspect a
+Raw NCBI zip files, unpacked `gene.fna`, minimap2 PAF, and MUMmer delta/coords
+files are not published. Inspect a
 retained failed/interrupted task work directory when native debugging is needed.
 
 For cluster runs, keep `-work-dir` on scratch storage, not in the project
@@ -190,7 +185,7 @@ directory or home quota.
 | 3 | `BUILD_FETCH_DATASET`, `FETCH_TAXONOMY` | Assemble sequence/metadata handoffs and fetch canonical taxonomy once. | Intermediate fetch dataset |
 | 4 | `FINALIZE_FETCH_OUTPUT` | Validate and publish the compact durable fetch layer. | `fetch/` |
 | 5 | `BUILD_ALIGNMENT_TASKS` | Create stable per-gene tasks and genomic partitions. | Intermediate task metadata |
-| 6 | alignment strategy processes | Run selected minimap2, nucmer, BWA, and opt-in Ensembl evidence producers. | Per-gene normalized evidence |
+| 6 | alignment strategy processes | Run selected minimap2, nucmer, and BWA evidence producers. | Per-gene normalized evidence |
 | 7 | `MERGE_ALIGNMENT_PARTITION` | Compact raw observations into event, exact-support, segment, and summary relations. | Intermediate bounded partitions |
 | 8 | `MERGE_ALIGNMENT` | Validate and copy partitions without global recompression or ID rebasing. | `alignment/` |
 | 9 | `PREPARE_ANNOTATION_CONTEXTS` | Materialize only each partition's target context. | Intermediate annotation context |

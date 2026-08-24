@@ -11,7 +11,6 @@ assets/reference/
 !assets/reference/
 !assets/reference/clinvar/
 /assets/reference/ncbi/refseq/
-/assets/reference/ensembl/
 /assets/reference/clinvar/clinvar.vcf.gz
 /assets/reference/clinvar/clinvar.vcf.gz.tbi
 /tools/bin/

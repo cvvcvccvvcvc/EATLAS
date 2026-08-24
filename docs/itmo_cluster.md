@@ -92,7 +92,7 @@ resource failures with `--alignment_max_forks 4`. Minimap2 used 2.32-2.53 CPUs
 per task at the median, Nucmer used 2.04, and peak RSS stayed below 2.4 GB for
 all sequence aligners. Four concurrent tasks per alignment process are
 therefore the default on the verified cluster setup; this setting does not
-change the separate Ensembl MAF or annotation concurrency limits.
+change the separate annotation concurrency limit.
 
 In the same run, annotation partitions containing two genes used 0.38-5.6 GB
 RSS for 66,921-815,531 unique variant contexts. The current resource function

@@ -69,7 +69,6 @@ STRATEGY_LABELS = {
     "minimap2_asm20": "minimap2 asm20",
     "minimap2_map_ont_pseudoreads_30000_15000": "minimap2 map-ont pseudo 30k/15k",
     "nucmer": "nucmer",
-    "precomputed_ensembl_92_mammals_epo_extended": "Ensembl EPO",
 }
 
 TAXONOMIC_SCOPE_ORDER = [
