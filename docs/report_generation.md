@@ -128,6 +128,12 @@ These caches do not replace pipeline evidence. Missing source partitions,
 mismatched schemas, or changed files are errors. There are no old aggregate or
 separate bulk-VEP fallback paths.
 
+The ClinVar validation universe publishes `clinvar_disease_ids` as its final
+column. It preserves each non-empty source `CLNDISDB` value: comma-separated
+identifiers and pipe-separated disease concepts retain their ClinVar meaning,
+while distinct source values merged into one normalized variant are separated
+by semicolons.
+
 Rows with a non-`ok` pipeline VEP status remain explicit and appear as
 `Not annotated` where consequence plots need a complete denominator. The
 target-space null can make additional VEP and gnomAD requests for generated

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import stat
 import sys
+from contextlib import contextmanager
 from pathlib import Path
 
 import pandas as pd
@@ -29,8 +30,66 @@ def test_clinvar_universe_writer_preserves_schema_and_shared_permissions(
         keep_default_na=False,
     )
     assert observed.columns.tolist() == clinvar_validation.UNIVERSE_FIELDS
+    assert observed.columns.tolist()[:-1] == [
+        "variant_key",
+        "variant_type",
+        "chrom",
+        "pos",
+        "ref",
+        "alt",
+        "label_class",
+        "clinvar_ids",
+        "clinvar_sigs",
+        "clinvar_mc_so_ids",
+        "clinvar_mc_terms",
+        "gene_ids",
+    ]
+    assert observed.columns[-1] == "clinvar_disease_ids"
     assert observed.loc[0, "variant_key"] == "1:10:A>G"
     assert stat.S_IMODE(universe_path.stat().st_mode) == 0o644
+
+
+def test_clinvar_universe_preserves_clndisdb_source_structure(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    lines = [
+        "1\t10\tVCV2\tA\tG\t.\t.\t"
+        "CLNSIG=Pathogenic;MC=SO:0001583|missense_variant;"
+        "CLNDISDB=MedGen:C1|MONDO:MONDO:1,OMIM:1\n",
+        "1\t10\tVCV1\tA\tG\t.\t.\t"
+        "CLNSIG=Pathogenic;MC=SO:0001583|missense_variant;"
+        "CLNDISDB=.|MedGen:C2\n",
+        "1\t10\tVCV3\tA\tG\t.\t.\t"
+        "CLNSIG=Pathogenic;MC=SO:0001583|missense_variant;CLNDISDB=.\n",
+    ]
+
+    @contextmanager
+    def fake_tabix_output_lines(*_args, **_kwargs):
+        yield iter(lines)
+
+    monkeypatch.setattr(clinvar_validation.shutil, "which", lambda _name: "tabix")
+    monkeypatch.setattr(
+        clinvar_validation,
+        "tabix_output_lines",
+        fake_tabix_output_lines,
+    )
+    monkeypatch.setattr(
+        clinvar_validation,
+        "normalize_clinvar_allele_for_targets",
+        lambda *_args: [(("1", 10, "A", "G"), "snv", {"gene_id": "1"})],
+    )
+
+    rows, _counts = clinvar_validation.query_clinvar_variant_universe(
+        tmp_path / "clinvar.vcf.gz",
+        tmp_path / "regions.bed",
+        {},
+    )
+
+    assert len(rows) == 1
+    assert rows[0]["clinvar_disease_ids"] == (
+        ".|MedGen:C2;MedGen:C1|MONDO:MONDO:1,OMIM:1"
+    )
 
 
 def test_tabix_output_is_streamed_and_errors_are_reported(tmp_path: Path) -> None:

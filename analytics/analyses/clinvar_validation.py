@@ -56,8 +56,9 @@ UNIVERSE_FIELDS = [
     "clinvar_mc_so_ids",
     "clinvar_mc_terms",
     "gene_ids",
+    "clinvar_disease_ids",
 ]
-CACHE_VERSION = 4
+CACHE_VERSION = 6
 OBSERVED_MEMBERSHIP_CACHE_VERSION = 1
 VALIDATION_TYPES = ["snv", "indel"]
 OBSERVED_MEMBERSHIP_COLUMNS = ["strategy", "variant_type", "variant_key"]
@@ -188,7 +189,7 @@ def build_or_load_vep_universe(
     output_path = analytics_dir / "clinvar_universe.snv_indel.vep.tsv.gz"
     manifest_path = analytics_dir / "clinvar_universe.snv_indel.vep.manifest.json"
     contract = {
-        "schema_version": 1,
+        "schema_version": 2,
         "source": path_metadata(universe_path),
         "backend": backend,
         "release": release,
@@ -228,6 +229,10 @@ def build_or_load_vep_universe(
     )
     if enriched["vep_status"].isna().any():
         raise ValueError("VEP did not return a status for every ClinVar allele")
+    enriched = enriched[
+        [column for column in enriched.columns if column != "clinvar_disease_ids"]
+        + ["clinvar_disease_ids"]
+    ]
     write_tsv_atomic(output_path, enriched)
     manifest = {
         "status": "complete",
@@ -469,6 +474,7 @@ def query_clinvar_variant_universe(
             pos = int(pos_text)
             ref = ref.upper()
             sig = info_value(info_text, "CLNSIG")
+            disease_ids = info_value(info_text, "CLNDISDB")
             molecular_consequences = parse_molecular_consequences(info_value(info_text, "MC"))
             label = clinvar_label(sig)
             for alt in alt_text.split(","):
@@ -511,6 +517,7 @@ def query_clinvar_variant_universe(
                             "clinvar_mc_so_ids": set(),
                             "clinvar_mc_terms": set(),
                             "gene_ids": set(),
+                            "clinvar_disease_ids": set(),
                         },
                     )
                     entry["labels"].add(label)
@@ -518,6 +525,8 @@ def query_clinvar_variant_universe(
                         entry["clinvar_ids"].add(rec_id)
                     if sig:
                         entry["clinvar_sigs"].add(sig)
+                    if disease_ids and disease_ids != ".":
+                        entry["clinvar_disease_ids"].add(disease_ids)
                     for so_id, term in molecular_consequences:
                         if so_id:
                             entry["clinvar_mc_so_ids"].add(so_id)
@@ -552,6 +561,9 @@ def query_clinvar_variant_universe(
                 "clinvar_mc_so_ids": "|".join(sorted(entry["clinvar_mc_so_ids"])),
                 "clinvar_mc_terms": "|".join(sorted(entry["clinvar_mc_terms"])),
                 "gene_ids": "|".join(sorted(entry["gene_ids"], key=gene_sort_key)),
+                "clinvar_disease_ids": ";".join(
+                    sorted(entry["clinvar_disease_ids"])
+                ),
             }
         )
     rows.sort(key=lambda row: (row["variant_type"], chrom_sort_key(str(row["chrom"])), int(row["pos"]), row["ref"], row["alt"]))
