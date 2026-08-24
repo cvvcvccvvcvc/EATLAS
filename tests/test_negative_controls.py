@@ -93,9 +93,10 @@ def test_build_target_space_null_end_to_end_with_mocked_annotations(
             }
         ]
     ).to_csv(annotations_path, sep="\t", index=False, compression="gzip")
+    analytics_dir = tmp_path / "analytics"
     observed_store = controls.build_or_load_observed_variant_store(
         variant_annotations_source=annotations_path,
-        analytics_dir=run_dir / "analytics",
+        analytics_dir=analytics_dir,
         strategies=["s1"],
     )
     monkeypatch.setattr(
@@ -148,17 +149,18 @@ def test_build_target_space_null_end_to_end_with_mocked_annotations(
     monkeypatch.setattr(controls, "annotate_vep_consequences", fake_vep)
     monkeypatch.setattr(controls, "_annotate_conservation", fake_conservation)
     monkeypatch.setattr(controls, "build_external_evidence", fake_external_evidence)
-    performance_path = run_dir / "analytics" / "performance.json"
+    performance_path = analytics_dir / "performance.json"
     performance = PerformanceProfile(
         performance_path,
-        run_dir=run_dir,
-        report_path=run_dir / "report.html",
+        analysis_dir=analytics_dir,
+        analysis_id="test-analysis",
+        report_path=analytics_dir / "report.html",
     )
     phylop_bigwig = tmp_path / "hg38.phyloP100way.bw"
     phylop_bigwig.write_bytes(b"test bigwig identity")
 
     analysis = controls.build_target_space_null(
-        run_dir=run_dir,
+        analytics_dir=analytics_dir,
         variant_annotations_source=annotations_path,
         target_features_tsv=features_path,
         genes_tsv=genes_path,
@@ -233,7 +235,7 @@ def test_build_target_space_null_end_to_end_with_mocked_annotations(
         ),
     )
     controls.build_target_space_null(
-        run_dir=run_dir,
+        analytics_dir=analytics_dir,
         variant_annotations_source=annotations_path,
         target_features_tsv=features_path,
         genes_tsv=genes_path,

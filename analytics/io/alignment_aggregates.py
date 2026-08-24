@@ -35,7 +35,11 @@ class AlignmentAggregatePaths:
     feature_coverage_tsv: Path
 
 
-def resolve_alignment_aggregate_paths(run_dir: Path) -> AlignmentAggregatePaths:
+def resolve_alignment_aggregate_paths(
+    run_dir: Path,
+    *,
+    analytics_dir: Path,
+) -> AlignmentAggregatePaths:
     """Require durable partition evidence and expose analytics-owned aggregates."""
 
     alignment_dir = run_dir / "alignment"
@@ -73,7 +77,7 @@ def resolve_alignment_aggregate_paths(run_dir: Path) -> AlignmentAggregatePaths:
         partition_dirs=partition_dirs,
         target_features=target_features,
         alignment_manifest=alignment_manifest,
-        analytics_dir=run_dir / "analytics",
+        analytics_dir=analytics_dir,
     )
 
 

@@ -1,96 +1,335 @@
-"""Discovery and validation of completed-run inputs."""
+"""Read-only pipeline inputs and explicit analytics workspace materialization."""
 
 from __future__ import annotations
 
-import argparse
+import hashlib
 import json
 import re
+import tempfile
+from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Sequence
 
+import duckdb
 import pandas as pd
 
-from analytics.analyses.variant_summary_aggregation import (
-    resolve_variant_aggregation_source,
-)
+from analytics.analyses.variant_summary_aggregation import resolve_variant_aggregation_source
 from analytics.io.alignment_aggregates import resolve_alignment_aggregate_paths
 from analytics.io.annotation_support import resolve_annotation_support_paths
-from analytics.io.taxonomy_summary import resolve_taxonomy_summary_path
+from analytics.io.artifacts import content_identity, path_metadata, write_json_atomic
+from analytics.io.taxonomy_summary import (
+    build_or_load_taxonomy_summary_many,
+    resolve_taxonomy_summary_path,
+)
+from analytics.io.variant_source import (
+    resolve_variant_table_source,
+    sql_string,
+    variant_source_sql,
+)
+
+
+ANALYSIS_CONTRACT_VERSION = 1
 
 
 @dataclass(frozen=True)
-class RunInputs:
+class SourceRun:
+    """One completed pipeline run. Resolution never writes below ``run_dir``."""
+
     run_dir: Path
+    source_id: str
+    root_manifest_json: Path
     fetch_manifest_json: Path
     genes_tsv: Path
     target_features_tsv: Path
     target_sequences_dir: Path
+    taxonomy_tsv: Path
+    orthologs_selected_tsv: Path
     variant_annotations_source: Path
-    variant_strategy_support_tsv: Path
-    ortholog_evidence_summary_tsv: Path
     annotation_manifest_json: Path
     annotation_failures_tsv: Path
-    feature_coverage_tsv: Path
     alignment_manifest_json: Path
-    strategy_summary_tsv: Path
+    requested_gene_ids: frozenset[str]
+    target_gene_ids: frozenset[str]
+    root_manifest: dict[str, object]
+    fetch_manifest: dict[str, object]
+    alignment_manifest: dict[str, object]
+    annotation_manifest: dict[str, object]
+    variant_annotation_descriptor: dict[str, object]
+
+
+@dataclass(frozen=True)
+class AnalysisInputs:
+    """Resolved sources and derived paths for one analysis of one or more runs."""
+
+    analytics_root: Path
+    analysis_id: str
+    analysis_dir: Path
+    derived_dir: Path
+    source_runs: tuple[SourceRun, ...]
+    genes_tsvs: tuple[Path, ...]
+    target_features_tsvs: tuple[Path, ...]
+    target_sequence_dirs: tuple[Path, ...]
+    variant_annotation_sources: tuple[Path, ...]
+    variant_strategy_support_tsvs: tuple[Path, ...]
+    ortholog_evidence_summary_tsvs: tuple[Path, ...]
+    annotation_failure_tsvs: tuple[Path, ...]
+    feature_coverage_tsvs: tuple[Path, ...]
+    strategy_summary_tsvs: tuple[Path, ...]
     taxonomy_summary_tsv: Path
-    cohort_manifest_json: Path | None = None
-    source_run_dirs: tuple[Path, ...] = ()
-    cohort_id: str | None = None
+    fetch_manifest: dict[str, object]
+    alignment_manifest: dict[str, object]
+    annotation_manifest: dict[str, object]
+    variant_annotation_descriptor: dict[str, object]
+    analysis_manifest_json: Path
 
     @property
-    def is_cohort(self) -> bool:
-        return self.cohort_id is not None
+    def source_run_dirs(self) -> tuple[Path, ...]:
+        return tuple(source.run_dir for source in self.source_runs)
 
 
 def safe_report_name(name: str) -> str:
-    cleaned = re.sub(r"[^A-Za-z0-9._-]+", "_", name.strip())
-    cleaned = cleaned.strip("._-")
-    return cleaned or "strategy_compare"
+    value = name.strip()
+    if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", value) is None:
+        raise ValueError(
+            "Report name may contain only letters, digits, dot, underscore, and hyphen"
+        )
+    return value
 
 
-def resolve_run_inputs(run_dir: Path) -> RunInputs:
-    run_dir = run_dir.expanduser().resolve()
-    if not run_dir.exists():
-        raise FileNotFoundError(f"Run directory does not exist: {run_dir}")
-    if not run_dir.is_dir():
-        raise NotADirectoryError(f"--run-dir is not a directory: {run_dir}")
+def resolve_source_runs(
+    run_dirs: Sequence[Path],
+    *,
+    clinvar_vcf: Path,
+) -> tuple[SourceRun, ...]:
+    """Validate source runs without creating analytics artifacts."""
 
-    annotation_dir = run_dir / "annotation"
-    annotation_manifest_json = annotation_dir / "manifest.json"
-    variant_annotations_source = resolve_variant_annotations_source(
-        annotation_manifest_json
+    if not run_dirs:
+        raise ValueError("At least one --run-dir is required")
+    sources = tuple(_resolve_source_run(path) for path in run_dirs)
+    if len({source.run_dir for source in sources}) != len(sources):
+        raise ValueError("The same --run-dir was supplied more than once")
+    if len({source.source_id for source in sources}) != len(sources):
+        raise ValueError("Source runs repeat the same completed pipeline identity")
+    _require_disjoint_requested_genes(sources)
+    _validate_compatibility(sources, clinvar_vcf.expanduser().resolve())
+    return tuple(sorted(sources, key=lambda source: source.source_id))
+
+
+def build_analysis_inputs(
+    source_runs: Sequence[SourceRun],
+    *,
+    analytics_root: Path,
+    scientific_config: dict[str, object],
+) -> AnalysisInputs:
+    """Materialize reusable analytics data outside immutable source runs."""
+
+    if not source_runs:
+        raise ValueError("Analysis requires at least one source run")
+    analytics_root = analytics_root.expanduser().resolve()
+    source_runs = tuple(sorted(source_runs, key=lambda source: source.source_id))
+    for source in source_runs:
+        if analytics_root == source.run_dir or source.run_dir in analytics_root.parents:
+            raise ValueError(
+                "--analytics-root must be outside every immutable source run: "
+                f"{source.run_dir}"
+            )
+    analytics_root.mkdir(parents=True, exist_ok=True)
+    contract = {
+        "contract_version": ANALYSIS_CONTRACT_VERSION,
+        "source_ids": [source.source_id for source in source_runs],
+        "scientific_config": scientific_config,
+    }
+    analysis_id = hashlib.sha256(_canonical_json(contract)).hexdigest()[:24]
+    analysis_dir = analytics_root / "analyses" / analysis_id
+    derived_dir = analysis_dir / "derived"
+    derived_dir.mkdir(parents=True, exist_ok=True)
+    _validate_shared_allele_evidence(source_runs, derived_dir)
+
+    alignment_paths = []
+    annotation_paths = []
+    taxonomy_paths = []
+    for source in source_runs:
+        source_cache = analytics_root / "cache" / source.source_id
+        alignment_paths.append(
+            resolve_alignment_aggregate_paths(
+                source.run_dir,
+                analytics_dir=source_cache,
+            )
+        )
+        annotation_paths.append(
+            resolve_annotation_support_paths(
+                source.run_dir,
+                analytics_dir=source_cache,
+            )
+        )
+        taxonomy_paths.append(
+            resolve_taxonomy_summary_path(
+                source.run_dir,
+                analytics_dir=source_cache,
+            )
+        )
+
+    taxonomy_summary = (
+        taxonomy_paths[0]
+        if len(source_runs) == 1
+        else build_or_load_taxonomy_summary_many(
+            taxonomy_tsvs=tuple(source.taxonomy_tsv for source in source_runs),
+            orthologs_tsvs=tuple(
+                source.orthologs_selected_tsv for source in source_runs
+            ),
+            analytics_dir=derived_dir,
+        )
     )
-    alignment_aggregates = resolve_alignment_aggregate_paths(run_dir)
-    annotation_support = resolve_annotation_support_paths(run_dir)
-
-    inputs = RunInputs(
-        run_dir=run_dir,
-        fetch_manifest_json=run_dir / "fetch" / "manifest.json",
-        genes_tsv=run_dir / "fetch" / "genes.tsv.gz",
-        target_features_tsv=run_dir / "fetch" / "target_features.tsv.gz",
-        target_sequences_dir=run_dir / "fetch" / "sequences" / "targets",
-        variant_annotations_source=variant_annotations_source,
-        variant_strategy_support_tsv=annotation_support.variant_strategy_support_tsv,
-        ortholog_evidence_summary_tsv=annotation_support.ortholog_evidence_summary_tsv,
-        annotation_manifest_json=annotation_manifest_json,
-        annotation_failures_tsv=annotation_dir / "failures.tsv.gz",
-        feature_coverage_tsv=alignment_aggregates.feature_coverage_tsv,
-        alignment_manifest_json=run_dir / "alignment" / "manifest.json",
-        strategy_summary_tsv=alignment_aggregates.strategy_summary_tsv,
-        taxonomy_summary_tsv=resolve_taxonomy_summary_path(run_dir),
+    variant_descriptor = _combined_variant_descriptor(source_runs)
+    inputs = AnalysisInputs(
+        analytics_root=analytics_root,
+        analysis_id=analysis_id,
+        analysis_dir=analysis_dir,
+        derived_dir=derived_dir,
+        source_runs=source_runs,
+        genes_tsvs=tuple(source.genes_tsv for source in source_runs),
+        target_features_tsvs=tuple(source.target_features_tsv for source in source_runs),
+        target_sequence_dirs=tuple(source.target_sequences_dir for source in source_runs),
+        variant_annotation_sources=tuple(
+            source.variant_annotations_source for source in source_runs
+        ),
+        variant_strategy_support_tsvs=tuple(
+            value.variant_strategy_support_tsv for value in annotation_paths
+        ),
+        ortholog_evidence_summary_tsvs=tuple(
+            value.ortholog_evidence_summary_tsv for value in annotation_paths
+        ),
+        annotation_failure_tsvs=tuple(
+            source.annotation_failures_tsv for source in source_runs
+        ),
+        feature_coverage_tsvs=tuple(
+            value.feature_coverage_tsv for value in alignment_paths
+        ),
+        strategy_summary_tsvs=tuple(
+            value.strategy_summary_tsv for value in alignment_paths
+        ),
+        taxonomy_summary_tsv=taxonomy_summary,
+        fetch_manifest=_combined_fetch_manifest(source_runs),
+        alignment_manifest=_combined_alignment_manifest(source_runs),
+        annotation_manifest=_combined_annotation_manifest(
+            source_runs,
+            variant_descriptor,
+        ),
+        variant_annotation_descriptor=variant_descriptor,
+        analysis_manifest_json=analysis_dir / "manifest.json",
     )
-    if not inputs.genes_tsv.exists():
-        raise FileNotFoundError("Missing fetch/genes.tsv.gz under --run-dir.")
-    if not inputs.target_features_tsv.exists():
-        raise FileNotFoundError("Missing fetch/target_features.tsv.gz under --run-dir.")
-    if not inputs.target_sequences_dir.exists():
-        raise FileNotFoundError("Missing fetch/sequences/targets under --run-dir.")
+    validate_report_inputs(inputs)
+    write_json_atomic(
+        inputs.analysis_manifest_json,
+        {
+            "schema_version": ANALYSIS_CONTRACT_VERSION,
+            "status": "ready",
+            "analysis_id": analysis_id,
+            "contract": contract,
+            "sources": [
+                {
+                    "source_id": source.source_id,
+                    "run_dir": str(source.run_dir),
+                    "requested_gene_count": len(source.requested_gene_ids),
+                    "target_gene_count": len(source.target_gene_ids),
+                }
+                for source in source_runs
+            ],
+        },
+    )
     return inputs
 
 
+def resolve_report_html(inputs: AnalysisInputs, report_name: str) -> Path:
+    name = safe_report_name(report_name)
+    if not name.endswith(".html"):
+        name += ".html"
+    return inputs.analysis_dir / "reports" / name
+
+
+def variant_annotation_descriptor(inputs: AnalysisInputs) -> dict[str, object]:
+    return dict(inputs.variant_annotation_descriptor)
+
+
+def variant_annotation_release(descriptor: dict[str, object]) -> str:
+    config = descriptor["vep_config"]
+    release = config.get("release") if isinstance(config, dict) else None
+    if not release:
+        raise ValueError("Variant annotation dataset is missing vep_config.release")
+    return str(release)
+
+
+def validate_report_inputs(inputs: AnalysisInputs) -> None:
+    """Fail before report work when a current source contract is incompatible."""
+
+    resolve_variant_aggregation_source(inputs.variant_annotation_sources)
+    contracts: list[tuple[tuple[Path, ...], set[str]]] = [
+        (
+            inputs.genes_tsvs,
+            {"gene_id", "chromosome", "begin", "end", "sequence_length"},
+        ),
+        (
+            inputs.target_features_tsvs,
+            {"gene_id", "feature_type", "target_start0", "target_end0"},
+        ),
+        (inputs.feature_coverage_tsvs, {"gene_id", "strategy", "feature_type"}),
+        (
+            inputs.strategy_summary_tsvs,
+            {
+                "strategy",
+                "gene_count",
+                "summary_row_count",
+                "aligned_summary_row_count",
+                "event_count",
+            },
+        ),
+        (
+            inputs.variant_strategy_support_tsvs,
+            {
+                "variant_key",
+                "gene_id",
+                "strategy",
+                "alt_support_row_count",
+                "alt_support_ortholog_count",
+                "alt_support_genus_count",
+            },
+        ),
+        (
+            inputs.ortholog_evidence_summary_tsvs,
+            {
+                "strategy",
+                "target_context",
+                "taxonomic_scope",
+                "evidence_unit",
+                "site_aligned_count",
+                "alt_support_count",
+                "gnomad_found_count",
+                "gnomad_not_found_count",
+                "gnomad_lookup_failed_count",
+            },
+        ),
+    ]
+    for paths, required in contracts:
+        for path in paths:
+            _require_header(path, required)
+    _require_header(
+        inputs.taxonomy_summary_tsv,
+        {
+            "taxonomic_scope",
+            "evidence_unit",
+            "gene_count",
+            "ortholog_count",
+            "taxon_count",
+            "unit_count",
+            "orthologs_per_gene_median",
+            "units_per_gene_median",
+        },
+    )
+
+
 def resolve_variant_annotations_source(annotation_manifest_path: Path) -> Path:
-    """Resolve the pipeline-owned partitioned variant-annotation dataset."""
+    """Resolve one pipeline-owned partitioned variant-annotation dataset."""
 
     descriptor = _variant_annotation_descriptor(annotation_manifest_path)
     declared = Path(str(descriptor.get("path") or ""))
@@ -104,175 +343,527 @@ def resolve_variant_annotations_source(annotation_manifest_path: Path) -> Path:
         raise FileNotFoundError(
             f"Missing pipeline variant-annotation dataset manifest: {source}"
         )
-    dataset_manifest = read_json(source)
-    if dataset_manifest != descriptor:
+    if _required_json(source) != descriptor:
         raise ValueError(
             "Annotation variant_annotations descriptor does not match its dataset "
             f"manifest: {source}"
         )
+    resolve_variant_table_source(source, required_columns=set())
     return source
 
 
-def variant_annotation_descriptor(inputs: RunInputs) -> dict[str, object]:
-    descriptor = _variant_annotation_descriptor(inputs.annotation_manifest_json)
-    declared_source = resolve_variant_annotations_source(inputs.annotation_manifest_json)
-    if inputs.variant_annotations_source.resolve() != declared_source:
-        raise ValueError(
-            "Report inputs do not use the variant_annotations dataset declared by "
-            f"{inputs.annotation_manifest_json}"
-        )
-    return descriptor
-
-
-def variant_annotation_release(descriptor: dict[str, object]) -> str:
-    config = descriptor["vep_config"]
-    release = config.get("release") if isinstance(config, dict) else None
-    if not release:
-        raise ValueError("Variant annotation dataset is missing vep_config.release")
-    return str(release)
-
-
-def _variant_annotation_descriptor(annotation_manifest_path: Path) -> dict[str, object]:
-    if not annotation_manifest_path.is_file():
+def _resolve_source_run(run_dir: Path) -> SourceRun:
+    run_dir = run_dir.expanduser().resolve()
+    if not run_dir.exists():
+        raise FileNotFoundError(f"Run directory does not exist: {run_dir}")
+    if not run_dir.is_dir():
+        raise NotADirectoryError(f"--run-dir is not a directory: {run_dir}")
+    root_path = run_dir / "run_manifest.json"
+    fetch_path = run_dir / "fetch" / "manifest.json"
+    alignment_path = run_dir / "alignment" / "manifest.json"
+    annotation_path = run_dir / "annotation" / "manifest.json"
+    root = _required_json(root_path)
+    fetch = _required_json(fetch_path)
+    alignment = _required_json(alignment_path)
+    annotation = _required_json(annotation_path)
+    _validate_completed_run(root, run_dir)
+    variant_source = resolve_variant_annotations_source(annotation_path)
+    genes = run_dir / "fetch" / "genes.tsv.gz"
+    features = run_dir / "fetch" / "target_features.tsv.gz"
+    targets = run_dir / "fetch" / "sequences" / "targets"
+    taxonomy = run_dir / "fetch" / "taxonomy.tsv.gz"
+    selected = run_dir / "fetch" / "orthologs.selected.tsv.gz"
+    failures = run_dir / "annotation" / "failures.tsv.gz"
+    missing = [
+        str(path)
+        for path in (genes, features, targets, taxonomy, selected, failures)
+        if not path.exists()
+    ]
+    if missing:
         raise FileNotFoundError(
-            f"Missing pipeline annotation manifest: {annotation_manifest_path}"
+            "Incomplete source run required for analytics; missing: "
+            + ", ".join(missing)
         )
-    manifest = read_json(annotation_manifest_path)
+    requested_gene_ids = frozenset(
+        _read_requested_gene_ids(run_dir / "fetch" / "input.ids.tsv")
+    )
+    target_gene_ids = frozenset(_read_gene_ids(genes))
+    if not target_gene_ids.issubset(requested_gene_ids):
+        raise ValueError(f"Target genes fall outside accepted input IDs: {run_dir}")
+    manifest_gene_ids = {str(value) for value in alignment.get("gene_ids", [])}
+    if manifest_gene_ids != target_gene_ids:
+        raise ValueError(
+            f"Alignment manifest gene_ids do not match fetch/genes.tsv.gz: {run_dir}"
+        )
+    identity = {
+        "contract_version": ANALYSIS_CONTRACT_VERSION,
+        "root_manifest": content_identity(root_path),
+        "fetch_manifest": content_identity(fetch_path),
+        "alignment_manifest": content_identity(alignment_path),
+        "annotation_manifest": content_identity(annotation_path),
+    }
+    source_id = hashlib.sha256(_canonical_json(identity)).hexdigest()[:24]
+    return SourceRun(
+        run_dir=run_dir,
+        source_id=source_id,
+        root_manifest_json=root_path,
+        fetch_manifest_json=fetch_path,
+        genes_tsv=genes,
+        target_features_tsv=features,
+        target_sequences_dir=targets,
+        taxonomy_tsv=taxonomy,
+        orthologs_selected_tsv=selected,
+        variant_annotations_source=variant_source,
+        annotation_manifest_json=annotation_path,
+        annotation_failures_tsv=failures,
+        alignment_manifest_json=alignment_path,
+        requested_gene_ids=requested_gene_ids,
+        target_gene_ids=target_gene_ids,
+        root_manifest=root,
+        fetch_manifest=fetch,
+        alignment_manifest=alignment,
+        annotation_manifest=annotation,
+        variant_annotation_descriptor=_variant_annotation_descriptor(annotation_path),
+    )
+
+
+def _validate_completed_run(manifest: dict[str, object], run_dir: Path) -> None:
+    if manifest.get("pipeline") != "gaph_v2":
+        raise ValueError(f"Not a gaph_v2 run: {run_dir}")
+    if manifest.get("schema_version") != 2:
+        raise ValueError(f"Unsupported run manifest schema: {run_dir}")
+    if manifest.get("status") != "complete" or manifest.get("success") is not True:
+        raise ValueError(f"Run is not successfully complete: {run_dir}")
+    if manifest.get("git_dirty") is not False:
+        raise ValueError(f"Analytics requires a clean pipeline revision: {run_dir}")
+
+
+def _require_disjoint_requested_genes(sources: Sequence[SourceRun]) -> None:
+    owners: dict[str, list[str]] = {}
+    for source in sources:
+        for gene_id in source.requested_gene_ids:
+            owners.setdefault(gene_id, []).append(source.run_dir.name)
+    conflicts = {gene: labels for gene, labels in owners.items() if len(labels) > 1}
+    if conflicts:
+        examples = "; ".join(
+            f"{gene}: {', '.join(labels)}"
+            for gene, labels in sorted(
+                conflicts.items(), key=lambda item: _gene_sort_key(item[0])
+            )[:20]
+        )
+        raise ValueError(
+            "Source runs contain overlapping accepted Gene IDs; implicit "
+            f"deduplication would change scientific weights. Conflicts: {examples}"
+        )
+
+
+def _validate_compatibility(
+    sources: Sequence[SourceRun],
+    clinvar_vcf: Path,
+) -> None:
+    if not clinvar_vcf.is_file():
+        raise FileNotFoundError(f"ClinVar VCF does not exist: {clinvar_vcf}")
+    clinvar_tbi = Path(f"{clinvar_vcf}.tbi")
+    if not clinvar_tbi.is_file():
+        raise FileNotFoundError(f"ClinVar index does not exist: {clinvar_tbi}")
+    expected_clinvar = {
+        "vcf": content_identity(clinvar_vcf),
+        "tbi": content_identity(clinvar_tbi),
+    }
+    contracts = [_source_compatibility(source) for source in sources]
+    baseline = contracts[0]
+    for source, observed in zip(sources[1:], contracts[1:]):
+        differing = [key for key in baseline if observed.get(key) != baseline.get(key)]
+        if differing:
+            raise ValueError(
+                f"Incompatible source run {source.run_dir}; contracts differ: "
+                + ", ".join(differing)
+            )
+    missing = [
+        key
+        for key, value in baseline.items()
+        if value is None or value == "" or value == [] or value == {}
+    ]
+    if missing:
+        raise ValueError(
+            "Source runs lack required current compatibility provenance: "
+            + ", ".join(missing)
+        )
+    required = {
+        "target_assembly_accession": "GCF_000001405.40",
+        "target_assembly_name": "GRCh38.p14",
+        "ortholog_scope": "all",
+        "alignment_event_mode": "compact_support",
+        "event_ortholog_support_format": "event_group_id_v2",
+        "annotation_schema": "normalized_annotation_evidence_v3",
+        "gnomad_dataset": "gnomad_r4",
+    }
+    invalid = [
+        key for key, value in required.items() if str(baseline.get(key)) != value
+    ]
+    if str(baseline.get("target_tax_id")) != "9606":
+        invalid.append("target_tax_id")
+    if invalid:
+        raise ValueError(
+            "Source runs do not use the current scientific constants: "
+            + ", ".join(invalid)
+        )
+    for source in sources:
+        if _declared_clinvar_identity(source) != expected_clinvar:
+            raise ValueError(
+                f"Run {source.run_dir} was annotated with different ClinVar contents"
+            )
+
+
+def _source_compatibility(source: SourceRun) -> dict[str, object]:
+    descriptor = source.variant_annotation_descriptor
+    config = descriptor.get("vep_config")
+    if not isinstance(config, dict):
+        config = {}
+    return {
+        "pipeline_git_commit": source.root_manifest.get("git_commit"),
+        "target_assembly_accession": source.fetch_manifest.get("target_assembly_accession"),
+        "target_assembly_name": source.fetch_manifest.get("target_assembly_name"),
+        "target_tax_id": source.fetch_manifest.get("target_tax_id"),
+        "target_annotation_gff3_sha256": source.fetch_manifest.get(
+            "target_annotation_gff3_sha256"
+        ),
+        "ortholog_scope": source.fetch_manifest.get("ortholog_scope"),
+        "datasets_versions": source.fetch_manifest.get("datasets_versions"),
+        "strategies": source.alignment_manifest.get("strategies"),
+        "strategy_parameters": source.alignment_manifest.get("strategy_parameters"),
+        "alignment_event_mode": source.alignment_manifest.get("alignment_event_mode"),
+        "event_ortholog_support_format": source.alignment_manifest.get(
+            "event_ortholog_support_format"
+        ),
+        "annotation_schema": source.annotation_manifest.get("schema"),
+        "gnomad_api_url": source.annotation_manifest.get("gnomad_api_url"),
+        "gnomad_dataset": source.annotation_manifest.get("gnomad_dataset"),
+        "vep_backend": config.get("backend"),
+        "vep_release": config.get("release"),
+        "vep_columns": descriptor.get("fields"),
+    }
+
+
+def _declared_clinvar_identity(source: SourceRun) -> dict[str, object]:
+    identities = {}
+    for key, manifest_key in (("vcf", "clinvar_vcf"), ("tbi", "clinvar_tbi")):
+        metadata = source.annotation_manifest.get(manifest_key)
+        if not isinstance(metadata, dict) or not str(metadata.get("path") or ""):
+            raise ValueError(
+                f"Run {source.run_dir} annotation manifest lacks {manifest_key} provenance"
+            )
+        path = Path(str(metadata["path"])).expanduser()
+        if not path.is_file():
+            raise FileNotFoundError(
+                f"Run {source.run_dir} ClinVar provenance file is unavailable: {path}"
+            )
+        if path_metadata(path) != metadata:
+            raise ValueError(
+                f"Run {source.run_dir} ClinVar provenance changed after annotation: {path}"
+            )
+        identities[key] = content_identity(path)
+    return identities
+
+
+def _combined_variant_descriptor(sources: Sequence[SourceRun]) -> dict[str, object]:
+    descriptors = [source.variant_annotation_descriptor for source in sources]
+    baseline = descriptors[0]
+    exact = ("schema", "status", "layout", "format", "fields", "vep_config")
+    for source, descriptor in zip(sources[1:], descriptors[1:]):
+        differing = [
+            field for field in exact if descriptor.get(field) != baseline.get(field)
+        ]
+        if differing:
+            raise ValueError(
+                f"Incompatible variant annotations in {source.run_dir}: "
+                + ", ".join(differing)
+            )
+    statuses: Counter[str] = Counter()
+    for descriptor in descriptors:
+        statuses.update(
+            {
+                str(key): int(value)
+                for key, value in dict(descriptor.get("vep_status_counts", {})).items()
+            }
+        )
+    return {
+        **{field: baseline.get(field) for field in exact},
+        "layout": (
+            "multi_run_partitioned" if len(sources) > 1 else baseline.get("layout")
+        ),
+        "run_count": len(sources),
+        "partition_count": sum(
+            int(value.get("partition_count", 0)) for value in descriptors
+        ),
+        "shard_count": sum(int(value.get("shard_count", 0)) for value in descriptors),
+        "row_count": sum(int(value.get("row_count", 0)) for value in descriptors),
+        "vep_status_counts": dict(sorted(statuses.items())),
+    }
+
+
+def _validate_shared_allele_evidence(
+    sources: Sequence[SourceRun],
+    temporary_root: Path,
+) -> None:
+    if len(sources) < 2:
+        return
+    required = {
+        "variant_key",
+        "gene_id",
+        "lookup_status",
+        "gnomad_af",
+        "clinvar_id",
+        "clinvar_sig",
+        "clinvar_review_stars",
+        "clinvar_scv_count",
+    }
+    source = resolve_variant_table_source(
+        tuple(item.variant_annotations_source for item in sources),
+        required_columns=required,
+    )
+    candidates = {
+        "gnomad_af": "try_cast(nullif(gnomad_af, '') AS DOUBLE)",
+        "gnomad_af_source": "nullif(gnomad_af_source, '')",
+        "gnomad_csq": "nullif(gnomad_csq, '')",
+        "clinvar_id": "nullif(clinvar_id, '')",
+        "clinvar_allele_id": "nullif(clinvar_allele_id, '')",
+        "clinvar_sig": "nullif(clinvar_sig, '')",
+        "clinvar_revstat": "nullif(clinvar_revstat, '')",
+        "clinvar_review_stars": "nullif(clinvar_review_stars, '')",
+        "clinvar_review_stars_status": "nullif(clinvar_review_stars_status, '')",
+        "clinvar_scv_count": "nullif(clinvar_scv_count, '')",
+        "clinvar_hgvs": "nullif(clinvar_hgvs, '')",
+        "clinvar_disease": "nullif(clinvar_disease, '')",
+        "clinvar_variant_type": "nullif(clinvar_variant_type, '')",
+    }
+    checks = {
+        field: expression
+        for field, expression in candidates.items()
+        if field in source.columns
+    }
+    count_sql = ", ".join(
+        f"count(DISTINCT {expression}) FILTER "
+        f"(WHERE {expression} IS NOT NULL) AS {field}_count"
+        for field, expression in checks.items()
+    )
+    conflict_sql = " OR ".join(f"{field}_count > 1" for field in checks)
+    with tempfile.TemporaryDirectory(
+        prefix=".shared_allele_preflight.",
+        dir=temporary_root,
+    ) as temporary:
+        with duckdb.connect() as connection:
+            connection.execute("SET preserve_insertion_order=false")
+            connection.execute(f"SET temp_directory={sql_string(temporary)}")
+            connection.execute(
+                f"CREATE VIEW source_rows AS SELECT * FROM {variant_source_sql(source)}"
+            )
+            rows = connection.execute(
+                "WITH evidence_counts AS (SELECT variant_key, "
+                f"{count_sql} FROM source_rows WHERE variant_key <> '' "
+                "GROUP BY variant_key) SELECT * FROM evidence_counts WHERE "
+                f"{conflict_sql} LIMIT 10"
+            ).fetchall()
+    conflicts = [
+        (field, str(row[0]))
+        for row in rows
+        for field, count in zip(checks, row[1:])
+        if int(count) > 1
+    ]
+    if conflicts:
+        examples = ", ".join(
+            f"{variant} ({field})" for field, variant in conflicts[:10]
+        )
+        raise ValueError(
+            "Source runs disagree on successful allele-level external evidence: "
+            + examples
+        )
+
+
+def _combined_fetch_manifest(sources: Sequence[SourceRun]) -> dict[str, object]:
+    if len(sources) == 1:
+        return dict(sources[0].fetch_manifest)
+    baseline = sources[0].fetch_manifest
+    return {
+        "stage": "fetch",
+        "status": "complete",
+        "run_count": len(sources),
+        "unique_gene_count": sum(len(source.requested_gene_ids) for source in sources),
+        "target_gene_count": sum(len(source.target_gene_ids) for source in sources),
+        **{
+            key: baseline.get(key)
+            for key in (
+                "target_assembly_accession",
+                "target_assembly_name",
+                "target_tax_id",
+                "target_annotation_gff3_sha256",
+                "ortholog_scope",
+                "datasets_versions",
+            )
+        },
+    }
+
+
+def _combined_alignment_manifest(sources: Sequence[SourceRun]) -> dict[str, object]:
+    if len(sources) == 1:
+        return dict(sources[0].alignment_manifest)
+    baseline = sources[0].alignment_manifest
+    return {
+        "stage": "alignment",
+        "schema": baseline.get("schema"),
+        "run_count": len(sources),
+        "gene_ids": sorted(
+            {gene for source in sources for gene in source.target_gene_ids},
+            key=_gene_sort_key,
+        ),
+        "gene_count": sum(len(source.target_gene_ids) for source in sources),
+        "strategies": baseline.get("strategies"),
+        "strategy_parameters": baseline.get("strategy_parameters"),
+        "alignment_event_mode": baseline.get("alignment_event_mode"),
+        "event_ortholog_support_format": baseline.get("event_ortholog_support_format"),
+    }
+
+
+def _combined_annotation_manifest(
+    sources: Sequence[SourceRun],
+    descriptor: dict[str, object],
+) -> dict[str, object]:
+    if len(sources) == 1:
+        return dict(sources[0].annotation_manifest)
+    manifests = [source.annotation_manifest for source in sources]
+    baseline = manifests[0]
+    event_statuses: Counter[str] = Counter()
+    for manifest in manifests:
+        event_statuses.update(
+            {
+                str(key): int(value)
+                for key, value in dict(
+                    manifest.get("event_key_status_counts", {})
+                ).items()
+            }
+        )
+    return {
+        "stage": "annotation",
+        "schema": baseline.get("schema"),
+        "run_count": len(sources),
+        "variant_annotations": descriptor,
+        "gnomad_api_url": baseline.get("gnomad_api_url"),
+        "gnomad_dataset": baseline.get("gnomad_dataset"),
+        "failure_count": sum(
+            int(value.get("failure_count", 0) or 0) for value in manifests
+        ),
+        "gnomad_region_failure_count": sum(
+            int(value.get("gnomad_region_failure_count", 0) or 0)
+            for value in manifests
+        ),
+        "event_key_status_counts": dict(sorted(event_statuses.items())),
+        "clinvar_cached_variant_count": sum(
+            int(value.get("clinvar_cached_variant_count", 0) or 0)
+            for value in manifests
+        ),
+        "gnomad_cached_variant_count": sum(
+            int(value.get("gnomad_cached_variant_count", 0) or 0)
+            for value in manifests
+        ),
+    }
+
+
+def _variant_annotation_descriptor(path: Path) -> dict[str, object]:
+    manifest = _required_json(path)
     if (
         manifest.get("stage") != "annotation"
         or manifest.get("schema") != "normalized_annotation_evidence_v3"
     ):
-        raise ValueError(
-            f"Unsupported pipeline annotation contract: {annotation_manifest_path}"
-        )
+        raise ValueError(f"Unsupported pipeline annotation contract: {path}")
     descriptor = manifest.get("variant_annotations")
     if not isinstance(descriptor, dict):
-        raise ValueError(
-            "Annotation manifest does not declare variant_annotations: "
-            f"{annotation_manifest_path}"
-        )
+        raise ValueError(f"Annotation manifest does not declare variant_annotations: {path}")
     config = descriptor.get("vep_config")
-    status_counts = descriptor.get("vep_status_counts")
-    if not isinstance(config, dict) or not config:
-        raise ValueError("Variant annotation dataset has no VEP configuration")
-    if config.get("backend") not in {"rest", "local"}:
-        raise ValueError("Variant annotation dataset has invalid vep_config.backend")
-    if not isinstance(status_counts, dict):
+    counts = descriptor.get("vep_status_counts")
+    if not isinstance(config, dict) or config.get("backend") not in {"rest", "local"}:
+        raise ValueError("Variant annotation dataset has invalid VEP configuration")
+    if not isinstance(counts, dict):
         raise ValueError("Variant annotation dataset has no VEP status counts")
     try:
         raw_row_count = descriptor["row_count"]
         if isinstance(raw_row_count, bool):
             raise TypeError
         row_count = int(raw_row_count)
-        normalized_counts = {}
-        for status, raw_count in status_counts.items():
-            if not str(status) or isinstance(raw_count, bool):
+        normalized = {}
+        for key, value in counts.items():
+            if not str(key) or isinstance(value, bool):
                 raise TypeError
-            normalized_counts[str(status)] = int(raw_count)
+            normalized[str(key)] = int(value)
     except (KeyError, TypeError, ValueError) as exc:
         raise ValueError("Variant annotation dataset has invalid VEP status counts") from exc
     if (
         row_count < 0
-        or any(count < 0 for count in normalized_counts.values())
-        or sum(normalized_counts.values()) != row_count
+        or any(value < 0 for value in normalized.values())
+        or sum(normalized.values()) != row_count
     ):
         raise ValueError("Variant annotation VEP status counts do not match row_count")
     variant_annotation_release(descriptor)
     return descriptor
 
 
-def validate_report_inputs(inputs: RunInputs) -> None:
-    """Fail before expensive work when a production table contract is incompatible."""
-    descriptor = variant_annotation_descriptor(inputs)
-    resolve_variant_aggregation_source(inputs.variant_annotations_source)
-    contracts = {
-        inputs.variant_annotations_source: {
-            "variant_key",
-            "gene_id",
-            "event_type",
-            "ref",
-            "alt",
-            "lookup_status",
-            "strategies",
-            "clinvar_id",
-            "clinvar_sig",
-            "clinvar_review_stars",
-            "clinvar_scv_count",
-            "gnomad_af",
-            "vep_status",
-            "vep_primary_consequence",
-            "vep_consequence_terms",
-        },
-        inputs.genes_tsv: {"gene_id", "chromosome", "begin", "end", "sequence_length"},
-        inputs.target_features_tsv: {
-            "gene_id",
-            "feature_type",
-            "target_start0",
-            "target_end0",
-        },
-        inputs.feature_coverage_tsv: {"gene_id", "strategy", "feature_type"},
-        inputs.strategy_summary_tsv: {
-            "strategy",
-            "gene_count",
-            "summary_row_count",
-            "aligned_summary_row_count",
-            "event_count",
-        },
-        inputs.variant_strategy_support_tsv: {
-            "variant_key",
-            "gene_id",
-            "strategy",
-            "alt_support_row_count",
-            "alt_support_ortholog_count",
-            "alt_support_genus_count",
-        },
-        inputs.ortholog_evidence_summary_tsv: {
-            "strategy",
-            "target_context",
-            "taxonomic_scope",
-            "evidence_unit",
-            "site_aligned_count",
-            "alt_support_count",
-            "gnomad_found_count",
-            "gnomad_not_found_count",
-            "gnomad_lookup_failed_count",
-        },
-        inputs.taxonomy_summary_tsv: {
-            "taxonomic_scope",
-            "evidence_unit",
-            "gene_count",
-            "ortholog_count",
-            "taxon_count",
-            "unit_count",
-            "orthologs_per_gene_median",
-            "units_per_gene_median",
-        },
-    }
-    for path, required in contracts.items():
-        if not path.exists():
-            raise FileNotFoundError(f"Missing report input: {path}")
-        if path == inputs.variant_annotations_source:
-            header = set(str(field) for field in descriptor.get("fields", []))
-        else:
-            compression = "gzip" if path.suffix == ".gz" else None
-            header = set(pd.read_csv(path, sep="\t", compression=compression, nrows=0).columns)
-        missing = required - header
-        if missing:
-            raise ValueError(
-                f"Report input {path} is missing required columns: {', '.join(sorted(missing))}"
-            )
+def _required_json(path: Path) -> dict[str, object]:
+    if not path.is_file():
+        raise FileNotFoundError(f"Missing JSON manifest: {path}")
+    try:
+        value = json.loads(path.read_text())
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"Invalid JSON manifest: {path}") from exc
+    if not isinstance(value, dict):
+        raise ValueError(f"Expected JSON object: {path}")
+    return value
 
 
-def resolve_out_html(args: argparse.Namespace, run_dir: Path) -> Path:
-    if args.out_html:
-        return args.out_html.expanduser().resolve()
-    report_dir = run_dir / "reports"
-    if args.report_name:
-        name = safe_report_name(Path(args.report_name).name)
-        if not name.endswith(".html"):
-            name += ".html"
-        return report_dir / name
-    return report_dir / "strategy_compare.html"
+def _read_requested_gene_ids(path: Path) -> list[str]:
+    if not path.is_file():
+        raise FileNotFoundError(f"Missing normalized input IDs: {path}")
+    frame = pd.read_csv(path, sep="\t", dtype=str, keep_default_na=False)
+    required = {"gene_id", "accepted"}
+    if not required.issubset(frame.columns):
+        raise ValueError(f"Normalized input IDs have an incompatible header: {path}")
+    return frame.loc[frame["accepted"].eq("true"), "gene_id"].astype(str).tolist()
+
+
+def _read_gene_ids(path: Path) -> list[str]:
+    frame = pd.read_csv(
+        path,
+        sep="\t",
+        compression="gzip",
+        usecols=["gene_id"],
+        dtype=str,
+    )
+    values = frame["gene_id"].astype(str).tolist()
+    if len(values) != len(set(values)):
+        raise ValueError(f"Run contains duplicate target Gene IDs: {path}")
+    return values
+
+
+def _require_header(path: Path, required: set[str]) -> None:
+    if not path.is_file():
+        raise FileNotFoundError(f"Missing report input: {path}")
+    compression = "gzip" if path.suffix == ".gz" else None
+    header = set(
+        pd.read_csv(path, sep="\t", compression=compression, nrows=0).columns
+    )
+    missing = required - header
+    if missing:
+        raise ValueError(
+            f"Report input {path} is missing required columns: "
+            + ", ".join(sorted(missing))
+        )
+
+
+def _canonical_json(value: object) -> bytes:
+    return json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
+
+
+def _gene_sort_key(value: str) -> tuple[int, int | str]:
+    text = str(value)
+    return (0, int(text)) if text.isdigit() else (1, text)
 
 
 def file_size_label(path: Path) -> str:
@@ -288,18 +879,13 @@ def file_size_label(path: Path) -> str:
     return str(size)
 
 
-def read_json(path: Path) -> dict:
-    if not path.exists():
-        return {}
-    return json.loads(path.read_text())
-
-
-def read_feature_coverage(path: Path) -> pd.DataFrame:
-    if not path.exists():
-        return pd.DataFrame()
-    print(f"Reading {path}...")
-    cov = pd.read_csv(path, sep="\t", compression="gzip", low_memory=False)
-    numeric_cols = [
+def read_feature_coverage(paths: Sequence[Path]) -> pd.DataFrame:
+    frames = [
+        pd.read_csv(path, sep="\t", compression="gzip", low_memory=False)
+        for path in paths
+    ]
+    cov = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+    for col in (
         "length_bp",
         "ortholog_count",
         "orthologs_covered",
@@ -307,45 +893,56 @@ def read_feature_coverage(path: Path) -> pd.DataFrame:
         "coverage_breadth",
         "depth_bases",
         "mean_depth",
-    ]
-    for col in numeric_cols:
+    ):
         if col in cov.columns:
             cov[col] = pd.to_numeric(cov[col], errors="coerce")
     return cov
 
 
-def read_strategy_summary(path: Path) -> pd.DataFrame:
-    if not path.exists():
-        raise FileNotFoundError(f"Missing resolved strategy-summary input: {path}")
-    print(f"Reading {path}...")
-    summary = pd.read_csv(path, sep="\t", compression="gzip", low_memory=False)
-    required = {"strategy", "summary_row_count", "aligned_summary_row_count", "event_count"}
-    missing = required - set(summary.columns)
-    if missing:
-        raise ValueError(f"Strategy summary missing required columns: {', '.join(sorted(missing))}")
-    for column in summary.columns:
-        if column != "strategy":
-            summary[column] = pd.to_numeric(summary[column], errors="coerce")
-    return summary
+def read_strategy_summary(paths: Sequence[Path]) -> pd.DataFrame:
+    frames = [
+        pd.read_csv(path, sep="\t", compression="gzip", low_memory=False)
+        for path in paths
+    ]
+    if not frames:
+        raise ValueError("Strategy summary requires at least one source table")
+    columns = list(frames[0].columns)
+    if any(list(frame.columns) != columns for frame in frames[1:]):
+        raise ValueError("Strategy summary columns differ across source runs")
+    combined = pd.concat(frames, ignore_index=True)
+    numeric = [column for column in columns if column != "strategy"]
+    for column in numeric:
+        combined[column] = pd.to_numeric(combined[column], errors="raise")
+    return combined.groupby("strategy", as_index=False, sort=True)[numeric].sum()[columns]
 
 
-def read_input_gene_count(path: Path) -> int:
-    genes = pd.read_csv(path, sep="\t", compression="gzip", usecols=["gene_id"])
-    return int(genes["gene_id"].astype(str).nunique())
+def read_input_gene_count(paths: Sequence[Path]) -> int:
+    values: set[str] = set()
+    for path in paths:
+        frame = pd.read_csv(
+            path,
+            sep="\t",
+            compression="gzip",
+            usecols=["gene_id"],
+            dtype=str,
+        )
+        values.update(frame["gene_id"].astype(str))
+    return len(values)
 
 
-def read_failures(path: Path) -> pd.DataFrame:
-    if not path.exists():
-        return pd.DataFrame()
-    failures = pd.read_csv(path, sep="\t", compression="gzip", keep_default_na=False)
-    return failures
+def read_failures(paths: Sequence[Path]) -> pd.DataFrame:
+    frames = [
+        pd.read_csv(path, sep="\t", compression="gzip", keep_default_na=False)
+        for path in paths
+    ]
+    return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
 
 
 def read_taxonomy_summary(path: Path) -> pd.DataFrame:
-    if not path.exists():
+    if not path.is_file():
         raise FileNotFoundError(f"Missing taxonomy summary: {path}")
     summary = pd.read_csv(path, sep="\t", compression="gzip", keep_default_na=False)
-    numeric_columns = [
+    for column in (
         "gene_count",
         "ortholog_count",
         "taxon_count",
@@ -358,8 +955,7 @@ def read_taxonomy_summary(path: Path) -> pd.DataFrame:
         "units_per_gene_median",
         "units_per_gene_mean",
         "units_per_gene_max",
-    ]
-    for column in numeric_columns:
+    ):
         if column in summary:
             summary[column] = pd.to_numeric(summary[column], errors="raise")
     return summary

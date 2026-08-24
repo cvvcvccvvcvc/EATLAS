@@ -2,22 +2,30 @@
 
 set -euo pipefail
 
-if (( $# < 6 )); then
-  printf 'Expected SOURCE_KIND SOURCE_PATH COHORT_ROOT REPORT_NAME GIT_COMMIT PROJECT_ROOT [report arguments...]\n' >&2
+if (( $# < 5 )); then
+  printf 'Expected ANALYTICS_ROOT REPORT_NAME GIT_COMMIT PROJECT_ROOT RUN_COUNT RUN_DIR... [report arguments...]\n' >&2
   exit 2
 fi
 
-source_kind=$1
-source_path=$2
-cohort_root=$3
-report_name=$4
-expected_commit=$5
-project_root=$6
-shift 6
+analytics_root=$1
+report_name=$2
+expected_commit=$3
+project_root=$4
+run_count=$5
+shift 5
+[[ "$run_count" =~ ^[1-9][0-9]*$ ]] || {
+  printf 'Invalid source-run count: %s\n' "$run_count" >&2
+  exit 2
+}
+(( $# >= run_count )) || {
+  printf 'Expected %s source-run arguments\n' "$run_count" >&2
+  exit 2
+}
+run_dirs=("${@:1:run_count}")
+shift "$run_count"
 report_args=("$@")
 
 source "$HOME/.gaph_v2_cluster_env.sh"
-
 : "${GAPH_ROOT:?GAPH_ROOT is not set by .gaph_v2_cluster_env.sh}"
 analytics_env="$GAPH_ROOT/envs/analytics"
 analytics_python="$analytics_env/bin/python"
@@ -34,28 +42,18 @@ fi
   exit 1
 }
 
-if [[ "$source_kind" == run ]]; then
-  analysis_root=$source_path
-  source_args=(--run-dir "$source_path")
-  mkdir -p "$analysis_root/reports"
-  commit_marker="$analysis_root/reports/$report_name.git_commit"
-elif [[ "$source_kind" == cohort ]]; then
-  analysis_root=$cohort_root
-  source_args=(--cohort-manifest "$source_path" --cohort-root "$cohort_root")
-  mkdir -p "$analysis_root/slurm"
-  commit_marker="$analysis_root/slurm/$report_name.git_commit"
-else
-  printf 'Unknown report source kind: %s\n' "$source_kind" >&2
-  exit 2
-fi
-printf '%s\n' "$actual_commit" > "$commit_marker"
+mkdir -p "$analytics_root/slurm"
+printf '%s\n' "$actual_commit" > "$analytics_root/slurm/$report_name.git_commit"
 
 command=(
   "$analytics_python" -m analytics.strategy_report
-  "${source_args[@]}"
+  --analytics-root "$analytics_root"
   --report-name "$report_name"
-  "${report_args[@]}"
 )
+for run_dir in "${run_dirs[@]}"; do
+  command+=(--run-dir "$run_dir")
+done
+command+=("${report_args[@]}")
 
 printf 'Git commit: %s\n' "$actual_commit"
 printf 'Command:'

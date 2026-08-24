@@ -12,8 +12,8 @@ and exact biological observations remain available.
 Report-specific aggregation is not a storage optimization. Taxonomic scope and
 rank selections, scientific counters, thresholds, bins, histograms, and plotting
 tables are analytics artifacts and must be reproducible after `work/` is deleted.
-They may be cached under `analytics/`, but cannot replace or cause deletion of
-their durable row-level inputs.
+They live in an external analytics workspace and cannot replace or cause
+deletion of their durable row-level inputs.
 
 Manifests may repeat inexpensive counts or checksums to detect incomplete or
 corrupted output. These values are integrity snapshots, not the canonical source
@@ -32,8 +32,13 @@ results/run_001/
   alignment/
   annotation/
   reports/nextflow/
-  analytics/          # after analytics artifacts are built
 ```
+
+Once `run_manifest.json` is finalized successfully, the whole source run is
+immutable. Analytics and operational tools may read it, but must not create,
+modify, or delete any path below it. A change to pipeline evidence requires a
+new run directory. This keeps archived source data stable and prevents report
+caches from being backed up as if they were biological evidence.
 
 `run_manifest.json` is written when the workflow starts and atomically finalized
 when Nextflow terminates. It records the launch-time Git commit and dirty state,
@@ -62,8 +67,8 @@ For an end-to-end run, `fetch/` contains:
 - `manifest.json`
 
 The report derives and fingerprint-caches strategy, feature-coverage, support,
-and taxonomy summaries under `analytics/`; the pipeline does not publish
-duplicate global copies.
+and taxonomy summaries under an external analytics root; the pipeline does not
+publish duplicate global copies.
 
 `annotation/` contains:
 
@@ -126,17 +131,22 @@ remains because annotation and reproducible target-context normalization need
 it. Alignment performs no taxonomy lookup and does not receive taxonomy as an
 input.
 
-Analytics owns the reproducible derived layer:
+Analytics owns a separate reproducible derived layer:
 
-- `<run>/analytics/alignment_aggregates/` — strategy summary and feature coverage;
-- `<run>/analytics/taxonomy_summary/` — scope/rank summary from selected orthologs and
-  canonical taxonomy;
-- `<run>/analytics/annotation_support/` — variant-strategy support and taxonomic
-  ortholog-evidence histograms.
+```text
+<analytics-root>/
+  cache/<source-id>/
+  analyses/<analysis-id>/
+  slurm/
+```
 
-Each cache records the identities of its source inputs and is rebuilt when they
-change. A missing canonical input is an error; no old aggregate is accepted as
-a substitute.
+Per-source strategy, feature-coverage, taxonomy, and support derivations live
+under `cache/<source-id>/`. Run-set scientific outputs, report HTML, and
+performance profiles live under `analyses/<analysis-id>/`. Large source tables
+are queried in place; analytics does not create a synthetic combined run.
+Every cache records source identities and is rebuilt when they change. A
+missing canonical input is an error; no old aggregate is accepted as a
+substitute.
 
 ## Execution Cache
 
@@ -207,12 +217,11 @@ Keep:
 - `<run>/run_manifest.json`
 - `<run>/fetch/`, `<run>/alignment/`, and `<run>/annotation/`
 - `<run>/reports/nextflow/` for execution trace and resource review
-- finalized report HTML and performance profile when the report is retained
+- the separate analytics root when derived caches or reports should be retained
 
-The small `<run>/analytics/alignment_aggregates/`, `taxonomy_summary/`, and
-`annotation_support/` directories are fingerprinted derived caches. They can
-be rebuilt from the durable pipeline evidence, but retaining them makes
-repeated reports faster. Do not delete pipeline evidence in their place.
+The external analytics root can be deleted and rebuilt from durable pipeline
+evidence. It is not part of a source-run archive. Do not delete pipeline
+evidence in its place.
 
 Usually remove after validation:
 - Nextflow `work/`

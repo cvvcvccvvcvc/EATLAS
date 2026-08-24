@@ -93,7 +93,11 @@ class AnnotationSupportPaths:
     ortholog_evidence_summary_tsv: Path
 
 
-def resolve_annotation_support_paths(run_dir: Path) -> AnnotationSupportPaths:
+def resolve_annotation_support_paths(
+    run_dir: Path,
+    *,
+    analytics_dir: Path,
+) -> AnnotationSupportPaths:
     """Require the normalized lineage contract and expose analytics-owned products."""
 
     annotation_dir = run_dir / "annotation"
@@ -192,7 +196,7 @@ def resolve_annotation_support_paths(run_dir: Path) -> AnnotationSupportPaths:
         failures=failures,
         alignment_manifest=alignment_manifest_path,
         annotation_manifest=annotation_manifest_path,
-        analytics_dir=run_dir / "analytics",
+        analytics_dir=analytics_dir,
     )
 
 

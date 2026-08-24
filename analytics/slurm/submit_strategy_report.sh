@@ -6,14 +6,14 @@ usage() {
   cat <<'EOF'
 Usage:
   analytics/slurm/submit_strategy_report.sh \
-    (--run-dir /absolute/path/to/run | --cohort-manifest /absolute/path/to/cohort.json) \
+    --analytics-root /absolute/path/to/analytics \
+    --run-dir /absolute/path/to/run [--run-dir /absolute/path/to/another_run ...] \
     --report-name report_name \
-    [--cohort-root /absolute/path/to/cohort/output/root] \
     [--slurm-cpus 8] [--slurm-memory 128G] [--slurm-time 06:00:00] \
     [--slurm-partition main] [-- <analytics.strategy_report arguments>]
 
 Arguments after -- are passed unchanged to analytics.strategy_report.
-The input selector, --cohort-root, and --report-name are reserved launcher arguments.
+The analytics root, source runs, and report name are managed by this launcher.
 EOF
 }
 
@@ -22,9 +22,20 @@ fail() {
   exit 2
 }
 
-run_dir=""
-cohort_manifest=""
-cohort_root=""
+canonical_destination() {
+  local path=$1
+  local suffix=""
+  while [[ ! -e "$path" ]]; do
+    suffix="/$(basename "$path")$suffix"
+    path=$(dirname "$path")
+  done
+  [[ -d "$path" ]] || return 1
+  path=$(cd "$path" && pwd -P) || return 1
+  printf '%s%s\n' "$path" "$suffix"
+}
+
+analytics_root=""
+run_dirs=()
 report_name=""
 slurm_cpus=8
 slurm_memory=128G
@@ -34,19 +45,14 @@ report_args=()
 
 while (( $# > 0 )); do
   case "$1" in
+    --analytics-root)
+      (( $# >= 2 )) || fail "--analytics-root requires a value"
+      analytics_root=$2
+      shift 2
+      ;;
     --run-dir)
       (( $# >= 2 )) || fail "--run-dir requires a value"
-      run_dir=$2
-      shift 2
-      ;;
-    --cohort-manifest)
-      (( $# >= 2 )) || fail "--cohort-manifest requires a value"
-      cohort_manifest=$2
-      shift 2
-      ;;
-    --cohort-root)
-      (( $# >= 2 )) || fail "--cohort-root requires a value"
-      cohort_root=$2
+      run_dirs+=("$2")
       shift 2
       ;;
     --report-name)
@@ -89,30 +95,28 @@ while (( $# > 0 )); do
   esac
 done
 
-if [[ -n "$run_dir" && -n "$cohort_manifest" ]]; then
-  fail "--run-dir and --cohort-manifest are mutually exclusive"
-fi
-if [[ -z "$run_dir" && -z "$cohort_manifest" ]]; then
-  fail "one of --run-dir or --cohort-manifest is required"
-fi
-if [[ -n "$run_dir" ]]; then
-  [[ "$run_dir" = /* ]] || fail "--run-dir must be an absolute path visible to compute nodes"
+[[ -n "$analytics_root" ]] || fail "--analytics-root is required"
+[[ "$analytics_root" = /* ]] || fail "--analytics-root must be an absolute path"
+(( ${#run_dirs[@]} > 0 )) || fail "at least one --run-dir is required"
+requested_analytics_root=$analytics_root
+analytics_root=$(canonical_destination "$analytics_root") || fail \
+  "--analytics-root cannot be resolved: $requested_analytics_root"
+resolved_run_dirs=()
+for run_dir in "${run_dirs[@]}"; do
+  [[ "$run_dir" = /* ]] || fail "--run-dir must be an absolute path: $run_dir"
   [[ -d "$run_dir" ]] || fail "run directory does not exist: $run_dir"
-  [[ -z "$cohort_root" ]] || fail "--cohort-root can only be used with --cohort-manifest"
-  source_kind=run
-  source_path=$run_dir
-  log_dir="$run_dir/reports/slurm"
-else
-  [[ "$cohort_manifest" = /* ]] || fail "--cohort-manifest must be an absolute path visible to compute nodes"
-  [[ -f "$cohort_manifest" ]] || fail "cohort manifest does not exist: $cohort_manifest"
-  if [[ -z "$cohort_root" ]]; then
-    cohort_root="$(dirname "$cohort_manifest")/cohorts"
-  fi
-  [[ "$cohort_root" = /* ]] || fail "--cohort-root must be an absolute path visible to compute nodes"
-  source_kind=cohort
-  source_path=$cohort_manifest
-  log_dir="$cohort_root/slurm"
-fi
+  run_dir=$(cd "$run_dir" && pwd -P)
+  case "$analytics_root/" in
+    "$run_dir/"*) fail "--analytics-root must be outside source run: $run_dir" ;;
+  esac
+  [[ -s "$run_dir/run_manifest.json" ]] || fail "missing run manifest: $run_dir"
+  [[ -s "$run_dir/annotation/manifest.json" ]] || fail \
+    "missing annotation manifest: $run_dir"
+  [[ -s "$run_dir/annotation/variant_annotations/manifest.json" ]] || fail \
+    "missing finalized variant annotations: $run_dir"
+  resolved_run_dirs+=("$run_dir")
+done
+run_dirs=("${resolved_run_dirs[@]}")
 [[ -n "$report_name" ]] || fail "--report-name is required"
 [[ "$report_name" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || fail \
   "--report-name may contain only letters, digits, dot, underscore, and hyphen"
@@ -120,17 +124,11 @@ fi
 [[ -n "$slurm_memory" ]] || fail "--slurm-memory must not be empty"
 [[ -n "$slurm_time" ]] || fail "--slurm-time must not be empty"
 [[ -n "$slurm_partition" ]] || fail "--slurm-partition must not be empty"
-command -v sbatch >/dev/null || fail "sbatch was not found; run this launcher on the Slurm controller"
-
-if [[ "$source_kind" == run ]]; then
-  annotation_dir="$run_dir/annotation"
-  [[ -s "$annotation_dir/manifest.json" && -s "$annotation_dir/variant_annotations/manifest.json" ]] || fail \
-    "missing finalized pipeline variant-annotation dataset under $annotation_dir"
-fi
+command -v sbatch >/dev/null || fail "sbatch was not found; run this on the Slurm controller"
 
 for argument in "${report_args[@]}"; do
   case "$argument" in
-    --run-dir|--run-dir=*|--cohort-manifest|--cohort-manifest=*|--cohort-root|--cohort-root=*|--report-name|--report-name=*)
+    --analytics-root|--analytics-root=*|--run-dir|--run-dir=*|--report-name|--report-name=*)
       fail "$argument is managed by the launcher and must appear before --"
       ;;
   esac
@@ -140,14 +138,14 @@ script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 project_root=$(cd "$script_dir/../.." && pwd)
 batch_script="$script_dir/strategy_report.sbatch"
 [[ -f "$batch_script" ]] || fail "missing Slurm batch script: $batch_script"
-
-git -C "$project_root" diff --quiet || fail "tracked working-tree changes must be committed before submission"
-git -C "$project_root" diff --cached --quiet || fail "staged changes must be committed before submission"
+git -C "$project_root" diff --quiet || fail "tracked changes must be committed before submission"
+git -C "$project_root" diff --cached --quiet || fail \
+  "staged changes must be committed before submission"
 git_commit=$(git -C "$project_root" rev-parse HEAD)
 
+log_dir="$analytics_root/slurm"
 mkdir -p "$log_dir"
 job_tag=${report_name:0:40}
-
 job_id=$(sbatch --parsable \
   --job-name="gaph-report-$job_tag" \
   --partition="$slurm_partition" \
@@ -157,18 +155,14 @@ job_id=$(sbatch --parsable \
   --output="$log_dir/$report_name.%j.out" \
   --error="$log_dir/$report_name.%j.err" \
   "$batch_script" \
-  "$source_kind" \
-  "$source_path" \
-  "$cohort_root" \
+  "$analytics_root" \
   "$report_name" \
   "$git_commit" \
   "$project_root" \
+  "${#run_dirs[@]}" \
+  "${run_dirs[@]}" \
   "${report_args[@]}")
 
 printf 'Submitted report job %s\n' "$job_id"
-if [[ "$source_kind" == run ]]; then
-  printf 'Report: %s/reports/%s.html\n' "$run_dir" "${report_name%.html}"
-else
-  printf 'Cohort report root: %s/<cohort-id>/reports/%s.html\n' "$cohort_root" "${report_name%.html}"
-fi
+printf 'Analytics workspace: %s\n' "$analytics_root"
 printf 'Logs: %s/%s.%s.{out,err}\n' "$log_dir" "$report_name" "$job_id"

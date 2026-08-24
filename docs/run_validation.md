@@ -185,13 +185,18 @@ Annotation expected properties:
 
 Analytics expected properties after the first report/preflight build:
 
-- `<run>/analytics/alignment_aggregates/` contains strategy summary and feature
-  coverage derived from partition summaries and segments.
-- `<run>/analytics/taxonomy_summary/` contains the taxonomy summary derived from
-  `fetch/taxonomy.tsv.gz` and `fetch/orthologs.selected.tsv.gz`.
-- `<run>/analytics/annotation_support/` contains variant-strategy support and
-  ortholog-evidence histograms derived from Stage 2 evidence and the Stage 3
-  event map.
+- `<analytics-root>/cache/<source-id>/alignment_aggregates/` contains strategy
+  summary and feature coverage derived from partition summaries and segments.
+- `<analytics-root>/cache/<source-id>/taxonomy_summary/` contains the taxonomy
+  summary derived from `fetch/taxonomy.tsv.gz` and
+  `fetch/orthologs.selected.tsv.gz`.
+- `<analytics-root>/cache/<source-id>/annotation_support/` contains
+  variant-strategy support and ortholog-evidence histograms derived from Stage 2
+  evidence and the Stage 3 event map.
+- `<analytics-root>/analyses/<analysis-id>/` contains only run-set derivations,
+  report HTML, performance data, and its analysis manifest.
+- The completed source run has exactly the same files and metadata before and
+  after analytics.
 - Repeating the build without changing inputs is a cache hit. Removing or
   changing any required canonical input fails or invalidates the cache; no old
   pipeline aggregate is accepted instead.
@@ -265,7 +270,8 @@ must contain one partition tree, not duplicate global copies of summaries,
 segments, events, or support.
 
 Every report writes a progressive profile under
-`<run>/analytics/performance/<report-name>.json`. Compare a cold report with an
+`<analytics-root>/analyses/<analysis-id>/performance/<report-name>.json`.
+Compare a cold report with an
 immediate identical rerun: the second run should scan the same pipeline-owned
 VEP shards and report cache hits for completed derived alignment, taxonomy, support, and
 analysis artifacts. Investigate a regression only when it reproduces on the

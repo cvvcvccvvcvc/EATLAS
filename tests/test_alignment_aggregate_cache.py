@@ -212,7 +212,7 @@ def test_alignment_aggregate_rejects_noncanonical_manifest(tmp_path: Path) -> No
     alignment_manifest.write_text(json.dumps(manifest) + "\n")
 
     with pytest.raises(ValueError, match="unsupported schema"):
-        resolve_alignment_aggregate_paths(run_dir)
+        resolve_alignment_aggregate_paths(run_dir, analytics_dir=tmp_path / "analytics")
 
 
 def _read_text(path: Path) -> str:
@@ -227,7 +227,10 @@ def test_alignment_aggregate_cache_exactly_matches_current_builders(
     run_dir = tmp_path / "run"
     partitions, target_features, alignment_manifest = _write_evidence_run(run_dir)
 
-    actual = resolve_alignment_aggregate_paths(run_dir)
+    actual = resolve_alignment_aggregate_paths(
+        run_dir,
+        analytics_dir=tmp_path / "analytics",
+    )
 
     expected_dir = tmp_path / "expected"
     expected_strategy = expected_dir / "strategy_summary.tsv.gz"
@@ -283,14 +286,15 @@ def test_alignment_aggregate_cache_exactly_matches_current_builders(
 @pytest.mark.skipif(not BEDTOOLS_AVAILABLE, reason="bedtools is not installed")
 def test_alignment_aggregate_cache_hit_and_evidence_invalidation(tmp_path: Path) -> None:
     run_dir = tmp_path / "run"
+    analytics_dir = tmp_path / "analytics"
     partitions, target_features, alignment_manifest = _write_evidence_run(run_dir)
     first = build_or_load_alignment_aggregates(
         partition_dirs=partitions,
         target_features=target_features,
         alignment_manifest=alignment_manifest,
-        analytics_dir=run_dir / "analytics",
+        analytics_dir=analytics_dir,
     )
-    manifest_path = run_dir / "analytics" / "alignment_aggregates" / "manifest.json"
+    manifest_path = analytics_dir / "alignment_aggregates" / "manifest.json"
     first_manifest = json.loads(manifest_path.read_text())
     first_mtimes = (
         first.strategy_summary_tsv.stat().st_mtime_ns,
@@ -301,7 +305,7 @@ def test_alignment_aggregate_cache_hit_and_evidence_invalidation(tmp_path: Path)
         partition_dirs=partitions,
         target_features=target_features,
         alignment_manifest=alignment_manifest,
-        analytics_dir=run_dir / "analytics",
+        analytics_dir=analytics_dir,
     )
     assert second == first
     assert (
@@ -318,7 +322,7 @@ def test_alignment_aggregate_cache_hit_and_evidence_invalidation(tmp_path: Path)
         partition_dirs=partitions,
         target_features=target_features,
         alignment_manifest=alignment_manifest,
-        analytics_dir=run_dir / "analytics",
+        analytics_dir=analytics_dir,
     )
     second_manifest = json.loads(manifest_path.read_text())
 
@@ -329,61 +333,8 @@ def test_alignment_aggregate_cache_hit_and_evidence_invalidation(tmp_path: Path)
 def test_alignment_aggregate_resolution_requires_partitioned_evidence(tmp_path: Path) -> None:
     run_dir = tmp_path / "run"
     with pytest.raises(FileNotFoundError, match="Missing normalized alignment evidence"):
-        resolve_alignment_aggregate_paths(run_dir)
+        resolve_alignment_aggregate_paths(run_dir, analytics_dir=tmp_path / "analytics")
 
     (run_dir / "alignment" / "evidence" / "partitions").mkdir(parents=True)
     with pytest.raises(ValueError, match="contains no partitions"):
-        resolve_alignment_aggregate_paths(run_dir)
-
-
-def test_run_inputs_uses_resolved_alignment_aggregate_paths(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    run_dir = tmp_path / "run"
-    fetch_dir = run_dir / "fetch"
-    annotation_dir = run_dir / "annotation"
-    (fetch_dir / "sequences" / "targets").mkdir(parents=True)
-    annotation_dir.mkdir()
-    pd.DataFrame(columns=["gene_id"]).to_csv(
-        fetch_dir / "genes.tsv.gz", sep="\t", index=False, compression="gzip"
-    )
-    pd.DataFrame(columns=["gene_id"]).to_csv(
-        fetch_dir / "target_features.tsv.gz", sep="\t", index=False, compression="gzip"
-    )
-    source_annotations = annotation_dir / "variant_annotations.tsv.gz"
-    pd.DataFrame(columns=["variant_key"]).to_csv(
-        source_annotations, sep="\t", index=False, compression="gzip"
-    )
-    resolved = AlignmentAggregatePaths(
-        strategy_summary_tsv=run_dir / "analytics" / "strategy.tsv.gz",
-        feature_coverage_tsv=run_dir / "analytics" / "coverage.tsv.gz",
-    )
-    monkeypatch.setattr(
-        run_inputs_module,
-        "resolve_variant_annotations_source",
-        lambda _manifest: source_annotations,
-    )
-    monkeypatch.setattr(
-        run_inputs_module,
-        "resolve_alignment_aggregate_paths",
-        lambda _run_dir: resolved,
-    )
-    monkeypatch.setattr(
-        run_inputs_module,
-        "resolve_annotation_support_paths",
-        lambda _run_dir: SimpleNamespace(
-            variant_strategy_support_tsv=run_dir / "analytics" / "support.tsv.gz",
-            ortholog_evidence_summary_tsv=run_dir / "analytics" / "evidence.tsv.gz",
-        ),
-    )
-    monkeypatch.setattr(
-        run_inputs_module,
-        "resolve_taxonomy_summary_path",
-        lambda _run_dir: run_dir / "analytics" / "taxonomy.tsv.gz",
-    )
-
-    inputs = run_inputs_module.resolve_run_inputs(run_dir)
-
-    assert inputs.strategy_summary_tsv == resolved.strategy_summary_tsv
-    assert inputs.feature_coverage_tsv == resolved.feature_coverage_tsv
+        resolve_alignment_aggregate_paths(run_dir, analytics_dir=tmp_path / "analytics")

@@ -11,7 +11,7 @@ import shutil
 import subprocess
 import tempfile
 from collections import Counter, defaultdict
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -79,9 +79,9 @@ class ClinvarValidation:
 
 def build_validation(
     *,
-    run_dir: Path,
-    genes_tsv: Path,
-    target_sequences_dir: Path,
+    analytics_dir: Path,
+    genes_tsv: Path | Sequence[Path],
+    target_sequences_dir: Path | Sequence[Path],
     clinvar_vcf: Path,
     strategies: list[str],
     observed_store: ObservedVariantStore,
@@ -94,7 +94,6 @@ def build_validation(
     vep_result_cache_tile_size_bp: int = DEFAULT_TILE_SIZE_BP,
     performance_profile: PerformanceProfile | None = None,
 ) -> ClinvarValidation:
-    analytics_dir = run_dir / "analytics"
     analytics_dir.mkdir(parents=True, exist_ok=True)
     universe_path = analytics_dir / "clinvar_universe.snv_indel.tsv.gz"
     manifest_path = analytics_dir / "clinvar_universe.snv_indel.manifest.json"
@@ -315,16 +314,19 @@ def _aggregate_vep_by_variant(annotations: pd.DataFrame) -> pd.DataFrame:
 
 def build_or_load_clinvar_universe(
     *,
-    genes_tsv: Path,
-    target_sequences_dir: Path,
+    genes_tsv: Path | Sequence[Path],
+    target_sequences_dir: Path | Sequence[Path],
     clinvar_vcf: Path,
     universe_path: Path,
     manifest_path: Path,
     regions_path: Path,
 ) -> dict:
     expected_inputs = {
-        "genes_tsv": path_metadata(genes_tsv),
-        "target_sequences_dir": directory_metadata(target_sequences_dir, "*.fa.gz"),
+        "genes_tsv": [path_metadata(path) for path in _paths(genes_tsv)],
+        "target_sequences_dir": [
+            directory_metadata(path, "*.fa.gz")
+            for path in _paths(target_sequences_dir)
+        ],
         "clinvar_vcf": path_metadata(clinvar_vcf),
         "clinvar_tbi": path_metadata(Path(f"{clinvar_vcf}.tbi")),
         "mode": "snv_indel",
@@ -395,14 +397,31 @@ def build_or_load_clinvar_universe(
     return manifest
 
 
-def read_genes(path: Path) -> list[dict[str, str]]:
-    with gzip.open(path, "rt", newline="") as handle:
-        reader = csv.DictReader(handle, delimiter="\t")
-        required = {"gene_id", "chromosome", "begin", "end"}
-        missing = required - set(reader.fieldnames or [])
-        if missing:
-            raise ValueError(f"Genes table missing required columns: {', '.join(sorted(missing))}")
-        return [row for row in reader]
+def read_genes(path: Path | Sequence[Path]) -> list[dict[str, str]]:
+    rows = []
+    seen: set[str] = set()
+    for item in _paths(path):
+        with gzip.open(item, "rt", newline="") as handle:
+            reader = csv.DictReader(handle, delimiter="\t")
+            required = {"gene_id", "chromosome", "begin", "end"}
+            missing = required - set(reader.fieldnames or [])
+            if missing:
+                raise ValueError(
+                    f"Genes table missing required columns: {', '.join(sorted(missing))}"
+                )
+            for row in reader:
+                gene_id = str(row["gene_id"])
+                if gene_id in seen:
+                    raise ValueError(
+                        f"Duplicate target Gene ID across source runs: {gene_id}"
+                    )
+                seen.add(gene_id)
+                rows.append(row)
+    return rows
+
+
+def _paths(value: Path | Sequence[Path]) -> tuple[Path, ...]:
+    return (value,) if isinstance(value, Path) else tuple(value)
 
 
 def merged_intervals(genes: list[dict[str, str]]) -> list[tuple[str, int, int]]:

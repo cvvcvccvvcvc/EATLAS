@@ -383,6 +383,7 @@ def _write_source_contract(run_dir: Path) -> dict[str, object]:
 @pytest.mark.skipif(not BEDTOOLS_AVAILABLE, reason="bedtools is not installed")
 def test_annotation_support_cache_reproduces_current_report_contract(tmp_path: Path) -> None:
     run_dir = tmp_path / "run"
+    analytics_dir = tmp_path / "analytics"
     contract = _write_source_contract(run_dir)
 
     outputs = build_or_load_annotation_support(
@@ -394,10 +395,10 @@ def test_annotation_support_cache_reproduces_current_report_contract(tmp_path: P
         failures=contract["failures"],
         alignment_manifest=contract["alignment_manifest"],
         annotation_manifest=contract["annotation_manifest"],
-        analytics_dir=run_dir / "analytics",
+        analytics_dir=analytics_dir,
     )
     cache_manifest = json.loads(
-        (run_dir / "analytics" / "annotation_support" / "manifest.json").read_text()
+        (analytics_dir / "annotation_support" / "manifest.json").read_text()
     )
     assert cache_manifest["schema_version"] == 5
     assert cache_manifest["exact_support"] == {
@@ -560,6 +561,7 @@ def test_annotation_support_cache_reproduces_current_report_contract(tmp_path: P
 @pytest.mark.skipif(not BEDTOOLS_AVAILABLE, reason="bedtools is not installed")
 def test_annotation_support_cache_hit_and_failure_invalidation(tmp_path: Path) -> None:
     run_dir = tmp_path / "run"
+    analytics_dir = tmp_path / "analytics"
     contract = _write_source_contract(run_dir)
     kwargs = {
         "partition_dirs": [contract["partition"]],
@@ -570,10 +572,10 @@ def test_annotation_support_cache_hit_and_failure_invalidation(tmp_path: Path) -
         "failures": contract["failures"],
         "alignment_manifest": contract["alignment_manifest"],
         "annotation_manifest": contract["annotation_manifest"],
-        "analytics_dir": run_dir / "analytics",
+        "analytics_dir": analytics_dir,
     }
     first = build_or_load_annotation_support(**kwargs)
-    cache_manifest = run_dir / "analytics" / "annotation_support" / "manifest.json"
+    cache_manifest = analytics_dir / "annotation_support" / "manifest.json"
     first_manifest = json.loads(cache_manifest.read_text())
     mtimes = (
         first.variant_strategy_support_tsv.stat().st_mtime_ns,
@@ -601,7 +603,7 @@ def test_annotation_support_resolution_rejects_missing_or_incomplete_contract(
     annotation = run_dir / "annotation"
     annotation.mkdir(parents=True)
     with pytest.raises(FileNotFoundError, match="Missing annotation manifest"):
-        resolve_annotation_support_paths(run_dir)
+        resolve_annotation_support_paths(run_dir, analytics_dir=tmp_path / "analytics")
 
     (annotation / "manifest.json").write_text(
         json.dumps(
@@ -613,7 +615,7 @@ def test_annotation_support_resolution_rejects_missing_or_incomplete_contract(
         + "\n"
     )
     with pytest.raises(ValueError, match="does not declare the required partitioned"):
-        resolve_annotation_support_paths(run_dir)
+        resolve_annotation_support_paths(run_dir, analytics_dir=tmp_path / "analytics")
 
     (annotation / "manifest.json").write_text(
         json.dumps(
@@ -634,61 +636,7 @@ def test_annotation_support_resolution_rejects_missing_or_incomplete_contract(
         + "\n"
     )
     with pytest.raises(FileNotFoundError, match="Incomplete analytics annotation-support"):
-        resolve_annotation_support_paths(run_dir)
-
-
-def test_run_inputs_uses_resolved_annotation_support_paths(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    run_dir = tmp_path / "run"
-    fetch = run_dir / "fetch"
-    annotation = run_dir / "annotation"
-    (fetch / "sequences" / "targets").mkdir(parents=True)
-    annotation.mkdir()
-    pd.DataFrame(columns=["gene_id"]).to_csv(
-        fetch / "genes.tsv.gz", sep="\t", index=False, compression="gzip"
-    )
-    pd.DataFrame(columns=["gene_id"]).to_csv(
-        fetch / "target_features.tsv.gz", sep="\t", index=False, compression="gzip"
-    )
-    source_annotations = annotation / "variant_annotations.tsv.gz"
-    pd.DataFrame(columns=["variant_key"]).to_csv(
-        source_annotations, sep="\t", index=False, compression="gzip"
-    )
-    annotation_support = AnnotationSupportPaths(
-        variant_strategy_support_tsv=run_dir / "analytics" / "support.tsv.gz",
-        ortholog_evidence_summary_tsv=run_dir / "analytics" / "evidence.tsv.gz",
-    )
-    alignment_aggregates = AlignmentAggregatePaths(
-        strategy_summary_tsv=run_dir / "analytics" / "strategy.tsv.gz",
-        feature_coverage_tsv=run_dir / "analytics" / "coverage.tsv.gz",
-    )
-    monkeypatch.setattr(
-        run_inputs_module,
-        "resolve_variant_annotations_source",
-        lambda _manifest: source_annotations,
-    )
-    monkeypatch.setattr(
-        run_inputs_module,
-        "resolve_alignment_aggregate_paths",
-        lambda _run_dir: alignment_aggregates,
-    )
-    monkeypatch.setattr(
-        run_inputs_module,
-        "resolve_annotation_support_paths",
-        lambda _run_dir: annotation_support,
-    )
-    monkeypatch.setattr(
-        run_inputs_module,
-        "resolve_taxonomy_summary_path",
-        lambda _run_dir: run_dir / "analytics" / "taxonomy.tsv.gz",
-    )
-
-    inputs = run_inputs_module.resolve_run_inputs(run_dir)
-
-    assert inputs.variant_strategy_support_tsv == annotation_support.variant_strategy_support_tsv
-    assert inputs.ortholog_evidence_summary_tsv == annotation_support.ortholog_evidence_summary_tsv
+        resolve_annotation_support_paths(run_dir, analytics_dir=tmp_path / "analytics")
 
 
 def test_annotation_support_import_does_not_require_pysam(tmp_path: Path) -> None:

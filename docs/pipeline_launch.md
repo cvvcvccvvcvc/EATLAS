@@ -101,6 +101,7 @@ bash scripts/slurm/run_and_report.sh \
   --ids-file "$IDS" \
   --run-dir "$RUN" \
   --work-dir "$WORK" \
+  --analytics-root "$GAPH_ROOT/analytics" \
   --report-name strategy_compare \
   -- \
   --target-space-null
@@ -108,7 +109,7 @@ bash scripts/slurm/run_and_report.sh \
 
 Everything after `--` is a report argument and is forwarded unchanged. Omit
 the target-space-null option unless the user requested it. See
-`docs/report_generation.md` for report and cohort details.
+`docs/report_generation.md` for report and multi-run details.
 
 ## Resume
 

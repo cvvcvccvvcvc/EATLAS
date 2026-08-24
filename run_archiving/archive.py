@@ -126,6 +126,24 @@ def _validate_run_dir(
                 f"Execution cache must not be inside an archived run: "
                 f"{resolved / forbidden}"
             )
+    analytics_dir = resolved / "analytics"
+    if analytics_dir.exists():
+        raise ArchiveError(
+            "Analytics artifacts must be stored outside immutable source runs: "
+            f"{analytics_dir}"
+        )
+    reports_dir = resolved / "reports"
+    if reports_dir.exists():
+        unexpected = [
+            path
+            for path in reports_dir.iterdir()
+            if path.name != "nextflow"
+        ]
+        if unexpected:
+            raise ArchiveError(
+                "Source-run reports may contain only pipeline execution reports; "
+                f"move analytics output outside the run: {unexpected[0]}"
+            )
     return resolved, run_id, legacy_run
 
 

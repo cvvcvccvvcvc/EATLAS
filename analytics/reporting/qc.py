@@ -15,7 +15,7 @@ from analytics.vep.consequences import (
     VALIDATION_CONSEQUENCE_OPTIONS as CONSEQUENCE_OPTIONS,
     VALIDATION_CONSEQUENCE_TERMS as CONSEQUENCE_TERMS,
 )
-from analytics.io.run_inputs import RunInputs, file_size_label, read_json
+from analytics.io.run_inputs import AnalysisInputs, file_size_label
 from .components import format_int, metric_cards, table_html
 from .config import (
     CONSEQUENCE_GROUP_ORDER,
@@ -414,7 +414,7 @@ def feature_coverage_formula_table() -> pd.DataFrame:
 
 
 def build_methods_sections(
-    inputs: RunInputs,
+    inputs: AnalysisInputs,
     out_html: Path,
     variant_summary: VariantSummary,
     cov: pd.DataFrame,
@@ -430,22 +430,25 @@ def build_methods_sections(
     report_profile_path: Path | None = None,
 ) -> list[str]:
     files = [
-        ("Analysis Root", inputs.run_dir),
-        ("Fetch Manifest", inputs.fetch_manifest_json),
-        ("Variant Annotation Dataset", inputs.variant_annotations_source),
-        ("Variant Strategy Support", inputs.variant_strategy_support_tsv),
-        ("Ortholog Evidence Summary", inputs.ortholog_evidence_summary_tsv),
-        ("Target Features", inputs.target_features_tsv),
-        ("Target Sequences", inputs.target_sequences_dir),
-        ("Feature Coverage", inputs.feature_coverage_tsv),
-        ("Strategy Summary", inputs.strategy_summary_tsv),
+        ("Analysis workspace", inputs.analysis_dir),
+        ("Analysis manifest", inputs.analysis_manifest_json),
         ("Taxonomy Summary", inputs.taxonomy_summary_tsv),
-        ("Annotation Manifest", inputs.annotation_manifest_json),
-        ("Alignment Manifest", inputs.alignment_manifest_json),
         ("Output HTML", out_html),
     ]
-    if inputs.cohort_manifest_json is not None:
-        files.insert(1, ("Resolved Cohort Manifest", inputs.cohort_manifest_json))
+    for index, source in enumerate(inputs.source_runs, start=1):
+        prefix = f"Source {index}"
+        files.extend(
+            [
+                (f"{prefix} run", source.run_dir),
+                (f"{prefix} root manifest", source.root_manifest_json),
+                (f"{prefix} fetch manifest", source.fetch_manifest_json),
+                (f"{prefix} alignment manifest", source.alignment_manifest_json),
+                (f"{prefix} annotation manifest", source.annotation_manifest_json),
+                (f"{prefix} variant annotations", source.variant_annotations_source),
+                (f"{prefix} target features", source.target_features_tsv),
+                (f"{prefix} target sequences", source.target_sequences_dir),
+            ]
+        )
     if validation is not None:
         files.extend(
             [
@@ -493,39 +496,36 @@ def build_methods_sections(
                 ("Candidate contexts excluded from gnomAD", format_int(variant_summary.gnomad_lookup_failed)),
                 (
                     "ClinVar cached variants",
-                    "Not pooled"
-                    if inputs.is_cohort
-                    else format_int(annotation_manifest.get("clinvar_cached_variant_count", 0)),
+                    format_int(
+                        annotation_manifest.get("clinvar_cached_variant_count", 0)
+                    ),
                 ),
                 (
                     "gnomAD cached variants",
-                    "Not pooled"
-                    if inputs.is_cohort
-                    else format_int(annotation_manifest.get("gnomad_cached_variant_count", 0)),
+                    format_int(
+                        annotation_manifest.get("gnomad_cached_variant_count", 0)
+                    ),
                 ),
                 ("Feature coverage rows", format_int(len(cov))),
             ]
         ),
     ]
-    if inputs.is_cohort and inputs.cohort_manifest_json is not None:
-        resolved_cohort = read_json(inputs.cohort_manifest_json)
+    if len(inputs.source_runs) > 1:
         provenance_rows = [
             {
-                "Run": str(member.get("label", "")),
-                "Run directory": str(member.get("run_dir", "")),
-                "Scientific fingerprint": str(member.get("fingerprint", "")),
-                "Accepted genes": int(member.get("requested_gene_count", 0)),
-                "Target genes": int(member.get("target_gene_count", 0)),
+                "Source ID": source.source_id,
+                "Run directory": str(source.run_dir),
+                "Accepted genes": len(source.requested_gene_ids),
+                "Target genes": len(source.target_gene_ids),
             }
-            for member in resolved_cohort.get("members", [])
-            if isinstance(member, dict)
+            for source in inputs.source_runs
         ]
         sections.extend(
             [
-                "<details open><summary>Cohort provenance</summary>",
-                "<p class=\"lead\">All listed completed runs were validated before "
-                "pooling. Accepted gene IDs are disjoint; scientific statistics are "
-                "recomputed over their union.</p>",
+                "<details open><summary>Source-run provenance</summary>",
+                "<p class=\"lead\">All completed source runs were validated before "
+                "analysis. Accepted gene IDs are disjoint; scientific statistics are "
+                "computed over their union without copying source evidence.</p>",
                 table_html(
                     pd.DataFrame(provenance_rows),
                     classes="table table-sm table-striped",

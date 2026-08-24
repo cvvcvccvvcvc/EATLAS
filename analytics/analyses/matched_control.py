@@ -16,6 +16,7 @@ import math
 import tempfile
 import time
 import warnings
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -51,8 +52,8 @@ from genomics.vep.annotator import annotate_vep_consequences
 from genomics.vep.result_cache import DEFAULT_TILE_SIZE_BP
 
 
-CONTROL_VERSION = 6
-FOCAL_CACHE_VERSION = 2
+CONTROL_VERSION = 7
+FOCAL_CACHE_VERSION = 3
 MATCHED_POOL_SIZE = 5
 CANDIDATE_POOL_SIZE = MATCHED_POOL_SIZE * 3
 CANDIDATE_FOCAL_CHUNK_SIZE = 2_000
@@ -90,11 +91,11 @@ class TargetSpaceNullAnalysis:
 
 def build_target_space_null(
     *,
-    run_dir: Path,
-    variant_annotations_source: Path,
-    target_features_tsv: Path,
-    genes_tsv: Path,
-    target_sequences_dir: Path,
+    analytics_dir: Path,
+    variant_annotations_source: Path | Sequence[Path],
+    target_features_tsv: Path | Sequence[Path],
+    genes_tsv: Path | Sequence[Path],
+    target_sequences_dir: Path | Sequence[Path],
     clinvar_vcf: Path,
     strategies: list[str],
     observed_store: ObservedVariantStore | None = None,
@@ -119,7 +120,7 @@ def build_target_space_null(
     if resamples < 100:
         raise ValueError("target-space-null resamples must be >= 100")
 
-    outdir = run_dir / "analytics" / "negative_control"
+    outdir = analytics_dir / "negative_control"
     outdir.mkdir(parents=True, exist_ok=True)
     matched_path = outdir / "target_space_null.snv.tsv.gz"
     focal_path = outdir / "target_space_null.focal_snvs.tsv.gz"
@@ -141,9 +142,12 @@ def build_target_space_null(
     expected_inputs = {
         "version": CONTROL_VERSION,
         "variant_annotations": variant_source.identity,
-        "target_features": path_metadata(target_features_tsv),
-        "genes": path_metadata(genes_tsv),
-        "target_sequences": directory_metadata(target_sequences_dir, "*.fa.gz"),
+        "target_features": [path_metadata(path) for path in _paths(target_features_tsv)],
+        "genes": [path_metadata(path) for path in _paths(genes_tsv)],
+        "target_sequences": [
+            directory_metadata(path, "*.fa.gz")
+            for path in _paths(target_sequences_dir)
+        ],
         "strategies": sorted(strategies),
         "sample_size_per_strategy": sample_size_per_strategy,
         "matched_pool_size": MATCHED_POOL_SIZE,
@@ -187,7 +191,7 @@ def build_target_space_null(
         if observed_store is None:
             observed_store = build_or_load_observed_variant_store(
                 variant_annotations_source=variant_annotations_source,
-                analytics_dir=run_dir / "analytics",
+                analytics_dir=analytics_dir,
                 strategies=strategies,
             )
             timing["details"] = (
@@ -207,20 +211,42 @@ def build_target_space_null(
     focal_inputs = {
         "version": FOCAL_CACHE_VERSION,
         "variant_annotations": variant_source.identity,
-        "target_features": path_metadata(target_features_tsv),
-        "genes": path_metadata(genes_tsv),
-        "target_sequences": directory_metadata(target_sequences_dir, "*.fa.gz"),
+        "target_features": [path_metadata(path) for path in _paths(target_features_tsv)],
+        "genes": [path_metadata(path) for path in _paths(genes_tsv)],
+        "target_sequences": [
+            directory_metadata(path, "*.fa.gz")
+            for path in _paths(target_sequences_dir)
+        ],
         "strategies": sorted(strategies),
         "sample_size_per_strategy": sample_size_per_strategy,
         "seed": seed,
         "rank_method": FOCAL_RANK_METHOD,
     }
     with profile_stage(performance_profile, "Target-null focal sampling") as timing:
-        genes = _read_genes(genes_tsv)
-        contexts = read_disjoint_contexts(
-            target_features_tsv,
-            {gene_id: int(gene["length"]) for gene_id, gene in genes.items()},
-        )
+        gene_paths = _paths(genes_tsv)
+        feature_paths = _paths(target_features_tsv)
+        if not gene_paths or len(gene_paths) != len(feature_paths):
+            raise ValueError(
+                "Target-space null requires equal non-empty gene and feature tables"
+            )
+        source_genes = [_read_genes(path) for path in gene_paths]
+        genes: dict[str, dict[str, object]] = {}
+        for current in source_genes:
+            overlap = set(genes) & set(current)
+            if overlap:
+                raise ValueError(
+                    "Duplicate target Gene ID across source runs: "
+                    + ", ".join(sorted(overlap)[:20])
+                )
+            genes.update(current)
+        contexts = {}
+        for path, current_genes in zip(feature_paths, source_genes):
+            lengths = {
+                gene_id: int(gene["length"])
+                for gene_id, gene in current_genes.items()
+            }
+            current = read_disjoint_contexts(path, lengths)
+            contexts.update(current)
         focal_cache_hit = _cache_is_valid(
             focal_manifest_path,
             focal_inputs,
@@ -508,8 +534,21 @@ def _write_tsv(path: Path, frame: pd.DataFrame) -> None:
     write_tsv_atomic(path, frame)
 
 
-def _read_genes(path: Path) -> dict[str, dict[str, object]]:
-    frame = pd.read_csv(path, sep="\t", compression="gzip", keep_default_na=False)
+def _read_genes(
+    path: Path | Sequence[Path],
+) -> dict[str, dict[str, object]]:
+    frame = pd.concat(
+        [
+            pd.read_csv(
+                item,
+                sep="\t",
+                compression="gzip",
+                keep_default_na=False,
+            )
+            for item in _paths(path)
+        ],
+        ignore_index=True,
+    )
     required = {
         "gene_id",
         "genomic_accession",
@@ -522,6 +561,10 @@ def _read_genes(path: Path) -> dict[str, dict[str, object]]:
         raise ValueError(f"Genes table missing columns: {', '.join(sorted(missing))}")
     genes = {}
     for row in frame.itertuples(index=False):
+        if str(row.gene_id) in genes:
+            raise ValueError(
+                f"Duplicate target Gene ID across source runs: {row.gene_id}"
+            )
         chrom = refseq_accession_to_chrom(str(row.genomic_accession))
         if chrom is None:
             raise ValueError(
@@ -586,17 +629,29 @@ def _sample_focal_snvs(
     return frame
 
 
-def _read_target_sequences(directory: Path, gene_ids: set[str]) -> dict[str, str]:
+def _read_target_sequences(
+    directory: Path | Sequence[Path],
+    gene_ids: set[str],
+) -> dict[str, str]:
+    directories = _paths(directory)
     sequences = {}
     for gene_id in sorted(gene_ids):
-        path = directory / f"{gene_id}.fa.gz"
-        if not path.exists():
-            raise FileNotFoundError(f"Missing target sequence for gene {gene_id}: {path}")
+        matches = [path / f"{gene_id}.fa.gz" for path in directories]
+        matches = [path for path in matches if path.exists()]
+        if len(matches) != 1:
+            raise FileNotFoundError(
+                f"Expected one target sequence for gene {gene_id}; found {len(matches)}"
+            )
+        path = matches[0]
         with gzip.open(path, "rt") as handle:
             sequences[gene_id] = "".join(
                 line.strip() for line in handle if not line.startswith(">")
             ).upper()
     return sequences
+
+
+def _paths(value: Path | Sequence[Path]) -> tuple[Path, ...]:
+    return (value,) if isinstance(value, Path) else tuple(value)
 
 
 def _validate_focal_reference(

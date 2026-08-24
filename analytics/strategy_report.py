@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build an HTML report for one completed GAPH run or a compatible run cohort."""
+"""Build one HTML report from one or more compatible completed GAPH runs."""
 
 from __future__ import annotations
 
@@ -21,20 +21,18 @@ from analytics.analyses.observed_variant_store import (
 )
 from analytics.analyses.variant_summary import build_variant_summary
 from analytics.io.run_inputs import (
+    build_analysis_inputs,
     read_failures,
     read_feature_coverage,
     read_input_gene_count,
-    read_json,
     read_strategy_summary,
     read_taxonomy_summary,
-    resolve_out_html,
-    resolve_run_inputs,
-    validate_report_inputs,
+    resolve_report_html,
+    resolve_source_runs,
     variant_annotation_descriptor,
     variant_annotation_release,
 )
-from analytics.io.cohort_inputs import resolve_cohort_inputs
-from analytics.io.artifacts import write_text_atomic
+from analytics.io.artifacts import path_metadata, write_text_atomic
 from analytics.io.performance import PerformanceProfile
 from analytics.reporting.components import strategy_label
 from analytics.reporting.basic_filtering import build_basic_filtering_sections
@@ -55,43 +53,40 @@ from analytics.reporting.variant_profile import (
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    source = parser.add_mutually_exclusive_group(required=True)
-    source.add_argument("--run-dir", type=Path, help="Completed GAPH run directory.")
-    source.add_argument(
-        "--cohort-manifest",
+    parser.add_argument(
+        "--analytics-root",
         type=Path,
-        help="JSON manifest listing compatible completed GAPH runs.",
+        required=True,
+        help="External workspace for analytics caches, derived data, and reports.",
     )
     parser.add_argument(
-        "--cohort-root",
+        "--run-dir",
         type=Path,
-        help=(
-            "Root for cohort outputs. Default: <cohort-manifest-dir>/cohorts. "
-            "Valid only with --cohort-manifest."
-        ),
+        action="append",
+        required=True,
+        help="Completed GAPH source run. Repeat for a multi-run analysis.",
     )
     parser.add_argument(
         "--clinvar-vcf",
         type=Path,
         default=project_root() / "assets" / "reference" / "clinvar" / "clinvar.vcf.gz",
-        help="Indexed ClinVar VCF used for validation. Default: assets/reference/clinvar/clinvar.vcf.gz",
-    )
-    parser.add_argument(
-        "--out-html",
-        type=Path,
-        help="Output HTML path. Default: <analysis-root>/reports/strategy_compare.html",
+        help=(
+            "Indexed ClinVar VCF used for validation. Default: "
+            "assets/reference/clinvar/clinvar.vcf.gz"
+        ),
     )
     parser.add_argument(
         "--report-name",
-        help="Short report file name inside <analysis-root>/reports. '.html' is added if omitted.",
+        required=True,
+        help="Report file name inside the analysis reports directory.",
     )
     parser.add_argument(
         "--target-space-null",
         action=argparse.BooleanOptionalAction,
         default=False,
         help=(
-            "Build the consequence-matched target-space null. Disabled by default because it uses Ensembl VEP "
-            "and the gnomAD GraphQL API."
+            "Build the consequence-matched target-space null. Disabled by default "
+            "because it uses Ensembl VEP and the gnomAD GraphQL API."
         ),
     )
     parser.add_argument(
@@ -136,7 +131,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--vep-release",
         default=os.environ.get("GAPH_VEP_RELEASE") or None,
-        help="Pinned Ensembl VEP release. Required for local VEP; REST detects the current release.",
+        help=(
+            "Pinned Ensembl VEP release. Required for local VEP; REST detects "
+            "the current release."
+        ),
     )
     parser.add_argument(
         "--vep-executable",
@@ -213,8 +211,6 @@ def _default_firth_workers() -> int:
 
 def main() -> None:
     args = parse_args()
-    if args.run_dir is not None and args.cohort_root is not None:
-        raise ValueError("--cohort-root can only be used with --cohort-manifest")
     args.clinvar_vcf = args.clinvar_vcf.expanduser().resolve()
     if args.phylop_bigwig is not None:
         args.phylop_bigwig = args.phylop_bigwig.expanduser().resolve()
@@ -232,21 +228,10 @@ def main() -> None:
         raise ValueError("--firth-workers must be >= 1")
     if args.vep_result_cache_tile_size_bp < 1:
         raise ValueError("--vep-result-cache-tile-size-bp must be >= 1")
-    if args.cohort_manifest is not None:
-        inputs = resolve_cohort_inputs(
-            args.cohort_manifest,
-            cohort_root=args.cohort_root,
-            clinvar_vcf=args.clinvar_vcf,
-        )
-        print(
-            f"Cohort {inputs.cohort_id}: {len(inputs.source_run_dirs)} runs, "
-            f"workspace {inputs.run_dir}"
-        )
-    else:
-        inputs = resolve_run_inputs(args.run_dir)
-        validate_report_inputs(inputs)
-    candidate_annotation_descriptor = variant_annotation_descriptor(inputs)
-    artifact_release = variant_annotation_release(candidate_annotation_descriptor)
+    source_runs = resolve_source_runs(args.run_dir, clinvar_vcf=args.clinvar_vcf)
+    artifact_release = variant_annotation_release(
+        source_runs[0].variant_annotation_descriptor
+    )
     if args.vep_release and str(args.vep_release) != artifact_release:
         raise ValueError(
             "Pipeline variant annotations use VEP release "
@@ -256,16 +241,47 @@ def main() -> None:
         args.vep_release = artifact_release
     if args.vep_backend == "local" and args.vep_cache_dir is None:
         raise ValueError("--vep-cache-dir is required with --vep-backend local")
-    out_html = resolve_out_html(args, inputs.run_dir)
-    analytics_dir = inputs.run_dir / "analytics"
-    performance_path = analytics_dir / "performance" / f"{out_html.stem}.json"
+    scientific_config = {
+        "clinvar": {
+            "vcf": path_metadata(args.clinvar_vcf),
+            "tbi": path_metadata(Path(f"{args.clinvar_vcf}.tbi")),
+        },
+        "phylop": path_metadata(args.phylop_bigwig)
+        if args.phylop_bigwig is not None
+        else None,
+        "target_space_null": (
+            {
+                "enabled": True,
+                "sample_size": args.target_space_null_sample_size,
+                "resamples": args.target_space_null_resamples,
+                "seed": args.target_space_null_seed,
+            }
+            if args.target_space_null
+            else {"enabled": False}
+        ),
+        "vep": {"backend": args.vep_backend, "release": args.vep_release},
+    }
+    inputs = build_analysis_inputs(
+        source_runs,
+        analytics_root=args.analytics_root,
+        scientific_config=scientific_config,
+    )
+    candidate_annotation_descriptor = variant_annotation_descriptor(inputs)
+    out_html = resolve_report_html(inputs, args.report_name)
+    analytics_dir = inputs.derived_dir
+    performance_path = inputs.analysis_dir / "performance" / f"{out_html.stem}.json"
     performance = PerformanceProfile(
         performance_path,
-        run_dir=inputs.run_dir,
+        analysis_dir=inputs.analysis_dir,
+        analysis_id=inputs.analysis_id,
         report_path=out_html,
-        tracked_directory=analytics_dir,
-        cohort_id=inputs.cohort_id,
+        tracked_directory=inputs.analysis_dir,
         source_run_dirs=inputs.source_run_dirs,
+    )
+
+    print(
+        f"Analysis {inputs.analysis_id}: {len(inputs.source_runs)} source run(s), "
+        f"workspace {inputs.analysis_dir}"
     )
 
     with performance.stage("Firth runtime preflight") as timing:
@@ -279,36 +295,43 @@ def main() -> None:
             f"{args.vep_result_cache_dir.expanduser()} "
             f"(tile size {args.vep_result_cache_tile_size_bp} bp)"
         )
-    print(f"Streaming {inputs.variant_annotations_source}...")
+    print(
+        "Streaming variant annotations from "
+        f"{len(inputs.variant_annotation_sources)} source run(s)..."
+    )
     with performance.stage("Variant summary") as timing:
         variant_summary = build_variant_summary(
-            inputs.variant_annotations_source,
+            inputs.variant_annotation_sources,
             analytics_dir,
             strategy_label,
-            target_features_path=inputs.target_features_tsv,
-            genes_path=inputs.genes_tsv,
-            annotation_failures_path=inputs.annotation_failures_tsv,
-            variant_strategy_support_path=inputs.variant_strategy_support_tsv,
-            ortholog_evidence_summary_path=inputs.ortholog_evidence_summary_tsv,
+            target_features_path=inputs.target_features_tsvs,
+            genes_path=inputs.genes_tsvs,
+            annotation_failures_path=inputs.annotation_failure_tsvs,
+            variant_strategy_support_path=inputs.variant_strategy_support_tsvs,
+            ortholog_evidence_summary_path=inputs.ortholog_evidence_summary_tsvs,
             performance_profile=performance,
         )
         timing["details"] = "cache hit" if variant_summary.cache_hit else "cache miss"
 
     with performance.stage("Run summary inputs"):
-        cov = read_feature_coverage(inputs.feature_coverage_tsv)
-        alignment_summary = read_strategy_summary(inputs.strategy_summary_tsv)
-        fetch_manifest = read_json(inputs.fetch_manifest_json)
+        cov = read_feature_coverage(inputs.feature_coverage_tsvs)
+        alignment_summary = read_strategy_summary(inputs.strategy_summary_tsvs)
+        fetch_manifest = inputs.fetch_manifest
         input_gene_count = int(
-            fetch_manifest.get("unique_gene_count") or read_input_gene_count(inputs.genes_tsv)
+            fetch_manifest.get("unique_gene_count")
+            or read_input_gene_count(inputs.genes_tsvs)
         )
-        failures = read_failures(inputs.annotation_failures_tsv)
-        annotation_manifest = read_json(inputs.annotation_manifest_json)
-        alignment_manifest = read_json(inputs.alignment_manifest_json)
+        failures = read_failures(inputs.annotation_failure_tsvs)
+        annotation_manifest = inputs.annotation_manifest
+        alignment_manifest = inputs.alignment_manifest
         taxonomy_summary = read_taxonomy_summary(inputs.taxonomy_summary_tsv)
 
     print("Computing strategy metrics...")
     with performance.stage("Strategy metrics"):
-        strategy_stats_full = merge_alignment_summary(variant_summary.strategy_stats, alignment_summary)
+        strategy_stats_full = merge_alignment_summary(
+            variant_summary.strategy_stats,
+            alignment_summary,
+        )
         summary_columns = [
             "Strategy",
             "Unique Variants",
@@ -332,7 +355,7 @@ def main() -> None:
     print("Building observed variant store...")
     with performance.stage("Observed variant store") as timing:
         observed_store = build_or_load_observed_variant_store(
-            variant_annotations_source=inputs.variant_annotations_source,
+            variant_annotations_source=inputs.variant_annotation_sources,
             analytics_dir=analytics_dir,
             strategies=strategies,
         )
@@ -348,9 +371,9 @@ def main() -> None:
     print("Computing ClinVar enrichment...")
     with performance.stage("ClinVar enrichment"):
         validation = build_validation(
-            run_dir=inputs.run_dir,
-            genes_tsv=inputs.genes_tsv,
-            target_sequences_dir=inputs.target_sequences_dir,
+            analytics_dir=analytics_dir,
+            genes_tsv=inputs.genes_tsvs,
+            target_sequences_dir=inputs.target_sequence_dirs,
             clinvar_vcf=args.clinvar_vcf,
             strategies=strategies,
             observed_store=observed_store,
@@ -380,10 +403,10 @@ def main() -> None:
     print("Computing basic support-filter curves...")
     with performance.stage("Basic filtering") as timing:
         basic_filtering = build_basic_filtering_analysis(
-            variant_annotations_source=inputs.variant_annotations_source,
-            variant_strategy_support_tsv=inputs.variant_strategy_support_tsv,
-            annotation_failures_tsv=inputs.annotation_failures_tsv,
-            analytics_dir=inputs.run_dir / "analytics",
+            variant_annotations_source=inputs.variant_annotation_sources,
+            variant_strategy_support_tsv=inputs.variant_strategy_support_tsvs,
+            annotation_failures_tsv=inputs.annotation_failure_tsvs,
+            analytics_dir=analytics_dir,
             cohort=conservation_analysis.validation.cohort,
             strategies=strategies,
             eligible_gene_ids_by_strategy=eligible_gene_ids_by_strategy,
@@ -402,7 +425,7 @@ def main() -> None:
             base_validation=conservation_analysis.validation,
             strategies=strategies,
             eligible_gene_ids_by_strategy=eligible_gene_ids_by_strategy,
-            analytics_dir=inputs.run_dir / "analytics",
+            analytics_dir=analytics_dir,
             firth_workers=args.firth_workers,
             performance_profile=performance,
         )
@@ -417,11 +440,11 @@ def main() -> None:
         print("Computing consequence-matched target-space null...")
         with performance.stage("Target-space null"):
             negative_controls = build_target_space_null(
-                run_dir=inputs.run_dir,
-                variant_annotations_source=inputs.variant_annotations_source,
-                target_features_tsv=inputs.target_features_tsv,
-                genes_tsv=inputs.genes_tsv,
-                target_sequences_dir=inputs.target_sequences_dir,
+                analytics_dir=analytics_dir,
+                variant_annotations_source=inputs.variant_annotation_sources,
+                target_features_tsv=inputs.target_features_tsvs,
+                genes_tsv=inputs.genes_tsvs,
+                target_sequences_dir=inputs.target_sequence_dirs,
                 clinvar_vcf=args.clinvar_vcf,
                 strategies=strategies,
                 observed_store=observed_store,

@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import tempfile
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterator
@@ -170,7 +171,7 @@ class ObservedVariantStore:
 
 def build_or_load_observed_variant_store(
     *,
-    variant_annotations_source: Path,
+    variant_annotations_source: Path | Sequence[Path],
     analytics_dir: Path,
     strategies: list[str] | tuple[str, ...],
 ) -> ObservedVariantStore:

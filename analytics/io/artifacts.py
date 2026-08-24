@@ -13,7 +13,7 @@ import pandas as pd
 
 
 def sha256_file(path: Path, *, chunk_size: int = 16 * 1024 * 1024) -> str:
-    """Return a content identity suitable for reproducible cohort inputs."""
+    """Return a content identity suitable for reproducible analysis inputs."""
 
     digest = hashlib.sha256()
     with path.open("rb") as handle:

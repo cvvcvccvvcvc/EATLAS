@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import tempfile
+from collections.abc import Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
 
@@ -55,9 +56,9 @@ class CandidateConservation:
 
 def build_candidate_conservation(
     *,
-    variant_annotations_source: Path,
+    variant_annotations_source: Path | Sequence[Path],
     analytics_dir: Path,
-    annotation_failures_tsv: Path | None = None,
+    annotation_failures_tsv: Path | Sequence[Path] | None = None,
     additional_rows: list[dict[str, str]] | None = None,
     track_names: str = DEFAULT_TRACK_NAMES,
     max_block_bp: int = 250_000,
@@ -86,7 +87,9 @@ def build_candidate_conservation(
         "cache_version": CACHE_VERSION,
         "variant_annotations": variant_source.identity,
         "annotation_failures": (
-            path_metadata(annotation_failures_tsv) if annotation_failures_tsv is not None else None
+            [path_metadata(path) for path in _paths(annotation_failures_tsv)]
+            if annotation_failures_tsv is not None
+            else None
         ),
         "track": track_identity(track),
         "max_block_bp": max_block_bp,
@@ -193,6 +196,10 @@ def build_candidate_conservation(
         manifest,
         position_scores,
     )
+
+
+def _paths(value: Path | Sequence[Path]) -> tuple[Path, ...]:
+    return (value,) if isinstance(value, Path) else tuple(value)
 
 
 def _load_cache(

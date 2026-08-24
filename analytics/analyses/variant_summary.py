@@ -8,6 +8,7 @@ import math
 import tempfile
 import time
 from collections import defaultdict
+from collections.abc import Sequence
 from contextlib import nullcontext
 from dataclasses import dataclass
 from pathlib import Path
@@ -46,7 +47,7 @@ VARIANT_USECOLS = [
     "vep_status",
     "vep_primary_consequence",
 ]
-SUMMARY_CACHE_VERSION = 16
+SUMMARY_CACHE_VERSION = 17
 SUMMARY_CACHE_NAME = "variant_summary.json.gz"
 SPECIAL_FLOAT_KEY = "__gaph_float__"
 ORTHOLOG_EVIDENCE_COLUMNS = [
@@ -115,21 +116,22 @@ class VariantSummary:
     cache_hit: bool = False
 
 
-def _input_metadata(path: Path) -> dict[str, object]:
-    stat = path.stat()
-    return {
-        "path": str(path.resolve()),
-        "size_bytes": stat.st_size,
-        "mtime_ns": stat.st_mtime_ns,
-    }
+def _input_metadata(
+    path: Path | Sequence[Path],
+) -> list[dict[str, object]]:
+    return [
+        {
+            "path": str(item.resolve()),
+            "size_bytes": item.stat().st_size,
+            "mtime_ns": item.stat().st_mtime_ns,
+        }
+        for item in _paths(path)
+    ]
 
 
-def _variant_input_metadata(path: Path) -> dict[str, object]:
+def _variant_input_metadata(path: Path | Sequence[Path]) -> dict[str, object]:
     source = resolve_variant_aggregation_source(path)
-    return {
-        "path": str(path.resolve()),
-        "source": source.identity,
-    }
+    return {"source": source.identity}
 
 
 def _encode_scalar(value: object) -> object:
@@ -178,12 +180,12 @@ def _frame_from_payload(payload: dict[str, object]) -> pd.DataFrame:
 
 def _summary_payload(
     summary: VariantSummary,
-    source: Path,
-    target_features: Path | None,
-    genes: Path | None,
-    annotation_failures: Path | None,
-    variant_strategy_support: Path | None,
-    ortholog_evidence_summary: Path,
+    source: Path | Sequence[Path],
+    target_features: Path | Sequence[Path] | None,
+    genes: Path | Sequence[Path] | None,
+    annotation_failures: Path | Sequence[Path] | None,
+    variant_strategy_support: Path | Sequence[Path] | None,
+    ortholog_evidence_summary: Path | Sequence[Path],
     strategy_label: Callable[[str], str],
 ) -> dict[str, object]:
     overlap = None
@@ -302,12 +304,12 @@ def _summary_from_payload(payload: dict[str, object]) -> VariantSummary:
 
 def _load_summary_cache(
     cache_path: Path,
-    source: Path,
-    target_features: Path | None,
-    genes: Path | None,
-    annotation_failures: Path | None,
-    variant_strategy_support: Path | None,
-    ortholog_evidence_summary: Path,
+    source: Path | Sequence[Path],
+    target_features: Path | Sequence[Path] | None,
+    genes: Path | Sequence[Path] | None,
+    annotation_failures: Path | Sequence[Path] | None,
+    variant_strategy_support: Path | Sequence[Path] | None,
+    ortholog_evidence_summary: Path | Sequence[Path],
     strategy_label: Callable[[str], str],
 ) -> VariantSummary | None:
     if not cache_path.exists():
@@ -351,12 +353,12 @@ def _load_summary_cache(
 def _write_summary_cache(
     cache_path: Path,
     summary: VariantSummary,
-    source: Path,
-    target_features: Path | None,
-    genes: Path | None,
-    annotation_failures: Path | None,
-    variant_strategy_support: Path | None,
-    ortholog_evidence_summary: Path,
+    source: Path | Sequence[Path],
+    target_features: Path | Sequence[Path] | None,
+    genes: Path | Sequence[Path] | None,
+    annotation_failures: Path | Sequence[Path] | None,
+    variant_strategy_support: Path | Sequence[Path] | None,
+    ortholog_evidence_summary: Path | Sequence[Path],
     strategy_label: Callable[[str], str],
 ) -> None:
     payload = _summary_payload(
@@ -405,7 +407,10 @@ def _categorize_clinvar(values: pd.Series, record_presence: pd.Series) -> pd.Cat
     return pd.Categorical(category, categories=CLINVAR_CLASS_ORDER, ordered=True)
 
 
-def _add_pathogenic_strategy_support(path: Path | None, variants: pd.DataFrame) -> pd.DataFrame:
+def _add_pathogenic_strategy_support(
+    path: Path | Sequence[Path] | None,
+    variants: pd.DataFrame,
+) -> pd.DataFrame:
     variants = variants.copy()
     for column in ["support_ortholog_mean", "support_ortholog_min", "support_ortholog_max"]:
         variants[column] = np.nan
@@ -414,24 +419,29 @@ def _add_pathogenic_strategy_support(path: Path | None, variants: pd.DataFrame) 
 
     keys = {str(value).encode() for value in variants["variant_id"]}
     support: dict[str, list[int]] = defaultdict(list)
-    with gzip.open(path, "rb") as handle:
-        header = handle.readline().rstrip(b"\r\n").split(b"\t")
-        required = [b"variant_key", b"alt_support_ortholog_count"]
-        if any(column not in header for column in required):
-            raise ValueError(
-                "Variant strategy support table needs variant_key and alt_support_ortholog_count."
-            )
-        key_index = header.index(b"variant_key")
-        count_index = header.index(b"alt_support_ortholog_count")
-        for line in handle:
-            fields = line.rstrip(b"\r\n").split(b"\t")
-            if len(fields) <= max(key_index, count_index) or fields[key_index] not in keys:
-                continue
-            try:
-                count = int(fields[count_index])
-            except ValueError:
-                continue
-            support[fields[key_index].decode()].append(count)
+    for item in _paths(path):
+        with gzip.open(item, "rb") as handle:
+            header = handle.readline().rstrip(b"\r\n").split(b"\t")
+            required = [b"variant_key", b"alt_support_ortholog_count"]
+            if any(column not in header for column in required):
+                raise ValueError(
+                    "Variant strategy support table needs variant_key and "
+                    "alt_support_ortholog_count."
+                )
+            key_index = header.index(b"variant_key")
+            count_index = header.index(b"alt_support_ortholog_count")
+            for line in handle:
+                fields = line.rstrip(b"\r\n").split(b"\t")
+                if (
+                    len(fields) <= max(key_index, count_index)
+                    or fields[key_index] not in keys
+                ):
+                    continue
+                try:
+                    count = int(fields[count_index])
+                except ValueError:
+                    continue
+                support[fields[key_index].decode()].append(count)
 
     for index, variant_id in variants["variant_id"].items():
         values = support.get(str(variant_id), [])
@@ -513,7 +523,7 @@ def _ortholog_evidence_distributions(
 
 
 def read_taxonomic_ortholog_evidence(
-    path: Path,
+    path: Path | Sequence[Path],
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Bin the compact analytics histogram for interactive report heatmaps."""
     empty = pd.DataFrame(columns=ORTHOLOG_EVIDENCE_COLUMNS)
@@ -529,12 +539,22 @@ def read_taxonomic_ortholog_evidence(
         "gnomad_not_found_count",
         "gnomad_lookup_failed_count",
     }
-    frame = pd.read_csv(path, sep="\t", compression="gzip", keep_default_na=False)
-    missing = required - set(frame.columns)
-    if missing:
-        raise ValueError(
-            f"Ortholog evidence summary {path} missing columns: {', '.join(sorted(missing))}"
+    frames = []
+    for item in _paths(path):
+        frame = pd.read_csv(
+            item,
+            sep="\t",
+            compression="gzip",
+            keep_default_na=False,
         )
+        missing = required - set(frame.columns)
+        if missing:
+            raise ValueError(
+                f"Ortholog evidence summary {item} missing columns: "
+                + ", ".join(sorted(missing))
+            )
+        frames.append(frame)
+    frame = pd.concat(frames, ignore_index=True)
     if frame.empty:
         return empty, empty_distributions
     for column in (
@@ -637,8 +657,8 @@ def _expand_strategy_masks(
 def _summary_from_grouped_aggregation(
     grouped: VariantGroupedAggregation,
     strategy_label: Callable[[str], str],
-    variant_strategy_support_path: Path | None,
-    ortholog_evidence_summary_path: Path,
+    variant_strategy_support_path: Path | Sequence[Path] | None,
+    ortholog_evidence_summary_path: Path | Sequence[Path],
 ) -> VariantSummary:
     strategies = list(grouped.masks.strategies)
     global_rows = _expand_strategy_masks(grouped.global_groups, grouped.masks.strategies)
@@ -827,22 +847,26 @@ def _summary_from_grouped_aggregation(
 
 
 def build_variant_summary(
-    path: Path,
+    path: Path | Sequence[Path],
     work_dir: Path,
     strategy_label: Callable[[str], str],
     *,
-    ortholog_evidence_summary_path: Path,
-    target_features_path: Path | None = None,
-    genes_path: Path | None = None,
-    annotation_failures_path: Path | None = None,
-    variant_strategy_support_path: Path | None = None,
+    ortholog_evidence_summary_path: Path | Sequence[Path],
+    target_features_path: Path | Sequence[Path] | None = None,
+    genes_path: Path | Sequence[Path] | None = None,
+    annotation_failures_path: Path | Sequence[Path] | None = None,
+    variant_strategy_support_path: Path | Sequence[Path] | None = None,
     chunk_size: int = 100_000,
     performance_profile: PerformanceProfile | None = None,
 ) -> VariantSummary:
     """Aggregate a variant annotation table without retaining row-level data in memory."""
-    if not ortholog_evidence_summary_path.is_file():
+    missing_evidence = [
+        item for item in _paths(ortholog_evidence_summary_path) if not item.is_file()
+    ]
+    if missing_evidence:
         raise FileNotFoundError(
-            f"Missing ortholog evidence summary: {ortholog_evidence_summary_path}"
+            "Missing ortholog evidence summary: "
+            + ", ".join(str(item) for item in missing_evidence)
         )
     work_dir.mkdir(parents=True, exist_ok=True)
     cache_path = work_dir / SUMMARY_CACHE_NAME
@@ -910,13 +934,13 @@ def build_variant_summary(
 
 
 def _compute_variant_summary(
-    path: Path,
+    path: Path | Sequence[Path],
     work_dir: Path,
-    target_features_path: Path | None,
-    genes_path: Path | None,
-    annotation_failures_path: Path | None,
-    variant_strategy_support_path: Path | None,
-    ortholog_evidence_summary_path: Path,
+    target_features_path: Path | Sequence[Path] | None,
+    genes_path: Path | Sequence[Path] | None,
+    annotation_failures_path: Path | Sequence[Path] | None,
+    variant_strategy_support_path: Path | Sequence[Path] | None,
+    ortholog_evidence_summary_path: Path | Sequence[Path],
     strategy_label: Callable[[str], str],
     chunk_size: int,
     performance_profile: PerformanceProfile | None,
@@ -958,3 +982,7 @@ def _compute_variant_summary(
             time.perf_counter() - started,
         )
     return summary
+
+
+def _paths(value: Path | Sequence[Path]) -> tuple[Path, ...]:
+    return (value,) if isinstance(value, Path) else tuple(value)

@@ -10,6 +10,12 @@ execution-cache directories are rejected instead of being silently skipped.
 New runs must have a root `run_manifest.json` with `status=complete`,
 `success=true`, and `exit_status=0`.
 
+A completed source run is immutable. Analytics belongs in its separate external
+workspace and is not included in a run archive. The archiver rejects a top-level
+`analytics/` directory and rejects report content other than
+`reports/nextflow/`, so derived reports cannot be silently archived as source
+evidence.
+
 Remote layout:
 
 ```text

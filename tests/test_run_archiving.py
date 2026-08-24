@@ -343,6 +343,27 @@ def test_snapshot_rejects_symlinks(tmp_path: Path) -> None:
         build_snapshot(run_dir)
 
 
+def test_snapshot_rejects_analytics_inside_source_run(tmp_path: Path) -> None:
+    run_dir = _make_run(tmp_path / "results")
+    (run_dir / "analytics").mkdir()
+    (run_dir / "analytics" / "report.html").write_text("derived")
+
+    with pytest.raises(ArchiveError, match="outside immutable source runs"):
+        build_snapshot(run_dir)
+
+
+def test_snapshot_rejects_non_nextflow_reports_inside_source_run(
+    tmp_path: Path,
+) -> None:
+    run_dir = _make_run(tmp_path / "results")
+    (run_dir / "reports" / "nextflow").mkdir(parents=True)
+    (run_dir / "reports" / "nextflow" / "trace.txt").write_text("trace")
+    (run_dir / "reports" / "scientific.html").write_text("derived")
+
+    with pytest.raises(ArchiveError, match="only pipeline execution reports"):
+        build_snapshot(run_dir)
+
+
 def test_verify_rejects_path_traversal_run_id(tmp_path: Path) -> None:
     client = LocalRemote(tmp_path / "remote")
 

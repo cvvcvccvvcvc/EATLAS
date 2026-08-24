@@ -9,6 +9,7 @@ Usage:
     --ids-file /absolute/path/to/gene_ids.txt \
     --run-dir /absolute/path/to/results/run_name \
     --work-dir /absolute/path/to/work/run_name \
+    --analytics-root /absolute/path/to/analytics \
     --report-name report_name \
     [--alignment-strategies strategy_a,strategy_b] \
     [--slurm-cpus N] [--slurm-memory SIZE] \
@@ -29,6 +30,7 @@ fail() {
 ids_file=""
 run_dir=""
 work_dir=""
+analytics_root=""
 report_name=""
 alignment_strategies=""
 report_slurm_cpus=""
@@ -52,6 +54,11 @@ while (( $# > 0 )); do
     --work-dir)
       (( $# >= 2 )) || fail "--work-dir requires a value"
       work_dir=$2
+      shift 2
+      ;;
+    --analytics-root)
+      (( $# >= 2 )) || fail "--analytics-root requires a value"
+      analytics_root=$2
       shift 2
       ;;
     --report-name)
@@ -102,11 +109,13 @@ done
 [[ -n "$ids_file" ]] || fail "--ids-file is required"
 [[ -n "$run_dir" ]] || fail "--run-dir is required"
 [[ -n "$work_dir" ]] || fail "--work-dir is required"
+[[ -n "$analytics_root" ]] || fail "--analytics-root is required"
 [[ -n "$report_name" ]] || fail "--report-name is required"
 
 [[ "$ids_file" = /* ]] || fail "--ids-file must be an absolute path"
 [[ "$run_dir" = /* ]] || fail "--run-dir must be an absolute path"
 [[ "$work_dir" = /* ]] || fail "--work-dir must be an absolute path"
+[[ "$analytics_root" = /* ]] || fail "--analytics-root must be an absolute path"
 [[ -f "$ids_file" ]] || fail "IDs file does not exist: $ids_file"
 [[ "$report_name" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || fail \
   "--report-name may contain only letters, digits, dot, underscore, and hyphen"
@@ -139,6 +148,7 @@ fi
 
 report_command=(
   bash "$report_launcher"
+  --analytics-root "$analytics_root"
   --run-dir "$run_dir"
   --report-name "$report_name"
 )

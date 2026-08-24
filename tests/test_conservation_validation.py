@@ -302,6 +302,49 @@ def test_cohort_can_use_unified_vep_consequences(tmp_path: Path) -> None:
     assert cohort.variants.loc[0, "consequence_groups"] == "intronic"
 
 
+def test_target_contexts_combine_disjoint_source_runs_without_cross_contamination(
+    tmp_path: Path,
+) -> None:
+    gene_paths = []
+    feature_paths = []
+    for label, gene_id, begin, context in (
+        ("a", "1", 1, "cds"),
+        ("b", "2", 101, "intron"),
+    ):
+        genes_path = tmp_path / f"genes-{label}.tsv.gz"
+        pd.DataFrame(
+            [{"gene_id": gene_id, "begin": begin, "sequence_length": 10}]
+        ).to_csv(genes_path, sep="\t", index=False, compression="gzip")
+        features_path = tmp_path / f"features-{label}.tsv.gz"
+        pd.DataFrame(
+            [
+                {
+                    "gene_id": gene_id,
+                    "feature_type": context,
+                    "target_start0": 0,
+                    "target_end0": 10,
+                }
+            ]
+        ).to_csv(features_path, sep="\t", index=False, compression="gzip")
+        gene_paths.append(genes_path)
+        feature_paths.append(features_path)
+
+    variants = pd.DataFrame(
+        [
+            {"variant_key": "1:2:A>G", "gene_ids": "1"},
+            {"variant_key": "1:108:A>G", "gene_ids": "2"},
+        ]
+    )
+
+    contexts = validation_module.assign_target_contexts(
+        variants,
+        genes_tsv=gene_paths,
+        target_features_tsv=feature_paths,
+    )
+
+    assert contexts.tolist() == ["cds", "intron"]
+
+
 def test_fixed_bands_use_prespecified_boundaries_and_all_selectors(tmp_path: Path) -> None:
     values = pd.Series([-1.30103, -1.0, 1.301029, 1.30103])
     assert assign_phylop_band(values).astype(str).tolist() == [

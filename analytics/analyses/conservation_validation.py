@@ -7,7 +7,7 @@ import os
 import shutil
 import subprocess
 import tempfile
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -70,8 +70,8 @@ def build_conservation_cohort(
     *,
     universe: pd.DataFrame,
     conservation: pd.DataFrame,
-    genes_tsv: Path,
-    target_features_tsv: Path,
+    genes_tsv: Path | Sequence[Path],
+    target_features_tsv: Path | Sequence[Path],
     score_column: str = SCORE_COLUMN,
     consequence_column: str = "clinvar_mc_terms",
 ) -> ConservationCohort:
@@ -140,22 +140,46 @@ def build_conservation_cohort(
 def assign_target_contexts(
     variants: pd.DataFrame,
     *,
-    genes_tsv: Path,
-    target_features_tsv: Path,
+    genes_tsv: Path | Sequence[Path],
+    target_features_tsv: Path | Sequence[Path],
 ) -> pd.Series:
-    genes = pd.read_csv(
-        genes_tsv,
-        sep="\t",
-        compression="gzip" if genes_tsv.suffix == ".gz" else None,
-        keep_default_na=False,
-        usecols=["gene_id", "begin", "sequence_length"],
-        dtype={"gene_id": str},
-    )
+    gene_paths = _paths(genes_tsv)
+    feature_paths = _paths(target_features_tsv)
+    if not gene_paths or len(gene_paths) != len(feature_paths):
+        raise ValueError(
+            "Target contexts require equal non-empty gene and feature tables"
+        )
+    gene_frames = [
+        pd.read_csv(
+            path,
+            sep="\t",
+            compression="gzip" if path.suffix == ".gz" else None,
+            keep_default_na=False,
+            usecols=["gene_id", "begin", "sequence_length"],
+            dtype={"gene_id": str},
+        )
+        for path in gene_paths
+    ]
+    genes = pd.concat(gene_frames, ignore_index=True)
+    if genes["gene_id"].duplicated().any():
+        raise ValueError("Target gene tables repeat a Gene ID")
     gene_begins = dict(zip(genes["gene_id"], genes["begin"].astype(int)))
-    intervals = read_disjoint_contexts(
-        target_features_tsv,
-        dict(zip(genes["gene_id"], genes["sequence_length"].astype(int))),
-    )
+    intervals = {}
+    for features_path, source_genes in zip(feature_paths, gene_frames):
+        lengths = dict(
+            zip(
+                source_genes["gene_id"],
+                source_genes["sequence_length"].astype(int),
+            )
+        )
+        current = read_disjoint_contexts(features_path, lengths)
+        overlap = set(intervals) & set(current)
+        if overlap:
+            raise ValueError(
+                "Target feature tables repeat Gene ID(s): "
+                + ", ".join(sorted(overlap)[:20])
+            )
+        intervals.update(current)
     starts = {
         gene_id: [start for start, _end, _context in values]
         for gene_id, values in intervals.items()
@@ -183,6 +207,10 @@ def assign_target_contexts(
         for row in variants[["variant_key", "gene_ids"]].itertuples(index=False)
     ]
     return pd.Series(values, index=variants.index, dtype="object")
+
+
+def _paths(value: Path | Sequence[Path]) -> tuple[Path, ...]:
+    return (value,) if isinstance(value, Path) else tuple(value)
 
 
 def split_memberships(value: str) -> set[str]:

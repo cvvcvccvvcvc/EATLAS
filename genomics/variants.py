@@ -8,6 +8,7 @@ import gzip
 import re
 from collections import Counter, defaultdict
 from pathlib import Path
+from collections.abc import Sequence
 from typing import TypeAlias
 
 
@@ -125,23 +126,33 @@ def changed_target_position(key: tuple[str, int, str, str], gene_begin: int) -> 
     return pos - int(gene_begin) + shared_prefix
 
 
-def read_failed_regions(path: Path | None, source: str) -> RegionIndex:
-    if path is None or not path.exists():
+def read_failed_regions(
+    path: Path | Sequence[Path] | None,
+    source: str,
+) -> RegionIndex:
+    paths = _paths(path)
+    if not paths:
         return {}
     intervals_by_chrom: dict[str, list[tuple[int, int]]] = defaultdict(list)
-    with open_text(path) as handle:
-        reader = csv.DictReader(handle, delimiter="\t")
-        for row in reader:
-            if str(row.get("source", "")) != source or str(row.get("scope", "")) != "region":
-                continue
-            chrom = normalize_chrom(row.get("chrom"))
-            try:
-                start = int(row.get("start", ""))
-                end = int(row.get("end", ""))
-            except (TypeError, ValueError):
-                continue
-            if chrom and start > 0 and end >= start:
-                intervals_by_chrom[chrom].append((start, end))
+    for item in paths:
+        if not item.exists():
+            raise FileNotFoundError(item)
+        with open_text(item) as handle:
+            reader = csv.DictReader(handle, delimiter="\t")
+            for row in reader:
+                if (
+                    str(row.get("source", "")) != source
+                    or str(row.get("scope", "")) != "region"
+                ):
+                    continue
+                chrom = normalize_chrom(row.get("chrom"))
+                try:
+                    start = int(row.get("start", ""))
+                    end = int(row.get("end", ""))
+                except (TypeError, ValueError):
+                    continue
+                if chrom and start > 0 and end >= start:
+                    intervals_by_chrom[chrom].append((start, end))
 
     index: RegionIndex = {}
     for chrom, intervals in intervals_by_chrom.items():
@@ -167,33 +178,64 @@ def variant_type(ref: str, alt: str) -> str:
     return "complex"
 
 
-def load_target_contexts(genes_tsv: Path, target_sequences_dir: Path) -> dict[str, dict]:
-    if not genes_tsv.exists():
-        raise FileNotFoundError(f"Target genes table not found: {genes_tsv}")
-    if not target_sequences_dir.exists():
-        raise FileNotFoundError(f"Target sequences directory not found: {target_sequences_dir}")
-
+def load_target_contexts(
+    genes_tsv: Path | Sequence[Path],
+    target_sequences_dir: Path | Sequence[Path],
+) -> dict[str, dict]:
+    gene_paths = _paths(genes_tsv)
+    sequence_dirs = _paths(target_sequences_dir)
+    if not gene_paths or len(gene_paths) != len(sequence_dirs):
+        raise ValueError(
+            "Target contexts require equal non-empty gene tables and sequence directories"
+        )
     contexts = {}
-    with open_text(genes_tsv) as handle:
-        reader = csv.DictReader(handle, delimiter="\t")
-        required = {"gene_id", "genomic_accession", "chromosome", "begin", "end"}
-        missing = required - set(reader.fieldnames or [])
-        if missing:
-            raise ValueError(f"Target genes table missing required columns: {', '.join(sorted(missing))}")
-        for row in reader:
-            gene_id = str(row["gene_id"])
-            fasta_path = target_sequences_dir / f"{gene_id}.fa.gz"
-            if not fasta_path.exists():
-                raise FileNotFoundError(f"Target FASTA not found for gene {gene_id}: {fasta_path}")
-            contexts[gene_id] = {
-                "gene_id": gene_id,
-                "accession": row["genomic_accession"],
-                "chrom": normalize_chrom(row["chromosome"]) or refseq_accession_to_chrom(row["genomic_accession"]),
-                "begin": int(row["begin"]),
-                "end": int(row["end"]),
-                "fasta_path": fasta_path,
+    for genes_path, sequences_path in zip(gene_paths, sequence_dirs):
+        if not genes_path.exists():
+            raise FileNotFoundError(f"Target genes table not found: {genes_path}")
+        if not sequences_path.exists():
+            raise FileNotFoundError(
+                f"Target sequences directory not found: {sequences_path}"
+            )
+        with open_text(genes_path) as handle:
+            reader = csv.DictReader(handle, delimiter="\t")
+            required = {
+                "gene_id",
+                "genomic_accession",
+                "chromosome",
+                "begin",
+                "end",
             }
+            missing = required - set(reader.fieldnames or [])
+            if missing:
+                raise ValueError(
+                    "Target genes table missing required columns: "
+                    + ", ".join(sorted(missing))
+                )
+            for row in reader:
+                gene_id = str(row["gene_id"])
+                if gene_id in contexts:
+                    raise ValueError(f"Duplicate target Gene ID across source runs: {gene_id}")
+                fasta_path = sequences_path / f"{gene_id}.fa.gz"
+                if not fasta_path.exists():
+                    raise FileNotFoundError(
+                        f"Target FASTA not found for gene {gene_id}: {fasta_path}"
+                    )
+                contexts[gene_id] = {
+                    "gene_id": gene_id,
+                    "accession": row["genomic_accession"],
+                    "chrom": normalize_chrom(row["chromosome"])
+                    or refseq_accession_to_chrom(row["genomic_accession"]),
+                    "begin": int(row["begin"]),
+                    "end": int(row["end"]),
+                    "fasta_path": fasta_path,
+                }
     return contexts
+
+
+def _paths(value: Path | Sequence[Path] | None) -> tuple[Path, ...]:
+    if value is None:
+        return ()
+    return (value,) if isinstance(value, Path) else tuple(value)
 
 
 def context_sequence(context: dict) -> str:

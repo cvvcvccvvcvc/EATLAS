@@ -5,6 +5,7 @@ from __future__ import annotations
 import csv
 import gzip
 import json
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -12,8 +13,6 @@ from analytics.io.artifacts import path_metadata
 
 
 VARIANT_DATASET_SCHEMA = "gaph_variant_annotation_dataset_v1"
-COHORT_VARIANT_SOURCE_KIND = "gaph_cohort_variant_source"
-COHORT_VARIANT_SOURCE_SCHEMA_VERSION = 1
 
 
 @dataclass(frozen=True)
@@ -27,39 +26,55 @@ class VariantTableSource:
 
 
 def resolve_variant_table_source(
-    path: Path,
+    source_paths: Path | Sequence[Path],
     *,
     required_columns: set[str],
 ) -> VariantTableSource:
-    """Resolve one current dataset, cohort descriptor, or explicit TSV fixture."""
+    """Resolve one or more current datasets without materializing a combined copy."""
 
-    path = path.expanduser().resolve()
-    cohort_paths = cohort_variant_paths(path)
-    if cohort_paths is not None:
-        sources = [
-            resolve_variant_table_source(member, required_columns=required_columns)
-            for member in cohort_paths
-        ]
+    if not isinstance(source_paths, Path):
+        members = tuple(source_paths)
+        if not members:
+            raise ValueError("Variant source requires at least one dataset")
+        if len(members) == 1:
+            return _resolve_one_variant_source(
+                members[0],
+                required_columns=required_columns,
+            )
+        sources = tuple(
+            _resolve_one_variant_source(path, required_columns=required_columns)
+            for path in members
+        )
         columns = sources[0].columns
         if any(source.columns != columns for source in sources[1:]):
-            raise ValueError("Cohort variant datasets have different columns")
+            raise ValueError("Variant annotation datasets have different columns")
         row_count = (
             sum(int(source.row_count) for source in sources)
             if all(source.row_count is not None for source in sources)
             else None
         )
         return VariantTableSource(
-            paths=tuple(item for source in sources for item in source.paths),
+            paths=tuple(path for source in sources for path in source.paths),
             columns=columns,
             row_count=row_count,
             header=True,
-            mode="cohort_partitioned",
-            identity={
-                "cohort_descriptor": path_metadata(path),
-                "members": [source.identity for source in sources],
-            },
+            mode="multi_run_partitioned" if len(sources) > 1 else sources[0].mode,
+            identity={"members": [source.identity for source in sources]},
         )
+    return _resolve_one_variant_source(
+        source_paths,
+        required_columns=required_columns,
+    )
 
+
+def _resolve_one_variant_source(
+    path: Path,
+    *,
+    required_columns: set[str],
+) -> VariantTableSource:
+    """Resolve one pipeline dataset or an explicit TSV used by focused tools/tests."""
+
+    path = path.expanduser().resolve()
     if path.name == "manifest.json" and path.is_file():
         manifest = _read_json(path)
         if manifest.get("schema") == VARIANT_DATASET_SCHEMA:
@@ -184,30 +199,6 @@ def variant_source_sql(source: VariantTableSource) -> str:
 
 def sql_string(value: object) -> str:
     return "'" + str(value).replace("'", "''") + "'"
-
-
-def cohort_variant_paths(path: Path) -> tuple[Path, ...] | None:
-    if path.suffix != ".json" or not path.is_file():
-        return None
-    payload = _read_json(path)
-    if payload.get("kind") != COHORT_VARIANT_SOURCE_KIND:
-        return None
-    if payload.get("schema_version") != COHORT_VARIANT_SOURCE_SCHEMA_VERSION:
-        raise ValueError(f"Unsupported cohort variant source schema: {path}")
-    raw_members = payload.get("members")
-    if not isinstance(raw_members, list) or not raw_members:
-        raise ValueError(f"Cohort variant source has no members: {path}")
-    members = []
-    for raw in raw_members:
-        if not isinstance(raw, dict) or not str(raw.get("path") or "").strip():
-            raise ValueError(f"Invalid cohort variant source member: {path}")
-        member = Path(str(raw["path"])).expanduser()
-        if not member.is_absolute():
-            member = path.parent / member
-        members.append(member.resolve())
-    if len(set(members)) != len(members):
-        raise ValueError(f"Cohort variant source repeats a member: {path}")
-    return tuple(members)
 
 
 def _read_header(path: Path) -> list[str]:

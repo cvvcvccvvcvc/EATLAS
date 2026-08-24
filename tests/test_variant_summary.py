@@ -169,7 +169,8 @@ def test_variant_summary_prefers_compact_ortholog_evidence_and_tracks_its_cache(
     work_dir = tmp_path / "analytics"
     profile = PerformanceProfile(
         tmp_path / "performance.json",
-        run_dir=tmp_path,
+        analysis_dir=tmp_path,
+        analysis_id="test-analysis",
         report_path=tmp_path / "report.html",
     )
     with profile.stage("Variant summary"):

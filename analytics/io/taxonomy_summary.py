@@ -7,7 +7,9 @@ import gzip
 import hashlib
 import json
 import tempfile
+from itertools import chain
 from pathlib import Path
+from typing import Sequence
 
 from analytics.io.artifacts import content_identity, write_json_atomic
 from analytics.derivations.taxonomy import (
@@ -18,12 +20,16 @@ from analytics.derivations.taxonomy import (
 )
 
 
-CACHE_SCHEMA_VERSION = 2
+CACHE_SCHEMA_VERSION = 3
 CACHE_DIRNAME = "taxonomy_summary"
 CACHE_FILENAME = "taxonomy_summary.tsv.gz"
 
 
-def resolve_taxonomy_summary_path(run_dir: Path) -> Path:
+def resolve_taxonomy_summary_path(
+    run_dir: Path,
+    *,
+    analytics_dir: Path,
+) -> Path:
     """Require the canonical Stage 1 taxonomy contract and derive its summary."""
 
     fetch_dir = run_dir / "fetch"
@@ -38,7 +44,7 @@ def resolve_taxonomy_summary_path(run_dir: Path) -> Path:
     return build_or_load_taxonomy_summary(
         taxonomy_tsv=taxonomy_tsv,
         orthologs_tsv=orthologs_tsv,
-        analytics_dir=run_dir / "analytics",
+        analytics_dir=analytics_dir,
     )
 
 
@@ -48,25 +54,61 @@ def build_or_load_taxonomy_summary(
     orthologs_tsv: Path,
     analytics_dir: Path,
 ) -> Path:
-    """Materialize the exact pipeline taxonomy-summary schema under analytics."""
+    """Materialize one run's taxonomy summary under analytics."""
+
+    return build_or_load_taxonomy_summary_many(
+        taxonomy_tsvs=(taxonomy_tsv,),
+        orthologs_tsvs=(orthologs_tsv,),
+        analytics_dir=analytics_dir,
+    )
+
+
+def build_or_load_taxonomy_summary_many(
+    *,
+    taxonomy_tsvs: Sequence[Path],
+    orthologs_tsvs: Sequence[Path],
+    analytics_dir: Path,
+) -> Path:
+    """Derive one exact summary from compatible, disjoint source runs."""
+
+    taxonomy_tsvs = tuple(taxonomy_tsvs)
+    orthologs_tsvs = tuple(orthologs_tsvs)
+    if not taxonomy_tsvs or len(taxonomy_tsvs) != len(orthologs_tsvs):
+        raise ValueError(
+            "Taxonomy summary requires equal non-empty taxonomy and ortholog inputs"
+        )
 
     cache_dir = analytics_dir / CACHE_DIRNAME
     output_path = cache_dir / CACHE_FILENAME
     manifest_path = cache_dir / "manifest.json"
     inputs = {
-        "taxonomy": content_identity(taxonomy_tsv),
-        "orthologs_selected": content_identity(orthologs_tsv),
+        "taxonomy": [content_identity(path) for path in taxonomy_tsvs],
+        "orthologs_selected": [content_identity(path) for path in orthologs_tsvs],
     }
     fingerprint = _fingerprint(inputs)
     if _cache_is_valid(manifest_path, output_path, inputs, fingerprint):
         return output_path
 
-    profiles = load_taxonomy_profiles(taxonomy_tsv)
-    with gzip.open(orthologs_tsv, "rt", newline="") as handle:
+    profiles = {}
+    for path in taxonomy_tsvs:
+        for tax_id, profile in load_taxonomy_profiles(path).items():
+            previous = profiles.setdefault(tax_id, profile)
+            if previous != profile:
+                raise ValueError(
+                    f"Source taxonomy tables disagree for tax_id {tax_id}: {path}"
+                )
+
+    handles = [gzip.open(path, "rt", newline="") for path in orthologs_tsvs]
+    try:
         rows = build_taxonomy_summary_rows(
-            csv.DictReader(handle, delimiter="\t"),
+            chain.from_iterable(
+                csv.DictReader(handle, delimiter="\t") for handle in handles
+            ),
             profiles,
         )
+    finally:
+        for handle in handles:
+            handle.close()
 
     cache_dir.mkdir(parents=True, exist_ok=True)
     temporary_path: Path | None = None
@@ -100,7 +142,7 @@ def build_or_load_taxonomy_summary(
     return output_path
 
 
-def _fingerprint(inputs: dict[str, dict[str, object]]) -> str:
+def _fingerprint(inputs: dict[str, object]) -> str:
     payload = {
         "schema_version": CACHE_SCHEMA_VERSION,
         "inputs": inputs,
@@ -112,7 +154,7 @@ def _fingerprint(inputs: dict[str, dict[str, object]]) -> str:
 def _cache_is_valid(
     manifest_path: Path,
     output_path: Path,
-    inputs: dict[str, dict[str, object]],
+    inputs: dict[str, object],
     fingerprint: str,
 ) -> bool:
     if not manifest_path.is_file() or not output_path.is_file():

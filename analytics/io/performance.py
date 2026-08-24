@@ -15,7 +15,7 @@ from pathlib import Path
 from .artifacts import path_metadata, write_json_atomic
 
 
-PROFILE_SCHEMA_VERSION = 1
+PROFILE_SCHEMA_VERSION = 2
 
 
 def _utc_now() -> str:
@@ -71,19 +71,19 @@ class PerformanceProfile:
         self,
         path: Path,
         *,
-        run_dir: Path,
+        analysis_dir: Path,
+        analysis_id: str,
         report_path: Path,
         tracked_directory: Path | None = None,
         command: Sequence[str] | None = None,
-        cohort_id: str | None = None,
         source_run_dirs: Sequence[Path] = (),
     ) -> None:
         self.path = path
-        self.run_dir = run_dir
+        self.analysis_dir = analysis_dir
+        self.analysis_id = analysis_id
         self.report_path = report_path
         self.tracked_directory = tracked_directory
         self.command = list(command or sys.argv)
-        self.cohort_id = cohort_id
         self.source_run_dirs = tuple(source_run_dirs)
         self.status = "running"
         self.started_at_utc = _utc_now()
@@ -278,7 +278,11 @@ class PerformanceProfile:
             "status": self.status,
             "started_at_utc": self.started_at_utc,
             "finished_at_utc": self.finished_at_utc,
-            "run_dir": str(self.run_dir.resolve()),
+            "analysis_id": self.analysis_id,
+            "analysis_dir": str(self.analysis_dir.resolve()),
+            "source_run_dirs": [
+                str(path.resolve()) for path in self.source_run_dirs
+            ],
             "report_path": str(self.report_path.resolve()),
             "profile_path": str(self.path.resolve()),
             "command": self.command,
@@ -289,13 +293,6 @@ class PerformanceProfile:
             "stages": self.stages,
             "artifacts": self._artifacts,
         }
-        if self.cohort_id is not None:
-            payload["cohort"] = {
-                "cohort_id": self.cohort_id,
-                "source_run_dirs": [
-                    str(path.resolve()) for path in self.source_run_dirs
-                ],
-            }
         return payload
 
     def _flush(self) -> None:

@@ -155,8 +155,9 @@ lookup. Non-concrete event rows are excluded before lookup
 regions are built and counted in `annotation/manifest.json`.
 
 The report derives strategy summaries, feature coverage, site depth, taxonomic
-evidence, and variant-strategy support under fingerprinted `analytics/` caches.
-These analytic tables are not pipeline outputs.
+evidence, and variant-strategy support under an explicitly selected external
+analytics root. These analytic tables are not pipeline outputs, and completed
+source run directories remain unchanged.
 
 Fetch, alignment, and annotation are internal workflow boundaries, not separate
 CLI modes. Recovery uses Nextflow `-resume` with the same inputs, result

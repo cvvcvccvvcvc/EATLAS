@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Iterator
 
@@ -34,7 +35,7 @@ class CandidateAlleleStore:
         *,
         source: CandidateAggregationSource,
         strategies: tuple[str, ...],
-        annotation_failures_path: Path | None,
+        annotation_failures_path: Path | Sequence[Path] | None,
         temp_dir: Path,
     ) -> None:
         self.source = source
@@ -205,7 +206,10 @@ class CandidateAlleleStore:
             "lookup_failed_allele_context_count": int(row[2] or 0),
         }
 
-    def _register_failed_regions(self, path: Path | None) -> None:
+    def _register_failed_regions(
+        self,
+        path: Path | Sequence[Path] | None,
+    ) -> None:
         rows = []
         for chrom, (_starts, intervals) in read_failed_regions(path, "gnomad").items():
             rows.extend(
@@ -291,9 +295,9 @@ class CandidateAlleleStore:
 
 def build_candidate_allele_store(
     *,
-    variant_annotations_source: Path,
+    variant_annotations_source: Path | Sequence[Path],
     strategies: list[str] | tuple[str, ...] | None,
-    annotation_failures_path: Path | None,
+    annotation_failures_path: Path | Sequence[Path] | None,
     temp_dir: Path,
 ) -> CandidateAlleleStore:
     source = resolve_candidate_aggregation_source(variant_annotations_source)
@@ -312,7 +316,9 @@ def build_candidate_allele_store(
     )
 
 
-def resolve_candidate_aggregation_source(path: Path) -> CandidateAggregationSource:
+def resolve_candidate_aggregation_source(
+    path: Path | Sequence[Path],
+) -> CandidateAggregationSource:
     return resolve_variant_table_source(
         path,
         required_columns=REQUIRED_COLUMNS,

@@ -7,6 +7,7 @@ import gzip
 import json
 import math
 import tempfile
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -72,9 +73,9 @@ class BasicFilteringAnalysis:
 
 def build_basic_filtering_analysis(
     *,
-    variant_annotations_source: Path,
-    variant_strategy_support_tsv: Path,
-    annotation_failures_tsv: Path,
+    variant_annotations_source: Path | Sequence[Path],
+    variant_strategy_support_tsv: Path | Sequence[Path],
+    annotation_failures_tsv: Path | Sequence[Path],
     analytics_dir: Path,
     cohort: ConservationCohort,
     strategies: list[str],
@@ -110,9 +111,9 @@ def build_basic_filtering_analysis(
 
 def build_or_load_filter_score_store(
     *,
-    variant_annotations_source: Path,
-    variant_strategy_support_tsv: Path,
-    annotation_failures_tsv: Path,
+    variant_annotations_source: Path | Sequence[Path],
+    variant_strategy_support_tsv: Path | Sequence[Path],
+    annotation_failures_tsv: Path | Sequence[Path],
     analytics_dir: Path,
     strategies: list[str],
 ) -> tuple[Path, Path, bool]:
@@ -122,7 +123,10 @@ def build_or_load_filter_score_store(
         variant_annotations_source,
         required_columns={"variant_key", "event_type", "lookup_status", "gnomad_af"},
     )
-    support_columns = _read_header(variant_strategy_support_tsv)
+    support_paths = _paths(variant_strategy_support_tsv)
+    support_columns = _read_header(support_paths[0])
+    if any(_read_header(path) != support_columns for path in support_paths[1:]):
+        raise ValueError("Variant strategy support columns differ across source runs")
     required_support = {
         "variant_key",
         "gene_id",
@@ -142,8 +146,10 @@ def build_or_load_filter_score_store(
     expected_inputs = {
         "schema_version": FILTER_SCORE_SCHEMA_VERSION,
         "variant_source": source.identity,
-        "strategy_support": path_metadata(variant_strategy_support_tsv),
-        "annotation_failures": path_metadata(annotation_failures_tsv),
+        "strategy_support": [path_metadata(path) for path in support_paths],
+        "annotation_failures": [
+            path_metadata(path) for path in _paths(annotation_failures_tsv)
+        ],
         "strategies": sorted(str(value) for value in strategies),
     }
     if score_path.exists() and manifest_path.exists():
@@ -182,9 +188,9 @@ def build_or_load_filter_score_store(
 def _build_filter_score_store(
     *,
     source,
-    support_path: Path,
+    support_path: Path | Sequence[Path],
     support_columns: list[str],
-    annotation_failures_tsv: Path,
+    annotation_failures_tsv: Path | Sequence[Path],
     score_path: Path,
     temp_dir: Path,
 ) -> int:
@@ -647,7 +653,10 @@ def _clinvar_score_maps(
     return maps
 
 
-def _register_gnomad_failures(connection, path: Path) -> None:
+def _register_gnomad_failures(
+    connection,
+    path: Path | Sequence[Path],
+) -> None:
     rows = []
     for chrom, (_starts, intervals) in read_failed_regions(path, "gnomad").items():
         rows.extend(
@@ -663,10 +672,14 @@ def _register_gnomad_failures(connection, path: Path) -> None:
     )
 
 
-def _support_source_sql(path: Path, columns: list[str]) -> str:
+def _support_source_sql(
+    path: Path | Sequence[Path],
+    columns: list[str],
+) -> str:
     schema = "{" + ",".join(f"{sql_string(column)}:'VARCHAR'" for column in columns) + "}"
+    paths = "[" + ",".join(sql_string(item) for item in _paths(path)) + "]"
     return (
-        f"read_csv({sql_string(path)}, delim='\\t', header=true, columns={schema}, "
+        f"read_csv({paths}, delim='\\t', header=true, columns={schema}, "
         "auto_detect=false, compression='auto', parallel=true, "
         "nullstr='__GAPH_NULL_SENTINEL__')"
     )
@@ -676,6 +689,13 @@ def _read_header(path: Path) -> list[str]:
     opener = gzip.open if path.suffix == ".gz" else open
     with opener(path, "rt", newline="") as handle:
         return next(csv.reader(handle, delimiter="\t"))
+
+
+def _paths(value: Path | Sequence[Path]) -> tuple[Path, ...]:
+    paths = (value,) if isinstance(value, Path) else tuple(value)
+    if not paths:
+        raise ValueError("At least one source table is required")
+    return paths
 
 
 def _validate_score_store(path: Path, expected_rows: int) -> None:

@@ -70,6 +70,7 @@ def _required_args(tmp_path: Path) -> tuple[list[str], Path, Path, Path]:
     ids.write_text("1\n")
     run = tmp_path / "results" / "run one"
     work = tmp_path / "work" / "run one"
+    analytics = tmp_path / "analytics root"
     return (
         [
             "--ids-file",
@@ -78,6 +79,8 @@ def _required_args(tmp_path: Path) -> tuple[list[str], Path, Path, Path]:
             str(run),
             "--work-dir",
             str(work),
+            "--analytics-root",
+            str(analytics),
             "--report-name",
             "strategy.compare",
         ],
@@ -142,6 +145,8 @@ def test_launcher_runs_pipeline_then_forwards_report_arguments_exactly(tmp_path:
     ]
     assert Path(env["PIPELINE_CWD_CAPTURE"]).read_text() == str(project)
     assert _read_argv(Path(env["REPORT_ARGS_CAPTURE"])) == [
+        "--analytics-root",
+        str(tmp_path / "analytics root"),
         "--run-dir",
         str(run),
         "--report-name",

@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import re
 import time
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -187,7 +188,9 @@ def _memory_limit_setting(value: float) -> str:
     return f"{mebibytes}MiB"
 
 
-def resolve_variant_aggregation_source(path: Path) -> VariantAggregationSource:
+def resolve_variant_aggregation_source(
+    path: Path | Sequence[Path],
+) -> VariantAggregationSource:
     """Resolve the current pipeline-owned variant annotation dataset."""
 
     source = resolve_variant_table_source(path, required_columns=REQUIRED_COLUMNS)
@@ -292,9 +295,9 @@ def aggregate_strategy_masks(
 def aggregate_variant_groups(
     source: VariantAggregationSource,
     *,
-    genes_path: Path | None = None,
-    target_features_path: Path | None = None,
-    annotation_failures_path: Path | None = None,
+    genes_path: Path | Sequence[Path] | None = None,
+    target_features_path: Path | Sequence[Path] | None = None,
+    annotation_failures_path: Path | Sequence[Path] | None = None,
     threads: int | None = None,
     temp_dir: Path | None = None,
 ) -> VariantGroupedAggregation:
@@ -443,18 +446,26 @@ def _read_strategies(connection) -> tuple[str, ...]:
 def _register_reference_tables(
     connection,
     *,
-    genes_path: Path | None,
-    target_features_path: Path | None,
-    annotation_failures_path: Path | None,
+    genes_path: Path | Sequence[Path] | None,
+    target_features_path: Path | Sequence[Path] | None,
+    annotation_failures_path: Path | Sequence[Path] | None,
 ) -> None:
     if genes_path is not None:
-        genes = pd.read_csv(
-            genes_path,
-            sep="\t",
-            compression="gzip" if genes_path.suffix == ".gz" else None,
-            usecols=["gene_id", "begin"],
-            dtype={"gene_id": str, "begin": "int64"},
+        genes = pd.concat(
+            [
+                pd.read_csv(
+                    path,
+                    sep="\t",
+                    compression="gzip" if path.suffix == ".gz" else None,
+                    usecols=["gene_id", "begin"],
+                    dtype={"gene_id": str, "begin": "int64"},
+                )
+                for path in _paths(genes_path)
+            ],
+            ignore_index=True,
         ).rename(columns={"begin": "gene_begin"})
+        if genes["gene_id"].duplicated().any():
+            raise ValueError("Target gene tables repeat a Gene ID")
     else:
         genes = pd.DataFrame(columns=["gene_id", "gene_begin"])
     connection.register("gene_begins_input", genes)
@@ -465,17 +476,26 @@ def _register_reference_tables(
 
     context_rows: list[dict[str, object]] = []
     if target_features_path is not None:
-        lengths = _gene_lengths_from_features(target_features_path)
-        for gene_id, intervals in read_disjoint_contexts(target_features_path, lengths).items():
-            context_rows.extend(
-                {
-                    "gene_id": gene_id,
-                    "start0": start,
-                    "end0": end,
-                    "target_context": context,
-                }
-                for start, end, context in intervals
-            )
+        seen_genes: set[str] = set()
+        for path in _paths(target_features_path):
+            lengths = _gene_lengths_from_features(path)
+            overlap = seen_genes & set(lengths)
+            if overlap:
+                raise ValueError(
+                    "Target feature tables repeat Gene ID(s): "
+                    + ", ".join(sorted(overlap)[:20])
+                )
+            seen_genes.update(lengths)
+            for gene_id, intervals in read_disjoint_contexts(path, lengths).items():
+                context_rows.extend(
+                    {
+                        "gene_id": gene_id,
+                        "start0": start,
+                        "end0": end,
+                        "target_context": context,
+                    }
+                    for start, end, context in intervals
+                )
     contexts = pd.DataFrame(
         context_rows,
         columns=["gene_id", "start0", "end0", "target_context"],
@@ -486,7 +506,6 @@ def _register_reference_tables(
         "cast(start0 AS BIGINT) AS start0, cast(end0 AS BIGINT) AS end0, "
         "cast(target_context AS VARCHAR) AS target_context FROM target_contexts_input"
     )
-
     failure_rows = []
     for chrom, (_starts, intervals) in read_failed_regions(
         annotation_failures_path, "gnomad"
@@ -502,6 +521,10 @@ def _register_reference_tables(
         "cast(start1 AS BIGINT) AS start1, cast(end1 AS BIGINT) AS end1 "
         "FROM gnomad_failures_input"
     )
+
+
+def _paths(value: Path | Sequence[Path]) -> tuple[Path, ...]:
+    return (value,) if isinstance(value, Path) else tuple(value)
 
 
 def _create_normalized_views(

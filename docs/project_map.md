@@ -28,7 +28,7 @@ runs.
 
 - Workflow entrypoint: `main.nf`
 - Runtime configuration: `nextflow.config`
-- Analytics report: `python -m analytics.strategy_report --run-dir <run-dir>`
+- Analytics report: `python -m analytics.strategy_report --analytics-root <root> --run-dir <run> --report-name <name>`
 - Combined cluster run and report: `scripts/slurm/run_and_report.sh`
 - Run archive: `python -m run_archiving`
 - Local execution: no profile required
@@ -179,7 +179,9 @@ Runtime environments:
 - `analytics/reporting/`
   - report sections, Plotly components, and final HTML document
 
-Durable analytics artifacts belong under `<run-dir>/analytics/`. Presentation
+Analytics artifacts belong under the explicitly selected external analytics
+root. `analytics/io/run_inputs.py` resolves one or more immutable source runs,
+reuses per-source caches, and assigns an analysis workspace. Presentation
 modules do not fetch data or own scientific calculations.
 
 ## Run Archiving
@@ -205,8 +207,11 @@ results/run_001/
   annotation/
   reports/
     nextflow/
-  analytics/       # after completed-run analytics is built
 ```
+
+Completed-run analytics is stored separately under
+`<analytics-root>/cache/` and `<analytics-root>/analyses/`. Source run
+directories are read-only after successful completion.
 
 Temporary files that must not be treated as final outputs:
 - NCBI raw zip packages

@@ -11,13 +11,10 @@ from analytics.analyses.candidate_conservation import CandidateConservation
 from analytics.analyses.basic_filtering import BasicFilteringAnalysis
 from analytics.analyses.matched_control import TargetSpaceNullAnalysis
 from analytics.vep.consequences import UNANNOTATED_CONSEQUENCE
-from analytics.io import run_inputs as run_inputs_module
 from analytics.io.run_inputs import (
-    RunInputs,
     read_taxonomy_summary,
-    resolve_run_inputs,
+    resolve_variant_annotations_source,
     validate_report_inputs,
-    variant_annotation_descriptor,
     variant_annotation_release,
 )
 from analytics.reporting.components import dataframe_records, format_table_dataframe
@@ -51,7 +48,7 @@ from analytics.reporting.variant_profile import (
     top_gene_contribution_counts,
     top_gene_contribution_figure,
 )
-from analytics.strategy_report import _default_phylop_bigwig
+from analytics.strategy_report import _default_phylop_bigwig, parse_args
 
 
 REPORT_VARIANT_FIELDS = [
@@ -73,6 +70,34 @@ REPORT_VARIANT_FIELDS = [
     "vep_primary_consequence",
     "vep_consequence_terms",
 ]
+
+
+def test_report_cli_has_one_workspace_and_repeatable_run_inputs(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "strategy_report",
+            "--analytics-root",
+            str(tmp_path / "analytics"),
+            "--run-dir",
+            str(tmp_path / "run-a"),
+            "--run-dir",
+            str(tmp_path / "run-b"),
+            "--report-name",
+            "combined",
+        ],
+    )
+
+    args = parse_args()
+
+    assert args.analytics_root == tmp_path / "analytics"
+    assert args.run_dir == [tmp_path / "run-a", tmp_path / "run-b"]
+    assert args.report_name == "combined"
+    assert not hasattr(args, "out_html")
+    assert not hasattr(args, "cohort_manifest")
 
 
 def write_pipeline_variant_dataset(annotation_dir: Path) -> tuple[Path, dict]:
@@ -216,20 +241,14 @@ def test_report_preflight_accepts_compact_production_contract(tmp_path: Path) ->
     taxonomy_summary = write_table("taxonomy_summary.tsv.gz", taxonomy_columns)
     targets = tmp_path / "targets"
     targets.mkdir()
-    inputs = RunInputs(
-        run_dir=tmp_path,
-        fetch_manifest_json=tmp_path / "fetch_manifest.json",
-        genes_tsv=genes,
-        target_features_tsv=features,
-        target_sequences_dir=targets,
-        variant_annotations_source=annotations,
-        variant_strategy_support_tsv=support,
-        ortholog_evidence_summary_tsv=ortholog_evidence,
-        annotation_manifest_json=annotation_dir / "manifest.json",
-        annotation_failures_tsv=tmp_path / "annotation_failures.tsv.gz",
-        feature_coverage_tsv=coverage,
-        alignment_manifest_json=tmp_path / "alignment_manifest.json",
-        strategy_summary_tsv=summary,
+    inputs = SimpleNamespace(
+        genes_tsvs=(genes,),
+        target_features_tsvs=(features,),
+        variant_annotation_sources=(annotations,),
+        variant_strategy_support_tsvs=(support,),
+        ortholog_evidence_summary_tsvs=(ortholog_evidence,),
+        feature_coverage_tsvs=(coverage,),
+        strategy_summary_tsvs=(summary,),
         taxonomy_summary_tsv=taxonomy_summary,
     )
 
@@ -248,47 +267,13 @@ def test_read_taxonomy_summary_requires_the_canonical_table(tmp_path: Path) -> N
         read_taxonomy_summary(tmp_path / "missing.tsv.gz")
 
 
-def test_report_inputs_use_pipeline_variant_annotation_dataset(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_report_inputs_use_pipeline_variant_annotation_dataset(tmp_path: Path) -> None:
     run_dir = tmp_path / "run"
     annotation_dir = run_dir / "annotation"
     (run_dir / "fetch" / "sequences" / "targets").mkdir(parents=True)
     annotation_dir.mkdir()
     source, descriptor = write_pipeline_variant_dataset(annotation_dir)
-    pd.DataFrame(columns=["gene_id"]).to_csv(
-        run_dir / "fetch" / "genes.tsv.gz", sep="\t", index=False, compression="gzip"
-    )
-    pd.DataFrame(columns=["gene_id"]).to_csv(
-        run_dir / "fetch" / "target_features.tsv.gz", sep="\t", index=False, compression="gzip"
-    )
-    monkeypatch.setattr(
-        run_inputs_module,
-        "resolve_alignment_aggregate_paths",
-        lambda _run_dir: SimpleNamespace(
-            strategy_summary_tsv=run_dir / "analytics" / "strategy.tsv.gz",
-            feature_coverage_tsv=run_dir / "analytics" / "coverage.tsv.gz",
-        ),
-    )
-    monkeypatch.setattr(
-        run_inputs_module,
-        "resolve_annotation_support_paths",
-        lambda _run_dir: SimpleNamespace(
-            variant_strategy_support_tsv=run_dir / "analytics" / "support.tsv.gz",
-            ortholog_evidence_summary_tsv=run_dir / "analytics" / "evidence.tsv.gz",
-        ),
-    )
-    monkeypatch.setattr(
-        run_inputs_module,
-        "resolve_taxonomy_summary_path",
-        lambda _run_dir: run_dir / "analytics" / "taxonomy.tsv.gz",
-    )
-
-    inputs = resolve_run_inputs(run_dir)
-
-    assert inputs.variant_annotations_source == source
-    assert variant_annotation_descriptor(inputs) == descriptor
+    assert resolve_variant_annotations_source(annotation_dir / "manifest.json") == source
     assert variant_annotation_release(descriptor) == "116"
 
 
@@ -300,7 +285,7 @@ def test_report_inputs_require_pipeline_variant_annotation_dataset(tmp_path: Pat
     dataset_manifest.unlink()
 
     with pytest.raises(FileNotFoundError, match="dataset manifest"):
-        resolve_run_inputs(run_dir)
+        resolve_variant_annotations_source(annotation_dir / "manifest.json")
 
 
 def test_report_inputs_reject_changed_variant_annotation_descriptor(
@@ -313,7 +298,7 @@ def test_report_inputs_reject_changed_variant_annotation_descriptor(
     dataset_manifest.write_text(json.dumps(changed) + "\n")
 
     with pytest.raises(ValueError, match="descriptor does not match"):
-        resolve_run_inputs(tmp_path / "run")
+        resolve_variant_annotations_source(annotation_dir / "manifest.json")
 
 
 def test_vep_qc_reports_candidate_and_clinvar_statuses() -> None:

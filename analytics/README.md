@@ -1,8 +1,9 @@
 # GAPH Analytics
 
-`analytics/` turns a completed evidence-first pipeline run into reproducible
-derived tables and an HTML report. It does not fetch or repair missing pipeline
-evidence, and pipeline commands do not import analytics modules.
+`analytics/` turns one or more completed evidence-first pipeline runs into
+reproducible derived tables and an HTML report. It does not fetch or repair
+missing pipeline evidence, and pipeline commands do not import analytics
+modules.
 
 For the supported cluster launch sequence, arguments, and monitoring commands,
 use `docs/report_generation.md`.
@@ -26,8 +27,8 @@ scientific calculations or external data access.
 
 ## Input Contract
 
-The report accepts one current completed run or a manifest of compatible,
-non-overlapping runs. Each run must provide:
+The report accepts one or more repeated `--run-dir` arguments. Runs must be
+compatible and non-overlapping. Each run must provide:
 
 - canonical Stage 1 target, selected-ortholog, feature, and taxonomy evidence;
 - partitioned Stage 2 summaries, segments, compact events, and exact support;
@@ -41,15 +42,17 @@ artifact.
 ## Derived Data
 
 The pipeline does not publish report-specific coverage, site-depth, support, or
-taxonomic counters. Analytics derives them under the run's `analytics/`
-directory:
+taxonomic counters. A completed source run is immutable: analytics never writes
+below it. Derived files live under the one explicitly supplied analytics root:
 
 ```text
-analytics/
-  alignment_aggregates/  strategy summary and feature coverage
-  taxonomy_summary/      selected-ortholog taxonomy summary
-  annotation_support/    variant support and ortholog-evidence views
-  performance/           progressive timing, memory, I/O, and disk profiles
+<analytics-root>/
+  cache/<source-id>/      reusable per-source evidence derivations
+  analyses/<analysis-id>/
+    derived/              run-set scientific artifacts
+    reports/              HTML reports
+    performance/          timing, memory, I/O, and disk profiles
+  slurm/                  report job logs and revision markers
 ```
 
 Every reusable artifact has a manifest that identifies its inputs and schema.
@@ -79,7 +82,9 @@ After the end-to-end pipeline has completed:
 
 ```bash
 micromamba run -n gaph-v2-analytics python -m analytics.strategy_report \
-  --run-dir /absolute/path/to/completed-run
+  --analytics-root /absolute/path/to/analytics \
+  --run-dir /absolute/path/to/completed-run \
+  --report-name strategy_compare
 ```
 
 The consequence-matched target-space null remains opt-in because it can perform
@@ -87,7 +92,9 @@ additional VEP and gnomAD work:
 
 ```bash
 micromamba run -n gaph-v2-analytics python -m analytics.strategy_report \
+  --analytics-root /absolute/path/to/analytics \
   --run-dir /absolute/path/to/completed-run \
+  --report-name strategy_compare_with_target_null \
   --target-space-null
 ```
 
