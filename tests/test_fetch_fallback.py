@@ -59,16 +59,34 @@ report = {
         }]
     }]
 }
+ortholog = {
+    "geneId": "101",
+    "taxId": 10090,
+    "taxname": "Mus musculus",
+    "symbol": "Gene1",
+    "type": "protein-coding",
+    "orientation": "plus",
+    "geneGroups": [{"id": "1"}],
+    "annotations": [{
+        "assemblyAccession": "GCF_test",
+        "genomicLocations": [{
+            "genomicAccessionVersion": "NC_000067.7",
+            "genomicRange": {"begin": 200, "end": 203}
+        }]
+    }]
+}
 
 with zipfile.ZipFile(output_path, "w") as archive:
     archive.writestr(
         "ncbi_dataset/data/data_report.jsonl",
-        json.dumps(report) + "\\n",
+        json.dumps(report) + "\\n" + json.dumps(ortholog) + "\\n",
     )
     archive.writestr(
         "ncbi_dataset/data/gene.fna",
         ">NC_000001.11:100-103 [GeneID=1] "
-        "[organism=Homo sapiens] [chromosome=1]\\nACGT\\n",
+        "[organism=Homo sapiens] [chromosome=1]\\nACGT\\n"
+        ">NC_000067.7:200-203 [GeneID=101] "
+        "[organism=Mus musculus] [chromosome=1]\\nACGA\\n",
     )
 """
     )
@@ -112,6 +130,7 @@ def test_batch_failure_falls_back_to_singletons_and_builds_partial_dataset(
     assert chunk_manifest["batch_download_attempts"] == 2
     assert chunk_manifest["singleton_download_attempts"] == 3
     assert chunk_manifest["target_gene_count"] == 1
+    assert chunk_manifest["selected_ortholog_count"] == 1
     assert chunk_manifest["failure_count"] == 1
     assert [row["gene_id"] for row in read_tsv_gz(chunk_dir / "genes.tsv.gz")] == ["1"]
     assert read_tsv_gz(chunk_dir / "failures.tsv.gz") == [

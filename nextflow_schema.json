@@ -44,6 +44,7 @@
             "properties": {
                 "chunk_size": {
                     "type": "integer",
+                    "minimum": 1,
                     "default": 10,
                     "description": "Number of genes to process per chunk"
                 },
@@ -59,11 +60,13 @@
             "properties": {
                 "fetch_max_forks": {
                     "type": "integer",
+                    "minimum": 1,
                     "default": 2,
                     "description": "Maximum concurrent NCBI fetch/parse tasks."
                 },
                 "alignment_max_forks": {
                     "type": "integer",
+                    "minimum": 1,
                     "default": 4,
                     "description": "Maximum concurrent tasks in each aligner process. The two minimap2 presets share one process and one limit; nucmer and BWA each have their own process. Total alignment concurrency is also bounded by executor CPU/queue limits."
                 },

@@ -388,31 +388,42 @@ def build_target_features(genes_tsv: Path, gff3_path: Path, output: Path) -> tup
 
 def merge_tsv_gz(inputs: list[Path], output: Path) -> int:
     output.parent.mkdir(parents=True, exist_ok=True)
-    wrote_header = False
+    expected_header: list[str] | None = None
     count = 0
     with gzip.open(output, "wt", newline="") as out:
-        writer = None
+        writer = csv.writer(out, delimiter="\t", lineterminator="\n")
         for path in inputs:
             if not path.exists():
-                continue
+                raise FileNotFoundError(f"Missing chunk table: {path}")
             with gzip.open(path, "rt", newline="") as handle:
                 reader = csv.reader(handle, delimiter="\t")
                 header = next(reader, None)
-                if header is None:
-                    continue
-                if not wrote_header:
-                    writer = csv.writer(out, delimiter="\t", lineterminator="\n")
+                if not header or any(not field for field in header):
+                    raise ValueError(f"Chunk table has no header: {path}")
+                if expected_header is None:
+                    expected_header = header
                     writer.writerow(header)
-                    wrote_header = True
-                elif writer is None:
-                    raise RuntimeError("Internal error: writer not initialized")
-                for row in reader:
+                elif header != expected_header:
+                    raise ValueError(
+                        f"Chunk table header mismatch in {path}: "
+                        f"expected={expected_header}, observed={header}"
+                    )
+                for row_number, row in enumerate(reader, start=2):
+                    if len(row) != len(expected_header):
+                        raise ValueError(
+                            f"Chunk table row width mismatch in {path} at line {row_number}: "
+                            f"expected={len(expected_header)}, observed={len(row)}"
+                        )
                     writer.writerow(row)
                     count += 1
-    if not wrote_header:
-        with gzip.open(output, "wt", newline="") as out:
-            out.write("")
     return count
+
+
+def validate_fetch_counts(target_gene_count: int, selected_ortholog_count: int) -> None:
+    if target_gene_count == 0:
+        raise ValueError("Fetch produced no target genes; the pipeline cannot continue")
+    if selected_ortholog_count == 0:
+        raise ValueError("Fetch produced no selected orthologs; alignment cannot continue")
 
 
 def copy_file_once(src: Path, dst: Path) -> None:
@@ -610,6 +621,10 @@ def main() -> None:
     table_counts = {
         name: merge_tsv_gz(paths, outdir / name) for name, paths in table_inputs.items()
     }
+    validate_fetch_counts(
+        table_counts["genes.tsv.gz"],
+        table_counts["orthologs.selected.tsv.gz"],
+    )
     target_files, ortholog_files = copy_sequences(chunk_dirs, outdir)
     gene_ids = read_tsv_gz_column(outdir / "genes.tsv.gz", "gene_id")
     failure_ids = read_tsv_gz_column(outdir / "failures.tsv.gz", "gene_id")

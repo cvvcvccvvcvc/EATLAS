@@ -79,11 +79,15 @@ comes from the mandatory task environment.
 
 5. `BUILD_FETCH_DATASET`
    - Merges chunk tables.
+   - Requires every chunk table to exist and have the same explicit schema;
+     malformed or headerless tables fail the run.
    - Copies final per-gene FASTA files.
    - Requires every accepted GeneID to have exactly one terminal outcome:
      a target gene row or a gene-level failure.
    - Requires one manifest for every planned chunk and rejects duplicate or
      missing chunk results.
+   - Requires at least one target gene and one selected ortholog because all
+     supported downstream alignment strategies need both.
    - Builds compact target structural features from the configured local target assembly GFF3.
    - Emits `chunk_metrics.tsv.gz` in task work for fetch diagnostics.
    - Writes final `manifest.json`.

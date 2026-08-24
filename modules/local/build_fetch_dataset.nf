@@ -18,7 +18,7 @@ process BUILD_FETCH_DATASET {
     path "orthologs.selected.tsv.gz", emit: orthologs_selected
     path "orthologs.candidates.tsv.gz", emit: orthologs_candidates
     path "failures.tsv.gz", emit: failures
-    path "sequences", optional: true, emit: sequences
+    path "sequences", emit: sequences
 
     script:
     """

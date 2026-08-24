@@ -135,6 +135,18 @@ if (removedExecutionParameters) {
 // Validate parameters against nextflow_schema.json
 validateParameters()
 
+def nonPositiveExecutionParameters = [
+    'chunk_size',
+    'fetch_max_forks',
+    'alignment_max_forks',
+].findAll { params[it] < 1 }
+if (nonPositiveExecutionParameters) {
+    error(
+        "Parameter(s) must be positive integers: " +
+        nonPositiveExecutionParameters.collect { "--${it}" }.join(', ')
+    )
+}
+
 if (!params.ids_file) {
     error "Missing required parameter: --ids_file"
 }
