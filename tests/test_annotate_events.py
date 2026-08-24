@@ -7,6 +7,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+import duckdb
 import pytest
 
 
@@ -26,7 +27,9 @@ from bin.annotate_vep_partition import SCHEMA as VEP_SHARD_SCHEMA, VEP_FIELDS
 from analytics.derivations.support import (  # noqa: E402
     VARIANT_STRATEGY_SUPPORT_FIELDS,
     EventOrthologSupportStream,
-    add_exact_strategy_support,
+    ExactSupportSpool,
+    StrategySupport,
+    aggregate_exact_support,
     build_variant_strategy_support,
     load_snv_alt_genus_support,
 )
@@ -561,26 +564,39 @@ def test_partitioned_manifest_aggregates_shared_gnomad_cache_metrics(tmp_path: P
     assert merged["fetch_batch_count"] == 1
 
 
-def test_variant_strategy_support_counts_distinct_orthologs() -> None:
+def test_exact_support_spool_counts_distinct_orthologs(tmp_path: Path) -> None:
     aggregate = {
         "variant_key": "1:100:A>G",
         "gene_id": "1",
         "_support_by_strategy": {},
     }
+    aggregates_by_id = [None, aggregate]
+    spool = ExactSupportSpool(tmp_path / "exact_support.tsv")
     for strategy, ortholog in [
         ("s1", "101"),
         ("s1", "101"),
         ("s1", "102"),
         ("s2", "101"),
     ]:
-        add_exact_strategy_support(
-            aggregate,
-            {"strategy": strategy},
-            [{"ortholog_gene_id": ortholog, "support_row_count": "1"}],
+        spool.add_group(
+            variant_context_id=1,
+            gene_id="1",
+            strategy=strategy,
+            support_rows=[
+                {"ortholog_gene_id": ortholog, "support_row_count": "1"}
+            ],
+        )
+    with duckdb.connect() as connection:
+        exact_edge_count = aggregate_exact_support(
+            connection,
+            spool,
+            aggregates_by_id,
         )
 
     rows, missing_key_count = build_variant_strategy_support([aggregate])
 
+    assert exact_edge_count == 3
+    assert not spool.path.exists()
     assert missing_key_count == 0
     assert rows == [
         {
@@ -638,14 +654,10 @@ def test_variant_strategy_support_loads_exact_alt_genus_count(tmp_path: Path) ->
         "target_start0": 4,
         "ref": "A",
         "alt": "G",
-        "_support_by_strategy": {},
+        "_support_by_strategy": {
+            "s1": StrategySupport(row_count=3, ortholog_count=3)
+        },
     }
-    for ortholog in ("101", "102", "103"):
-        add_exact_strategy_support(
-            aggregate,
-            {"strategy": "s1"},
-            [{"ortholog_gene_id": ortholog, "support_row_count": "1"}],
-        )
 
     genus_supports = load_snv_alt_genus_support(path)
     rows, _missing = build_variant_strategy_support(
@@ -733,13 +745,10 @@ def test_snv_support_uses_site_aligned_depth() -> None:
         "gene_id": "1",
         "event_type": "snv",
         "target_start0": "9",
-        "_support_by_strategy": {},
+        "_support_by_strategy": {
+            "s1": StrategySupport(row_count=1, ortholog_count=1)
+        },
     }
-    add_exact_strategy_support(
-        aggregate,
-        {"strategy": "s1"},
-        [{"ortholog_gene_id": "101", "support_row_count": "1"}],
-    )
     rows, _missing_key_count = build_variant_strategy_support(
         [aggregate],
         {("1", "s1", 9): 4},
@@ -752,16 +761,10 @@ def test_snv_support_rejects_alt_count_above_site_depth() -> None:
         "variant_key": "1:100:A>G",
         "gene_id": "1",
         "event_type": "snv",
-        "_support_by_strategy": {},
+        "_support_by_strategy": {
+            "s1": StrategySupport(row_count=2, ortholog_count=2)
+        },
     }
-    add_exact_strategy_support(
-        aggregate,
-        {"strategy": "s1"},
-        [
-            {"ortholog_gene_id": "101", "support_row_count": "1"},
-            {"ortholog_gene_id": "102", "support_row_count": "1"},
-        ],
-    )
 
     with pytest.raises(ValueError, match="exceeds site-aligned"):
         build_variant_strategy_support(
@@ -774,17 +777,10 @@ def test_variant_strategy_support_uses_exact_edge_multiplicity() -> None:
     aggregate = {
         "variant_key": "1:100:A>G",
         "gene_id": "1",
-        "_support_by_strategy": {},
+        "_support_by_strategy": {
+            "s1": StrategySupport(row_count=10, ortholog_count=3)
+        },
     }
-    add_exact_strategy_support(
-        aggregate,
-        {"strategy": "s1"},
-        [
-            {"ortholog_gene_id": "101", "support_row_count": "5"},
-            {"ortholog_gene_id": "102", "support_row_count": "3"},
-            {"ortholog_gene_id": "103", "support_row_count": "2"},
-        ],
-    )
 
     rows, _missing_key_count = build_variant_strategy_support([aggregate])
 
@@ -792,19 +788,17 @@ def test_variant_strategy_support_uses_exact_edge_multiplicity() -> None:
     assert rows[0]["alt_support_ortholog_count"] == 3
 
 
-def test_variant_strategy_support_requires_one_strategy() -> None:
-    aggregate = {
-        "variant_key": "1:100:A>G",
-        "gene_id": "1",
-        "_support_by_strategy": {},
-    }
-
-    with pytest.raises(ValueError, match="requires one alignment strategy"):
-        add_exact_strategy_support(
-            aggregate,
-            {"strategies": "s1,s2"},
-            [{"ortholog_gene_id": "101", "support_row_count": "1"}],
-        )
+def test_exact_support_spool_requires_one_strategy(tmp_path: Path) -> None:
+    with ExactSupportSpool(tmp_path / "exact_support.tsv") as spool:
+        with pytest.raises(ValueError, match="requires one alignment strategy"):
+            spool.add_group(
+                variant_context_id=1,
+                gene_id="1",
+                strategy="",
+                support_rows=[
+                    {"ortholog_gene_id": "101", "support_row_count": "1"}
+                ],
+            )
 
 
 def test_canonical_variant_key_collapses_raw_indel_representations() -> None:

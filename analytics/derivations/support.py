@@ -6,7 +6,7 @@ import csv
 import gzip
 from collections import Counter, defaultdict
 from collections.abc import Iterable, Iterator, Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 
 from analytics.derivations.ortholog_evidence import (
@@ -40,7 +40,75 @@ EVENT_ORTHOLOG_SUPPORT_FIELDS = [
 @dataclass(slots=True)
 class StrategySupport:
     row_count: int = 0
-    orthologs: set[str] = field(default_factory=set)
+    ortholog_count: int = 0
+
+
+class ExactSupportSpool:
+    """Write exact supporters as narrow integer edges for bounded aggregation."""
+
+    def __init__(self, path: Path):
+        self.path = path
+        self.handle = path.open("w", buffering=1024 * 1024)
+        self.strategy_ids: dict[str, int] = {}
+        self.strategy_names: list[str] = []
+        self.ortholog_ids: dict[tuple[str, str], int] = {}
+        self.input_edge_count = 0
+
+    def __enter__(self) -> "ExactSupportSpool":
+        return self
+
+    def __exit__(self, *_args) -> None:
+        self.close()
+
+    def close(self) -> None:
+        if not self.handle.closed:
+            self.handle.close()
+
+    def _strategy_id(self, strategy: str) -> int:
+        strategy_id = self.strategy_ids.get(strategy)
+        if strategy_id is None:
+            strategy_id = len(self.strategy_names) + 1
+            self.strategy_ids[strategy] = strategy_id
+            self.strategy_names.append(strategy)
+        return strategy_id
+
+    def _ortholog_id(self, gene_id: str, ortholog_gene_id: str) -> int:
+        key = (gene_id, ortholog_gene_id)
+        ortholog_id = self.ortholog_ids.get(key)
+        if ortholog_id is None:
+            ortholog_id = len(self.ortholog_ids) + 1
+            self.ortholog_ids[key] = ortholog_id
+        return ortholog_id
+
+    def add_group(
+        self,
+        *,
+        variant_context_id: int,
+        gene_id: str,
+        strategy: str,
+        support_rows: Iterable[Mapping[str, str]],
+    ) -> None:
+        if variant_context_id < 1:
+            raise ValueError("Exact support requires a positive variant_context_id")
+        if not gene_id:
+            raise ValueError("Exact support requires gene_id")
+        if not strategy:
+            raise ValueError("Exact support requires one alignment strategy")
+        strategy_id = self._strategy_id(strategy)
+        for row in support_rows:
+            ortholog_gene_id = str(row.get("ortholog_gene_id") or "")
+            if not ortholog_gene_id:
+                raise ValueError("Exact event support requires ortholog_gene_id")
+            support_row_count = _positive_int(
+                row.get("support_row_count"),
+                "exact support_row_count",
+            )
+            ortholog_id = self._ortholog_id(gene_id, ortholog_gene_id)
+            self.handle.write(
+                f"{variant_context_id}\t{strategy_id}\t{ortholog_id}\t"
+                f"{support_row_count}\n"
+            )
+            self.input_edge_count += 1
 
 
 class EventOrthologSupportStream:
@@ -108,24 +176,94 @@ class EventOrthologSupportStream:
             )
 
 
-def add_exact_strategy_support(
-    aggregate: dict,
-    event_row: Mapping[str, str],
-    support_rows: Iterable[Mapping[str, str]],
-) -> None:
-    strategy = str(event_row.get("strategy") or "")
-    if not strategy:
-        raise ValueError("Event row requires one alignment strategy")
-    support = aggregate["_support_by_strategy"].setdefault(strategy, StrategySupport())
-    for row in support_rows:
-        ortholog_gene_id = str(row.get("ortholog_gene_id") or "")
-        if not ortholog_gene_id:
-            raise ValueError("Exact event support requires ortholog_gene_id")
-        support.orthologs.add(ortholog_gene_id)
-        support.row_count += _positive_int(
-            row.get("support_row_count"),
-            "exact support_row_count",
+def aggregate_exact_support(
+    connection,
+    spool: ExactSupportSpool,
+    aggregates_by_id: list[dict | None],
+) -> int:
+    """Collapse exact edges and attach scalar per-strategy counts to variants."""
+
+    spool.close()
+    connection.execute("DROP TABLE IF EXISTS exact_support")
+    try:
+        if spool.input_edge_count == 0:
+            if len(aggregates_by_id) > 1:
+                raise ValueError("Canonical variants have no exact ortholog support")
+            return 0
+        connection.execute(
+            f"""
+            CREATE TEMP TABLE exact_support AS
+            SELECT
+                variant_context_id,
+                strategy_id,
+                ortholog_id,
+                CAST(SUM(support_row_count) AS UBIGINT) AS support_row_count
+            FROM read_csv(
+                {_sql_string(spool.path)},
+                delim = '\t',
+                header = false,
+                auto_detect = false,
+                columns = {{
+                    'variant_context_id': 'UBIGINT',
+                    'strategy_id': 'UINTEGER',
+                    'ortholog_id': 'UBIGINT',
+                    'support_row_count': 'UBIGINT'
+                }}
+            )
+            GROUP BY variant_context_id, strategy_id, ortholog_id
+            """
         )
+        cursor = connection.execute(
+            """
+            SELECT
+                variant_context_id,
+                strategy_id,
+                COUNT(*) AS ortholog_count,
+                SUM(support_row_count) AS row_count
+            FROM exact_support
+            GROUP BY variant_context_id, strategy_id
+            ORDER BY variant_context_id, strategy_id
+            """
+        )
+        while batch := cursor.fetchmany(100_000):
+            for variant_context_id, strategy_id, ortholog_count, row_count in batch:
+                variant_index = int(variant_context_id)
+                if variant_index >= len(aggregates_by_id):
+                    raise ValueError(f"Unknown variant_context_id: {variant_index}")
+                aggregate = aggregates_by_id[variant_index]
+                if aggregate is None:
+                    raise ValueError(f"Unknown variant_context_id: {variant_index}")
+                strategy_index = int(strategy_id) - 1
+                if strategy_index < 0 or strategy_index >= len(spool.strategy_names):
+                    raise ValueError(
+                        f"Unknown exact-support strategy_id: {strategy_id}"
+                    )
+                strategy = spool.strategy_names[strategy_index]
+                support_by_strategy = aggregate["_support_by_strategy"]
+                if strategy in support_by_strategy:
+                    raise ValueError(
+                        "Duplicate exact-support aggregate for "
+                        f"variant_context_id={variant_index}, strategy={strategy}"
+                    )
+                support_by_strategy[strategy] = StrategySupport(
+                    row_count=int(row_count),
+                    ortholog_count=int(ortholog_count),
+                )
+
+        for variant_context_id, aggregate in enumerate(aggregates_by_id[1:], start=1):
+            if aggregate is None:
+                raise ValueError(f"Missing variant aggregate: {variant_context_id}")
+            if not aggregate["_support_by_strategy"]:
+                raise ValueError(
+                    "Canonical variant has no exact ortholog support: "
+                    f"variant_context_id={variant_context_id}"
+                )
+        return int(
+            connection.execute("SELECT COUNT(*) FROM exact_support").fetchone()[0]
+        )
+    finally:
+        connection.execute("DROP TABLE IF EXISTS exact_support")
+        spool.path.unlink(missing_ok=True)
 
 
 def build_variant_strategy_support(
@@ -143,7 +281,7 @@ def build_variant_strategy_support(
             missing_key_count += len(support_by_strategy)
             continue
         for strategy, support in support_by_strategy.items():
-            alt_support_count = len(support.orthologs)
+            alt_support_count = support.ortholog_count
             site_depth: int | str = ""
             genus_support: int | str = ""
             if aggregate.get("event_type") == "snv":
@@ -380,6 +518,10 @@ def _positive_int(value: object, label: str) -> int:
     if parsed < 1:
         raise ValueError(f"{label} must be a positive integer: {parsed}")
     return parsed
+
+
+def _sql_string(value: Path | str) -> str:
+    return "'" + str(value).replace("'", "''") + "'"
 
 
 def _manifest_count(manifest: dict, field: str, partition: Path) -> int:

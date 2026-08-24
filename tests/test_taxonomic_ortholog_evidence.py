@@ -13,6 +13,7 @@ from analytics.derivations.ortholog_evidence import write_ortholog_evidence_summ
 from analytics.derivations.support import merge_ortholog_evidence
 from analytics.derivations.taxonomy import (
     COUNT_KEYS,
+    TaxonomyProfile,
     build_taxonomy_summary_rows,
     count_member_groups,
     load_taxonomy_profiles,
@@ -216,6 +217,35 @@ def test_scope_and_unit_counts_use_any_member_semantics(tmp_path: Path) -> None:
     }
     assert by_key[("all", "ortholog")]["orthologs_per_gene_median"] == "2.0"
     assert by_key[("primates", "species")]["units_per_gene_median"] == "1.0"
+
+
+def test_missing_rank_fallback_does_not_collide_with_real_taxon_id() -> None:
+    profiles = {
+        "missing": TaxonomyProfile(
+            tax_id="123",
+            ancestor_ids=frozenset({"123"}),
+            species_id="",
+            genus_id="",
+            family_id="",
+            order_id="",
+        ),
+        "resolved": TaxonomyProfile(
+            tax_id="456",
+            ancestor_ids=frozenset({"456"}),
+            species_id="123",
+            genus_id="123",
+            family_id="123",
+            order_id="123",
+        ),
+    }
+
+    counts = count_member_groups(
+        [("missing_gene", "missing"), ("resolved_gene", "resolved")],
+        profiles,
+    )
+
+    assert counts["all__species"] == 2
+    assert counts["all__genus"] == 2
 
 
 def test_compact_events_preserve_exact_taxonomic_identities(tmp_path: Path) -> None:

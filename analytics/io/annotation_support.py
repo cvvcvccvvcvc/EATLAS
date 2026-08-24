@@ -8,6 +8,7 @@ import hashlib
 import json
 import os
 import tempfile
+import time
 from dataclasses import dataclass
 from itertools import zip_longest
 from pathlib import Path
@@ -27,7 +28,8 @@ from analytics.derivations.ortholog_evidence import (
 from analytics.derivations.support import (
     VARIANT_STRATEGY_SUPPORT_FIELDS,
     EventOrthologSupportStream,
-    add_exact_strategy_support,
+    ExactSupportSpool,
+    aggregate_exact_support,
     build_gnomad_statuses,
     build_variant_strategy_support,
     load_snv_alt_genus_support,
@@ -47,7 +49,7 @@ from analytics.io.variant_source import (
 from genomics.variants import parse_variant_key, variant_aggregate_key
 
 
-CACHE_SCHEMA_VERSION = 4
+CACHE_SCHEMA_VERSION = 5
 CACHE_DIRNAME = "annotation_support"
 VARIANT_SUPPORT_FILENAME = "variant_strategy_support.tsv.gz"
 ORTHOLOG_EVIDENCE_FILENAME = "ortholog_evidence_summary.tsv.gz"
@@ -250,9 +252,25 @@ def build_or_load_annotation_support(
     if _cache_is_valid(manifest_path, outputs, inputs, fingerprint):
         return outputs
 
+    build_started = time.perf_counter()
+    timings: dict[str, float] = {}
+    support_metrics = {
+        "canonical_variant_count": 0,
+        "canonical_support_edge_count": 0,
+        "exact_support_edge_count": 0,
+    }
     cache_dir.mkdir(parents=True, exist_ok=True)
+    phase_started = time.perf_counter()
     profiles = load_taxonomy_profiles(taxonomy)
-    failure_rows = list(_iter_required_tsv(failures, {"source", "scope", "chrom", "start", "end"}))
+    _record_timing(timings, "load_taxonomy", phase_started)
+    phase_started = time.perf_counter()
+    failure_rows = list(
+        _iter_required_tsv(
+            failures,
+            {"source", "scope", "chrom", "start", "end"},
+        )
+    )
+    _record_timing(timings, "load_failures", phase_started)
     support_row_count = 0
     ortholog_partition_inputs: list[tuple[Path, dict[str, int]]] = []
     with tempfile.TemporaryDirectory(
@@ -269,8 +287,13 @@ def build_or_load_annotation_support(
                 "2GB",
             )
             connection.execute(f"SET memory_limit = {_sql_string(memory_limit)}")
-            connection.execute(f"SET temp_directory = {_sql_string(temporary_dir / 'duckdb_tmp')}")
+            connection.execute(
+                f"SET temp_directory = {_sql_string(temporary_dir / 'duckdb_tmp')}"
+            )
+            connection.execute("SET preserve_insertion_order = false")
+            phase_started = time.perf_counter()
             _load_source_annotations(connection, variant_source)
+            _record_timing(timings, "load_source_annotations", phase_started)
             with gzip.open(temporary_support, "wt", newline="") as support_handle:
                 support_writer = csv.DictWriter(
                     support_handle,
@@ -285,22 +308,50 @@ def build_or_load_annotation_support(
                     partition_work.mkdir()
                     map_path = map_root / partition_id / EVENT_MAP_FILENAME
                     alt_support_path = partition_work / "snv_alt_taxonomic_support.tsv.gz"
-                    aggregates = _collapse_partition(
-                        partition_id,
-                        partition_dir / EVENTS_FILENAME,
-                        partition_dir / EVENT_SUPPORT_FILENAME,
-                        map_path,
-                        profiles,
-                        alt_support_path,
+                    exact_support_spool = ExactSupportSpool(
+                        partition_work / ".exact_support_rows.tsv"
                     )
+                    phase_started = time.perf_counter()
+                    with exact_support_spool:
+                        aggregates_by_id = _collapse_partition(
+                            partition_id,
+                            partition_dir / EVENTS_FILENAME,
+                            partition_dir / EVENT_SUPPORT_FILENAME,
+                            map_path,
+                            profiles,
+                            alt_support_path,
+                            exact_support_spool,
+                        )
+                    _record_timing(timings, "collapse_events", phase_started)
+                    phase_started = time.perf_counter()
+                    exact_edge_count = aggregate_exact_support(
+                        connection,
+                        exact_support_spool,
+                        aggregates_by_id,
+                    )
+                    _record_timing(timings, "aggregate_exact_support", phase_started)
+                    aggregates = [
+                        aggregate
+                        for aggregate in aggregates_by_id[1:]
+                        if aggregate is not None
+                    ]
+                    support_metrics["canonical_variant_count"] += len(aggregates)
+                    input_edge_count = exact_support_spool.input_edge_count
+                    support_metrics[
+                        "canonical_support_edge_count"
+                    ] += input_edge_count
+                    support_metrics["exact_support_edge_count"] += exact_edge_count
                     site_depth_path = partition_work / "snv_site_depth.tsv.gz"
                     taxonomic_depth_path = partition_work / "snv_taxonomic_depth.tsv.gz"
+                    phase_started = time.perf_counter()
                     write_snv_site_depth(
                         [partition_dir / SEGMENTS_FILENAME],
                         iter_snv_event_sites([partition_dir / EVENTS_FILENAME]),
                         site_depth_path,
                         partition_work,
                     )
+                    _record_timing(timings, "snv_site_depth", phase_started)
+                    phase_started = time.perf_counter()
                     write_snv_taxonomic_depth(
                         [partition_dir / SEGMENTS_FILENAME],
                         iter_snv_event_sites([partition_dir / EVENTS_FILENAME]),
@@ -308,8 +359,10 @@ def build_or_load_annotation_support(
                         taxonomic_depth_path,
                         partition_work,
                     )
+                    _record_timing(timings, "snv_taxonomic_depth", phase_started)
+                    phase_started = time.perf_counter()
                     support_rows, missing_key_count = build_variant_strategy_support(
-                        aggregates.values(),
+                        aggregates,
                         load_snv_site_depth(site_depth_path),
                         load_snv_alt_genus_support(alt_support_path),
                     )
@@ -320,13 +373,15 @@ def build_or_load_annotation_support(
                         )
                     support_writer.writerows(support_rows)
                     support_row_count += len(support_rows)
+                    _record_timing(timings, "write_variant_support", phase_started)
 
+                    phase_started = time.perf_counter()
                     annotation_rows = _source_annotations_for_genes(
                         connection,
-                        {str(item.get("gene_id") or "") for item in aggregates.values()},
+                        {str(item.get("gene_id") or "") for item in aggregates},
                     )
                     gnomad_cache: dict[tuple[str, int, str, str], dict[str, object]] = {}
-                    for aggregate in aggregates.values():
+                    for aggregate in aggregates:
                         key = (
                             str(aggregate.get("gene_id") or ""),
                             str(aggregate.get("variant_key") or ""),
@@ -349,11 +404,13 @@ def build_or_load_annotation_support(
                                 "exome": {"af": annotation["gnomad_af"]}
                             }
                     statuses = build_gnomad_statuses(
-                        aggregates.values(),
+                        aggregates,
                         gnomad_cache,
                         failure_rows,
                     )
+                    _record_timing(timings, "join_source_annotations", phase_started)
                     ortholog_path = partition_work / ORTHOLOG_EVIDENCE_FILENAME
+                    phase_started = time.perf_counter()
                     ortholog_count = write_ortholog_evidence_summary(
                         taxonomic_depth_path,
                         alt_support_path,
@@ -361,6 +418,7 @@ def build_or_load_annotation_support(
                         statuses,
                         ortholog_path,
                     )
+                    _record_timing(timings, "ortholog_evidence_summary", phase_started)
                     ortholog_partition_inputs.append(
                         (
                             partition_work,
@@ -370,15 +428,19 @@ def build_or_load_annotation_support(
         finally:
             connection.close()
 
+        phase_started = time.perf_counter()
         ortholog_row_count = merge_ortholog_evidence(
             ortholog_partition_inputs,
             temporary_ortholog,
         )
+        _record_timing(timings, "merge_ortholog_evidence", phase_started)
         temporary_support.chmod(0o644)
         temporary_ortholog.chmod(0o644)
         temporary_support.replace(outputs.variant_strategy_support_tsv)
         temporary_ortholog.replace(outputs.ortholog_evidence_summary_tsv)
 
+    timings["total"] = round(time.perf_counter() - build_started, 6)
+    _report_timings(timings)
     write_json_atomic(
         manifest_path,
         {
@@ -386,6 +448,8 @@ def build_or_load_annotation_support(
             "status": "complete",
             "fingerprint": fingerprint,
             "inputs": inputs,
+            "timings_seconds": timings,
+            "exact_support": support_metrics,
             "variant_strategy_support": {
                 "columns": VARIANT_STRATEGY_SUPPORT_FIELDS,
                 "row_count": support_row_count,
@@ -408,10 +472,12 @@ def _collapse_partition(
     event_map_path: Path,
     profiles: dict,
     alt_support_path: Path,
-) -> dict[tuple, dict]:
+    exact_support_spool: ExactSupportSpool,
+) -> list[dict | None]:
     """Join partition-local lineage streams while holding one exact-support group."""
 
     aggregates: dict[tuple, dict] = {}
+    aggregates_by_id: list[dict | None] = [None]
     with (
         gzip.open(events_path, "rt", newline="") as event_handle,
         gzip.open(event_map_path, "rt", newline="") as map_handle,
@@ -486,11 +552,18 @@ def _collapse_partition(
                     "lookup_status": map_row.get("normalization_status", ""),
                     "_lookup_key": lookup_key,
                     "_support_by_strategy": {},
+                    "_variant_context_id": len(aggregates_by_id),
                 }
                 aggregates[aggregate_key] = aggregate
-            add_exact_strategy_support(aggregate, event_row, support_rows)
+                aggregates_by_id.append(aggregate)
+            exact_support_spool.add_group(
+                variant_context_id=int(aggregate["_variant_context_id"]),
+                gene_id=str(aggregate.get("gene_id") or ""),
+                strategy=str(event_row.get("strategy") or ""),
+                support_rows=support_rows,
+            )
         support_stream.finish()
-    return aggregates
+    return aggregates_by_id
 
 
 def _alt_taxonomic_support_row(
@@ -770,6 +843,23 @@ def _positive_int(value: object, label: str) -> int:
     if result < 1:
         raise ValueError(f"Invalid {label}: {value!r}")
     return result
+
+
+def _record_timing(timings: dict[str, float], phase: str, started: float) -> None:
+    elapsed = time.perf_counter() - started
+    timings[phase] = round(timings.get(phase, 0.0) + elapsed, 6)
+
+
+def _report_timings(timings: dict[str, float]) -> None:
+    details = ", ".join(
+        f"{phase}={seconds:.3f}s"
+        for phase, seconds in timings.items()
+        if phase != "total"
+    )
+    print(
+        f"Annotation support cache built in {timings['total']:.3f}s ({details})",
+        flush=True,
+    )
 
 
 def _read_json(path: Path) -> dict:

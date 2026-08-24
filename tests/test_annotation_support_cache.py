@@ -396,6 +396,17 @@ def test_annotation_support_cache_reproduces_current_report_contract(tmp_path: P
         annotation_manifest=contract["annotation_manifest"],
         analytics_dir=run_dir / "analytics",
     )
+    cache_manifest = json.loads(
+        (run_dir / "analytics" / "annotation_support" / "manifest.json").read_text()
+    )
+    assert cache_manifest["schema_version"] == 5
+    assert cache_manifest["exact_support"] == {
+        "canonical_variant_count": 4,
+        "canonical_support_edge_count": 8,
+        "exact_support_edge_count": 7,
+    }
+    assert cache_manifest["timings_seconds"]["total"] >= 0
+    assert cache_manifest["timings_seconds"]["aggregate_exact_support"] >= 0
 
     support_rows = _read_rows(outputs.variant_strategy_support_tsv)
     assert list(support_rows[0]) == VARIANT_STRATEGY_SUPPORT_FIELDS

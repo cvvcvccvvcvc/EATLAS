@@ -138,12 +138,35 @@ def count_member_groups(
     members: Iterable[tuple[str, str]],
     profiles: dict[str, TaxonomyProfile],
 ) -> dict[str, int]:
-    groups = {key: set() for key in COUNT_KEYS}
+    groups = [set() for _ in COUNT_KEYS]
     for ortholog_gene_id, tax_id in members:
-        for item in member_group_keys(ortholog_gene_id, tax_id, profiles):
-            key, group_id = item.split("=", 1)
-            groups[key].add(group_id)
-    return {key: len(values) for key, values in groups.items()}
+        if not ortholog_gene_id:
+            continue
+        profile = profiles.get(tax_id)
+        if profile is None:
+            raise ValueError(
+                "Ortholog evidence references tax_id absent from canonical taxonomy: "
+                f"ortholog_gene_id={ortholog_gene_id!r}, tax_id={tax_id!r}"
+            )
+        # A tagged fallback cannot collide with a real rank ID in the same set.
+        fallback_id = ("taxon", profile.tax_id)
+        unit_ids = (
+            ortholog_gene_id,
+            profile.species_id or fallback_id,
+            profile.genus_id or fallback_id,
+            profile.family_id or fallback_id,
+            profile.order_id or fallback_id,
+        )
+        for scope_index, ancestor_id in enumerate(SCOPE_ANCESTORS.values()):
+            if ancestor_id and ancestor_id not in profile.ancestor_ids:
+                continue
+            offset = scope_index * len(UNIT_ORDER)
+            for unit_index, unit_id in enumerate(unit_ids):
+                groups[offset + unit_index].add(unit_id)
+    return {
+        key: len(values)
+        for key, values in zip(COUNT_KEYS, groups, strict=True)
+    }
 
 
 def _format_stat(value: float) -> str:
