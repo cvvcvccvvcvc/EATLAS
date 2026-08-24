@@ -124,6 +124,8 @@ above and submit its report separately after completion.
 
 Resume with the same `RUN`, `WORK`, inputs, and relevant parameters. Use the
 same command with `-resume`; do not invent a new work directory for a resume.
+The pipeline refuses to reuse a successfully completed `RUN`; use a new run
+directory when source evidence must be regenerated.
 
 ```bash
 tmux attach -t gaph_run_name

@@ -40,6 +40,11 @@ modify, or delete any path below it. A change to pipeline evidence requires a
 new run directory. This keeps archived source data stable and prevents report
 caches from being backed up as if they were biological evidence.
 
+The pipeline enforces this boundary: an existing completed manifest makes the
+launch fail before stage work begins, even with `-resume`. An existing
+`running` or `failed` manifest can be continued only with `-resume`; a fresh
+launch must use a new output directory.
+
 `run_manifest.json` is written when the workflow starts and atomically finalized
 when Nextflow terminates. It records the launch-time Git commit and dirty state,
 selected profiles, schema-declared launch parameters with secret-like values

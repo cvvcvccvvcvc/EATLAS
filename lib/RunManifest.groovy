@@ -14,6 +14,9 @@ import java.util.regex.Pattern
 class RunManifest {
     static final int SCHEMA_VERSION = 2
     static final String REDACTED = '<redacted>'
+    private static final Set<String> ACTIVE_RUNS = Collections.synchronizedSet(
+        new HashSet<String>()
+    )
 
     private static final Pattern SENSITIVE_KEY = Pattern.compile(
         '(?i).*(password|passwd|secret|token|credential|api[_-]?key|' +
@@ -34,6 +37,7 @@ class RunManifest {
         def parameters,
         Path parameterSchema = null
     ) {
+        validateStart(manifestPath, workflow.resume as boolean)
         Map git = gitProvenance(projectDir)
         Map payload = [
             schema_version: SCHEMA_VERSION,
@@ -53,9 +57,54 @@ class RunManifest {
             parameters: sanitizeParameters(parameters, parameterSchema),
         ]
         writeAtomic(manifestPath, payload)
+        ACTIVE_RUNS.add(runKey(manifestPath, workflow))
+    }
+
+    private static void validateStart(Path manifestPath, boolean resume) {
+        if (!Files.exists(manifestPath)) {
+            return
+        }
+        if (!Files.isRegularFile(manifestPath)) {
+            throw new IllegalStateException(
+                "Run manifest is not a regular file: ${manifestPath}"
+            )
+        }
+        Map existing = (Map) new JsonSlurper().parse(manifestPath.toFile())
+        if (existing.schema_version != SCHEMA_VERSION) {
+            throw new IllegalStateException(
+                "Unsupported existing run manifest schema: " +
+                "${existing.schema_version} (${manifestPath})"
+            )
+        }
+        if (existing.pipeline != 'gaph_v2') {
+            throw new IllegalStateException(
+                "Existing output is not a gaph_v2 run: ${manifestPath}"
+            )
+        }
+
+        String status = existing.status?.toString()
+        if (status == 'complete') {
+            throw new IllegalStateException(
+                "Completed source run is immutable; choose a new --outdir: " +
+                manifestPath.parent
+            )
+        }
+        if (!(status in ['running', 'failed'])) {
+            throw new IllegalStateException(
+                "Existing run manifest has invalid status=${status}: ${manifestPath}"
+            )
+        }
+        if (!resume) {
+            throw new IllegalStateException(
+                "Existing incomplete run requires -resume: ${manifestPath.parent}"
+            )
+        }
     }
 
     static void finish(Path manifestPath, def workflow) {
+        if (!ACTIVE_RUNS.remove(runKey(manifestPath, workflow))) {
+            return
+        }
         if (!Files.isRegularFile(manifestPath)) {
             if (!(workflow.success as boolean)) {
                 return
@@ -81,6 +130,11 @@ class RunManifest {
         payload.success = success
         payload.exit_status = workflow.exitStatus as Integer
         writeAtomic(manifestPath, payload)
+    }
+
+    private static String runKey(Path manifestPath, def workflow) {
+        return manifestPath.toAbsolutePath().normalize().toString() + '\u0000' +
+            workflow.sessionId?.toString()
     }
 
     private static List<String> parseProfiles(def rawProfiles) {

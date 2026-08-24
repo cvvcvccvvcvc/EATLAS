@@ -15,7 +15,14 @@ ROOT = Path(__file__).resolve().parents[1]
 FIXTURE = ROOT / "tests" / "fixtures" / "run_manifest_workflow.nf"
 
 
-def _command(tmp_path: Path, outdir: Path, *, fail: bool, hold_seconds: int) -> list[str]:
+def _command(
+    tmp_path: Path,
+    outdir: Path,
+    *,
+    fail: bool,
+    hold_seconds: int,
+    resume: bool = False,
+) -> list[str]:
     nextflow = shutil.which("nextflow")
     if nextflow is None:
         pytest.skip("nextflow is not installed")
@@ -43,7 +50,7 @@ def _command(tmp_path: Path, outdir: Path, *, fail: bool, hold_seconds: int) -> 
             }
         )
     )
-    return [
+    command = [
         nextflow,
         "-C",
         str(empty_config),
@@ -70,6 +77,9 @@ def _command(tmp_path: Path, outdir: Path, *, fail: bool, hold_seconds: int) -> 
         "--hold_seconds",
         str(hold_seconds),
     ]
+    if resume:
+        command.insert(command.index(str(FIXTURE)) + 1, "-resume")
+    return command
 
 
 def _environment(tmp_path: Path) -> dict[str, str]:
@@ -170,3 +180,78 @@ def test_run_manifest_records_failed_completion(tmp_path: Path) -> None:
     assert payload["success"] is False
     assert payload["exit_status"] != 0
     assert payload["completed_at"]
+
+
+def test_completed_run_cannot_be_reused(tmp_path: Path) -> None:
+    outdir = tmp_path / "run"
+    first = subprocess.run(
+        _command(tmp_path, outdir, fail=False, hold_seconds=0),
+        cwd=tmp_path,
+        env=_environment(tmp_path),
+        text=True,
+        capture_output=True,
+        timeout=30,
+    )
+    assert first.returncode == 0, first.stdout + first.stderr
+    before = {
+        path.relative_to(outdir): path.read_bytes()
+        for path in outdir.rglob("*")
+        if path.is_file()
+    }
+
+    second = subprocess.run(
+        _command(tmp_path, outdir, fail=False, hold_seconds=0, resume=True),
+        cwd=tmp_path,
+        env=_environment(tmp_path),
+        text=True,
+        capture_output=True,
+        timeout=30,
+    )
+
+    assert second.returncode != 0
+    assert "Completed source run is immutable" in second.stdout + second.stderr
+    assert {
+        path.relative_to(outdir): path.read_bytes()
+        for path in outdir.rglob("*")
+        if path.is_file()
+    } == before
+
+
+def test_incomplete_run_requires_resume_and_can_then_complete(tmp_path: Path) -> None:
+    outdir = tmp_path / "run"
+    failed = subprocess.run(
+        _command(tmp_path, outdir, fail=True, hold_seconds=0),
+        cwd=tmp_path,
+        env=_environment(tmp_path),
+        text=True,
+        capture_output=True,
+        timeout=30,
+    )
+    assert failed.returncode != 0
+
+    without_resume = subprocess.run(
+        _command(tmp_path, outdir, fail=False, hold_seconds=0),
+        cwd=tmp_path,
+        env=_environment(tmp_path),
+        text=True,
+        capture_output=True,
+        timeout=30,
+    )
+    assert without_resume.returncode != 0
+    assert "Existing incomplete run requires -resume" in (
+        without_resume.stdout + without_resume.stderr
+    )
+
+    resumed = subprocess.run(
+        _command(tmp_path, outdir, fail=False, hold_seconds=0, resume=True),
+        cwd=tmp_path,
+        env=_environment(tmp_path),
+        text=True,
+        capture_output=True,
+        timeout=30,
+    )
+    assert resumed.returncode == 0, resumed.stdout + resumed.stderr
+    manifest = json.loads((outdir / "run_manifest.json").read_text())
+    assert manifest["status"] == "complete"
+    assert manifest["success"] is True
+    assert manifest["resume"] is True
