@@ -27,6 +27,18 @@ fail() {
   exit 2
 }
 
+canonical_destination() {
+  local path=$1
+  local suffix=""
+  while [[ ! -e "$path" ]]; do
+    suffix="/$(basename "$path")$suffix"
+    path=$(dirname "$path")
+  done
+  [[ -d "$path" ]] || return 1
+  path=$(cd "$path" && pwd -P) || return 1
+  printf '%s%s\n' "$path" "$suffix"
+}
+
 ids_file=""
 run_dir=""
 work_dir=""
@@ -78,16 +90,19 @@ while (( $# > 0 )); do
       ;;
     --slurm-memory)
       (( $# >= 2 )) || fail "--slurm-memory requires a value"
+      [[ -n "$2" ]] || fail "--slurm-memory must not be empty"
       report_slurm_memory=$2
       shift 2
       ;;
     --slurm-time)
       (( $# >= 2 )) || fail "--slurm-time requires a value"
+      [[ -n "$2" ]] || fail "--slurm-time must not be empty"
       report_slurm_time=$2
       shift 2
       ;;
     --slurm-partition)
       (( $# >= 2 )) || fail "--slurm-partition requires a value"
+      [[ -n "$2" ]] || fail "--slurm-partition must not be empty"
       report_slurm_partition=$2
       shift 2
       ;;
@@ -122,10 +137,32 @@ done
 [[ -z "$report_slurm_cpus" || "$report_slurm_cpus" =~ ^[1-9][0-9]*$ ]] || fail \
   "--slurm-cpus must be a positive integer"
 
+resolved_run_dir=$(canonical_destination "$run_dir") || fail \
+  "--run-dir cannot be resolved as a directory destination: $run_dir"
+resolved_analytics_root=$(canonical_destination "$analytics_root") || fail \
+  "--analytics-root cannot be resolved as a directory destination: $analytics_root"
+case "$resolved_analytics_root/" in
+  "$resolved_run_dir/"*) fail "--analytics-root must be outside source run: $run_dir" ;;
+esac
+
+if (( ${#report_args[@]} > 0 )); then
+  for argument in "${report_args[@]}"; do
+    case "$argument" in
+      --analytics-root|--analytics-root=*|--run-dir|--run-dir=*|--report-name|--report-name=*)
+        fail "$argument is managed by the launcher and must appear before --"
+        ;;
+    esac
+  done
+fi
+
 script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 project_root=$(cd "$script_dir/../.." && pwd)
 report_launcher="$project_root/analytics/slurm/submit_strategy_report.sh"
 [[ -f "$report_launcher" ]] || fail "missing report launcher: $report_launcher"
+git_status=$(git -C "$project_root" status --porcelain=v1 --untracked-files=normal) || fail \
+  "cannot inspect repository status: $project_root"
+[[ -z "$git_status" ]] || fail \
+  "pipeline and report launch requires a clean working tree"
 
 cluster_env="$HOME/.gaph_v2_cluster_env.sh"
 [[ -f "$cluster_env" ]] || fail "cluster environment file not found: $cluster_env"

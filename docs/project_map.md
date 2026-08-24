@@ -26,13 +26,19 @@ runs.
 
 ## Entrypoints
 
-- Workflow entrypoint: `main.nf`
+- Pipeline execution: `nextflow run .`; workflow entrypoint: `main.nf`
 - Runtime configuration: `nextflow.config`
 - Analytics report: `python -m analytics.strategy_report --analytics-root <root> --run-dir <run> --report-name <name>`
+- Cluster report submission: `analytics/slurm/submit_strategy_report.sh`
 - Combined cluster run and report: `scripts/slurm/run_and_report.sh`
 - Run archive: `python -m run_archiving`
 - Local execution: no profile required
 - Cluster run profile: `-profile slurm`
+
+The two shell launchers above are user-facing commands.
+`analytics/slurm/strategy_report.sbatch` is their internal Slurm report worker,
+not a third launch mode. Pipeline-only execution intentionally uses Nextflow
+directly rather than another wrapper.
 
 Runtime environments:
 - `envs/controller.yml` - Nextflow, Java, and Micromamba for the login/controller host.

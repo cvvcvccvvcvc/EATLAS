@@ -42,6 +42,16 @@ def _launcher_fixture(tmp_path: Path, pipeline_status: int = 0) -> tuple[Path, d
         "exit \"$PIPELINE_STATUS\"\n"
     )
     micromamba.chmod(0o755)
+    git = fake_bin / "git"
+    git.write_text(
+        "#!/usr/bin/env bash\n"
+        "if [[ \"$*\" == *'status --porcelain=v1 --untracked-files=normal'* ]]; then\n"
+        "  printf '%s' \"${GIT_STATUS_OUTPUT:-}\"\n"
+        "  exit \"${GIT_STATUS_EXIT:-0}\"\n"
+        "fi\n"
+        "exit 0\n"
+    )
+    git.chmod(0o755)
 
     gaph_root = tmp_path / "gaph root"
     home = tmp_path / "home"
@@ -218,4 +228,71 @@ def test_launcher_rejects_invalid_inputs_before_starting_pipeline(tmp_path: Path
 
     assert completed.returncode == 2
     assert "--report-name may contain" in completed.stderr
+    assert not Path(env["PIPELINE_ARGS_CAPTURE"]).exists()
+
+
+def test_launcher_rejects_dirty_checkout_before_starting_pipeline(tmp_path: Path) -> None:
+    launcher, env = _launcher_fixture(tmp_path)
+    required, _ids, _run, _work = _required_args(tmp_path)
+    env["GIT_STATUS_OUTPUT"] = "?? untracked.py\n"
+
+    completed = subprocess.run(
+        ["bash", str(launcher), *required],
+        env=env,
+        text=True,
+        capture_output=True,
+    )
+
+    assert completed.returncode == 2
+    assert "requires a clean working tree" in completed.stderr
+    assert not Path(env["PIPELINE_ARGS_CAPTURE"]).exists()
+
+
+def test_launcher_rejects_analytics_inside_run_before_pipeline(tmp_path: Path) -> None:
+    launcher, env = _launcher_fixture(tmp_path)
+    required, _ids, run, _work = _required_args(tmp_path)
+    analytics_index = required.index("--analytics-root") + 1
+    required[analytics_index] = str(run / "analytics")
+
+    completed = subprocess.run(
+        ["bash", str(launcher), *required],
+        env=env,
+        text=True,
+        capture_output=True,
+    )
+
+    assert completed.returncode == 2
+    assert "--analytics-root must be outside source run" in completed.stderr
+    assert not Path(env["PIPELINE_ARGS_CAPTURE"]).exists()
+
+
+def test_launcher_rejects_managed_report_argument_before_pipeline(tmp_path: Path) -> None:
+    launcher, env = _launcher_fixture(tmp_path)
+    required, _ids, _run, _work = _required_args(tmp_path)
+
+    completed = subprocess.run(
+        ["bash", str(launcher), *required, "--", "--run-dir", "/another/run"],
+        env=env,
+        text=True,
+        capture_output=True,
+    )
+
+    assert completed.returncode == 2
+    assert "--run-dir is managed by the launcher" in completed.stderr
+    assert not Path(env["PIPELINE_ARGS_CAPTURE"]).exists()
+
+
+def test_launcher_rejects_empty_report_resource_before_pipeline(tmp_path: Path) -> None:
+    launcher, env = _launcher_fixture(tmp_path)
+    required, _ids, _run, _work = _required_args(tmp_path)
+
+    completed = subprocess.run(
+        ["bash", str(launcher), *required, "--slurm-memory", ""],
+        env=env,
+        text=True,
+        capture_output=True,
+    )
+
+    assert completed.returncode == 2
+    assert "--slurm-memory must not be empty" in completed.stderr
     assert not Path(env["PIPELINE_ARGS_CAPTURE"]).exists()

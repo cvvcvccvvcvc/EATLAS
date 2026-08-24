@@ -40,6 +40,9 @@ source "$HOME/.gaph_v2_cluster_env.sh"
 ```
 
 Do not copy tracked source files with `rsync`, Git bundles, or ad hoc archives.
+A source run intended for analytics must start from a clean Git working tree,
+including no untracked files. The run manifest records this state, and analytics
+rejects dirty source runs instead of treating unreproducible evidence as valid.
 
 ## Start A Persistent Controller Session
 
@@ -110,6 +113,12 @@ bash scripts/slurm/run_and_report.sh \
 Everything after `--` is a report argument and is forwarded unchanged. Omit
 the target-space-null option unless the user requested it. See
 `docs/report_generation.md` for report and multi-run details.
+
+Before starting Nextflow, the combined launcher verifies the clean checkout,
+the external analytics path, and its own report arguments. It exposes the
+standard pipeline configuration plus optional `--alignment-strategies`. When a
+measured run requires concurrency overrides, use the direct Nextflow command
+above and submit its report separately after completion.
 
 ## Resume
 

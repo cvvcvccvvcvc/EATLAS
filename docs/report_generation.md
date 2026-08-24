@@ -57,6 +57,11 @@ bash analytics/slurm/submit_strategy_report.sh \
   --report-name strategy_compare
 ```
 
+Tracked and staged code changes must be committed before submission. The Slurm
+worker verifies both the submitted commit and the working tree again when the
+job starts; changing the checkout while a report is queued causes an explicit
+failure instead of running different code.
+
 For several runs, repeat `--run-dir`; there is no separate cohort mode or
 cohort manifest:
 
@@ -120,7 +125,8 @@ bash scripts/slurm/run_and_report.sh \
 Arguments before `--` belong to the launcher; arguments after it go unchanged
 to the report. The launcher uses `-profile slurm` and `-resume`, preserves the
 registry alignment default unless `--alignment-strategies` is supplied, and
-does not submit a report after a failed pipeline run.
+does not submit a report after a failed pipeline run. It validates the clean
+checkout and analytics path before starting Nextflow.
 
 Optional report-job resources are `--slurm-cpus`, `--slurm-memory`,
 `--slurm-time`, and `--slurm-partition`.

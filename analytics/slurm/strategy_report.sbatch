@@ -37,6 +37,14 @@ if [[ "$actual_commit" != "$expected_commit" ]]; then
     "$expected_commit" "$actual_commit" >&2
   exit 1
 fi
+git -C "$project_root" diff --quiet || {
+  printf 'Repository has tracked changes after report submission\n' >&2
+  exit 1
+}
+git -C "$project_root" diff --cached --quiet || {
+  printf 'Repository has staged changes after report submission\n' >&2
+  exit 1
+}
 [[ -x "$analytics_python" ]] || {
   printf 'Analytics Python is missing: %s\n' "$analytics_python" >&2
   exit 1

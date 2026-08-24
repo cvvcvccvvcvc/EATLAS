@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import os
+import shlex
 import shutil
 import subprocess
 from pathlib import Path
+
+import pytest
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -53,6 +56,56 @@ def _run(path: Path) -> Path:
         "{}\n"
     )
     return path
+
+
+def _worker_fixture(tmp_path: Path) -> tuple[Path, Path, dict[str, str]]:
+    project = tmp_path / "project with spaces"
+    worker = project / "analytics" / "slurm" / BATCH.name
+    worker.parent.mkdir(parents=True)
+    shutil.copy2(BATCH, worker)
+
+    fake_bin = tmp_path / "worker bin"
+    fake_bin.mkdir()
+    git = fake_bin / "git"
+    git.write_text(
+        "#!/usr/bin/env bash\n"
+        "if [[ \"$*\" == *'rev-parse HEAD'* ]]; then\n"
+        "  printf 'abc123\\n'\n"
+        "  exit 0\n"
+        "fi\n"
+        "if [[ \"$*\" == *'diff --cached --quiet'* ]]; then\n"
+        "  exit \"${GIT_CACHED_DIFF_STATUS:-0}\"\n"
+        "fi\n"
+        "if [[ \"$*\" == *'diff --quiet'* ]]; then\n"
+        "  exit \"${GIT_DIFF_STATUS:-0}\"\n"
+        "fi\n"
+        "exit 0\n"
+    )
+    git.chmod(0o755)
+
+    gaph_root = tmp_path / "gaph root"
+    analytics_python = gaph_root / "envs" / "analytics" / "bin" / "python"
+    analytics_python.parent.mkdir(parents=True)
+    analytics_python.write_text(
+        "#!/usr/bin/env bash\n"
+        "printf '%s\\0' \"$@\" > \"$PYTHON_CAPTURE\"\n"
+    )
+    analytics_python.chmod(0o755)
+
+    home = tmp_path / "home"
+    home.mkdir()
+    (home / ".gaph_v2_cluster_env.sh").write_text(
+        f"export GAPH_ROOT={shlex.quote(str(gaph_root))}\n"
+    )
+    environment = os.environ.copy()
+    environment.update(
+        {
+            "HOME": str(home),
+            "PATH": f"{fake_bin}{os.pathsep}{environment['PATH']}",
+            "PYTHON_CAPTURE": str(tmp_path / "python.args"),
+        }
+    )
+    return worker, project, environment
 
 
 def test_report_launcher_forwards_one_root_and_repeated_source_runs(
@@ -143,3 +196,86 @@ def test_report_launcher_does_not_write_inside_source_run(tmp_path: Path) -> Non
     assert "must be outside source run" in completed.stderr
     assert not (run / "analytics").exists()
     assert not Path(environment["SBATCH_CAPTURE"]).exists()
+
+
+def test_report_worker_forwards_sources_and_report_arguments(tmp_path: Path) -> None:
+    worker, project, environment = _worker_fixture(tmp_path)
+    analytics_root = tmp_path / "analytics root"
+    first = tmp_path / "run one"
+    second = tmp_path / "run two"
+
+    completed = subprocess.run(
+        [
+            "bash",
+            str(worker),
+            str(analytics_root),
+            "combined",
+            "abc123",
+            str(project),
+            "2",
+            str(first),
+            str(second),
+            "--target-space-null",
+            "--target-space-null-seed",
+            "7",
+        ],
+        env=environment,
+        text=True,
+        capture_output=True,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert _read_argv(Path(environment["PYTHON_CAPTURE"])) == [
+        "-m",
+        "analytics.strategy_report",
+        "--analytics-root",
+        str(analytics_root),
+        "--report-name",
+        "combined",
+        "--run-dir",
+        str(first),
+        "--run-dir",
+        str(second),
+        "--target-space-null",
+        "--target-space-null-seed",
+        "7",
+    ]
+    assert (analytics_root / "slurm" / "combined.git_commit").read_text() == (
+        "abc123\n"
+    )
+
+
+@pytest.mark.parametrize(
+    ("status_variable", "message"),
+    [
+        ("GIT_DIFF_STATUS", "tracked changes"),
+        ("GIT_CACHED_DIFF_STATUS", "staged changes"),
+    ],
+)
+def test_report_worker_rejects_changes_after_submission(
+    tmp_path: Path,
+    status_variable: str,
+    message: str,
+) -> None:
+    worker, project, environment = _worker_fixture(tmp_path)
+    environment[status_variable] = "1"
+
+    completed = subprocess.run(
+        [
+            "bash",
+            str(worker),
+            str(tmp_path / "analytics"),
+            "report",
+            "abc123",
+            str(project),
+            "1",
+            str(tmp_path / "run"),
+        ],
+        env=environment,
+        text=True,
+        capture_output=True,
+    )
+
+    assert completed.returncode == 1
+    assert message in completed.stderr
+    assert not Path(environment["PYTHON_CAPTURE"]).exists()
