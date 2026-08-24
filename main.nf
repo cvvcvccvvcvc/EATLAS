@@ -548,6 +548,8 @@ workflow PARTITIONED_ANNOTATION_STAGE {
     FINALIZE_ANNOTATION(
         ANNOTATE_EVENTS_PARTITION.out.partition_dirs.map { meta, dir -> dir }.collect(),
         ANNOTATE_VEP_PARTITION.out.shard_dirs.map { meta, dir -> dir }.collect(),
+        clinvar_vcf,
+        clinvar_vcf_tbi,
         finalize_script
     )
 

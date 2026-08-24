@@ -8,7 +8,7 @@ import pandas as pd
 import pytest
 
 from analytics.io import run_inputs as run_inputs_module
-from analytics.io.artifacts import path_metadata
+from analytics.io.artifacts import content_identity
 from analytics.io.run_inputs import build_analysis_inputs, resolve_source_runs
 from analytics.analyses.variant_summary_aggregation import (
     resolve_variant_aggregation_source,
@@ -233,11 +233,11 @@ def _make_source_run(
         annotation / "manifest.json",
         {
             "stage": "annotation",
-            "schema": "normalized_annotation_evidence_v3",
+            "schema": "normalized_annotation_evidence_v4",
             "gnomad_api_url": "https://example.invalid",
             "gnomad_dataset": "gnomad_r4",
-            "clinvar_vcf": path_metadata(clinvar_vcf),
-            "clinvar_tbi": path_metadata(Path(f"{clinvar_vcf}.tbi")),
+            "clinvar_vcf": content_identity(clinvar_vcf),
+            "clinvar_tbi": content_identity(Path(f"{clinvar_vcf}.tbi")),
             "variant_annotations": descriptor,
         },
     )
@@ -392,6 +392,50 @@ def test_analysis_rejects_incompatible_source_contracts(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="contracts differ: strategies"):
         resolve_source_runs([run_a, run_b], clinvar_vcf=clinvar)
+
+
+def test_analysis_accepts_moved_clinvar_with_identical_contents(tmp_path: Path) -> None:
+    original = tmp_path / "original" / "clinvar.vcf.gz"
+    original.parent.mkdir()
+    original.write_bytes(b"clinvar")
+    Path(f"{original}.tbi").write_bytes(b"index")
+    run = _make_source_run(tmp_path / "run", gene_id="1", clinvar_vcf=original)
+
+    moved = tmp_path / "moved" / "clinvar.vcf.gz"
+    moved.parent.mkdir()
+    moved.write_bytes(original.read_bytes())
+    Path(f"{moved}.tbi").write_bytes(Path(f"{original}.tbi").read_bytes())
+    original.unlink()
+    Path(f"{original}.tbi").unlink()
+
+    assert resolve_source_runs([run], clinvar_vcf=moved)[0].run_dir == run
+
+
+def test_analysis_rejects_different_clinvar_contents(tmp_path: Path) -> None:
+    original = tmp_path / "original.vcf.gz"
+    original.write_bytes(b"clinvar")
+    Path(f"{original}.tbi").write_bytes(b"index")
+    run = _make_source_run(tmp_path / "run", gene_id="1", clinvar_vcf=original)
+    different = tmp_path / "different.vcf.gz"
+    different.write_bytes(b"different")
+    Path(f"{different}.tbi").write_bytes(b"index")
+
+    with pytest.raises(ValueError, match="different ClinVar contents"):
+        resolve_source_runs([run], clinvar_vcf=different)
+
+
+def test_analysis_rejects_previous_annotation_schema(tmp_path: Path) -> None:
+    clinvar = tmp_path / "clinvar.vcf.gz"
+    clinvar.write_bytes(b"clinvar")
+    Path(f"{clinvar}.tbi").write_bytes(b"index")
+    run = _make_source_run(tmp_path / "run", gene_id="1", clinvar_vcf=clinvar)
+    manifest_path = run / "annotation" / "manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    manifest["schema"] = "normalized_annotation_evidence_v3"
+    _json(manifest_path, manifest)
+
+    with pytest.raises(ValueError, match="Unsupported pipeline annotation contract"):
+        resolve_source_runs([run], clinvar_vcf=clinvar)
 
 
 def test_analysis_rejects_conflicting_shared_allele_evidence(

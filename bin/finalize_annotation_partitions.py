@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import csv
 import gzip
+import hashlib
 import json
 import re
 import shutil
@@ -76,6 +77,8 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--partition-root", required=True, type=Path)
     parser.add_argument("--vep-root", required=True, type=Path)
+    parser.add_argument("--clinvar-vcf", required=True, type=Path)
+    parser.add_argument("--clinvar-tbi", required=True, type=Path)
     parser.add_argument("--outdir", required=True, type=Path)
     return parser.parse_args()
 
@@ -177,6 +180,31 @@ def validate_partition_manifests(partitions: list[tuple[Path, dict]]) -> None:
             reference_identity = identity
         elif identity != reference_identity:
             raise ValueError("Annotation reference metadata differs across partitions")
+
+
+def content_identity_from_partition_input(
+    path: Path,
+    declared_metadata: dict[str, object],
+    label: str,
+) -> dict[str, object]:
+    if not path.is_file():
+        raise FileNotFoundError(f"{label} input does not exist: {path}")
+    before = path.stat()
+    if (
+        before.st_size != declared_metadata.get("size_bytes")
+        or int(before.st_mtime) != declared_metadata.get("mtime")
+    ):
+        raise ValueError(
+            f"{label} input changed between partition annotation and finalization: {path}"
+        )
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for block in iter(lambda: handle.read(16 * 1024 * 1024), b""):
+            digest.update(block)
+    after = path.stat()
+    if (before.st_size, before.st_mtime_ns) != (after.st_size, after.st_mtime_ns):
+        raise ValueError(f"{label} input changed while hashing: {path}")
+    return {"size_bytes": before.st_size, "sha256": digest.hexdigest()}
 
 
 def variant_annotation_shards(
@@ -602,6 +630,17 @@ def main() -> None:
     args.outdir.mkdir(parents=True, exist_ok=True)
     partitions = load_partitions(args.partition_root)
     validate_partition_manifests(partitions)
+    first_manifest = partitions[0][1]
+    clinvar_vcf_identity = content_identity_from_partition_input(
+        args.clinvar_vcf,
+        first_manifest["clinvar_vcf"],
+        "ClinVar VCF",
+    )
+    clinvar_tbi_identity = content_identity_from_partition_input(
+        args.clinvar_tbi,
+        first_manifest["clinvar_tbi"],
+        "ClinVar index",
+    )
     variant_annotations = copy_variant_annotation_dataset(
         partitions,
         args.vep_root,
@@ -644,13 +683,12 @@ def main() -> None:
             counter.update(manifest_counter(manifest, field, path))
         counters[field] = dict(counter)
 
-    first_manifest = partitions[0][1]
     gnomad_shared_cache = merge_gnomad_shared_cache(partitions)
     partition_timings = merge_partition_timings(partitions)
     manifest = {
         "created_at": utc_now(),
         "stage": "annotation",
-        "schema": "normalized_annotation_evidence_v3",
+        "schema": "normalized_annotation_evidence_v4",
         "partition_count": len(partitions),
         "partition_ids": [manifest_string(item, "partition_id", path) for path, item in partitions],
         **counts,
@@ -662,8 +700,8 @@ def main() -> None:
             len(partitions),
         ),
         "failure_count": failure_count,
-        "clinvar_vcf": first_manifest["clinvar_vcf"],
-        "clinvar_tbi": first_manifest["clinvar_tbi"],
+        "clinvar_vcf": clinvar_vcf_identity,
+        "clinvar_tbi": clinvar_tbi_identity,
         "gnomad_api_url": first_manifest["gnomad_api_url"],
         "gnomad_dataset": first_manifest["gnomad_dataset"],
         "cache_count_semantics": "ClinVar and gnomAD cache counts are sums across partitions.",

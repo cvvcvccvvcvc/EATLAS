@@ -79,6 +79,11 @@ backend/release, and variant columns. Accepted Gene IDs must be disjoint.
 Overlap and incompatibility fail explicitly; analytics never silently
 deduplicates them.
 
+`--clinvar-vcf` defaults to `CLINVAR_VCF`, then to
+`assets/reference/clinvar/clinvar.vcf.gz`. Its indexed contents must match the
+portable ClinVar identity recorded by every source run; the current file does
+not need to be at the path used when the pipeline ran.
+
 Pass scientific report options unchanged after `--`. For example:
 
 ```bash

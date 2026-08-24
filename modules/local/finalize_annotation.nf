@@ -4,6 +4,8 @@ process FINALIZE_ANNOTATION {
     input:
     path partition_dirs, stageAs: 'partitions/*'
     path vep_shard_dirs, stageAs: 'vep_partitions/*'
+    path clinvar_vcf, stageAs: 'references/clinvar.vcf.gz'
+    path clinvar_vcf_tbi, stageAs: 'references/clinvar.vcf.gz.tbi'
     path finalize_script
 
     output:
@@ -17,6 +19,8 @@ process FINALIZE_ANNOTATION {
     python3 "${finalize_script}" \\
         --partition-root partitions \\
         --vep-root vep_partitions \\
+        --clinvar-vcf references/clinvar.vcf.gz \\
+        --clinvar-tbi references/clinvar.vcf.gz.tbi \\
         --outdir .
     """
 }

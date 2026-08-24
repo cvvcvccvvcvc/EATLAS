@@ -166,7 +166,7 @@ Annotation expected properties:
   consecutive within the partition; non-concrete alleles have an empty
   `variant_key` and retain their normalization status.
 - `annotation/manifest.json` declares `stage=annotation` and
-  `schema=normalized_annotation_evidence_v3`; its `variant_annotations`
+  `schema=normalized_annotation_evidence_v4`; its `variant_annotations`
   descriptor exactly matches the child dataset manifest.
 - Pipeline-owned `variant_strategy_support`, `variant_ortholog_support`, and
   `ortholog_evidence_summary` outputs are absent.

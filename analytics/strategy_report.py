@@ -69,10 +69,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--clinvar-vcf",
         type=Path,
-        default=project_root() / "assets" / "reference" / "clinvar" / "clinvar.vcf.gz",
+        default=_default_clinvar_vcf(),
         help=(
             "Indexed ClinVar VCF used for validation. Default: "
-            "assets/reference/clinvar/clinvar.vcf.gz"
+            "$CLINVAR_VCF, then assets/reference/clinvar/clinvar.vcf.gz"
         ),
     )
     parser.add_argument(
@@ -179,6 +179,13 @@ def parse_args() -> argparse.Namespace:
 
 def project_root() -> Path:
     return Path(__file__).resolve().parents[1]
+
+
+def _default_clinvar_vcf() -> Path:
+    configured = os.environ.get("CLINVAR_VCF")
+    if configured:
+        return Path(configured)
+    return project_root() / "assets" / "reference" / "clinvar" / "clinvar.vcf.gz"
 
 
 def _default_vep_result_cache_dir() -> Path | None:

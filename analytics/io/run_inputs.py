@@ -17,7 +17,7 @@ import pandas as pd
 from analytics.analyses.variant_summary_aggregation import resolve_variant_aggregation_source
 from analytics.io.alignment_aggregates import resolve_alignment_aggregate_paths
 from analytics.io.annotation_support import resolve_annotation_support_paths
-from analytics.io.artifacts import content_identity, path_metadata, write_json_atomic
+from analytics.io.artifacts import content_identity, write_json_atomic
 from analytics.io.taxonomy_summary import (
     build_or_load_taxonomy_summary_many,
     resolve_taxonomy_summary_path,
@@ -495,7 +495,7 @@ def _validate_compatibility(
         "ortholog_scope": "all",
         "alignment_event_mode": "compact_support",
         "event_ortholog_support_format": "event_group_id_v2",
-        "annotation_schema": "normalized_annotation_evidence_v3",
+        "annotation_schema": "normalized_annotation_evidence_v4",
         "gnomad_dataset": "gnomad_r4",
     }
     invalid = [
@@ -549,20 +549,25 @@ def _declared_clinvar_identity(source: SourceRun) -> dict[str, object]:
     identities = {}
     for key, manifest_key in (("vcf", "clinvar_vcf"), ("tbi", "clinvar_tbi")):
         metadata = source.annotation_manifest.get(manifest_key)
-        if not isinstance(metadata, dict) or not str(metadata.get("path") or ""):
+        if not isinstance(metadata, dict) or set(metadata) != {"size_bytes", "sha256"}:
             raise ValueError(
-                f"Run {source.run_dir} annotation manifest lacks {manifest_key} provenance"
+                f"Run {source.run_dir} annotation manifest has invalid "
+                f"{manifest_key} content identity"
             )
-        path = Path(str(metadata["path"])).expanduser()
-        if not path.is_file():
-            raise FileNotFoundError(
-                f"Run {source.run_dir} ClinVar provenance file is unavailable: {path}"
-            )
-        if path_metadata(path) != metadata:
+        size_bytes = metadata.get("size_bytes")
+        sha256 = metadata.get("sha256")
+        if (
+            isinstance(size_bytes, bool)
+            or not isinstance(size_bytes, int)
+            or size_bytes < 0
+            or not isinstance(sha256, str)
+            or re.fullmatch(r"[0-9a-f]{64}", sha256) is None
+        ):
             raise ValueError(
-                f"Run {source.run_dir} ClinVar provenance changed after annotation: {path}"
+                f"Run {source.run_dir} annotation manifest has invalid "
+                f"{manifest_key} content identity"
             )
-        identities[key] = content_identity(path)
+        identities[key] = {"size_bytes": size_bytes, "sha256": sha256}
     return identities
 
 
@@ -772,7 +777,7 @@ def _variant_annotation_descriptor(path: Path) -> dict[str, object]:
     manifest = _required_json(path)
     if (
         manifest.get("stage") != "annotation"
-        or manifest.get("schema") != "normalized_annotation_evidence_v3"
+        or manifest.get("schema") != "normalized_annotation_evidence_v4"
     ):
         raise ValueError(f"Unsupported pipeline annotation contract: {path}")
     descriptor = manifest.get("variant_annotations")

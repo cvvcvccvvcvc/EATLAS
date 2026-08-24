@@ -71,7 +71,9 @@ annotation/
 ```
 
 `annotation/manifest.json` uses
-`schema=normalized_annotation_evidence_v3`. Its `variant_annotations` object is
+`schema=normalized_annotation_evidence_v4`. Its `clinvar_vcf` and
+`clinvar_tbi` fields store content identities (`size_bytes` and `sha256`), not
+machine-specific paths. Its `variant_annotations` object is
 identical to `annotation/variant_annotations/manifest.json` and declares:
 
 - `schema=gaph_variant_annotation_dataset_v1`;
@@ -107,6 +109,10 @@ Completed-run analytics requires the current root annotation manifest and the
 exact child variant dataset manifest. It validates all declared shard files and
 scans them as one virtual table. Cohorts reference member dataset manifests and
 shards rather than concatenating large variant tables.
+
+The report still needs an indexed ClinVar VCF for validation analyses. It
+compares that file's content identity with every source run, so the same VCF may
+be moved to another machine or directory without changing the source run.
 
 Analytics then derives strategy/feature coverage, site depth, taxonomic depth,
 ALT support, genus support, and report summaries under fingerprinted caches.

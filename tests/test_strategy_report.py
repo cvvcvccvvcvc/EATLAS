@@ -48,7 +48,11 @@ from analytics.reporting.variant_profile import (
     top_gene_contribution_counts,
     top_gene_contribution_figure,
 )
-from analytics.strategy_report import _default_phylop_bigwig, parse_args
+from analytics.strategy_report import (
+    _default_clinvar_vcf,
+    _default_phylop_bigwig,
+    parse_args,
+)
 
 
 REPORT_VARIANT_FIELDS = [
@@ -98,6 +102,24 @@ def test_report_cli_has_one_workspace_and_repeatable_run_inputs(
     assert args.report_name == "combined"
     assert not hasattr(args, "out_html")
     assert not hasattr(args, "cohort_manifest")
+
+
+def test_clinvar_default_prefers_environment(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    configured = tmp_path / "clinvar.vcf.gz"
+    monkeypatch.setenv("CLINVAR_VCF", str(configured))
+    assert _default_clinvar_vcf() == configured
+
+    monkeypatch.delenv("CLINVAR_VCF")
+    assert _default_clinvar_vcf() == (
+        Path(__file__).resolve().parents[1]
+        / "assets"
+        / "reference"
+        / "clinvar"
+        / "clinvar.vcf.gz"
+    )
 
 
 def write_pipeline_variant_dataset(annotation_dir: Path) -> tuple[Path, dict]:
@@ -155,7 +177,7 @@ def write_pipeline_variant_dataset(annotation_dir: Path) -> tuple[Path, dict]:
         json.dumps(
             {
                 "stage": "annotation",
-                "schema": "normalized_annotation_evidence_v3",
+                "schema": "normalized_annotation_evidence_v4",
                 "variant_annotations": descriptor,
             },
             indent=2,

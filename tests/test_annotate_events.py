@@ -20,6 +20,7 @@ from bin.annotate_events import (
     VARIANT_ANNOTATION_FIELDS,
     event_variant_map_row,
     load_alignment_manifest,
+    path_metadata,
     write_tsv_gz,
     write_variant_annotation_shards,
 )
@@ -33,6 +34,7 @@ from analytics.derivations.support import (  # noqa: E402
     build_variant_strategy_support,
     load_snv_alt_genus_support,
 )
+from analytics.io.artifacts import content_identity  # noqa: E402
 from genomics.variants import event_vcf_key, variant_aggregate_key  # noqa: E402
 from bin.finalize_annotation_partitions import (
     COUNTER_FIELDS,
@@ -387,6 +389,10 @@ def test_finalizer_publishes_only_source_annotation_evidence(tmp_path: Path) -> 
     partition_root = tmp_path / "partitions"
     partition = partition_root / "annotation_partition_000001"
     partition.mkdir(parents=True)
+    clinvar_vcf = tmp_path / "clinvar.vcf.gz"
+    clinvar_tbi = tmp_path / "clinvar.vcf.gz.tbi"
+    clinvar_vcf.write_bytes(b"clinvar")
+    clinvar_tbi.write_bytes(b"index")
     manifest = canonical_partition_manifest("partition_000001")
     manifest.update(
         {
@@ -394,6 +400,8 @@ def test_finalizer_publishes_only_source_annotation_evidence(tmp_path: Path) -> 
             "event_variant_map_count": 1,
             "variant_context_count": 1,
             "annotated_variant_context_count": 1,
+            "clinvar_vcf": path_metadata(clinvar_vcf),
+            "clinvar_tbi": path_metadata(clinvar_tbi),
         }
     )
     source_rows = [
@@ -437,6 +445,10 @@ def test_finalizer_publishes_only_source_annotation_evidence(tmp_path: Path) -> 
             str(partition_root),
             "--vep-root",
             str(vep_root),
+            "--clinvar-vcf",
+            str(clinvar_vcf),
+            "--clinvar-tbi",
+            str(clinvar_tbi),
             "--outdir",
             str(outdir),
         ],
@@ -455,7 +467,9 @@ def test_finalizer_publishes_only_source_annotation_evidence(tmp_path: Path) -> 
     }
     final_manifest = json.loads((outdir / "manifest.json").read_text())
     assert final_manifest["stage"] == "annotation"
-    assert final_manifest["schema"] == "normalized_annotation_evidence_v3"
+    assert final_manifest["schema"] == "normalized_annotation_evidence_v4"
+    assert final_manifest["clinvar_vcf"] == content_identity(clinvar_vcf)
+    assert final_manifest["clinvar_tbi"] == content_identity(clinvar_tbi)
     dataset_manifest = json.loads(
         (outdir / "variant_annotations" / "manifest.json").read_text()
     )

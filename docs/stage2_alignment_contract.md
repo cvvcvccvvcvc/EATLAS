@@ -220,7 +220,7 @@ evidence. Per-partition phase timings remain in the final manifest; they are
 task measurements, not a synthetic wall-clock total.
 
 Stage 3 follows the same evidence-first boundary. Its canonical
-`normalized_annotation_evidence_v3` output contains the partitioned
+`normalized_annotation_evidence_v4` output contains the partitioned
 ClinVar/gnomAD/VEP variant dataset, partitioned `event_variant_map`, annotation
 `failures.tsv.gz`, and `manifest.json`. The event map preserves the exact
 `(partition_id, event_group_id)` to canonical `variant_key` lineage needed to
