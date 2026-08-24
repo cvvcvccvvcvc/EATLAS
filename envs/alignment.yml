@@ -6,9 +6,7 @@ dependencies:
   - python=3.11
   - python-duckdb=1.5
   - pysam
-  - ncbi-datasets-cli
   - minimap2
   - mummer4
   - bwa
   - samtools
-  - bedtools=2.31.1

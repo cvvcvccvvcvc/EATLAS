@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Fail early when the end-to-end pipeline cannot run in the task environment."""
+"""Fail early when selected alignment and annotation dependencies are unavailable."""
 
 from __future__ import annotations
 
@@ -44,8 +44,6 @@ def main() -> None:
     strategies = split_strategies(args.alignment_strategies)
     errors: list[str] = []
 
-    require_executable("datasets", "datasets", errors)
-    require_executable("bedtools", "bedtools", errors)
     require_python_module("pysam", errors)
     if any(strategy.startswith("minimap2_") for strategy in strategies):
         require_executable("minimap2", "minimap2", errors)

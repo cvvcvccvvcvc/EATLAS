@@ -28,7 +28,12 @@ def test_map_ont_strategy_checks_minimap2_dependency(
         "require_executable",
         lambda name, _raw, _errors: requested.append(name),
     )
+    monkeypatch.setattr(
+        check_runtime,
+        "require_python_module",
+        lambda _name, _errors: None,
+    )
 
     check_runtime.main()
 
-    assert requested == ["datasets", "bedtools", "minimap2"]
+    assert requested == ["minimap2"]
