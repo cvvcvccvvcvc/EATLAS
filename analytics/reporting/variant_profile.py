@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import re
-
 import numpy as np
 import pandas as pd
 import plotly.express as px
@@ -23,8 +21,6 @@ from .config import (
     CONSEQUENCE_GROUP_TERMS,
     FEATURE_ORDER,
     PROFILE_FEATURE_ORDER,
-    REVIEW_STAR_COLORS,
-    REVIEW_STAR_ORDER,
     TARGET_CONTEXT_COLORS,
     TARGET_CONTEXT_LABELS,
     TARGET_CONTEXT_ORDER,
@@ -77,13 +73,6 @@ def strategy_overlap_figure(overlap: StrategyOverlap | None):
     fig.update_xaxes(side="top", tickangle=-35, title_text=None, automargin=True)
     fig.update_yaxes(title_text=None, automargin=True)
     return fig
-
-
-def review_star_category(row: pd.Series) -> str:
-    stars = str(row.get("clinvar_review_stars", "") or "").strip()
-    if stars in {"0", "1", "2", "3", "4"}:
-        return stars
-    return "Unmapped"
 
 
 def group_consequence_counts(raw_counts: pd.DataFrame) -> pd.DataFrame:
@@ -322,75 +311,6 @@ def top_gene_contribution_figure(
     fig.update_xaxes(tickangle=-45)
     compact_figure(fig, height=430)
     return fig
-
-
-def compact_list_text(value: str, max_items: int = 2, max_chars: int = 90) -> str:
-    items = [item for item in re.split(r"[|,]", str(value or "")) if item and item != "."]
-    if not items:
-        return ""
-    shown = "; ".join(items[:max_items])
-    if len(items) > max_items:
-        shown += f"; +{len(items) - max_items}"
-    if len(shown) > max_chars:
-        shown = shown[: max_chars - 1].rstrip() + "..."
-    return shown
-
-
-def format_strategy_list(value: str) -> str:
-    strategies = [strategy_label(item.strip()) for item in str(value or "").split(",") if item.strip()]
-    return ", ".join(strategies)
-
-
-def pathogenic_variant_table(variants: pd.DataFrame) -> pd.DataFrame:
-    pathogenic = variants[variants["clinvar_category"].astype(str) == "P/LP"].copy()
-    if pathogenic.empty:
-        return pd.DataFrame()
-
-    pathogenic["Stars"] = pathogenic.apply(review_star_category, axis=1)
-    pathogenic["Strategies"] = pathogenic["strategies"].map(format_strategy_list)
-    pathogenic["Disease"] = pathogenic["clinvar_disease"].map(compact_list_text)
-    pathogenic["HGVS"] = pathogenic["clinvar_hgvs"].map(lambda value: compact_list_text(value, max_items=1, max_chars=70))
-    pathogenic["gnomAD AF"] = pathogenic["gnomad_af"]
-    pathogenic["Ortholog support / strategy"] = pathogenic.apply(
-        lambda row: (
-            ""
-            if pd.isna(row.get("support_ortholog_mean"))
-            else (
-                f"{float(row['support_ortholog_mean']):.1f} "
-                f"({int(row['support_ortholog_min'])}-{int(row['support_ortholog_max'])})"
-            )
-        ),
-        axis=1,
-    )
-    table = pd.DataFrame(
-        {
-            "Key": pathogenic["variant_id"],
-            "Gene": pathogenic["gene_id"],
-            "Event": pathogenic["event_type"],
-            "ClinVar sig": pathogenic["clinvar_sig"],
-            "Stars": pathogenic["Stars"],
-            "Review status": pathogenic["clinvar_revstat"],
-            "SCVs": pathogenic["clinvar_scv_count"],
-            "ClinVar ID": pathogenic["clinvar_id"],
-            "Allele ID": pathogenic["clinvar_allele_id"],
-            "Disease": pathogenic["Disease"],
-            "HGVS": pathogenic["HGVS"],
-            "ClinVar type": pathogenic["clinvar_variant_type"],
-            "gnomAD AF": pathogenic["gnomAD AF"],
-            "VEP consequence": pathogenic["vep_primary_consequence"],
-            "VEP status": pathogenic["vep_status"],
-            "Ortholog support / strategy": pathogenic["Ortholog support / strategy"],
-            "Strategies": pathogenic["Strategies"],
-        }
-    )
-    star_rank = table["Stars"].map({star: index for index, star in enumerate(REVIEW_STAR_ORDER[::-1])}).fillna(-1)
-    table["_star_rank"] = star_rank
-    table = table.sort_values(
-        ["_star_rank", "SCVs", "Key"],
-        ascending=[False, False, True],
-        kind="mergesort",
-    ).drop(columns=["_star_rank"])
-    return table
 
 
 def coverage_summary(cov: pd.DataFrame, feature_types: list[str] | None = None) -> pd.DataFrame:
@@ -635,68 +555,6 @@ def build_clinvar_gnomad_sections(
     fig_clin.update_layout(yaxis_tickformat=".0%")
     compact_figure(fig_clin, height=360)
     sections.append(fig_html(fig_clin))
-
-    star_counts = variant_summary.pathogenic_star_counts.copy()
-    if not star_counts.empty:
-        present_stars = [star for star in REVIEW_STAR_ORDER if star != "Unmapped"]
-        if "Unmapped" in set(star_counts["Review stars"].astype(str)):
-            present_stars.append("Unmapped")
-        complete_index = pd.MultiIndex.from_product(
-            [strategy_stats["Strategy"].tolist(), present_stars], names=["Strategy", "Review stars"]
-        )
-        star_counts = (
-            star_counts.set_index(["Strategy", "Review stars"])
-            .reindex(complete_index, fill_value=0)
-            .reset_index()
-        )
-        totals = star_counts.groupby("Strategy", observed=True)["Variant_Count"].sum()
-        high_conf = star_counts[star_counts["Review stars"].astype(str).isin(["4", "3", "2"])]
-        high_conf_totals = high_conf.groupby("Strategy", observed=True)["Variant_Count"].sum()
-        star_order = (
-            pd.DataFrame({"total": totals, "high_conf": high_conf_totals})
-            .fillna(0)
-            .sort_values(["high_conf", "total"], ascending=False)
-            .index.tolist()
-        )
-        fig_stars = px.bar(
-            star_counts,
-            x="Strategy",
-            y="Variant_Count",
-            color="Review stars",
-            barmode="stack",
-            title="Pathogenic ClinVar hits by review stars",
-            category_orders={"Strategy": star_order, "Review stars": present_stars},
-            color_discrete_map=REVIEW_STAR_COLORS,
-            labels={"Strategy": "", "Variant_Count": "P/LP ClinVar variants", "Review stars": "Review stars"},
-        )
-        compact_figure(fig_stars, height=340)
-        sections.append("<h3>Pathogenic ClinVar Evidence</h3>")
-        sections.append(fig_html(fig_stars))
-    else:
-        sections.append("<h3>Pathogenic ClinVar Evidence</h3>")
-        sections.append("<p>No P/LP ClinVar variants were found in the candidate set.</p>")
-
-    pathogenic_consequence_counts = group_consequence_counts(variant_summary.pathogenic_consequence_counts)
-    if not pathogenic_consequence_counts.empty:
-        pathogenic_order = (
-            pathogenic_consequence_counts.groupby("Strategy", observed=True)["Variant_Count"]
-            .sum()
-            .sort_values(ascending=False)
-            .index.tolist()
-        )
-        fig_path_conseq = px.bar(
-            pathogenic_consequence_counts,
-            x="Strategy",
-            y="Variant_Count",
-            color="Consequence group",
-            barmode="stack",
-            title=f"{variant_summary.consequence_source} consequence groups for pathogenic ClinVar hits",
-            category_orders={"Strategy": pathogenic_order, "Consequence group": CONSEQUENCE_GROUP_ORDER},
-            color_discrete_map=CONSEQUENCE_GROUP_COLORS,
-            labels={"Strategy": "", "Variant_Count": "P/LP ClinVar variants", "Consequence group": "Consequence group"},
-        )
-        compact_figure(fig_path_conseq, height=320)
-        sections.append(fig_html(fig_path_conseq))
 
     return sections
 

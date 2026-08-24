@@ -30,7 +30,7 @@ def test_clinvar_universe_writer_preserves_schema_and_shared_permissions(
         keep_default_na=False,
     )
     assert observed.columns.tolist() == clinvar_validation.UNIVERSE_FIELDS
-    assert observed.columns.tolist()[:-1] == [
+    assert observed.columns.tolist()[:-2] == [
         "variant_key",
         "variant_type",
         "chrom",
@@ -44,7 +44,10 @@ def test_clinvar_universe_writer_preserves_schema_and_shared_permissions(
         "clinvar_mc_terms",
         "gene_ids",
     ]
-    assert observed.columns[-1] == "clinvar_disease_ids"
+    assert observed.columns.tolist()[-2:] == [
+        "clinvar_disease_names",
+        "clinvar_disease_ids",
+    ]
     assert observed.loc[0, "variant_key"] == "1:10:A>G"
     assert stat.S_IMODE(universe_path.stat().st_mode) == 0o644
 
@@ -56,9 +59,11 @@ def test_clinvar_universe_preserves_clndisdb_source_structure(
     lines = [
         "1\t10\tVCV2\tA\tG\t.\t.\t"
         "CLNSIG=Pathogenic;MC=SO:0001583|missense_variant;"
+        "CLNDN=Disease_one|Disease_two;"
         "CLNDISDB=MedGen:C1|MONDO:MONDO:1,OMIM:1\n",
         "1\t10\tVCV1\tA\tG\t.\t.\t"
         "CLNSIG=Pathogenic;MC=SO:0001583|missense_variant;"
+        "CLNDN=not_provided|Disease_three;"
         "CLNDISDB=.|MedGen:C2\n",
         "1\t10\tVCV3\tA\tG\t.\t.\t"
         "CLNSIG=Pathogenic;MC=SO:0001583|missense_variant;CLNDISDB=.\n",
@@ -89,6 +94,9 @@ def test_clinvar_universe_preserves_clndisdb_source_structure(
     assert len(rows) == 1
     assert rows[0]["clinvar_disease_ids"] == (
         ".|MedGen:C2;MedGen:C1|MONDO:MONDO:1,OMIM:1"
+    )
+    assert rows[0]["clinvar_disease_names"] == (
+        "not_provided|Disease_three;Disease_one|Disease_two"
     )
 
 

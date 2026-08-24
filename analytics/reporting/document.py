@@ -136,8 +136,58 @@ def render_html(sections: list[tuple[str, str, list[str]]]) -> str:
                 font-size: 13px;
             }}
             .analysis-plot {{ min-height: 330px; max-width: 980px; }}
+            .pathogenic-table-wrap {{
+                overflow-x: auto;
+                max-height: 680px;
+                border: 1px solid #d5d9df;
+            }}
+            .pathogenic-table {{
+                width: max-content;
+                min-width: 100%;
+                margin-bottom: 0;
+                white-space: nowrap;
+            }}
+            .pathogenic-table th {{
+                position: sticky;
+                top: 0;
+                z-index: 1;
+            }}
+            .pathogenic-table-footer {{
+                margin: 10px 0 20px;
+            }}
+            .pathogenic-sort-controls {{
+                display: grid;
+                grid-template-columns: repeat(4, minmax(160px, 1fr));
+                gap: 10px;
+            }}
+            .pathogenic-sort-controls label {{ color: #52606d; font-size: 13px; }}
+            .pathogenic-sort-controls select {{
+                display: block;
+                width: 100%;
+                margin-top: 4px;
+                padding: 7px 8px;
+                border: 1px solid #cbd2d9;
+                border-radius: 4px;
+                background: white;
+            }}
+            .pathogenic-pagination {{
+                display: flex;
+                align-items: center;
+                justify-content: flex-end;
+                gap: 10px;
+                margin-top: 10px;
+            }}
+            .pathogenic-pagination button {{
+                padding: 6px 10px;
+                border: 1px solid #cbd2d9;
+                border-radius: 4px;
+                background: #f5f7fa;
+                cursor: pointer;
+            }}
+            .pathogenic-pagination button:disabled {{ cursor: default; opacity: 0.5; }}
             @media (max-width: 760px) {{
                 .analysis-controls {{ grid-template-columns: 1fr; }}
+                .pathogenic-sort-controls {{ grid-template-columns: 1fr; }}
             }}
         </style>
     </head>

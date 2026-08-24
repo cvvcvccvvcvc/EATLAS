@@ -36,6 +36,7 @@ from analytics.reporting.ortholog_evidence import (
     ortholog_evidence_figure,
 )
 from analytics.reporting.overview import overview_strategy_table
+from analytics.reporting.pathogenic_variants import pathogenic_variant_table_html
 from analytics.reporting.qc import vep_qc_tables
 from analytics.reporting.variant_profile import (
     build_gnomad_stratification_sections,
@@ -44,7 +45,6 @@ from analytics.reporting.variant_profile import (
     gene_variant_distribution_figure,
     gnomad_stratification_figure,
     group_consequence_counts,
-    pathogenic_variant_table,
     top_gene_contribution_counts,
     top_gene_contribution_figure,
 )
@@ -376,39 +376,47 @@ def test_unannotated_vep_rows_are_a_separate_grey_consequence_group() -> None:
     assert CONSEQUENCE_GROUP_COLORS["Not annotated"] == "#d9d9d9"
 
 
-def test_pathogenic_table_exposes_only_vep_consequence() -> None:
+def test_pathogenic_table_supports_two_level_client_sorting() -> None:
     variants = pd.DataFrame(
         [
             {
-                "variant_id": "1:100:A>G",
-                "gene_id": "1",
+                "variant_key": "1:100:A>G",
+                "gene_ids": "1",
                 "event_type": "snv",
-                "clinvar_category": "P/LP",
-                "clinvar_sig": "Pathogenic",
+                "pathogenic_subtype": "Pathogenic",
+                "low_penetrance": False,
                 "clinvar_review_stars": "2",
-                "clinvar_revstat": "criteria_provided",
+                "clinvar_review_status": "criteria_provided",
                 "clinvar_scv_count": "3",
-                "clinvar_id": "VCV1",
+                "clinvar_ids": "VCV1",
                 "clinvar_allele_id": "1",
-                "clinvar_disease": "Example disease",
+                "conditions": "Example disease",
+                "condition_ids": "MONDO:1",
                 "clinvar_hgvs": "NC_000001.11:g.100A>G",
                 "clinvar_variant_type": "single nucleotide variant",
                 "gnomad_af": "0.01",
                 "vep_primary_consequence": "missense_variant",
+                "vep_consequence_group": "Missense/inframe",
+                "vep_consequence_terms": "missense_variant",
+                "vep_transcript_id": "NM_1",
+                "vep_mane_select": "NM_1",
                 "vep_status": "ok",
                 "support_ortholog_mean": 2.0,
                 "support_ortholog_min": 1,
                 "support_ortholog_max": 3,
+                "phylop100way": 2.5,
                 "strategies": "s1",
             }
         ]
     )
 
-    table = pathogenic_variant_table(variants)
+    rendered = pathogenic_variant_table_html(variants)
 
-    assert "gnomAD consequence" not in table.columns
-    assert table.loc[0, "VEP consequence"] == "missense_variant"
-    assert table.loc[0, "VEP status"] == "ok"
+    assert "Primary sort" in rendered
+    assert "Secondary sort" in rendered
+    assert "primary.value = 'Stars'" in rendered
+    assert "secondary.value = 'Max ortholog support'" in rendered
+    assert "missense_variant" in rendered
 
 
 def test_single_strategy_candidate_profile_loads_plotly_without_overlap() -> None:

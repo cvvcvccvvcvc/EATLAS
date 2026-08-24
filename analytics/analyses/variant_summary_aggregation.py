@@ -718,6 +718,17 @@ def _query_pathogenic_rows(
             aggregate_columns.append(
                 "string_agg(DISTINCT gene_id, ', ' ORDER BY gene_id) AS gene_id"
             )
+        elif name in {
+            "vep_status",
+            "vep_primary_consequence",
+            "vep_consequence_terms",
+            "vep_transcript_id",
+            "vep_mane_select",
+        }:
+            aggregate_columns.append(
+                f"string_agg(DISTINCT {name}, '|' ORDER BY {name}) "
+                f"FILTER (WHERE {name} <> '') AS {name}"
+            )
         elif name == "strategies":
             continue
         elif name in {"variant_key", "clinvar_scv_count", "clinvar_review_stars"}:
@@ -730,7 +741,7 @@ def _query_pathogenic_rows(
         "first(review_stars) AS review_stars "
         "FROM normalized_rows WHERE clinvar_category = 'P/LP' GROUP BY variant_id "
         "ORDER BY try_cast(first(review_stars) AS INTEGER) DESC NULLS LAST, "
-        "try_cast(max(clinvar_scv_count) AS BIGINT) DESC NULLS LAST, variant_id LIMIT 100"
+        "try_cast(max(clinvar_scv_count) AS BIGINT) DESC NULLS LAST, variant_id"
     ).fetchdf()
     if rows.empty:
         return pd.DataFrame(columns=[*columns, "variant_id", "clinvar_category", "review_stars"])
@@ -769,6 +780,9 @@ def _pathogenic_source_columns() -> list[str]:
         "gnomad_af",
         "vep_status",
         "vep_primary_consequence",
+        "vep_consequence_terms",
+        "vep_transcript_id",
+        "vep_mane_select",
     ]
 
 

@@ -25,7 +25,6 @@ from .config import (
 )
 from .conservation import hidden_clinvar_association_views
 from .matched_control import build_target_space_null_qc_sections
-from .variant_profile import pathogenic_variant_table
 
 
 def consequence_grouping_table(source: str) -> pd.DataFrame:
@@ -578,21 +577,6 @@ def build_methods_sections(
         sections.append("<details><summary>Taxonomic evidence scope and grouping</summary>")
         sections.append(table_html(shown, classes="table table-sm table-striped"))
         sections.append("</details>")
-    pathogenic_table = pathogenic_variant_table(variant_summary.pathogenic_rows)
-    if not pathogenic_table.empty:
-        shown = min(len(pathogenic_table), 100)
-        sections.append(
-            "<details><summary>Top "
-            f"{format_int(shown)} of {format_int(variant_summary.pathogenic_variant_count)} "
-            "unique P/LP variants</summary>"
-        )
-        sections.append(
-            "<p>Sorted by ClinVar review stars, then supporting SCV count.</p>"
-        )
-        sections.append(
-            table_html(pathogenic_table, classes="table table-sm table-striped", max_rows=100)
-        )
-        sections.append("</details>")
     if report_timings:
         sections.append("<details><summary>Report computation timing</summary>")
         sections.append(
@@ -644,7 +628,7 @@ def build_methods_sections(
     sections.append("</details>")
     sections.append(f"<details><summary>{variant_summary.consequence_source} consequence grouping</summary>")
     sections.append(
-        f"<p class=\"lead\">The Candidate Profile consequence plots use "
+        f"<p class=\"lead\">The report consequence plots use "
         f"{variant_summary.consequence_source} annotations and group them as follows. "
         "Only the release-pinned VEP annotations define these groups.</p>"
     )

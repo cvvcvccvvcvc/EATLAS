@@ -46,8 +46,11 @@ VARIANT_USECOLS = [
     "gnomad_af",
     "vep_status",
     "vep_primary_consequence",
+    "vep_consequence_terms",
+    "vep_transcript_id",
+    "vep_mane_select",
 ]
-SUMMARY_CACHE_VERSION = 17
+SUMMARY_CACHE_VERSION = 18
 SUMMARY_CACHE_NAME = "variant_summary.json.gz"
 SPECIAL_FLOAT_KEY = "__gaph_float__"
 ORTHOLOG_EVIDENCE_COLUMNS = [
@@ -71,6 +74,15 @@ ORTHOLOG_EVIDENCE_DISTRIBUTION_COLUMNS = [
     "metric",
     "value",
     "variant_count",
+]
+PATHOGENIC_SUPPORT_COLUMNS = [
+    "variant_key",
+    "gene_id",
+    "strategy",
+    "alt_support_row_count",
+    "alt_support_ortholog_count",
+    "alt_support_genus_count",
+    "site_aligned_ortholog_count",
 ]
 
 
@@ -111,6 +123,7 @@ class VariantSummary:
     consequence_counts: pd.DataFrame
     pathogenic_consequence_counts: pd.DataFrame
     pathogenic_rows: pd.DataFrame
+    pathogenic_support_rows: pd.DataFrame
     ortholog_evidence_cells: pd.DataFrame
     ortholog_evidence_distributions: pd.DataFrame
     cache_hit: bool = False
@@ -211,6 +224,7 @@ def _summary_payload(
         "consequence_counts",
         "pathogenic_consequence_counts",
         "pathogenic_rows",
+        "pathogenic_support_rows",
         "ortholog_evidence_cells",
         "ortholog_evidence_distributions",
     ]
@@ -294,6 +308,7 @@ def _summary_from_payload(payload: dict[str, object]) -> VariantSummary:
         consequence_counts=_frame_from_payload(frames["consequence_counts"]),
         pathogenic_consequence_counts=_frame_from_payload(frames["pathogenic_consequence_counts"]),
         pathogenic_rows=_frame_from_payload(frames["pathogenic_rows"]),
+        pathogenic_support_rows=_frame_from_payload(frames["pathogenic_support_rows"]),
         ortholog_evidence_cells=_frame_from_payload(frames["ortholog_evidence_cells"]),
         ortholog_evidence_distributions=_frame_from_payload(
             frames["ortholog_evidence_distributions"]
@@ -410,26 +425,37 @@ def _categorize_clinvar(values: pd.Series, record_presence: pd.Series) -> pd.Cat
 def _add_pathogenic_strategy_support(
     path: Path | Sequence[Path] | None,
     variants: pd.DataFrame,
-) -> pd.DataFrame:
+) -> tuple[pd.DataFrame, pd.DataFrame]:
     variants = variants.copy()
     for column in ["support_ortholog_mean", "support_ortholog_min", "support_ortholog_max"]:
         variants[column] = np.nan
     if path is None or variants.empty:
-        return variants
+        return variants, pd.DataFrame(columns=PATHOGENIC_SUPPORT_COLUMNS)
 
     keys = {str(value).encode() for value in variants["variant_id"]}
     support: dict[str, list[int]] = defaultdict(list)
+    support_rows: list[dict[str, object]] = []
     for item in _paths(path):
         with gzip.open(item, "rb") as handle:
             header = handle.readline().rstrip(b"\r\n").split(b"\t")
-            required = [b"variant_key", b"alt_support_ortholog_count"]
+            required = [
+                b"variant_key",
+                b"gene_id",
+                b"strategy",
+                b"alt_support_ortholog_count",
+            ]
             if any(column not in header for column in required):
                 raise ValueError(
-                    "Variant strategy support table needs variant_key and "
-                    "alt_support_ortholog_count."
+                    "Variant strategy support table needs variant_key, gene_id, strategy, "
+                    "and alt_support_ortholog_count."
                 )
-            key_index = header.index(b"variant_key")
-            count_index = header.index(b"alt_support_ortholog_count")
+            indices = {
+                column: header.index(column.encode())
+                for column in PATHOGENIC_SUPPORT_COLUMNS
+                if column.encode() in header
+            }
+            key_index = indices["variant_key"]
+            count_index = indices["alt_support_ortholog_count"]
             for line in handle:
                 fields = line.rstrip(b"\r\n").split(b"\t")
                 if (
@@ -441,7 +467,20 @@ def _add_pathogenic_strategy_support(
                     count = int(fields[count_index])
                 except ValueError:
                     continue
-                support[fields[key_index].decode()].append(count)
+                key = fields[key_index].decode()
+                support[key].append(count)
+                row: dict[str, object] = {}
+                for column in PATHOGENIC_SUPPORT_COLUMNS:
+                    index = indices.get(column)
+                    value = fields[index].decode() if index is not None and index < len(fields) else ""
+                    if column.endswith("_count"):
+                        try:
+                            row[column] = int(value) if value else np.nan
+                        except ValueError:
+                            row[column] = np.nan
+                    else:
+                        row[column] = value
+                support_rows.append(row)
 
     for index, variant_id in variants["variant_id"].items():
         values = support.get(str(variant_id), [])
@@ -450,7 +489,7 @@ def _add_pathogenic_strategy_support(
         variants.at[index, "support_ortholog_mean"] = float(np.mean(values))
         variants.at[index, "support_ortholog_min"] = min(values)
         variants.at[index, "support_ortholog_max"] = max(values)
-    return variants
+    return variants, pd.DataFrame(support_rows, columns=PATHOGENIC_SUPPORT_COLUMNS)
 
 
 def _weighted_quantile_bins(
@@ -809,7 +848,7 @@ def _summary_from_grouped_aggregation(
         ortholog_evidence_summary_path
     )
 
-    pathogenic_rows = _add_pathogenic_strategy_support(
+    pathogenic_rows, pathogenic_support_rows = _add_pathogenic_strategy_support(
         variant_strategy_support_path,
         grouped.pathogenic_rows,
     )
@@ -841,6 +880,7 @@ def _summary_from_grouped_aggregation(
         consequence_counts=consequence_counts,
         pathogenic_consequence_counts=pathogenic_consequence_counts,
         pathogenic_rows=pathogenic_rows,
+        pathogenic_support_rows=pathogenic_support_rows,
         ortholog_evidence_cells=ortholog_cells,
         ortholog_evidence_distributions=ortholog_distributions,
     )

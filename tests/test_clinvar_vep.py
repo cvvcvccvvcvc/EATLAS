@@ -18,12 +18,14 @@ def test_clinvar_vep_artifact_aggregates_genes_and_resumes(
                 "variant_key": "1:10:A>G",
                 "gene_ids": "1|2",
                 "clinvar_mc_terms": "synonymous_variant",
+                "clinvar_disease_names": "Disease one",
                 "clinvar_disease_ids": "MedGen:C1|OMIM:1",
             },
             {
                 "variant_key": "1:20:C>T",
                 "gene_ids": "1",
                 "clinvar_mc_terms": "intron_variant",
+                "clinvar_disease_names": "Disease two",
                 "clinvar_disease_ids": "MedGen:C2",
             },
         ]
@@ -81,8 +83,12 @@ def test_clinvar_vep_artifact_aggregates_genes_and_resumes(
     first = enriched.set_index("variant_key").loc["1:10:A>G"]
     assert first["vep_primary_consequence"] == "missense_variant"
     assert first["vep_consequence_terms"] == "missense_variant|splice_region_variant"
+    assert first["clinvar_disease_names"] == "Disease one"
     assert first["clinvar_disease_ids"] == "MedGen:C1|OMIM:1"
-    assert enriched.columns[-1] == "clinvar_disease_ids"
+    assert enriched.columns[-2:].tolist() == [
+        "clinvar_disease_names",
+        "clinvar_disease_ids",
+    ]
     assert enriched.set_index("variant_key").loc["1:20:C>T", "vep_status"] == "no_target_gene"
 
     monkeypatch.setattr(

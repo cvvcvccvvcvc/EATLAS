@@ -144,7 +144,17 @@ The report derives fingerprinted caches from durable evidence:
 - taxonomy summary from selected orthologs and canonical Stage 1 taxonomy;
 - variant-strategy support and taxonomic depth/support from exact Stage 2
   evidence plus Stage 3 event-to-variant lineage;
+- `derived/pathogenic_clinvar_hits.tsv.gz`, the complete unique P/LP allele
+  table used by the second report tab. It includes ClinVar review strength and
+  conditions, VEP effects, phyloP100way, gnomAD AF, strategy membership, and
+  exact ortholog-support summaries;
 - scientific tables used by report sections.
+
+The `Pathogenic ClinVar Hits` tab owns the P/LP-only review-star and molecular-
+effect plots, the condition and evolutionary-support views, and the paginated
+detail table. The table sorts the complete in-browser dataset by configurable
+primary and secondary columns; it is not a top-N extract. Candidate Profile and
+QC do not repeat these P/LP-only views.
 
 These files never replace pipeline evidence. Missing source partitions,
 mismatched schemas, changed files, and invalid empty outputs are errors. There

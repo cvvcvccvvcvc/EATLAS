@@ -457,8 +457,8 @@ def test_variant_summary_adds_per_strategy_pathogenic_support(tmp_path: Path) ->
             }
         )
     pd_rows = [
-        ["1:100:A>G", "1", "s1", "5", "3"],
-        ["1:100:A>G", "1", "s2", "9", "7"],
+        ["1:100:A>G", "1", "s1", "5", "3", "2", "10"],
+        ["1:100:A>G", "1", "s2", "9", "7", "4", "12"],
     ]
     with gzip.open(support, "wt", newline="") as handle:
         writer = csv.writer(handle, delimiter="\t", lineterminator="\n")
@@ -469,6 +469,8 @@ def test_variant_summary_adds_per_strategy_pathogenic_support(tmp_path: Path) ->
                 "strategy",
                 "alt_support_row_count",
                 "alt_support_ortholog_count",
+                "alt_support_genus_count",
+                "site_aligned_ortholog_count",
             ]
         )
         writer.writerows(pd_rows)
@@ -486,6 +488,51 @@ def test_variant_summary_adds_per_strategy_pathogenic_support(tmp_path: Path) ->
     assert row["support_ortholog_mean"] == 5.0
     assert row["support_ortholog_min"] == 3
     assert row["support_ortholog_max"] == 7
+    assert summary.pathogenic_support_rows[
+        "alt_support_genus_count"
+    ].tolist() == [2, 4]
+    assert summary.pathogenic_support_rows[
+        "site_aligned_ortholog_count"
+    ].tolist() == [10, 12]
+
+
+def test_variant_summary_retains_all_pathogenic_detail_rows(tmp_path: Path) -> None:
+    annotations = tmp_path / "variant_annotations.tsv.gz"
+    ortholog_evidence = _write_empty_ortholog_evidence(tmp_path)
+    with gzip.open(annotations, "wt", newline="") as handle:
+        writer = csv.DictWriter(
+            handle,
+            fieldnames=VARIANT_USECOLS,
+            delimiter="\t",
+            lineterminator="\n",
+        )
+        writer.writeheader()
+        for position in range(1, 106):
+            writer.writerow(
+                {
+                    "variant_key": f"1:{position}:A>G",
+                    "gene_id": "1",
+                    "event_type": "snv",
+                    "ref": "A",
+                    "alt": "G",
+                    "lookup_status": "ok",
+                    "strategies": "s1",
+                    "clinvar_sig": "Pathogenic",
+                    "clinvar_review_stars": "1",
+                    "vep_status": "ok",
+                    "vep_primary_consequence": "missense_variant",
+                }
+            )
+
+    summary = build_variant_summary(
+        annotations,
+        tmp_path / "analytics",
+        strategy_label=str,
+        ortholog_evidence_summary_path=ortholog_evidence,
+    )
+
+    assert summary.pathogenic_variant_count == 105
+    assert len(summary.pathogenic_rows) == 105
 
 
 def test_variant_summary_aggregates_target_context_and_gnomad_strata(tmp_path: Path) -> None:

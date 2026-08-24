@@ -19,6 +19,7 @@ from analytics.analyses.minimap_concordance import build_minimap_concordance_ana
 from analytics.analyses.observed_variant_store import (
     build_or_load_observed_variant_store,
 )
+from analytics.analyses.pathogenic_variants import build_pathogenic_variant_analysis
 from analytics.analyses.variant_summary import build_variant_summary
 from analytics.io.run_inputs import (
     build_analysis_inputs,
@@ -42,6 +43,7 @@ from analytics.reporting.matched_control import build_target_space_null_sections
 from analytics.reporting.minimap_concordance import build_minimap_concordance_sections
 from analytics.reporting.ortholog_evidence import build_ortholog_evidence_sections
 from analytics.reporting.overview import build_overview, merge_alignment_summary
+from analytics.reporting.pathogenic_variants import build_pathogenic_variant_sections
 from analytics.reporting.qc import build_methods_sections
 from analytics.reporting.variant_profile import (
     build_clinvar_gnomad_sections,
@@ -407,6 +409,24 @@ def main() -> None:
             phylop_bigwig=args.phylop_bigwig,
         )
 
+    print("Characterizing pathogenic ClinVar hits...")
+    with performance.stage("Pathogenic ClinVar hits") as timing:
+        pathogenic_analysis = build_pathogenic_variant_analysis(
+            summary=variant_summary,
+            clinvar_universe=validation.universe,
+            conservation_cohort=conservation_analysis.validation.cohort.variants,
+            analytics_dir=analytics_dir,
+        )
+        timing["metrics"] = {
+            "variants": int(len(pathogenic_analysis.variants)),
+            "conditions": int(
+                pathogenic_analysis.condition_counts["condition"].nunique()
+                if not pathogenic_analysis.condition_counts.empty
+                else 0
+            ),
+            "evolution_rows": int(len(pathogenic_analysis.evolution_rows)),
+        }
+
     print("Computing basic support-filter curves...")
     with performance.stage("Basic filtering") as timing:
         basic_filtering = build_basic_filtering_analysis(
@@ -492,6 +512,11 @@ def main() -> None:
                     annotation_manifest,
                     input_gene_count,
                 ),
+            ),
+            (
+                "pathogenic-clinvar-hits",
+                "Pathogenic ClinVar Hits",
+                build_pathogenic_variant_sections(pathogenic_analysis),
             ),
             ("candidates", "Candidate Profile", candidate_sections),
             (

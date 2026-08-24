@@ -19,6 +19,11 @@ CLINVAR_REVIEW_STARS = {
 
 CLINVAR_CLASSIFIED_ORDER = ("P/LP", "B/LB", "VUS", "Other")
 CLINVAR_CLASS_ORDER = (*CLINVAR_CLASSIFIED_ORDER, "Unclassified", "Not in ClinVar")
+PATHOGENIC_SUBTYPE_ORDER = (
+    "Pathogenic",
+    "Likely pathogenic",
+    "Pathogenic / likely pathogenic",
+)
 
 
 def normalize_review_status(value: object) -> str:
@@ -68,6 +73,29 @@ def significance_class(value: object) -> str | None:
     if pathogenic and not benign:
         return "P/LP"
     return "Other"
+
+
+def pathogenic_subtype(value: object) -> tuple[str | None, bool]:
+    """Return the P/LP subtype and whether ClinVar marks low penetrance."""
+
+    if significance_class(value) != "P/LP":
+        return None, False
+    normalized = str(value or "").strip().lower().replace(" ", "_")
+    low_penetrance = "low_penetrance" in normalized
+    classifications: set[str] = set()
+    for item in normalized.split("|"):
+        base = item.replace(",_low_penetrance", "").replace("/low_penetrance", "")
+        if "pathogenic/likely_pathogenic" in base:
+            classifications.update({"pathogenic", "likely_pathogenic"})
+        elif "likely_pathogenic" in base:
+            classifications.add("likely_pathogenic")
+        elif "pathogenic" in base:
+            classifications.add("pathogenic")
+    if classifications == {"pathogenic"}:
+        return "Pathogenic", low_penetrance
+    if classifications == {"likely_pathogenic"}:
+        return "Likely pathogenic", low_penetrance
+    return "Pathogenic / likely pathogenic", low_penetrance
 
 
 def record_category(significance: object, *, found: bool) -> str:
