@@ -12,6 +12,7 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
+from analytics.io import annotation_support as annotation_support_module
 from analytics.io import run_inputs as run_inputs_module
 from analytics.io.alignment_aggregates import AlignmentAggregatePaths
 from analytics.io.annotation_support import (
@@ -400,7 +401,7 @@ def test_annotation_support_cache_reproduces_current_report_contract(tmp_path: P
     cache_manifest = json.loads(
         (analytics_dir / "annotation_support" / "manifest.json").read_text()
     )
-    assert cache_manifest["schema_version"] == 5
+    assert cache_manifest["schema_version"] == 6
     assert cache_manifest["exact_support"] == {
         "canonical_variant_count": 4,
         "canonical_support_edge_count": 8,
@@ -594,6 +595,161 @@ def test_annotation_support_cache_hit_and_failure_invalidation(tmp_path: Path) -
     second_manifest = json.loads(cache_manifest.read_text())
     assert second_manifest["fingerprint"] != first_manifest["fingerprint"]
     assert second_manifest["inputs"] != first_manifest["inputs"]
+
+
+@pytest.mark.skipif(not BEDTOOLS_AVAILABLE, reason="bedtools is not installed")
+def test_annotation_support_resumes_completed_partitions(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    run_dir = tmp_path / "run"
+    analytics_dir = tmp_path / "analytics"
+    contract = _write_source_contract(run_dir)
+    first_partition = contract["partition"]
+    second_partition = first_partition.parent / "partition_000002"
+    shutil.copytree(first_partition, second_partition)
+    first_map = contract["map_root"] / first_partition.name
+    second_map = contract["map_root"] / second_partition.name
+    shutil.copytree(first_map, second_map)
+
+    alignment_manifest = json.loads(contract["alignment_manifest"].read_text())
+    alignment_manifest["normalized_evidence"]["partition_count"] = 2
+    contract["alignment_manifest"].write_text(json.dumps(alignment_manifest) + "\n")
+    annotation_manifest = json.loads(contract["annotation_manifest"].read_text())
+    annotation_manifest["partition_ids"] = [first_partition.name, second_partition.name]
+    annotation_manifest["event_variant_map"]["partition_count"] = 2
+    annotation_manifest["event_variant_map"]["row_count"] *= 2
+    contract["annotation_manifest"].write_text(json.dumps(annotation_manifest) + "\n")
+
+    dataset_root = run_dir / "annotation" / "variant_annotations"
+    dataset_partitions = []
+    for partition in (first_partition, second_partition):
+        shard = (
+            dataset_root
+            / "partitions"
+            / partition.name
+            / "shard_000001.tsv.gz"
+        )
+        shard.parent.mkdir(parents=True)
+        shutil.copyfile(contract["source_annotations"], shard)
+        dataset_partitions.append(
+            {
+                "partition_id": partition.name,
+                "shard_count": 1,
+                "row_count": 4,
+                "shards": [
+                    {
+                        "shard_id": "shard_000001",
+                        "path": str(shard.relative_to(dataset_root)),
+                        "row_count": 4,
+                        "size_bytes": shard.stat().st_size,
+                    }
+                ],
+            }
+        )
+    variant_manifest = dataset_root / "manifest.json"
+    variant_manifest.write_text(
+        json.dumps(
+            {
+                "schema": "gaph_variant_annotation_dataset_v1",
+                "status": "complete",
+                "layout": "partitioned",
+                "format": "tsv_gzip_v1",
+                "partition_count": 2,
+                "shard_count": 2,
+                "row_count": 8,
+                "fields": SOURCE_ANNOTATION_FIELDS,
+                "partitions": dataset_partitions,
+            }
+        )
+        + "\n"
+    )
+
+    progress_updates: list[dict[str, object]] = []
+    kwargs = {
+        "partition_dirs": [first_partition, second_partition],
+        "map_root": contract["map_root"],
+        "taxonomy": contract["taxonomy"],
+        "target_features": contract["target_features"],
+        "variant_annotations_source": variant_manifest,
+        "failures": contract["failures"],
+        "alignment_manifest": contract["alignment_manifest"],
+        "annotation_manifest": contract["annotation_manifest"],
+        "analytics_dir": analytics_dir,
+        "progress_callback": progress_updates.append,
+    }
+    original_collapse = annotation_support_module._collapse_partition
+
+    def fail_second_partition(partition_id, *args, **inner_kwargs):
+        if partition_id == second_partition.name:
+            raise RuntimeError("injected partition failure")
+        return original_collapse(partition_id, *args, **inner_kwargs)
+
+    monkeypatch.setattr(
+        annotation_support_module,
+        "_collapse_partition",
+        fail_second_partition,
+    )
+    with pytest.raises(RuntimeError, match="injected partition failure"):
+        build_or_load_annotation_support(**kwargs)
+
+    cache_dir = analytics_dir / "annotation_support"
+    assert not (cache_dir / "manifest.json").exists()
+    assert progress_updates[-1]["partition_completed"] == 1
+    assert progress_updates[-1]["last_partition"] == first_partition.name
+    completed = list((cache_dir / ".build").glob("*/partition_000001/*/manifest.json"))
+    assert len(completed) == 1
+    second_shard = (
+        dataset_root
+        / "partitions"
+        / second_partition.name
+        / "shard_000001.tsv.gz"
+    )
+    stat = second_shard.stat()
+    os.utime(
+        second_shard,
+        ns=(stat.st_atime_ns, stat.st_mtime_ns + 1_000_000_000),
+    )
+
+    rebuilt_partitions: list[str] = []
+
+    def record_collapse(partition_id, *args, **inner_kwargs):
+        rebuilt_partitions.append(partition_id)
+        return original_collapse(partition_id, *args, **inner_kwargs)
+
+    monkeypatch.setattr(
+        annotation_support_module,
+        "_collapse_partition",
+        record_collapse,
+    )
+    progress_updates.clear()
+    outputs = build_or_load_annotation_support(**kwargs)
+
+    assert rebuilt_partitions == [second_partition.name]
+    assert progress_updates[0]["partition_reused"] == 1
+    assert progress_updates[-1]["partition_completed"] == 2
+    assert len(_read_rows(outputs.variant_strategy_support_tsv)) == 8
+    final_manifest = json.loads((cache_dir / "manifest.json").read_text())
+    assert final_manifest["partitions"] == {
+        "total": 2,
+        "built": 1,
+        "reused": 1,
+        "workers": 1,
+    }
+    assert not (cache_dir / ".build").exists()
+
+    parallel_kwargs = {
+        **kwargs,
+        "analytics_dir": tmp_path / "parallel-analytics",
+        "workers": 2,
+    }
+    parallel_outputs = build_or_load_annotation_support(**parallel_kwargs)
+    assert _read_text(parallel_outputs.variant_strategy_support_tsv) == _read_text(
+        outputs.variant_strategy_support_tsv
+    )
+    assert _read_text(parallel_outputs.ortholog_evidence_summary_tsv) == _read_text(
+        outputs.ortholog_evidence_summary_tsv
+    )
 
 
 def test_annotation_support_resolution_rejects_missing_or_incomplete_contract(

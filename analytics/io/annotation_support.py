@@ -7,14 +7,18 @@ import gzip
 import hashlib
 import json
 import os
+import shutil
 import tempfile
 import time
+from collections.abc import Callable
+from concurrent.futures import Future, ProcessPoolExecutor, as_completed
 from dataclasses import dataclass
 from itertools import zip_longest
 from pathlib import Path
 
 import duckdb
 
+from analytics.derivations.alignment_summary import concatenate_tsv_gz
 from analytics.derivations.feature_coverage import (
     iter_snv_event_sites,
     load_snv_site_depth,
@@ -44,12 +48,14 @@ from analytics.io.artifacts import content_identity, file_identity, write_json_a
 from analytics.io.variant_source import (
     VariantTableSource,
     resolve_variant_table_source,
+    variant_sources_by_partition,
     variant_source_sql,
 )
 from genomics.variants import parse_variant_key, variant_aggregate_key
 
 
-CACHE_SCHEMA_VERSION = 5
+CACHE_SCHEMA_VERSION = 6
+PARTITION_CACHE_SCHEMA_VERSION = 1
 CACHE_DIRNAME = "annotation_support"
 VARIANT_SUPPORT_FILENAME = "variant_strategy_support.tsv.gz"
 ORTHOLOG_EVIDENCE_FILENAME = "ortholog_evidence_summary.tsv.gz"
@@ -93,10 +99,42 @@ class AnnotationSupportPaths:
     ortholog_evidence_summary_tsv: Path
 
 
+@dataclass(frozen=True)
+class PartitionSupportResult:
+    partition_id: str
+    directory: Path
+    support_row_count: int
+    ortholog_row_count: int
+    exact_support: dict[str, int]
+    timings_seconds: dict[str, float]
+    reused: bool
+
+
+@dataclass(frozen=True)
+class PartitionBuildSpec:
+    partition_dir: Path
+    map_path: Path
+    taxonomy: Path
+    target_features: Path
+    variant_source: VariantTableSource
+    failures: Path
+    work_dir: Path
+
+
+@dataclass(frozen=True)
+class PendingPartition:
+    spec: PartitionBuildSpec
+    checkpoint_dir: Path
+    inputs: dict[str, object]
+    fingerprint: str
+
+
 def resolve_annotation_support_paths(
     run_dir: Path,
     *,
     analytics_dir: Path,
+    workers: int = 1,
+    progress_callback: Callable[[dict[str, object]], None] | None = None,
 ) -> AnnotationSupportPaths:
     """Require the normalized lineage contract and expose analytics-owned products."""
 
@@ -197,6 +235,8 @@ def resolve_annotation_support_paths(
         alignment_manifest=alignment_manifest_path,
         annotation_manifest=annotation_manifest_path,
         analytics_dir=analytics_dir,
+        workers=workers,
+        progress_callback=progress_callback,
     )
 
 
@@ -211,11 +251,15 @@ def build_or_load_annotation_support(
     alignment_manifest: Path,
     annotation_manifest: Path,
     analytics_dir: Path,
+    workers: int = 1,
+    progress_callback: Callable[[dict[str, object]], None] | None = None,
 ) -> AnnotationSupportPaths:
     """Build report schemas without using pipeline-owned report aggregates."""
 
     if not partition_dirs:
         raise ValueError("Annotation support requires at least one evidence partition")
+    if workers < 1:
+        raise ValueError("Annotation support workers must be >= 1")
     partition_dirs = sorted(partition_dirs, key=lambda path: path.name)
     partition_ids = [path.name for path in partition_dirs]
     if len(partition_ids) != len(set(partition_ids)):
@@ -242,41 +286,48 @@ def build_or_load_annotation_support(
         variant_annotations_source,
         required_columns={"variant_key", "gene_id", "lookup_status", "gnomad_af"},
     )
+    variant_sources = variant_sources_by_partition(variant_source, partition_ids)
     inputs = _input_identities(
         partition_dirs=partition_dirs,
         map_root=map_root,
         taxonomy=taxonomy,
         target_features=target_features,
         variant_source=variant_source,
+        variant_sources=variant_sources,
         failures=failures,
         alignment_manifest=alignment_manifest,
         annotation_manifest=annotation_manifest,
     )
     fingerprint = _fingerprint(inputs)
     if _cache_is_valid(manifest_path, outputs, inputs, fingerprint):
+        _remove_tree(cache_dir / ".build")
+        if progress_callback is not None:
+            progress_callback(
+                {
+                    "partition_total": len(partition_dirs),
+                    "partition_completed": len(partition_dirs),
+                    "partition_built": 0,
+                    "partition_reused": len(partition_dirs),
+                    "workers": 0,
+                    "last_partition": "",
+                    "elapsed_seconds": 0.0,
+                    "cache_hit": True,
+                }
+            )
         return outputs
 
+    manifest_path.unlink(missing_ok=True)
     build_started = time.perf_counter()
+    progress_started = time.perf_counter()
     timings: dict[str, float] = {}
-    support_metrics = {
-        "canonical_variant_count": 0,
-        "canonical_support_edge_count": 0,
-        "exact_support_edge_count": 0,
-    }
     cache_dir.mkdir(parents=True, exist_ok=True)
-    phase_started = time.perf_counter()
-    profiles = load_taxonomy_profiles(taxonomy)
-    _record_timing(timings, "load_taxonomy", phase_started)
-    phase_started = time.perf_counter()
-    failure_rows = list(
-        _iter_required_tsv(
-            failures,
-            {"source", "scope", "chrom", "start", "end"},
-        )
+    checkpoint_root = (
+        cache_dir
+        / ".build"
+        / _fingerprint_partition_inputs(_common_checkpoint_inputs(inputs))
     )
-    _record_timing(timings, "load_failures", phase_started)
-    support_row_count = 0
-    ortholog_partition_inputs: list[tuple[Path, dict[str, int]]] = []
+    checkpoint_root.mkdir(parents=True, exist_ok=True)
+    partition_results: list[PartitionSupportResult] = []
     with tempfile.TemporaryDirectory(
         prefix=".annotation_support_",
         dir=cache_dir,
@@ -284,157 +335,104 @@ def build_or_load_annotation_support(
         temporary_dir = Path(temporary_name)
         temporary_support = temporary_dir / VARIANT_SUPPORT_FILENAME
         temporary_ortholog = temporary_dir / ORTHOLOG_EVIDENCE_FILENAME
-        connection = duckdb.connect(str(temporary_dir / "source_annotations.duckdb"))
-        try:
-            memory_limit = os.environ.get(
-                "GAPH_ANALYTICS_DUCKDB_MEMORY_LIMIT",
-                "2GB",
+        pending: list[PendingPartition] = []
+        for partition_dir in partition_dirs:
+            partition_inputs = _partition_checkpoint_inputs(
+                inputs,
+                partition_dir.name,
             )
-            connection.execute(f"SET memory_limit = {_sql_string(memory_limit)}")
-            connection.execute(
-                f"SET temp_directory = {_sql_string(temporary_dir / 'duckdb_tmp')}"
+            partition_fingerprint = _fingerprint_partition_inputs(partition_inputs)
+            checkpoint_dir = (
+                checkpoint_root / partition_dir.name / partition_fingerprint
             )
-            connection.execute("SET preserve_insertion_order = false")
-            phase_started = time.perf_counter()
-            _load_source_annotations(connection, variant_source)
-            _record_timing(timings, "load_source_annotations", phase_started)
-            with gzip.open(temporary_support, "wt", newline="") as support_handle:
-                support_writer = csv.DictWriter(
-                    support_handle,
-                    fieldnames=VARIANT_STRATEGY_SUPPORT_FIELDS,
-                    delimiter="\t",
-                    lineterminator="\n",
+            cached = _load_partition_checkpoint(
+                checkpoint_dir,
+                partition_inputs,
+                partition_fingerprint,
+            )
+            if cached is not None:
+                partition_results.append(cached)
+                continue
+            pending.append(
+                PendingPartition(
+                    spec=PartitionBuildSpec(
+                        partition_dir=partition_dir,
+                        map_path=(
+                            map_root / partition_dir.name / EVENT_MAP_FILENAME
+                        ),
+                        taxonomy=taxonomy,
+                        target_features=target_features,
+                        variant_source=variant_sources[partition_dir.name],
+                        failures=failures,
+                        work_dir=temporary_dir / partition_dir.name,
+                    ),
+                    checkpoint_dir=checkpoint_dir,
+                    inputs=partition_inputs,
+                    fingerprint=partition_fingerprint,
                 )
-                support_writer.writeheader()
-                for partition_dir in partition_dirs:
-                    partition_id = partition_dir.name
-                    partition_work = temporary_dir / partition_id
-                    partition_work.mkdir()
-                    map_path = map_root / partition_id / EVENT_MAP_FILENAME
-                    alt_support_path = partition_work / "snv_alt_taxonomic_support.tsv.gz"
-                    exact_support_spool = ExactSupportSpool(
-                        partition_work / ".exact_support_rows.tsv"
-                    )
-                    phase_started = time.perf_counter()
-                    with exact_support_spool:
-                        aggregates_by_id = _collapse_partition(
-                            partition_id,
-                            partition_dir / EVENTS_FILENAME,
-                            partition_dir / EVENT_SUPPORT_FILENAME,
-                            map_path,
-                            profiles,
-                            alt_support_path,
-                            exact_support_spool,
-                        )
-                    _record_timing(timings, "collapse_events", phase_started)
-                    phase_started = time.perf_counter()
-                    exact_edge_count = aggregate_exact_support(
-                        connection,
-                        exact_support_spool,
-                        aggregates_by_id,
-                    )
-                    _record_timing(timings, "aggregate_exact_support", phase_started)
-                    aggregates = [
-                        aggregate
-                        for aggregate in aggregates_by_id[1:]
-                        if aggregate is not None
-                    ]
-                    support_metrics["canonical_variant_count"] += len(aggregates)
-                    input_edge_count = exact_support_spool.input_edge_count
-                    support_metrics[
-                        "canonical_support_edge_count"
-                    ] += input_edge_count
-                    support_metrics["exact_support_edge_count"] += exact_edge_count
-                    site_depth_path = partition_work / "snv_site_depth.tsv.gz"
-                    taxonomic_depth_path = partition_work / "snv_taxonomic_depth.tsv.gz"
-                    phase_started = time.perf_counter()
-                    write_snv_site_depth(
-                        [partition_dir / SEGMENTS_FILENAME],
-                        iter_snv_event_sites([partition_dir / EVENTS_FILENAME]),
-                        site_depth_path,
-                        partition_work,
-                    )
-                    _record_timing(timings, "snv_site_depth", phase_started)
-                    phase_started = time.perf_counter()
-                    write_snv_taxonomic_depth(
-                        [partition_dir / SEGMENTS_FILENAME],
-                        iter_snv_event_sites([partition_dir / EVENTS_FILENAME]),
-                        taxonomy,
-                        taxonomic_depth_path,
-                        partition_work,
-                    )
-                    _record_timing(timings, "snv_taxonomic_depth", phase_started)
-                    phase_started = time.perf_counter()
-                    support_rows, missing_key_count = build_variant_strategy_support(
-                        aggregates,
-                        load_snv_site_depth(site_depth_path),
-                        load_snv_alt_genus_support(alt_support_path),
-                    )
-                    if missing_key_count:
-                        raise ValueError(
-                            f"Canonical event map omitted {missing_key_count} support group(s) "
-                            f"in partition {partition_id}"
-                        )
-                    support_writer.writerows(support_rows)
-                    support_row_count += len(support_rows)
-                    _record_timing(timings, "write_variant_support", phase_started)
+            )
+        pending.sort(
+            key=lambda item: (
+                -(item.spec.partition_dir / EVENT_SUPPORT_FILENAME).stat().st_size,
+                item.spec.partition_dir.name,
+            )
+        )
+        completed_count = 0
+        built_count = 0
+        reused_count = 0
+        workers_used = min(workers, len(pending))
 
-                    phase_started = time.perf_counter()
-                    annotation_rows = _source_annotations_for_genes(
-                        connection,
-                        {str(item.get("gene_id") or "") for item in aggregates},
-                    )
-                    gnomad_cache: dict[tuple[str, int, str, str], dict[str, object]] = {}
-                    for aggregate in aggregates:
-                        key = (
-                            str(aggregate.get("gene_id") or ""),
-                            str(aggregate.get("variant_key") or ""),
-                        )
-                        annotation = annotation_rows.get(key)
-                        if annotation is None:
-                            raise ValueError(
-                                "Source variant annotations are missing canonical event support "
-                                f"for partition {partition_id}: {key}"
-                            )
-                        if annotation["lookup_status"] != aggregate.get("lookup_status"):
-                            raise ValueError(
-                                f"Normalization status differs for {key}: "
-                                f"map={aggregate.get('lookup_status')!r}, "
-                                f"annotation={annotation['lookup_status']!r}"
-                            )
-                        lookup_key = aggregate.get("_lookup_key")
-                        if annotation["gnomad_af"] and lookup_key is not None:
-                            gnomad_cache[lookup_key] = {
-                                "exome": {"af": annotation["gnomad_af"]}
-                            }
-                    statuses = build_gnomad_statuses(
-                        aggregates,
-                        gnomad_cache,
-                        failure_rows,
-                    )
-                    _record_timing(timings, "join_source_annotations", phase_started)
-                    ortholog_path = partition_work / ORTHOLOG_EVIDENCE_FILENAME
-                    phase_started = time.perf_counter()
-                    ortholog_count = write_ortholog_evidence_summary(
-                        taxonomic_depth_path,
-                        alt_support_path,
-                        [target_features],
-                        statuses,
-                        ortholog_path,
-                    )
-                    _record_timing(timings, "ortholog_evidence_summary", phase_started)
-                    ortholog_partition_inputs.append(
-                        (
-                            partition_work,
-                            {"ortholog_evidence_summary_count": ortholog_count},
-                        )
-                    )
-        finally:
-            connection.close()
+        def partition_completed(result: PartitionSupportResult) -> None:
+            nonlocal completed_count, built_count, reused_count
+            completed_count += 1
+            built_count += int(not result.reused)
+            reused_count += int(result.reused)
+            if progress_callback is not None:
+                progress_callback(
+                    {
+                        "partition_total": len(partition_dirs),
+                        "partition_completed": completed_count,
+                        "partition_built": built_count,
+                        "partition_reused": reused_count,
+                        "workers": workers_used,
+                        "last_partition": result.partition_id,
+                        "elapsed_seconds": round(
+                            time.perf_counter() - progress_started,
+                            6,
+                        ),
+                        "cache_hit": False,
+                    }
+                )
+
+        for result in partition_results:
+            partition_completed(result)
+        partition_results.extend(
+            _build_missing_partitions(
+                pending,
+                workers,
+                completed_callback=partition_completed,
+            )
+        )
+        partition_results.sort(key=lambda result: result.partition_id)
 
         phase_started = time.perf_counter()
+        support_row_count = concatenate_tsv_gz(
+            [
+                result.directory / VARIANT_SUPPORT_FILENAME
+                for result in partition_results
+            ],
+            temporary_support,
+        )
+        _record_timing(timings, "merge_variant_support", phase_started)
+        phase_started = time.perf_counter()
         ortholog_row_count = merge_ortholog_evidence(
-            ortholog_partition_inputs,
+            [
+                (
+                    result.directory,
+                    {"ortholog_evidence_summary_count": result.ortholog_row_count},
+                )
+                for result in partition_results
+            ],
             temporary_ortholog,
         )
         _record_timing(timings, "merge_ortholog_evidence", phase_started)
@@ -443,6 +441,17 @@ def build_or_load_annotation_support(
         temporary_support.replace(outputs.variant_strategy_support_tsv)
         temporary_ortholog.replace(outputs.ortholog_evidence_summary_tsv)
 
+    support_metrics = {
+        key: sum(result.exact_support[key] for result in partition_results)
+        for key in (
+            "canonical_variant_count",
+            "canonical_support_edge_count",
+            "exact_support_edge_count",
+        )
+    }
+    for result in partition_results:
+        for phase, seconds in result.timings_seconds.items():
+            timings[phase] = round(timings.get(phase, 0.0) + seconds, 6)
     timings["total"] = round(time.perf_counter() - build_started, 6)
     _report_timings(timings)
     write_json_atomic(
@@ -464,9 +473,423 @@ def build_or_load_annotation_support(
                 "row_count": ortholog_row_count,
                 "output": file_identity(outputs.ortholog_evidence_summary_tsv),
             },
+            "partitions": {
+                "total": len(partition_results),
+                "built": sum(not result.reused for result in partition_results),
+                "reused": sum(result.reused for result in partition_results),
+                "workers": min(
+                    workers,
+                    sum(not result.reused for result in partition_results),
+                ),
+            },
         },
     )
+    _remove_tree(cache_dir / ".build")
     return outputs
+
+
+def _build_missing_partitions(
+    pending: list[PendingPartition],
+    workers: int,
+    *,
+    completed_callback: Callable[[PartitionSupportResult], None] | None = None,
+) -> list[PartitionSupportResult]:
+    if not pending:
+        return []
+    if workers == 1:
+        results = []
+        for item in pending:
+            result = _checkpoint_partition_result(
+                item,
+                _run_partition_build(item.spec),
+            )
+            results.append(result)
+            if completed_callback is not None:
+                completed_callback(result)
+        return results
+
+    results: list[PartitionSupportResult] = []
+    executor = ProcessPoolExecutor(max_workers=min(workers, len(pending)))
+    futures: dict[Future, PendingPartition] = {
+        executor.submit(_run_partition_build, item.spec): item for item in pending
+    }
+    completed: set[Future] = set()
+    try:
+        for future in as_completed(futures):
+            completed.add(future)
+            result = _checkpoint_partition_result(futures[future], future.result())
+            results.append(result)
+            if completed_callback is not None:
+                completed_callback(result)
+    except BaseException:
+        for future in futures:
+            if future not in completed:
+                future.cancel()
+        executor.shutdown(wait=True, cancel_futures=True)
+        for future, item in futures.items():
+            if future in completed or future.cancelled() or future.exception() is not None:
+                continue
+            result = _checkpoint_partition_result(item, future.result())
+            results.append(result)
+            if completed_callback is not None:
+                completed_callback(result)
+        raise
+    else:
+        executor.shutdown(wait=True)
+    return results
+
+
+def _checkpoint_partition_result(
+    pending: PendingPartition,
+    result: PartitionSupportResult,
+) -> PartitionSupportResult:
+    if result.partition_id != pending.spec.partition_dir.name:
+        raise ValueError(
+            "Annotation support worker returned the wrong partition: "
+            f"expected={pending.spec.partition_dir.name}, observed={result.partition_id}"
+        )
+    return _write_partition_checkpoint(
+        checkpoint_dir=pending.checkpoint_dir,
+        partition_inputs=pending.inputs,
+        partition_fingerprint=pending.fingerprint,
+        result=result,
+    )
+
+
+def _run_partition_build(spec: PartitionBuildSpec) -> PartitionSupportResult:
+    spec.work_dir.mkdir()
+    profiles = load_taxonomy_profiles(spec.taxonomy)
+    failure_rows = list(
+        _iter_required_tsv(
+            spec.failures,
+            {"source", "scope", "chrom", "start", "end"},
+        )
+    )
+    connection = duckdb.connect(str(spec.work_dir / "source_annotations.duckdb"))
+    try:
+        memory_limit = os.environ.get(
+            "GAPH_ANALYTICS_DUCKDB_MEMORY_LIMIT",
+            "2GB",
+        )
+        connection.execute(f"SET memory_limit = {_sql_string(memory_limit)}")
+        connection.execute("SET threads = 1")
+        connection.execute(
+            f"SET temp_directory = {_sql_string(spec.work_dir / 'duckdb_tmp')}"
+        )
+        connection.execute("SET preserve_insertion_order = false")
+        return _build_partition_support(
+            connection=connection,
+            variant_source=spec.variant_source,
+            partition_dir=spec.partition_dir,
+            map_path=spec.map_path,
+            taxonomy=spec.taxonomy,
+            target_features=spec.target_features,
+            profiles=profiles,
+            failure_rows=failure_rows,
+            work_dir=spec.work_dir,
+        )
+    finally:
+        connection.close()
+
+
+def _build_partition_support(
+    *,
+    connection,
+    variant_source: VariantTableSource,
+    partition_dir: Path,
+    map_path: Path,
+    taxonomy: Path,
+    target_features: Path,
+    profiles: dict,
+    failure_rows: list[dict[str, str]],
+    work_dir: Path,
+) -> PartitionSupportResult:
+    partition_id = partition_dir.name
+    timings: dict[str, float] = {}
+    phase_started = time.perf_counter()
+    _load_source_annotations(connection, variant_source)
+    _record_timing(timings, "load_source_annotations", phase_started)
+    alt_support_path = work_dir / "snv_alt_taxonomic_support.tsv.gz"
+    exact_support_spool = ExactSupportSpool(work_dir / ".exact_support_rows.tsv")
+    phase_started = time.perf_counter()
+    with exact_support_spool:
+        aggregates_by_id = _collapse_partition(
+            partition_id,
+            partition_dir / EVENTS_FILENAME,
+            partition_dir / EVENT_SUPPORT_FILENAME,
+            map_path,
+            profiles,
+            alt_support_path,
+            exact_support_spool,
+        )
+    _record_timing(timings, "aggregate_event_support", phase_started)
+    phase_started = time.perf_counter()
+    exact_edge_count = aggregate_exact_support(
+        connection,
+        exact_support_spool,
+        aggregates_by_id,
+    )
+    _record_timing(timings, "aggregate_exact_support", phase_started)
+    aggregates = [
+        aggregate for aggregate in aggregates_by_id[1:] if aggregate is not None
+    ]
+    exact_support = {
+        "canonical_variant_count": len(aggregates),
+        "canonical_support_edge_count": exact_support_spool.input_edge_count,
+        "exact_support_edge_count": exact_edge_count,
+    }
+    site_depth_path = work_dir / "snv_site_depth.tsv.gz"
+    taxonomic_depth_path = work_dir / "snv_taxonomic_depth.tsv.gz"
+    phase_started = time.perf_counter()
+    write_snv_site_depth(
+        [partition_dir / SEGMENTS_FILENAME],
+        iter_snv_event_sites([partition_dir / EVENTS_FILENAME]),
+        site_depth_path,
+        work_dir,
+    )
+    _record_timing(timings, "snv_site_depth", phase_started)
+    phase_started = time.perf_counter()
+    write_snv_taxonomic_depth(
+        [partition_dir / SEGMENTS_FILENAME],
+        iter_snv_event_sites([partition_dir / EVENTS_FILENAME]),
+        taxonomy,
+        taxonomic_depth_path,
+        work_dir,
+    )
+    _record_timing(timings, "snv_taxonomic_depth", phase_started)
+    phase_started = time.perf_counter()
+    support_rows, missing_key_count = build_variant_strategy_support(
+        aggregates,
+        load_snv_site_depth(site_depth_path),
+        load_snv_alt_genus_support(alt_support_path),
+    )
+    if missing_key_count:
+        raise ValueError(
+            f"Canonical event map omitted {missing_key_count} support group(s) "
+            f"in partition {partition_id}"
+        )
+    support_path = work_dir / VARIANT_SUPPORT_FILENAME
+    with gzip.open(support_path, "wt", newline="") as support_handle:
+        support_writer = csv.DictWriter(
+            support_handle,
+            fieldnames=VARIANT_STRATEGY_SUPPORT_FIELDS,
+            delimiter="\t",
+            lineterminator="\n",
+        )
+        support_writer.writeheader()
+        support_writer.writerows(support_rows)
+    _record_timing(timings, "write_variant_support", phase_started)
+
+    phase_started = time.perf_counter()
+    annotation_rows = _source_annotations_for_genes(
+        connection,
+        {str(item.get("gene_id") or "") for item in aggregates},
+    )
+    gnomad_cache: dict[tuple[str, int, str, str], dict[str, object]] = {}
+    for aggregate in aggregates:
+        key = (
+            str(aggregate.get("gene_id") or ""),
+            str(aggregate.get("variant_key") or ""),
+        )
+        annotation = annotation_rows.get(key)
+        if annotation is None:
+            raise ValueError(
+                "Source variant annotations are missing canonical event support "
+                f"for partition {partition_id}: {key}"
+            )
+        if annotation["lookup_status"] != aggregate.get("lookup_status"):
+            raise ValueError(
+                f"Normalization status differs for {key}: "
+                f"map={aggregate.get('lookup_status')!r}, "
+                f"annotation={annotation['lookup_status']!r}"
+            )
+        lookup_key = aggregate.get("_lookup_key")
+        if annotation["gnomad_af"] and lookup_key is not None:
+            gnomad_cache[lookup_key] = {"exome": {"af": annotation["gnomad_af"]}}
+    statuses = build_gnomad_statuses(aggregates, gnomad_cache, failure_rows)
+    _record_timing(timings, "join_source_annotations", phase_started)
+    ortholog_path = work_dir / ORTHOLOG_EVIDENCE_FILENAME
+    phase_started = time.perf_counter()
+    ortholog_count = write_ortholog_evidence_summary(
+        taxonomic_depth_path,
+        alt_support_path,
+        [target_features],
+        statuses,
+        ortholog_path,
+    )
+    _record_timing(timings, "ortholog_evidence_summary", phase_started)
+    return PartitionSupportResult(
+        partition_id=partition_id,
+        directory=work_dir,
+        support_row_count=len(support_rows),
+        ortholog_row_count=ortholog_count,
+        exact_support=exact_support,
+        timings_seconds=timings,
+        reused=False,
+    )
+
+
+def _write_partition_checkpoint(
+    *,
+    checkpoint_dir: Path,
+    partition_inputs: dict[str, object],
+    partition_fingerprint: str,
+    result: PartitionSupportResult,
+) -> PartitionSupportResult:
+    checkpoint_dir.parent.mkdir(parents=True, exist_ok=True)
+    if checkpoint_dir.exists():
+        _remove_tree(checkpoint_dir)
+    staging_dir = Path(
+        tempfile.mkdtemp(prefix=".tmp-", dir=checkpoint_dir.parent)
+    )
+    try:
+        support_path = staging_dir / VARIANT_SUPPORT_FILENAME
+        ortholog_path = staging_dir / ORTHOLOG_EVIDENCE_FILENAME
+        (result.directory / VARIANT_SUPPORT_FILENAME).replace(support_path)
+        (result.directory / ORTHOLOG_EVIDENCE_FILENAME).replace(ortholog_path)
+        write_json_atomic(
+            staging_dir / "manifest.json",
+            {
+                "schema_version": PARTITION_CACHE_SCHEMA_VERSION,
+                "status": "complete",
+                "partition_id": result.partition_id,
+                "fingerprint": partition_fingerprint,
+                "inputs": partition_inputs,
+                "timings_seconds": result.timings_seconds,
+                "exact_support": result.exact_support,
+                "variant_strategy_support": {
+                    "columns": VARIANT_STRATEGY_SUPPORT_FIELDS,
+                    "row_count": result.support_row_count,
+                    "output": file_identity(support_path),
+                },
+                "ortholog_evidence_summary": {
+                    "columns": ORTHOLOG_EVIDENCE_FIELDS,
+                    "row_count": result.ortholog_row_count,
+                    "output": file_identity(ortholog_path),
+                },
+            },
+        )
+        staging_dir.replace(checkpoint_dir)
+    finally:
+        _remove_tree(staging_dir)
+    return PartitionSupportResult(
+        partition_id=result.partition_id,
+        directory=checkpoint_dir,
+        support_row_count=result.support_row_count,
+        ortholog_row_count=result.ortholog_row_count,
+        exact_support=result.exact_support,
+        timings_seconds=result.timings_seconds,
+        reused=False,
+    )
+
+
+def _load_partition_checkpoint(
+    checkpoint_dir: Path,
+    partition_inputs: dict[str, object],
+    partition_fingerprint: str,
+) -> PartitionSupportResult | None:
+    manifest_path = checkpoint_dir / "manifest.json"
+    support_path = checkpoint_dir / VARIANT_SUPPORT_FILENAME
+    ortholog_path = checkpoint_dir / ORTHOLOG_EVIDENCE_FILENAME
+    if (
+        not manifest_path.is_file()
+        or not support_path.is_file()
+        or not ortholog_path.is_file()
+    ):
+        return None
+    try:
+        manifest = _read_json(manifest_path)
+        if not (
+            manifest.get("schema_version") == PARTITION_CACHE_SCHEMA_VERSION
+            and manifest.get("status") == "complete"
+            and manifest.get("partition_id") == checkpoint_dir.parent.name
+            and manifest.get("fingerprint") == partition_fingerprint
+            and manifest.get("inputs") == partition_inputs
+            and manifest.get("variant_strategy_support", {}).get("columns")
+            == VARIANT_STRATEGY_SUPPORT_FIELDS
+            and manifest.get("variant_strategy_support", {}).get("output")
+            == file_identity(support_path)
+            and manifest.get("ortholog_evidence_summary", {}).get("columns")
+            == ORTHOLOG_EVIDENCE_FIELDS
+            and manifest.get("ortholog_evidence_summary", {}).get("output")
+            == file_identity(ortholog_path)
+        ):
+            return None
+        exact_support = manifest.get("exact_support")
+        timings = manifest.get("timings_seconds")
+        if not isinstance(exact_support, dict) or not isinstance(timings, dict):
+            return None
+        return PartitionSupportResult(
+            partition_id=checkpoint_dir.parent.name,
+            directory=checkpoint_dir,
+            support_row_count=int(
+                manifest["variant_strategy_support"]["row_count"]
+            ),
+            ortholog_row_count=int(
+                manifest["ortholog_evidence_summary"]["row_count"]
+            ),
+            exact_support={
+                key: int(exact_support[key])
+                for key in (
+                    "canonical_variant_count",
+                    "canonical_support_edge_count",
+                    "exact_support_edge_count",
+                )
+            },
+            timings_seconds={
+                str(phase): float(seconds)
+                for phase, seconds in timings.items()
+            },
+            reused=True,
+        )
+    except (KeyError, OSError, TypeError, ValueError, json.JSONDecodeError):
+        return None
+
+
+def _common_checkpoint_inputs(inputs: dict[str, object]) -> dict[str, object]:
+    return {
+        key: inputs[key]
+        for key in (
+            "taxonomy",
+            "target_features",
+            "failures",
+        )
+    }
+
+
+def _partition_checkpoint_inputs(
+    inputs: dict[str, object],
+    partition_id: str,
+) -> dict[str, object]:
+    raw_partitions = inputs.get("partitions")
+    if not isinstance(raw_partitions, list):
+        raise ValueError("Annotation support inputs have no partition identities")
+    matches = [
+        partition
+        for partition in raw_partitions
+        if isinstance(partition, dict)
+        and partition.get("partition_id") == partition_id
+    ]
+    if len(matches) != 1:
+        raise ValueError(
+            f"Expected one input identity for partition {partition_id}, found {len(matches)}"
+        )
+    return {**_common_checkpoint_inputs(inputs), "partition": matches[0]}
+
+
+def _fingerprint_partition_inputs(inputs: dict[str, object]) -> str:
+    payload = {
+        "schema_version": PARTITION_CACHE_SCHEMA_VERSION,
+        "inputs": inputs,
+    }
+    return hashlib.sha256(
+        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+
+
+def _remove_tree(path: Path) -> None:
+    if path.is_dir():
+        shutil.rmtree(path)
 
 
 def _collapse_partition(
@@ -633,6 +1056,7 @@ def _validate_exact_event_support(
 
 
 def _load_source_annotations(connection, source: VariantTableSource) -> None:
+    connection.execute("DROP TABLE IF EXISTS source_annotations")
     connection.execute(
         f"""
         CREATE TABLE source_annotations AS
@@ -753,6 +1177,7 @@ def _input_identities(
     taxonomy: Path,
     target_features: Path,
     variant_source: VariantTableSource,
+    variant_sources: dict[str, VariantTableSource],
     failures: Path,
     alignment_manifest: Path,
     annotation_manifest: Path,
@@ -775,6 +1200,9 @@ def _input_identities(
                 "event_variant_map": file_identity(
                     map_root / partition_dir.name / EVENT_MAP_FILENAME
                 ),
+                "variant_annotations": variant_sources[
+                    partition_dir.name
+                ].identity,
             }
             for partition_dir in partition_dirs
         ],

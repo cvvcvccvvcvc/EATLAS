@@ -18,6 +18,7 @@ from analytics.analyses.variant_summary_aggregation import resolve_variant_aggre
 from analytics.io.alignment_aggregates import resolve_alignment_aggregate_paths
 from analytics.io.annotation_support import resolve_annotation_support_paths
 from analytics.io.artifacts import content_identity, write_json_atomic
+from analytics.io.performance import PerformanceProfile, profile_stage
 from analytics.io.taxonomy_summary import (
     build_or_load_taxonomy_summary_many,
     resolve_taxonomy_summary_path,
@@ -88,6 +89,15 @@ class AnalysisInputs:
         return tuple(source.run_dir for source in self.source_runs)
 
 
+@dataclass(frozen=True)
+class AnalysisWorkspace:
+    analytics_root: Path
+    analysis_id: str
+    analysis_dir: Path
+    derived_dir: Path
+    contract: dict[str, object]
+
+
 def safe_report_name(name: str) -> str:
     value = name.strip()
     if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", value) is None:
@@ -121,29 +131,28 @@ def build_analysis_inputs(
     *,
     analytics_root: Path,
     scientific_config: dict[str, object],
+    annotation_support_workers: int = 1,
+    workspace: AnalysisWorkspace | None = None,
+    performance_profile: PerformanceProfile | None = None,
 ) -> AnalysisInputs:
     """Materialize reusable analytics data outside immutable source runs."""
 
     if not source_runs:
         raise ValueError("Analysis requires at least one source run")
-    analytics_root = analytics_root.expanduser().resolve()
     source_runs = tuple(sorted(source_runs, key=lambda source: source.source_id))
-    for source in source_runs:
-        if analytics_root == source.run_dir or source.run_dir in analytics_root.parents:
-            raise ValueError(
-                "--analytics-root must be outside every immutable source run: "
-                f"{source.run_dir}"
-            )
-    analytics_root.mkdir(parents=True, exist_ok=True)
-    contract = {
-        "contract_version": ANALYSIS_CONTRACT_VERSION,
-        "source_ids": [source.source_id for source in source_runs],
-        "scientific_config": scientific_config,
-    }
-    analysis_id = hashlib.sha256(_canonical_json(contract)).hexdigest()[:24]
-    analysis_dir = analytics_root / "analyses" / analysis_id
-    derived_dir = analysis_dir / "derived"
-    derived_dir.mkdir(parents=True, exist_ok=True)
+    expected_workspace = resolve_analysis_workspace(
+        source_runs,
+        analytics_root=analytics_root,
+        scientific_config=scientific_config,
+    )
+    if workspace is not None and workspace != expected_workspace:
+        raise ValueError("Analysis workspace does not match the requested inputs")
+    workspace = workspace or expected_workspace
+    analytics_root = workspace.analytics_root
+    analysis_id = workspace.analysis_id
+    analysis_dir = workspace.analysis_dir
+    derived_dir = workspace.derived_dir
+    contract = workspace.contract
     _validate_shared_allele_evidence(source_runs, derived_dir)
 
     alignment_paths = []
@@ -151,24 +160,39 @@ def build_analysis_inputs(
     taxonomy_paths = []
     for source in source_runs:
         source_cache = analytics_root / "cache" / source.source_id
-        alignment_paths.append(
-            resolve_alignment_aggregate_paths(
+        with profile_stage(
+            performance_profile,
+            f"Alignment aggregates [{source.run_dir.name}]",
+        ):
+            alignment_path = resolve_alignment_aggregate_paths(
                 source.run_dir,
                 analytics_dir=source_cache,
             )
-        )
-        annotation_paths.append(
-            resolve_annotation_support_paths(
+        alignment_paths.append(alignment_path)
+        with profile_stage(
+            performance_profile,
+            f"Annotation support [{source.run_dir.name}]",
+        ):
+            annotation_path = resolve_annotation_support_paths(
+                source.run_dir,
+                analytics_dir=source_cache,
+                workers=annotation_support_workers,
+                progress_callback=(
+                    performance_profile.checkpoint
+                    if performance_profile is not None
+                    else None
+                ),
+            )
+        annotation_paths.append(annotation_path)
+        with profile_stage(
+            performance_profile,
+            f"Taxonomy summary [{source.run_dir.name}]",
+        ):
+            taxonomy_path = resolve_taxonomy_summary_path(
                 source.run_dir,
                 analytics_dir=source_cache,
             )
-        )
-        taxonomy_paths.append(
-            resolve_taxonomy_summary_path(
-                source.run_dir,
-                analytics_dir=source_cache,
-            )
-        )
+        taxonomy_paths.append(taxonomy_path)
 
     taxonomy_summary = (
         taxonomy_paths[0]
@@ -241,7 +265,46 @@ def build_analysis_inputs(
     return inputs
 
 
-def resolve_report_html(inputs: AnalysisInputs, report_name: str) -> Path:
+def resolve_analysis_workspace(
+    source_runs: Sequence[SourceRun],
+    *,
+    analytics_root: Path,
+    scientific_config: dict[str, object],
+) -> AnalysisWorkspace:
+    """Resolve the stable report location before expensive cache preparation."""
+
+    if not source_runs:
+        raise ValueError("Analysis requires at least one source run")
+    source_runs = tuple(sorted(source_runs, key=lambda source: source.source_id))
+    analytics_root = analytics_root.expanduser().resolve()
+    for source in source_runs:
+        if analytics_root == source.run_dir or source.run_dir in analytics_root.parents:
+            raise ValueError(
+                "--analytics-root must be outside every immutable source run: "
+                f"{source.run_dir}"
+            )
+    contract = {
+        "contract_version": ANALYSIS_CONTRACT_VERSION,
+        "source_ids": [source.source_id for source in source_runs],
+        "scientific_config": scientific_config,
+    }
+    analysis_id = hashlib.sha256(_canonical_json(contract)).hexdigest()[:24]
+    analysis_dir = analytics_root / "analyses" / analysis_id
+    derived_dir = analysis_dir / "derived"
+    derived_dir.mkdir(parents=True, exist_ok=True)
+    return AnalysisWorkspace(
+        analytics_root=analytics_root,
+        analysis_id=analysis_id,
+        analysis_dir=analysis_dir,
+        derived_dir=derived_dir,
+        contract=contract,
+    )
+
+
+def resolve_report_html(
+    inputs: AnalysisInputs | AnalysisWorkspace,
+    report_name: str,
+) -> Path:
     name = safe_report_name(report_name)
     if not name.endswith(".html"):
         name += ".html"

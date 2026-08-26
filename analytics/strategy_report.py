@@ -28,6 +28,7 @@ from analytics.io.run_inputs import (
     read_input_gene_count,
     read_strategy_summary,
     read_taxonomy_summary,
+    resolve_analysis_workspace,
     resolve_report_html,
     resolve_source_runs,
     variant_annotation_descriptor,
@@ -168,6 +169,15 @@ def parse_args() -> argparse.Namespace:
         help="Worker processes for local VEP. Default: 4.",
     )
     parser.add_argument(
+        "--annotation-support-workers",
+        type=int,
+        default=_default_annotation_support_workers(),
+        help=(
+            "Worker processes for partition-local annotation support. "
+            "Defaults to 4 within a Slurm allocation and 1 locally."
+        ),
+    )
+    parser.add_argument(
         "--firth-workers",
         type=int,
         default=_default_firth_workers(),
@@ -218,6 +228,16 @@ def _default_firth_workers() -> int:
     return max(1, min(available, 8))
 
 
+def _default_annotation_support_workers() -> int:
+    configured = os.environ.get("GAPH_ANNOTATION_SUPPORT_WORKERS")
+    if configured:
+        return int(configured)
+    allocated = os.environ.get("SLURM_CPUS_PER_TASK")
+    if allocated and allocated.isdigit():
+        return max(1, min(int(allocated), 4))
+    return 1
+
+
 def main() -> None:
     args = parse_args()
     args.clinvar_vcf = args.clinvar_vcf.expanduser().resolve()
@@ -233,6 +253,8 @@ def main() -> None:
         raise ValueError("--target-space-null-resamples must be >= 100")
     if args.vep_forks < 1:
         raise ValueError("--vep-forks must be >= 1")
+    if args.annotation_support_workers < 1:
+        raise ValueError("--annotation-support-workers must be >= 1")
     if args.firth_workers < 1:
         raise ValueError("--firth-workers must be >= 1")
     if args.vep_result_cache_tile_size_bp < 1:
@@ -270,23 +292,36 @@ def main() -> None:
         ),
         "vep": {"backend": args.vep_backend, "release": args.vep_release},
     }
-    inputs = build_analysis_inputs(
+    workspace = resolve_analysis_workspace(
         source_runs,
         analytics_root=args.analytics_root,
         scientific_config=scientific_config,
     )
-    candidate_annotation_descriptor = variant_annotation_descriptor(inputs)
-    out_html = resolve_report_html(inputs, args.report_name)
-    analytics_dir = inputs.derived_dir
-    performance_path = inputs.analysis_dir / "performance" / f"{out_html.stem}.json"
+    out_html = resolve_report_html(workspace, args.report_name)
+    performance_path = workspace.analysis_dir / "performance" / f"{out_html.stem}.json"
     performance = PerformanceProfile(
         performance_path,
-        analysis_dir=inputs.analysis_dir,
-        analysis_id=inputs.analysis_id,
+        analysis_dir=workspace.analysis_dir,
+        analysis_id=workspace.analysis_id,
         report_path=out_html,
-        tracked_directory=inputs.analysis_dir,
-        source_run_dirs=inputs.source_run_dirs,
+        tracked_directory=workspace.analysis_dir,
+        source_run_dirs=tuple(source.run_dir for source in source_runs),
     )
+    with performance.stage("Prepare analysis inputs") as timing:
+        inputs = build_analysis_inputs(
+            source_runs,
+            analytics_root=args.analytics_root,
+            scientific_config=scientific_config,
+            annotation_support_workers=args.annotation_support_workers,
+            workspace=workspace,
+            performance_profile=performance,
+        )
+        timing["metrics"] = {
+            "source_runs": len(inputs.source_runs),
+            "annotation_support_workers": args.annotation_support_workers,
+        }
+    candidate_annotation_descriptor = variant_annotation_descriptor(inputs)
+    analytics_dir = inputs.derived_dir
 
     print(
         f"Analysis {inputs.analysis_id}: {len(inputs.source_runs)} source run(s), "

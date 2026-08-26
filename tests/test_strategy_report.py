@@ -49,6 +49,7 @@ from analytics.reporting.variant_profile import (
     top_gene_contribution_figure,
 )
 from analytics.strategy_report import (
+    _default_annotation_support_workers,
     _default_clinvar_vcf,
     _default_phylop_bigwig,
     parse_args,
@@ -120,6 +121,20 @@ def test_clinvar_default_prefers_environment(
         / "clinvar"
         / "clinvar.vcf.gz"
     )
+
+
+def test_annotation_support_worker_default_uses_slurm_allocation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("GAPH_ANNOTATION_SUPPORT_WORKERS", raising=False)
+    monkeypatch.delenv("SLURM_CPUS_PER_TASK", raising=False)
+    assert _default_annotation_support_workers() == 1
+
+    monkeypatch.setenv("SLURM_CPUS_PER_TASK", "12")
+    assert _default_annotation_support_workers() == 4
+
+    monkeypatch.setenv("GAPH_ANNOTATION_SUPPORT_WORKERS", "2")
+    assert _default_annotation_support_workers() == 2
 
 
 def write_pipeline_variant_dataset(annotation_dir: Path) -> tuple[Path, dict]:

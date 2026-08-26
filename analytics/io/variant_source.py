@@ -23,6 +23,15 @@ class VariantTableSource:
     header: bool
     mode: str
     identity: dict[str, object]
+    partitions: tuple["VariantTablePartition", ...] = ()
+
+
+@dataclass(frozen=True)
+class VariantTablePartition:
+    partition_id: str
+    paths: tuple[Path, ...]
+    row_count: int
+    identity: dict[str, object]
 
 
 def resolve_variant_table_source(
@@ -118,6 +127,7 @@ def _resolve_partitioned_dataset(
 
     paths = []
     files = []
+    partitions = []
     observed_rows = 0
     observed_shards = 0
     seen_paths = set()
@@ -125,10 +135,19 @@ def _resolve_partitioned_dataset(
     for raw_partition in raw_partitions:
         if not isinstance(raw_partition, dict):
             raise ValueError(f"Invalid variant annotation partition: {manifest_path}")
+        partition_id = str(raw_partition.get("partition_id") or "")
+        if not partition_id:
+            raise ValueError(f"Variant annotation partition has no ID: {manifest_path}")
+        if any(partition.partition_id == partition_id for partition in partitions):
+            raise ValueError(
+                f"Duplicate variant annotation partition ID {partition_id}: {manifest_path}"
+            )
         raw_shards = raw_partition.get("shards")
         if not isinstance(raw_shards, list) or not raw_shards:
             raise ValueError(f"Variant annotation partition has no shards: {manifest_path}")
         partition_rows = 0
+        partition_paths = []
+        partition_files = []
         for raw_shard in raw_shards:
             if not isinstance(raw_shard, dict):
                 raise ValueError(f"Invalid variant annotation shard: {manifest_path}")
@@ -157,7 +176,10 @@ def _resolve_partitioned_dataset(
             if tuple(_read_header(shard_path)) != columns:
                 raise ValueError(f"Variant annotation shard columns changed: {shard_path}")
             paths.append(shard_path)
-            files.append(path_metadata(shard_path))
+            metadata = path_metadata(shard_path)
+            files.append(metadata)
+            partition_paths.append(shard_path)
+            partition_files.append(metadata)
             partition_rows += row_count
             observed_rows += row_count
             observed_shards += 1
@@ -165,6 +187,14 @@ def _resolve_partitioned_dataset(
             raise ValueError(f"Variant annotation partition row count changed: {manifest_path}")
         if len(raw_shards) != int(raw_partition.get("shard_count", -1)):
             raise ValueError(f"Variant annotation partition shard count changed: {manifest_path}")
+        partitions.append(
+            VariantTablePartition(
+                partition_id=partition_id,
+                paths=tuple(partition_paths),
+                row_count=partition_rows,
+                identity={"partition_id": partition_id, "files": partition_files},
+            )
+        )
 
     if observed_rows != int(manifest.get("row_count", -1)):
         raise ValueError(f"Variant annotation dataset row count changed: {manifest_path}")
@@ -182,7 +212,46 @@ def _resolve_partitioned_dataset(
             "manifest": path_metadata(manifest_path),
             "files": files,
         },
+        partitions=tuple(partitions),
     )
+
+
+def variant_sources_by_partition(
+    source: VariantTableSource,
+    partition_ids: Sequence[str],
+) -> dict[str, VariantTableSource]:
+    """Return the annotation shards owned by each alignment partition."""
+
+    expected = tuple(partition_ids)
+    if len(expected) != len(set(expected)):
+        raise ValueError(f"Duplicate requested variant partition IDs: {expected}")
+    if source.mode == "explicit_tsv":
+        if len(expected) != 1:
+            raise ValueError(
+                "An explicit variant TSV can support only one evidence partition"
+            )
+        return {expected[0]: source}
+    if source.mode != "partitioned":
+        raise ValueError(
+            f"Annotation support requires one partitioned variant dataset, got {source.mode}"
+        )
+    observed = tuple(partition.partition_id for partition in source.partitions)
+    if set(observed) != set(expected):
+        raise ValueError(
+            "Alignment evidence and variant annotations have different partition IDs: "
+            f"evidence={sorted(expected)}, annotations={sorted(observed)}"
+        )
+    return {
+        partition.partition_id: VariantTableSource(
+            paths=partition.paths,
+            columns=source.columns,
+            row_count=partition.row_count,
+            header=source.header,
+            mode="partition",
+            identity=partition.identity,
+        )
+        for partition in source.partitions
+    }
 
 
 def variant_source_sql(source: VariantTableSource) -> str:

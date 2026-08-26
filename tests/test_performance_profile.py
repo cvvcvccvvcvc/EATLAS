@@ -72,6 +72,29 @@ def test_performance_profile_flushes_failed_stage(tmp_path: Path) -> None:
     assert payload["stages"][0]["error_type"] == "ValueError"
 
 
+def test_performance_profile_flushes_running_stage_checkpoint(tmp_path: Path) -> None:
+    profile_path = tmp_path / "performance.json"
+    profile = PerformanceProfile(
+        profile_path,
+        analysis_dir=tmp_path,
+        analysis_id="analysis-running",
+        report_path=tmp_path / "report.html",
+    )
+
+    with profile.stage("Prepare annotation support"):
+        profile.checkpoint(
+            {
+                "partition_total": 4,
+                "partition_completed": 2,
+                "last_partition": "partition_000002",
+            }
+        )
+        payload = json.loads(profile_path.read_text())
+        assert payload["status"] == "running"
+        assert payload["stages"][0]["status"] == "running"
+        assert payload["stages"][0]["metrics"]["partition_completed"] == 2
+
+
 def test_performance_profile_records_source_run_provenance(tmp_path: Path) -> None:
     source_runs = [tmp_path / "run-a", tmp_path / "run-b"]
     profile_path = tmp_path / "analytics" / "performance.json"

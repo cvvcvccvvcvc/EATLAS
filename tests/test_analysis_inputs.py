@@ -9,7 +9,13 @@ import pytest
 
 from analytics.io import run_inputs as run_inputs_module
 from analytics.io.artifacts import content_identity
-from analytics.io.run_inputs import build_analysis_inputs, resolve_source_runs
+from analytics.io.performance import PerformanceProfile
+from analytics.io.run_inputs import (
+    build_analysis_inputs,
+    resolve_analysis_workspace,
+    resolve_report_html,
+    resolve_source_runs,
+)
 from analytics.analyses.variant_summary_aggregation import (
     resolve_variant_aggregation_source,
 )
@@ -273,7 +279,14 @@ def _stub_derived_builders(monkeypatch: pytest.MonkeyPatch) -> None:
             feature_coverage_tsv=coverage,
         )
 
-    def annotation(_run: Path, *, analytics_dir: Path):
+    def annotation(
+        _run: Path,
+        *,
+        analytics_dir: Path,
+        workers: int = 1,
+        progress_callback=None,
+    ):
+        assert workers >= 1
         support = analytics_dir / "annotation_support" / "variant_strategy_support.tsv.gz"
         evidence = analytics_dir / "annotation_support" / "ortholog_evidence_summary.tsv.gz"
         _table(
@@ -303,6 +316,14 @@ def _stub_derived_builders(monkeypatch: pytest.MonkeyPatch) -> None:
             ],
             [],
         )
+        if progress_callback is not None:
+            progress_callback(
+                {
+                    "partition_total": 2,
+                    "partition_completed": 2,
+                    "partition_built": 2,
+                }
+            )
         return SimpleNamespace(
             variant_strategy_support_tsv=support,
             ortholog_evidence_summary_tsv=evidence,
@@ -365,6 +386,50 @@ def test_analysis_workspace_is_order_independent_and_source_runs_are_read_only(
     manifest = json.loads(first.analysis_manifest_json.read_text())
     assert manifest["status"] == "ready"
     assert len(manifest["sources"]) == 2
+
+
+def test_analysis_input_preparation_is_profiled_before_cache_builds(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    clinvar = tmp_path / "clinvar.vcf.gz"
+    clinvar.write_bytes(b"clinvar")
+    Path(f"{clinvar}.tbi").write_bytes(b"index")
+    run = _make_source_run(tmp_path / "run", gene_id="1", clinvar_vcf=clinvar)
+    _stub_derived_builders(monkeypatch)
+    sources = resolve_source_runs([run], clinvar_vcf=clinvar)
+    workspace = resolve_analysis_workspace(
+        sources,
+        analytics_root=tmp_path / "analytics",
+        scientific_config={"test": True},
+    )
+    report_path = resolve_report_html(workspace, "report")
+    profile_path = workspace.analysis_dir / "performance" / "report.json"
+    profile = PerformanceProfile(
+        profile_path,
+        analysis_dir=workspace.analysis_dir,
+        analysis_id=workspace.analysis_id,
+        report_path=report_path,
+        source_run_dirs=[run],
+    )
+    assert profile_path.is_file()
+
+    with profile.stage("Prepare analysis inputs"):
+        build_analysis_inputs(
+            sources,
+            analytics_root=tmp_path / "analytics",
+            scientific_config={"test": True},
+            annotation_support_workers=2,
+            workspace=workspace,
+            performance_profile=profile,
+        )
+
+    payload = json.loads(profile_path.read_text())
+    annotation_stage = next(
+        stage for stage in payload["stages"] if stage["name"].startswith("Annotation support")
+    )
+    assert annotation_stage["parent_id"] == payload["stages"][0]["id"]
+    assert annotation_stage["metrics"]["partition_completed"] == 2
 
 
 def test_analysis_rejects_overlapping_source_genes(tmp_path: Path) -> None:

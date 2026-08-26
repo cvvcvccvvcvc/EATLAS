@@ -39,6 +39,14 @@ directly from each source. Analytics materializes only reusable per-source
 derivations and genuine run-set results; it does not build a synthetic combined
 run, copy source TSV files, or create target-FASTA symlink trees.
 
+Annotation-support preparation is partition-local. Each worker reads only the
+variant-annotation shards owned by its evidence partition, uses one DuckDB
+thread, and atomically checkpoints the two small derived partition tables.
+After interruption, a repeated identical command reuses completed checkpoints
+and continues with the missing partitions; incomplete partition directories are
+never accepted. Checkpoints are removed after the final per-source cache has
+been assembled, so they do not become a second durable dataset.
+
 ## Submit A Report
 
 First pass the local-to-cluster revision gate in `docs/pipeline_launch.md`; do
@@ -105,6 +113,13 @@ bash analytics/slurm/submit_strategy_report.sh \
   --target-space-null-sample-size 5000 \
   --target-space-null-resamples 500
 ```
+
+`--annotation-support-workers` is operational and does not change the analysis
+identity or scientific result. It defaults to `1` outside Slurm and to the
+smaller of `4` and `SLURM_CPUS_PER_TASK` in a Slurm job. Override it after `--`,
+or set `GAPH_ANNOTATION_SUPPORT_WORKERS`. Keep it within the CPUs requested from
+the launcher; each worker may use up to the configured
+`GAPH_ANALYTICS_DUCKDB_MEMORY_LIMIT` (default `2GB`).
 
 The report launcher requires absolute paths. `--report-name` may contain only
 letters, digits, `.`, `_`, and `-`. The CLI is the source of truth for
@@ -194,8 +209,11 @@ The launcher prints the analytics workspace. A successful analysis contains:
 ```
 
 Slurm must report `COMPLETED` and exit code `0:0`. The performance JSON is
-written progressively and is the first artifact to inspect after failure.
-Repeating an identical command reuses valid caches.
+created before cache preparation, then written progressively. During annotation
+support it records total, completed, built, and reused partitions, worker count,
+elapsed time, and the last completed partition. It is the first artifact to
+inspect during a long preparation or after failure. Repeating an identical
+command reuses valid caches and completed partition checkpoints.
 
 The launcher defaults to 8 CPUs, 128 GB, six hours, and the `main` partition.
 Change these only after measuring a representative report.

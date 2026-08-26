@@ -204,6 +204,15 @@ class PerformanceProfile:
         assert isinstance(metrics, dict)
         metrics[name] = value
 
+    def checkpoint(self, metrics: dict[str, object] | None = None) -> None:
+        """Persist current-stage progress without closing the stage."""
+
+        if not self._stack:
+            raise RuntimeError("Performance checkpoints require an active stage")
+        for name, value in (metrics or {}).items():
+            self.add_metric(name, value)
+        self._flush()
+
     def table_rows(self) -> list[dict[str, object]]:
         rows = []
         for stage in self.stages:
