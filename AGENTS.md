@@ -49,6 +49,13 @@ evidence.
     `GAPH_GNOMAD_CACHE_DIR`.
 12. Pipeline candidate VEP is part of annotation and publishes one partitioned
     durable dataset. Do not recreate a separate bulk-VEP/report precompute.
+13. Before any cluster pipeline or report submission, pass the revision gate in
+    `docs/pipeline_launch.md`: fetch the authoritative `origin/main`, require
+    the intended local commit, fetched `origin/main`, and cluster `HEAD` to be
+    identical, and require a clean cluster tree. A clean checkout or equality
+    with a stale remote-tracking ref is not evidence that code is current. If a
+    documented launcher argument or interface is missing on the cluster, stop
+    and resynchronize; never adapt the launch to an obsolete interface.
 
 ## Engineering Method
 

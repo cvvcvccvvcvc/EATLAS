@@ -29,15 +29,40 @@ explicitly.
 Completed code changes reach the cluster through GitHub only:
 
 ```bash
+git fetch origin main
+git status --short --branch
+git merge-base --is-ancestor origin/main HEAD
 git push origin main
+INTENDED_COMMIT=$(git rev-parse HEAD)
+test "$(git rev-parse origin/main)" = "$INTENDED_COMMIT"
 
 ssh -i ~/.ssh/itmo ilunegov@ctlab.itmo.ru
 ssh sphinx
 
 cd /nfs/home/$USER/gaph_v2
-git pull --ff-only
+git fetch origin main
+git merge --ff-only origin/main
 source "$HOME/.gaph_v2_cluster_env.sh"
+test -z "$(git status --porcelain)"
+git rev-parse HEAD
 ```
+
+The final cluster hash must equal the exact `INTENDED_COMMIT` captured in the
+authoritative local checkout. Do not infer currency from a clean cluster tree,
+from a commit-looking run name, or by comparing cluster `HEAD` with the
+cluster's `origin/main` before fetching: remote-tracking refs can be stale.
+
+This revision gate applies again before report submission, even if the source
+pipeline run is already complete. After a pipeline creates `run_manifest.json`,
+verify that its `git_commit` equals `INTENDED_COMMIT`. After a report worker
+starts, verify that the `Git commit:` line in its Slurm stdout equals the same
+commit.
+
+Treat any mismatch between the documented command and the cluster launcher as
+a stale-checkout failure. Stop and synchronize the checkout. In particular, do
+not remove current arguments, substitute a historical cohort workflow, or
+otherwise reshape the requested run merely to make an older launcher accept
+the command.
 
 Do not copy tracked source files with `rsync`, Git bundles, or ad hoc archives.
 A source run intended for analytics must start from a clean Git working tree,

@@ -41,7 +41,8 @@ run, copy source TSV files, or create target-FASTA symlink trees.
 
 ## Submit A Report
 
-On the ITMO controller:
+First pass the local-to-cluster revision gate in `docs/pipeline_launch.md`; do
+not use a merely clean but unfetched cluster checkout. On the ITMO controller:
 
 ```bash
 cd /nfs/home/$USER/gaph_v2
@@ -61,6 +62,14 @@ Tracked and staged code changes must be committed before submission. The Slurm
 worker verifies both the submitted commit and the working tree again when the
 job starts; changing the checkout while a report is queued causes an explicit
 failure instead of running different code.
+
+The current launcher requires external `--analytics-root` and accepts repeated
+`--run-dir` arguments. If the cluster launcher rejects those arguments or asks
+for a historical `--cohort-manifest`/`--cohort-root` workflow, stop: the cluster
+checkout is obsolete. Fetch and fast-forward to the intended commit instead of
+adapting the report request to the old interface. Once the worker starts,
+confirm that the `Git commit:` line in Slurm stdout matches the intended
+revision before allowing a long report to continue.
 
 For several runs, repeat `--run-dir`; there is no separate cohort mode or
 cohort manifest:
