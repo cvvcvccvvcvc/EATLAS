@@ -5,7 +5,7 @@ from __future__ import annotations
 import csv
 import gzip
 import statistics
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterable
 
@@ -23,6 +23,7 @@ SCOPE_ANCESTORS = {
     "primates": "9443",
 }
 SCOPE_ORDER = tuple(SCOPE_ANCESTORS)
+_SCOPE_ANCESTOR_IDS = tuple(SCOPE_ANCESTORS.values())
 UNIT_ORDER = ("ortholog", "species", "genus", "family", "order")
 COUNT_KEYS = tuple(
     f"{scope}__{unit}"
@@ -55,12 +56,35 @@ class TaxonomyProfile:
     genus_id: str
     family_id: str
     order_id: str
+    scope_mask: int = field(init=False, repr=False)
+    rank_unit_ids: tuple[object, ...] = field(init=False, repr=False)
+
+    def __post_init__(self) -> None:
+        scope_mask = 1
+        for scope_index, ancestor_id in enumerate(
+            _SCOPE_ANCESTOR_IDS[1:],
+            start=1,
+        ):
+            if ancestor_id in self.ancestor_ids:
+                scope_mask |= 1 << scope_index
+        fallback_id = ("taxon", self.tax_id)
+        object.__setattr__(self, "scope_mask", scope_mask)
+        object.__setattr__(
+            self,
+            "rank_unit_ids",
+            (
+                self.species_id or fallback_id,
+                self.genus_id or fallback_id,
+                self.family_id or fallback_id,
+                self.order_id or fallback_id,
+            ),
+        )
 
     def scopes(self) -> tuple[str, ...]:
         return tuple(
             scope
-            for scope, ancestor in SCOPE_ANCESTORS.items()
-            if not ancestor or ancestor in self.ancestor_ids
+            for scope_index, scope in enumerate(SCOPE_ORDER)
+            if self.scope_mask & (1 << scope_index)
         )
 
     def unit_id(self, unit: str, ortholog_gene_id: str) -> str:
@@ -138,7 +162,9 @@ def count_member_groups(
     members: Iterable[tuple[str, str]],
     profiles: dict[str, TaxonomyProfile],
 ) -> dict[str, int]:
-    groups = [set() for _ in COUNT_KEYS]
+    unit_scope_masks: tuple[dict[object, int], ...] = tuple(
+        {} for _unit in UNIT_ORDER
+    )
     for ortholog_gene_id, tax_id in members:
         if not ortholog_gene_id:
             continue
@@ -148,25 +174,35 @@ def count_member_groups(
                 "Ortholog evidence references tax_id absent from canonical taxonomy: "
                 f"ortholog_gene_id={ortholog_gene_id!r}, tax_id={tax_id!r}"
             )
-        # A tagged fallback cannot collide with a real rank ID in the same set.
-        fallback_id = ("taxon", profile.tax_id)
-        unit_ids = (
-            ortholog_gene_id,
-            profile.species_id or fallback_id,
-            profile.genus_id or fallback_id,
-            profile.family_id or fallback_id,
-            profile.order_id or fallback_id,
-        )
-        for scope_index, ancestor_id in enumerate(SCOPE_ANCESTORS.values()):
-            if ancestor_id and ancestor_id not in profile.ancestor_ids:
-                continue
-            offset = scope_index * len(UNIT_ORDER)
-            for unit_index, unit_id in enumerate(unit_ids):
-                groups[offset + unit_index].add(unit_id)
-    return {
-        key: len(values)
-        for key, values in zip(COUNT_KEYS, groups, strict=True)
-    }
+        unit_ids = (ortholog_gene_id, *profile.rank_unit_ids)
+        for groups, unit_id in zip(unit_scope_masks, unit_ids, strict=True):
+            groups[unit_id] = groups.get(unit_id, 0) | profile.scope_mask
+
+    counts = [0] * len(COUNT_KEYS)
+    unit_count = len(UNIT_ORDER)
+    for unit_index, groups in enumerate(unit_scope_masks):
+        mask_counts: dict[int, int] = {}
+        for scope_mask in groups.values():
+            mask_counts[scope_mask] = mask_counts.get(scope_mask, 0) + 1
+        # Canonical lineages are scope prefixes, so one suffix sum replaces
+        # repeated set insertions. The mask path preserves arbitrary profiles.
+        if all(scope_mask & (scope_mask + 1) == 0 for scope_mask in mask_counts):
+            depth_counts = [0] * len(SCOPE_ORDER)
+            for scope_mask, group_count in mask_counts.items():
+                depth_counts[scope_mask.bit_length() - 1] += group_count
+            running_count = 0
+            for scope_index in range(len(SCOPE_ORDER) - 1, -1, -1):
+                running_count += depth_counts[scope_index]
+                counts[scope_index * unit_count + unit_index] = running_count
+            continue
+        for scope_mask, group_count in mask_counts.items():
+            remaining_mask = scope_mask
+            while remaining_mask:
+                scope_bit = remaining_mask & -remaining_mask
+                scope_index = scope_bit.bit_length() - 1
+                counts[scope_index * unit_count + unit_index] += group_count
+                remaining_mask ^= scope_bit
+    return dict(zip(COUNT_KEYS, counts, strict=True))
 
 
 def _format_stat(value: float) -> str:

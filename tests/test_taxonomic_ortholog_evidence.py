@@ -3,6 +3,7 @@ from __future__ import annotations
 import csv
 import gzip
 import json
+import random
 from pathlib import Path
 
 import pytest
@@ -13,6 +14,8 @@ from analytics.derivations.ortholog_evidence import write_ortholog_evidence_summ
 from analytics.derivations.support import merge_ortholog_evidence
 from analytics.derivations.taxonomy import (
     COUNT_KEYS,
+    SCOPE_ANCESTORS,
+    UNIT_ORDER,
     TaxonomyProfile,
     build_taxonomy_summary_rows,
     count_member_groups,
@@ -246,6 +249,69 @@ def test_missing_rank_fallback_does_not_collide_with_real_taxon_id() -> None:
 
     assert counts["all__species"] == 2
     assert counts["all__genus"] == 2
+
+
+def test_taxonomic_counter_matches_set_reference_for_arbitrary_profiles() -> None:
+    randomizer = random.Random(20_260_826)
+    ancestor_ids = tuple(SCOPE_ANCESTORS.values())[1:]
+
+    def reference_count(members, profiles):
+        groups = [set() for _ in COUNT_KEYS]
+        for ortholog_gene_id, tax_id in members:
+            if not ortholog_gene_id:
+                continue
+            profile = profiles[tax_id]
+            fallback_id = ("taxon", profile.tax_id)
+            unit_ids = (
+                ortholog_gene_id,
+                profile.species_id or fallback_id,
+                profile.genus_id or fallback_id,
+                profile.family_id or fallback_id,
+                profile.order_id or fallback_id,
+            )
+            for scope_index, ancestor_id in enumerate(SCOPE_ANCESTORS.values()):
+                if ancestor_id and ancestor_id not in profile.ancestor_ids:
+                    continue
+                offset = scope_index * len(UNIT_ORDER)
+                for unit_index, unit_id in enumerate(unit_ids):
+                    groups[offset + unit_index].add(unit_id)
+        return dict(
+            zip(
+                COUNT_KEYS,
+                (len(group) for group in groups),
+                strict=True,
+            )
+        )
+
+    for _case in range(250):
+        profiles = {}
+        for tax_index in range(randomizer.randint(1, 16)):
+            tax_id = str(10_000 + tax_index)
+            profiles[tax_id] = TaxonomyProfile(
+                tax_id=tax_id,
+                ancestor_ids=frozenset(
+                    ancestor
+                    for ancestor in ancestor_ids
+                    if randomizer.random() < 0.65
+                ),
+                species_id=randomizer.choice(("", tax_id, f"s{tax_index % 5}")),
+                genus_id=randomizer.choice(("", f"g{tax_index % 4}")),
+                family_id=randomizer.choice(("", f"f{tax_index % 3}")),
+                order_id=randomizer.choice(("", f"o{tax_index % 2}")),
+            )
+        tax_ids = tuple(profiles)
+        members = [
+            (
+                randomizer.choice(("", f"ortholog_{randomizer.randrange(12)}")),
+                randomizer.choice(tax_ids),
+            )
+            for _member in range(randomizer.randint(0, 50))
+        ]
+
+        assert count_member_groups(members, profiles) == reference_count(
+            members,
+            profiles,
+        )
 
 
 def test_compact_events_preserve_exact_taxonomic_identities(tmp_path: Path) -> None:
