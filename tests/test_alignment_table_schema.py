@@ -44,20 +44,46 @@ def registered_strategy_names() -> set[str]:
     return literal_names
 
 
+def registered_strategy_entry(strategy: str) -> str:
+    workflow = (PROJECT_DIR / "main.nf").read_text()
+    registry = re.search(
+        r"ALIGNMENT_STRATEGY_REGISTRY\s*=\s*\[(.*?)\]\nAVAILABLE_ALIGNMENT_STRATEGIES",
+        workflow,
+        re.DOTALL,
+    )
+    assert registry is not None
+    entry = re.search(
+        rf"\[(?=[^\[\]]*\bname:\s*'{re.escape(strategy)}')[^\[\]]*\]",
+        registry.group(1),
+        re.DOTALL,
+    )
+    assert entry is not None
+    return entry.group(0)
+
+
 def test_contract_covers_every_registered_alignment_strategy() -> None:
     assert set(STRATEGY_PRODUCERS) == registered_strategy_names()
 
 
-def test_map_ont_long_pseudoread_strategy_is_fixed_and_opt_in() -> None:
-    workflow = (PROJECT_DIR / "main.nf").read_text()
-    strategy = re.search(
-        r"\[\s*name:\s*'minimap2_map_ont_pseudoreads_30000_15000',(.*?)\n\s*\]",
-        workflow,
-        re.DOTALL,
+def test_default_alignment_strategy_set_is_exact() -> None:
+    default_strategies = {
+        strategy
+        for strategy in STRATEGY_PRODUCERS
+        if "default_enabled: true" in registered_strategy_entry(strategy)
+    }
+    assert default_strategies == {
+        "minimap2_asm20",
+        "minimap2_map_ont_pseudoreads_30000_15000",
+        "nucmer",
+        "bwa_pseudoreads_150_75",
+    }
+
+
+def test_map_ont_long_pseudoread_strategy_is_fixed_and_default_enabled() -> None:
+    strategy_body = registered_strategy_entry(
+        "minimap2_map_ont_pseudoreads_30000_15000"
     )
-    assert strategy is not None
-    strategy_body = strategy.group(1)
-    assert "default_enabled: false" in strategy_body
+    assert "default_enabled: true" in strategy_body
     assert "minimap2_preset: 'map-ont'" in strategy_body
     assert "minimap2_pseudoread_len: 30000" in strategy_body
     assert "minimap2_pseudoread_step: 15000" in strategy_body

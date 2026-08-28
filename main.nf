@@ -6,11 +6,11 @@ import RunManifest
 include { validateParameters; paramsHelp } from 'plugin/nf-validation'
 
 ALIGNMENT_STRATEGY_REGISTRY = [
-    [name: 'minimap2_asm10', default_enabled: true, minimap2_preset: 'asm10'],
+    [name: 'minimap2_asm10', default_enabled: false, minimap2_preset: 'asm10'],
     [name: 'minimap2_asm20', default_enabled: true, minimap2_preset: 'asm20'],
     [
         name: 'minimap2_map_ont_pseudoreads_30000_15000',
-        default_enabled: false,
+        default_enabled: true,
         minimap2_preset: 'map-ont',
         minimap2_pseudoread_len: 30000,
         minimap2_pseudoread_step: 15000,

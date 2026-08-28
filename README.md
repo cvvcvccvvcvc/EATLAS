@@ -79,9 +79,9 @@ nextflow run . \
   -resume
 ```
 
-By default, `--alignment_strategies default` runs `minimap2_asm10`,
-`minimap2_asm20`, `nucmer`, and `bwa_pseudoreads_150_75`.
-`minimap2_map_ont_pseudoreads_30000_15000` remains available only when named
+By default, `--alignment_strategies default` runs `minimap2_asm20`,
+`minimap2_map_ont_pseudoreads_30000_15000`, `nucmer`, and
+`bwa_pseudoreads_150_75`. `minimap2_asm10` remains available only when named
 explicitly. Use a comma-separated list to select a different set:
 
 ```bash
@@ -92,10 +92,10 @@ nextflow run . \
   -resume
 ```
 
-The long-pseudoread comparator is selected with:
+The opt-in `asm10` comparator is selected with:
 
 ```bash
---alignment_strategies minimap2_map_ont_pseudoreads_30000_15000
+--alignment_strategies minimap2_asm10
 ```
 
 ## Outputs

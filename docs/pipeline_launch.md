@@ -20,8 +20,8 @@ precompute.
 
 When an option is not specified, keep the Nextflow/config default. The pipeline
 always runs end to end, and the default strategy selection runs
-`minimap2_asm10`, `minimap2_asm20`, `nucmer`, and `bwa_pseudoreads_150_75`. The
-long-pseudoread `minimap2_map_ont_pseudoreads_30000_15000` must be selected
+`minimap2_asm20`, `minimap2_map_ont_pseudoreads_30000_15000`, `nucmer`, and
+`bwa_pseudoreads_150_75`. The `minimap2_asm10` comparator must be selected
 explicitly.
 
 ## Connect And Update
@@ -107,10 +107,10 @@ example:
 --annotation_max_forks 4
 ```
 
-For the fixed opt-in long-pseudoread strategy, use:
+For the fixed opt-in `asm10` strategy, use:
 
 ```bash
---alignment_strategies minimap2_map_ont_pseudoreads_30000_15000
+--alignment_strategies minimap2_asm10
 ```
 
 Detach without stopping Nextflow with `Ctrl-b d`. Reattach with:

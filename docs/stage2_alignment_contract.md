@@ -56,9 +56,9 @@ default-enabled in that registry.
 | `nucmer` | MUMmer/nucmer | Independent comparator using multi-query nucmer output. |
 | `bwa_pseudoreads_150_75` | BWA/samtools/pysam | Pseudoread comparator using 150-base reads at a 75-base step. |
 
-The two assembly-mode minimap2 strategies, nucmer, and BWA pseudoreads are
-default-enabled. The long-pseudoread strategy is runnable only when named
-explicitly.
+The `asm20` and long-pseudoread minimap2 strategies, nucmer, and BWA
+pseudoreads are default-enabled. The `asm10` strategy is runnable only when
+named explicitly.
 
 No LASTZ, consensus calling, or production variant filtering is part of Stage 2.
 Conservation scores such as GERP are not part of alignment; they belong to the
@@ -78,7 +78,8 @@ At least one strategy must be selected. Single-strategy runs are valid; compare
 or report layers must treat cross-strategy-only sections as not applicable or
 empty rather than failing.
 
-`default` selects `minimap2_asm10`, `minimap2_asm20`, `nucmer`, and
+`default` selects `minimap2_asm20`,
+`minimap2_map_ont_pseudoreads_30000_15000`, `nucmer`, and
 `bwa_pseudoreads_150_75`.
 
 Each bounded partition merge reduces raw per-ortholog observations to one
@@ -113,9 +114,9 @@ index. Multi-query execution avoids rebuilding the target index and avoids
 creating thousands of scheduler tasks.
 
 All minimap2 modes run through one `ALIGN_MINIMAP2` process. Strategy metadata
-selects `asm10`, `asm20`, or the opt-in `map-ont` long-pseudoread mode; there
-are no duplicate workflow modules. Selected minimap2 strategies share that
-process's `alignment_max_forks` budget.
+selects the opt-in `asm10`, default `asm20`, or default `map-ont`
+long-pseudoread mode; there are no duplicate workflow modules. Selected
+minimap2 strategies share that process's `alignment_max_forks` budget.
 
 The long-pseudoread strategy cuts each ortholog deterministically into 30,000
 base windows at a 15,000 base step. An ortholog of at most 30,000 bases is
