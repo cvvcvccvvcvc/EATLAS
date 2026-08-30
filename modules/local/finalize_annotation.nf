@@ -6,7 +6,10 @@ process FINALIZE_ANNOTATION {
     path vep_shard_dirs, stageAs: 'vep_partitions/*'
     path clinvar_vcf, stageAs: 'references/clinvar.vcf.gz'
     path clinvar_vcf_tbi, stageAs: 'references/clinvar.vcf.gz.tbi'
-    path finalize_script
+    path finalize_script, stageAs: 'bin/finalize_annotation_partitions.py'
+    path bin_package_init, stageAs: 'bin/__init__.py'
+    path genomics_package_init, stageAs: 'genomics/__init__.py'
+    path variants_source, stageAs: 'genomics/variants.py'
 
     output:
     path "variant_annotations", emit: variant_annotations
@@ -16,7 +19,7 @@ process FINALIZE_ANNOTATION {
 
     script:
     """
-    python3 "${finalize_script}" \\
+    python3 -m bin.finalize_annotation_partitions \\
         --partition-root partitions \\
         --vep-root vep_partitions \\
         --clinvar-vcf references/clinvar.vcf.gz \\

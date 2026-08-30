@@ -100,6 +100,7 @@ def test_pipeline_python_modules_are_staged_packages_without_path_bridges() -> N
         "bin.run_nucmer_alignment",
         "bin.run_bwa_pseudoreads",
         "bin.merge_alignment_results",
+        "bin.finalize_annotation_partitions",
     ):
         assert f"python3 -m {module_name}" in module_text
 

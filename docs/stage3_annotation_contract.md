@@ -93,10 +93,10 @@ Each shard retains the normalized source fields plus:
 - `vep_impact`;
 - `vep_variant_class`.
 
-Non-concrete events remain in the event map with their normalization status and
-an empty canonical key. Variant-context rows with invalid keys retain an
-explicit `vep_status`; individual non-`ok` VEP outcomes do not make a complete
-dataset partial.
+Events that cannot be normalized remain in the event map with their
+normalization status and an empty canonical key. Variant-context rows with
+invalid keys retain an explicit `vep_status`; individual non-`ok` VEP outcomes
+do not make a complete dataset partial.
 
 The event map uses partition-local `event_group_id`. Its durable join key is
 `(partition_id, event_group_id)`. Variant shards are headered and directly

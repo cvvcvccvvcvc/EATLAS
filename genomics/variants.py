@@ -317,44 +317,43 @@ def event_vcf_key(
         return None, "unknown_chrom"
 
     try:
-        raw_pos = int(row.get("genomic_start1") or 0)
+        int(row.get("genomic_start1") or 0)
     except (TypeError, ValueError):
         return None, "bad_position"
-    raw_key = (chrom, raw_pos, ref, alt)
 
     if not context:
-        return raw_key, "raw_no_context"
+        return None, "raw_no_context"
 
     try:
         start0 = int(row.get("target_start0") or 0)
     except (TypeError, ValueError):
-        return raw_key, "bad_target_position"
+        return None, "bad_target_position"
 
     sequence = context_sequence(context)
     event_type = str(row.get("event_type") or "")
     if event_type == "snv":
         if len(ref) != 1 or len(alt) != 1:
-            return raw_key, "bad_snv_allele"
+            return None, "bad_snv_allele"
         vcf_key = (chrom, int(context["begin"]) + start0, ref, alt)
     elif event_type == "del":
         if not ref or alt:
-            return raw_key, "bad_del_allele"
+            return None, "bad_del_allele"
         if start0 <= 0:
-            return raw_key, "missing_left_anchor"
+            return None, "missing_left_anchor"
         anchor = sequence[start0 - 1]
         vcf_key = (chrom, int(context["begin"]) + start0 - 1, anchor + ref, anchor)
     elif event_type == "ins":
         if ref or not alt:
-            return raw_key, "bad_ins_allele"
+            return None, "bad_ins_allele"
         if start0 <= 0:
-            return raw_key, "missing_left_anchor"
+            return None, "missing_left_anchor"
         anchor = sequence[start0 - 1]
         vcf_key = (chrom, int(context["begin"]) + start0 - 1, anchor, anchor + alt)
     else:
-        return raw_key, "unsupported_event_type"
+        return None, "unsupported_event_type"
 
     normalized, status = normalize_vcf_key_for_context(context, *vcf_key)
-    return normalized or raw_key, status
+    return normalized, status
 
 
 def add_context_normalized_record(

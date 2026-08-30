@@ -330,6 +330,20 @@ def test_event_variant_map_dataset_is_validated_and_copied_byte_for_byte(
             "row count does not match partition manifest",
             id="manifest-count",
         ),
+        pytest.param(
+            [event_variant_map_row(1, ("1", 100, "", "G"), "ok")],
+            1,
+            1,
+            "invalid canonical variant_key",
+            id="invalid-canonical-key",
+        ),
+        pytest.param(
+            [event_variant_map_row(1, ("1", 100, "A", "G"), "unsupported_allele")],
+            1,
+            1,
+            "Unresolved event has a canonical variant_key",
+            id="unresolved-key",
+        ),
     ],
 )
 def test_event_variant_map_rejects_invalid_count_or_event_fk(
@@ -440,7 +454,8 @@ def test_finalizer_publishes_only_source_annotation_evidence(tmp_path: Path) -> 
     completed = subprocess.run(
         [
             sys.executable,
-            str(FINALIZE_SCRIPT),
+            "-m",
+            "bin.finalize_annotation_partitions",
             "--partition-root",
             str(partition_root),
             "--vep-root",
@@ -867,7 +882,7 @@ def test_event_vcf_key_rejects_non_concrete_alleles(ref: str, alt: str) -> None:
     assert status == "non_concrete_allele"
 
 
-def test_event_vcf_key_keeps_concrete_alleles() -> None:
+def test_event_vcf_key_requires_target_context() -> None:
     key, status = event_vcf_key(
         {
             "gene_id": "1",
@@ -881,5 +896,41 @@ def test_event_vcf_key_keeps_concrete_alleles() -> None:
         {},
     )
 
-    assert key == ("1", 100, "A", "G")
+    assert key is None
     assert status == "raw_no_context"
+
+
+@pytest.mark.parametrize(
+    ("event_type", "ref", "alt"),
+    [
+        ("ins", "", "A"),
+        ("del", "A", ""),
+    ],
+)
+def test_event_vcf_key_leaves_ambiguous_anchor_unresolved(
+    event_type: str,
+    ref: str,
+    alt: str,
+) -> None:
+    key, status = event_vcf_key(
+        {
+            "gene_id": "1",
+            "event_type": event_type,
+            "genomic_accession": "NC_000001.11",
+            "genomic_start1": "102",
+            "target_start0": "2",
+            "ref": ref,
+            "alt": alt,
+        },
+        {
+            "1": {
+                "chrom": "1",
+                "begin": 100,
+                "end": 104,
+                "seq": "ANAAA",
+            }
+        },
+    )
+
+    assert key is None
+    assert status == "unsupported_allele"

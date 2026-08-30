@@ -550,7 +550,10 @@ workflow PARTITIONED_ANNOTATION_STAGE {
         ANNOTATE_VEP_PARTITION.out.shard_dirs.map { meta, dir -> dir }.collect(),
         clinvar_vcf,
         clinvar_vcf_tbi,
-        finalize_script
+        finalize_script,
+        bin_package_init,
+        genomics_package_init,
+        variants_source
     )
 
 }

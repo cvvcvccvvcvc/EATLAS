@@ -15,6 +15,8 @@ from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
 
+from genomics.variants import parse_variant_key
+
 
 csv.field_size_limit(sys.maxsize)
 
@@ -370,12 +372,18 @@ def copy_event_variant_map_dataset(
                     raise ValueError(
                         f"Event-variant map has empty normalization_status: {source}"
                     )
+                variant_key = row["variant_key"]
+                normalization_status = row["normalization_status"]
                 if (
-                    row["normalization_status"] == "non_concrete_allele"
-                    and row["variant_key"]
+                    normalization_status == "ok"
+                    and parse_variant_key(variant_key) is None
                 ):
                     raise ValueError(
-                        f"Non-concrete event has a canonical variant_key in {source}"
+                        f"Successful event has an invalid canonical variant_key in {source}"
+                    )
+                if normalization_status != "ok" and variant_key:
+                    raise ValueError(
+                        f"Unresolved event has a canonical variant_key in {source}"
                     )
         expected_count = manifest_count(
             manifest,
