@@ -15,7 +15,6 @@ from analytics.analyses.conservation_analysis import (
 )
 from analytics.analyses.conservation_validation import validate_firth_runtime
 from analytics.analyses.matched_control import build_target_space_null
-from analytics.analyses.minimap_concordance import build_minimap_concordance_analysis
 from analytics.analyses.observed_variant_store import (
     build_or_load_observed_variant_store,
 )
@@ -41,7 +40,6 @@ from analytics.reporting.basic_filtering import build_basic_filtering_sections
 from analytics.reporting.conservation import build_clinvar_association_sections
 from analytics.reporting.document import render_html
 from analytics.reporting.matched_control import build_target_space_null_sections
-from analytics.reporting.minimap_concordance import build_minimap_concordance_sections
 from analytics.reporting.ortholog_evidence import build_ortholog_evidence_sections
 from analytics.reporting.overview import build_overview, merge_alignment_summary
 from analytics.reporting.pathogenic_variants import build_pathogenic_variant_sections
@@ -479,24 +477,6 @@ def main() -> None:
             "clinvar_curve_rows": int(len(basic_filtering.clinvar_curves)),
         }
 
-    print("Computing minimap2 preset concordance...")
-    with performance.stage("Minimap2 concordance") as timing:
-        minimap_concordance = build_minimap_concordance_analysis(
-            score_path=basic_filtering.score_path,
-            observed_by_strategy_type=validation.observed_by_strategy_type,
-            base_validation=conservation_analysis.validation,
-            strategies=strategies,
-            eligible_gene_ids_by_strategy=eligible_gene_ids_by_strategy,
-            analytics_dir=analytics_dir,
-            firth_workers=args.firth_workers,
-            performance_profile=performance,
-        )
-        timing["details"] = minimap_concordance.reason
-        timing["metrics"] = {
-            "available": minimap_concordance.available,
-            "candidate_rows": int(len(minimap_concordance.candidate_summary)),
-        }
-
     negative_controls = None
     if args.target_space_null:
         print("Computing consequence-matched target-space null...")
@@ -558,11 +538,6 @@ def main() -> None:
                 "basic-filtering",
                 "Basic Filtering",
                 build_basic_filtering_sections(basic_filtering),
-            ),
-            (
-                "minimap-concordance",
-                "Minimap2 Concordance",
-                build_minimap_concordance_sections(minimap_concordance),
             ),
             (
                 "ortholog-evidence",
