@@ -87,12 +87,23 @@ feature coverage, and canonical segment/event evidence. Minimap2 initially diffe
 line-order-derived provenance identifiers; those identifiers are now derived
 from PAF content and remain stable across thread counts.
 
-A 20-gene default-strategy run completed without task retries or scheduler
+A 20-gene default-strategy smoke completed without task retries or scheduler
 resource failures with `--alignment_max_forks 4`. Minimap2 used 2.32-2.53 CPUs
-per task at the median, Nucmer used 2.04, and peak RSS stayed below 2.4 GB for
-all sequence aligners. Four concurrent tasks per alignment process are
-therefore the default on the verified cluster setup; this setting does not
-change the separate annotation concurrency limit.
+per task at the median and Nucmer used 2.04. This validates the task shape but
+does not establish four as a throughput optimum: the verified user QOS permits
+64 CPUs, while each alignment task reserves three.
+
+Three later production runs exposed a size-dependent memory tail in the
+long-pseudoread minimap2 strategy. Across 1,470 logical tasks, 1,405 genes below
+150 million selected-ortholog bases stayed below 6.5 GB RSS without retry. Of
+the 63 genes from 150 to 600 million bases, the maximum successful RSS was
+21.5 GB; the two genes at or above 600 million bases reached 31.8 GB. Starting
+every task at 8 GB caused 38 failed attempts across 29 genes before retries
+reached a sufficient allocation. The workflow now records the total selected-
+ortholog sequence volume during task preparation and starts these classes at
+8, 24, and 40 GB respectively. BWA starts at 16 GB only for the largest class;
+all other BWA tasks remain at 8 GB. Fixed retry increments remain as protection
+against outliers.
 
 In the same run, annotation partitions containing two genes used 0.38-5.6 GB
 RSS for 66,921-815,531 unique variant contexts. The current resource function
@@ -105,6 +116,16 @@ memory limit; larger retries may queue rather than run simultaneously.
 Current memory requests are conservative initial bounds. Tune them from
 Nextflow trace `peak_rss` after representative cluster runs. Requesting the
 account maximum for every task wastes capacity and can increase queue time.
+The trace also records `attempt`, requested `cpus`, `memory`, and `time`, so a
+retry can be distinguished from a large successful first allocation.
+
+The next representative production run should evaluate explicit overrides of
+4 fetch tasks, 21 tasks per alignment process, and 8 tasks per annotation
+process. These are trial settings, not new defaults. Slurm still enforces the
+64-CPU and 512-GB per-user limits, and `maxForks` applies separately to
+minimap2, nucmer, and BWA. Promote a value to the configuration default only
+after comparing wall time, retries, peak RSS, and external-service failures on
+the same workload and cache state.
 
 ## Shared gnomAD Cache
 

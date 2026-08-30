@@ -169,6 +169,7 @@ def prepare_gene_task(
         raise ValueError(
             f"Ortholog metadata for gene {gene_id} contains duplicate ortholog_gene_id values"
         )
+    ortholog_sequence_bp = 0
     for row in source_orthologs:
         ortholog_id = row["ortholog_gene_id"]
         if not row.get("tax_id"):
@@ -183,12 +184,14 @@ def prepare_gene_task(
             raise ValueError(
                 f"Ortholog {ortholog_id} for gene {gene_id} has invalid sequence_length"
             )
+        ortholog_sequence_bp += sequence_length
     ortholog_meta_by_id = {row["ortholog_gene_id"]: row for row in source_orthologs}
     target_ready = target_path is not None
     ortholog_ready = target_ready and ortholog_path is not None and bool(ortholog_meta_by_id)
     task_row = {
         "gene_id": gene_id,
         "partition_id": partition_id,
+        "ortholog_sequence_bp": ortholog_sequence_bp,
         "target_ready": str(target_ready).lower(),
         "ortholog_ready": str(ortholog_ready).lower(),
         "status": "ready",
@@ -284,6 +287,7 @@ def main() -> None:
     task_fields = [
         "gene_id",
         "partition_id",
+        "ortholog_sequence_bp",
         "target_ready",
         "ortholog_ready",
         "status",

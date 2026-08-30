@@ -79,6 +79,34 @@ def annotationBaseMemoryGbForEventRows(rawEventRowCount) {
 }
 
 
+def longPseudoreadMinimapBaseMemoryGbForOrthologBp(rawOrthologSequenceBp) {
+    def orthologSequenceBp = rawOrthologSequenceBp as Long
+    if (orthologSequenceBp < 0) {
+        throw new IllegalArgumentException(
+            "ortholog_sequence_bp must be non-negative: ${orthologSequenceBp}"
+        )
+    }
+    if (orthologSequenceBp < 150_000_000L) {
+        return 8
+    }
+    if (orthologSequenceBp < 600_000_000L) {
+        return 24
+    }
+    return 40
+}
+
+
+def bwaBaseMemoryGbForOrthologBp(rawOrthologSequenceBp) {
+    def orthologSequenceBp = rawOrthologSequenceBp as Long
+    if (orthologSequenceBp < 0) {
+        throw new IllegalArgumentException(
+            "ortholog_sequence_bp must be non-negative: ${orthologSequenceBp}"
+        )
+    }
+    return orthologSequenceBp < 600_000_000L ? 8 : 16
+}
+
+
 def geneIdFromFastaPath(value) {
     def name = value instanceof java.nio.file.Path ? value.getFileName().toString() : new File(value.toString()).name
     return name
@@ -283,29 +311,39 @@ workflow ALIGNMENT_STAGE {
             tuple(
                 row.gene_id as String,
                 row.partition_id as String,
+                row.ortholog_sequence_bp as Long,
                 (row.ortholog_ready as String) == 'true'
             )
         }
     eligible_task_partitions = task_capabilities
-        .filter { gene_id, partition_id, ortholog_ready -> ortholog_ready }
-        .map { gene_id, partition_id, ortholog_ready -> tuple(gene_id, partition_id) }
+        .filter { gene_id, partition_id, ortholog_sequence_bp, ortholog_ready -> ortholog_ready }
+        .map { gene_id, partition_id, ortholog_sequence_bp, ortholog_ready ->
+            tuple(gene_id, partition_id, ortholog_sequence_bp)
+        }
     eligible_genes_by_partition = eligible_task_partitions
-        .map { gene_id, partition_id -> tuple(partition_id, gene_id) }
+        .map { gene_id, partition_id, ortholog_sequence_bp -> tuple(partition_id, gene_id) }
         .groupTuple()
         .map { partition_id, gene_ids ->
             tuple(partition_id, gene_ids.unique().sort())
         }
     ortholog_task_dirs_by_gene = task_dirs_by_gene_unpartitioned
         .join(eligible_task_partitions)
-        .map { gene_id, dir, partition_id -> tuple(gene_id, partition_id, dir) }
+        .map { gene_id, dir, partition_id, ortholog_sequence_bp ->
+            tuple(gene_id, partition_id, ortholog_sequence_bp, dir)
+        }
     target_fastas_by_gene = sequences.flatMap { seq_dir -> fastaFilesByGene(seq_dir, 'targets') }
     ortholog_fastas_by_gene = sequences.flatMap { seq_dir -> fastaFilesByGene(seq_dir, 'orthologs') }
     alignment_inputs = ortholog_task_dirs_by_gene
         .join(target_fastas_by_gene)
         .join(ortholog_fastas_by_gene)
-        .map { gene_id, partition_id, task_dir, source_target_fasta, source_ortholog_fasta ->
+        .map { gene_id, partition_id, ortholog_sequence_bp, task_dir, source_target_fasta, source_ortholog_fasta ->
             tuple(
-                [id: "task_${gene_id}", gene_id: gene_id, partition_id: partition_id],
+                [
+                    id: "task_${gene_id}",
+                    gene_id: gene_id,
+                    partition_id: partition_id,
+                    ortholog_sequence_bp: ortholog_sequence_bp,
+                ],
                 task_dir,
                 source_target_fasta,
                 source_ortholog_fasta
@@ -314,12 +352,16 @@ workflow ALIGNMENT_STAGE {
     minimap2_inputs = alignment_inputs.flatMap {
         meta, task_dir, source_target_fasta, source_ortholog_fasta ->
             SELECTED_MINIMAP2_STRATEGIES.collect { strategy ->
+                def pseudoreadLen = strategy.minimap2_pseudoread_len ?: 0
                 tuple(
                     meta + [
                         strategy: strategy.name,
                         preset: strategy.minimap2_preset,
-                        pseudoread_len: strategy.minimap2_pseudoread_len ?: 0,
+                        pseudoread_len: pseudoreadLen,
                         pseudoread_step: strategy.minimap2_pseudoread_step ?: 0,
+                        alignment_memory_gb: pseudoreadLen > 0
+                            ? longPseudoreadMinimapBaseMemoryGbForOrthologBp(meta.ortholog_sequence_bp)
+                            : 8,
                     ],
                     task_dir,
                     source_target_fasta,
@@ -336,6 +378,7 @@ workflow ALIGNMENT_STAGE {
                         pseudoread_len: strategy.bwa_pseudoread_len,
                         pseudoread_step: strategy.bwa_pseudoread_step,
                         pseudoread_phred: strategy.bwa_pseudoread_phred,
+                        alignment_memory_gb: bwaBaseMemoryGbForOrthologBp(meta.ortholog_sequence_bp),
                     ],
                     task_dir,
                     source_target_fasta,

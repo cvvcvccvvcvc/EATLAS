@@ -86,13 +86,26 @@ def test_alignment_tasks_capture_target_and_ortholog_readiness(tmp_path: Path) -
         ortholog_fields,
         [
             {
-                "query_gene_id": gene_id,
-                "ortholog_gene_id": f"10{gene_id}",
+                "query_gene_id": "1",
+                "ortholog_gene_id": "101",
                 "tax_id": "10090",
                 "taxname": "Mus musculus",
                 "sequence_length": "4",
-            }
-            for gene_id in ("1", "2")
+            },
+            {
+                "query_gene_id": "1",
+                "ortholog_gene_id": "102",
+                "tax_id": "10116",
+                "taxname": "Rattus norvegicus",
+                "sequence_length": "6",
+            },
+            {
+                "query_gene_id": "2",
+                "ortholog_gene_id": "102",
+                "tax_id": "10090",
+                "taxname": "Mus musculus",
+                "sequence_length": "4",
+            },
         ],
     )
 
@@ -108,6 +121,8 @@ def test_alignment_tasks_capture_target_and_ortholog_readiness(tmp_path: Path) -
             )
             with gzip.open(output_dir / f"{gene_id}.fa.gz", "wt") as handle:
                 handle.write(f">{header}\nACGT\n")
+                if directory == "orthologs" and gene_id == "1":
+                    handle.write(">query_1|ortholog_gene_102|tax_id=10116\nACGTAC\n")
 
     outdir = tmp_path / "out"
     result = subprocess.run(
@@ -146,6 +161,9 @@ def test_alignment_tasks_capture_target_and_ortholog_readiness(tmp_path: Path) -
         "1": ("true", "true"),
         "2": ("true", "false"),
     }
+    assert {
+        gene_id: row["ortholog_sequence_bp"] for gene_id, row in task_rows.items()
+    } == {"1": "10", "2": "4"}
     assert (outdir / "tasks" / "task_2" / "task.json").exists()
 
     task_dir = outdir / "tasks" / "task_1"
@@ -166,7 +184,14 @@ def test_alignment_tasks_capture_target_and_ortholog_readiness(tmp_path: Path) -
             "tax_id": "10090",
             "taxname": "Mus musculus",
             "sequence_length": "4",
-        }
+        },
+        {
+            "sequence_id": "ortholog_102",
+            "ortholog_gene_id": "102",
+            "tax_id": "10116",
+            "taxname": "Rattus norvegicus",
+            "sequence_length": "6",
+        },
     ]
     with (task_dir / "orthologs.metadata.tsv").open(newline="") as handle:
         assert next(csv.reader(handle, delimiter="\t")) == [
@@ -180,6 +205,7 @@ def test_alignment_tasks_capture_target_and_ortholog_readiness(tmp_path: Path) -
         assert next(csv.reader(handle, delimiter="\t")) == [
             "gene_id",
             "partition_id",
+            "ortholog_sequence_bp",
             "target_ready",
             "ortholog_ready",
             "status",
@@ -193,7 +219,10 @@ def test_alignment_tasks_capture_target_and_ortholog_readiness(tmp_path: Path) -
         tmp_path / "materialized",
     )
     assert target_fasta.read_text() == ">target_1\nACGT\n"
-    assert ortholog_fasta.read_text() == ">ortholog_101\nACGT\n"
+    assert ortholog_fasta.read_text() == (
+        ">ortholog_101\nACGT\n"
+        ">ortholog_102\nACGTAC\n"
+    )
 
 
 def test_ortholog_groups_reject_noncontiguous_gene_rows(tmp_path: Path) -> None:

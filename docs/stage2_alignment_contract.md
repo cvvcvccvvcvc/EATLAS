@@ -315,6 +315,16 @@ maximum number of target genes in each partition (default: 10). The identifier
 is carried in task metadata for bounded downstream merge and annotation; it does
 not change gene-level alignment behavior.
 
+The same preparation pass sums the validated selected-ortholog
+`sequence_length` values for each gene into internal `ortholog_sequence_bp`
+task metadata. Nextflow uses that input-size measure to choose the initial
+memory request for the two pseudoread strategies. The long-pseudoread minimap2
+strategy starts at 8 GB below 150 million bases, 24 GB below 600 million bases,
+and 40 GB otherwise. BWA starts at 8 GB below 600 million bases and 16 GB
+otherwise. Ordinary assembly minimap2 stays at 8 GB and nucmer at 12 GB.
+Retries remain a safety margin for unusual tasks; they are not the primary
+mechanism for reaching a predictable memory class.
+
 Alignment results are merged in two bounded levels. Each partition merges at
 most `--alignment_partition_size` genes and streams one raw event group at a
 time from its SQLite key index into the compact event/support pair. The final

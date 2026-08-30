@@ -264,10 +264,12 @@ du -sh results/run_001/{fetch,alignment,annotation,reports}
 du -sh /path/to/dedicated/work/run_001
 ```
 
-Review `realtime`, `%cpu`, `peak_rss`, `rchar`, and `wchar` in the
-trace. Check the largest partitions rather than only totals. Durable alignment
-must contain one partition tree, not duplicate global copies of summaries,
-segments, events, or support.
+Review `attempt`, requested `cpus`, `memory`, and `time` together with
+`realtime`, `%cpu`, `peak_rss`, `rchar`, and `wchar` in the trace. Compare
+requested memory with successful `peak_rss`, and count failed attempts
+separately from logical tasks. Check the largest partitions rather than only
+totals. Durable alignment must contain one partition tree, not duplicate global
+copies of summaries, segments, events, or support.
 
 Every report writes a progressive profile under
 `<analytics-root>/analyses/<analysis-id>/performance/<report-name>.json`.

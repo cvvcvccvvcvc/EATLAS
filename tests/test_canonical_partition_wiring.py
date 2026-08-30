@@ -130,3 +130,17 @@ def test_small_annotation_partitions_do_not_request_large_run_memory() -> None:
     aligner_text = "\n".join(path.read_text() for path in aligner_scripts)
     assert "feature_coverage.tsv.gz" not in aligner_text
     assert "feature_coverage_count" not in aligner_text
+
+
+def test_alignment_memory_is_sized_from_ortholog_sequence_volume() -> None:
+    main = (PROJECT_DIR / "main.nf").read_text()
+    config = (PROJECT_DIR / "nextflow.config").read_text()
+
+    assert "row.ortholog_sequence_bp as Long" in main
+    assert "orthologSequenceBp < 150_000_000L" in main
+    assert "orthologSequenceBp < 600_000_000L" in main
+    assert "longPseudoreadMinimapBaseMemoryGbForOrthologBp" in main
+    assert "bwaBaseMemoryGbForOrthologBp" in main
+    assert "meta.alignment_memory_gb" in config
+    assert "retryStepGb" in config
+    assert "attempt,cpus,memory,time" in config
