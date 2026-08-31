@@ -98,14 +98,15 @@ micromamba run -p "$GAPH_ROOT/envs/controller" nextflow run . \
 ```
 
 Add only options requested by the user or required by a concrete run, for
-example:
+example an explicit strategy subset:
 
 ```bash
---alignment_strategies minimap2_asm20,nucmer \
---fetch_max_forks 2 \
---alignment_max_forks 4 \
---annotation_max_forks 4
+--alignment_strategies minimap2_asm20,nucmer
 ```
+
+Ordinary launches use the configured concurrency defaults. Override
+`--fetch_max_forks`, `--alignment_max_forks`, or `--annotation_max_forks` only
+when a specific run needs different limits.
 
 For the fixed opt-in `asm10` strategy, use:
 

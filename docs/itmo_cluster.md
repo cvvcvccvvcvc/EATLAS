@@ -109,9 +109,10 @@ In the same run, annotation partitions containing two genes used 0.38-5.6 GB
 RSS for 66,921-815,531 unique variant contexts. The current resource function
 uses each partition's compact `alignment_event_count`: 8 or 16 GB at up to 1 or
 5 million events, then 32, 48, 64, or 96 GB at up to 15, 30, 40, or more than
-40 million events. Each retry adds 32 GB. With four annotation forks, even four
-largest first attempts reserve 384 GB, below the verified 512 GB per-user Slurm
-memory limit; larger retries may queue rather than run simultaneously.
+40 million events. Each retry adds 32 GB. With eight annotation forks, eight
+largest first attempts would request 768 GB in aggregate. Slurm enforces the
+verified 512 GB per-user memory limit, so some tasks and larger retries may
+queue rather than run simultaneously.
 
 Current memory requests are conservative initial bounds. Tune them from
 Nextflow trace `peak_rss` after representative cluster runs. Requesting the
@@ -119,13 +120,15 @@ account maximum for every task wastes capacity and can increase queue time.
 The trace also records `attempt`, requested `cpus`, `memory`, and `time`, so a
 retry can be distinguished from a large successful first allocation.
 
-The next representative production run should evaluate explicit overrides of
-4 fetch tasks, 21 tasks per alignment process, and 8 tasks per annotation
-process. These are trial settings, not new defaults. Slurm still enforces the
-64-CPU and 512-GB per-user limits, and `maxForks` applies separately to
-minimap2, nucmer, and BWA. Promote a value to the configuration default only
-after comparing wall time, retries, peak RSS, and external-service failures on
-the same workload and cache state.
+The 490-gene `all_genes_batch_001_20260830_163720_f4_a21_n8` run on commit
+`8a6f666` completed all 2,347 tasks in 4 h 51 min 49 s, with no failed tasks or
+fetch, alignment, or annotation failures. Its tested concurrency settings are
+now the defaults: 4 fetch tasks, 21 tasks per alignment process, and 8 tasks per
+annotation process. Slurm still enforces the 64-CPU and 512-GB per-user limits,
+and `maxForks` applies separately to minimap2, nucmer, and BWA. This successful
+run does not establish a throughput optimum; further tuning should compare
+wall time, retries, peak RSS, and external-service failures on the same workload
+and cache state.
 
 ## Shared gnomAD Cache
 

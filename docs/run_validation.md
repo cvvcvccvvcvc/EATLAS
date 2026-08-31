@@ -24,7 +24,7 @@ uses an in-memory lookup bounded to each genomic partition. Set
 `GAPH_GNOMAD_CACHE_DIR` or `--gnomad_cache_dir` to reuse complete 25-kb regional
 responses across runs and analytics reports. When `GAPH_ROOT` is set, the cache
 defaults to `$GAPH_ROOT/cache/gnomad`. End-to-end runs may process up to
-`--annotation_max_forks` partitions concurrently (default: 4). Initial memory
+`--annotation_max_forks` tasks per annotation process concurrently. Initial memory
 is selected from the partition's compact alignment-event count; retries add
 32 GB per attempt.
 

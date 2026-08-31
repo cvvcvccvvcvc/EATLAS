@@ -21,7 +21,7 @@ Required:
 Optional operational parameters:
 - `--outdir`: final output directory.
 - `--chunk_size`: accepted IDs per NCBI package request.
-- `--fetch_max_forks`: max concurrent NCBI fetch/parse tasks. Default is 2.
+- `--fetch_max_forks`: max concurrent NCBI fetch/parse tasks. Default is 4.
 - `ENTREZ_API_KEY` or `NCBI_API_KEY`: optional NCBI API key passed to
   `datasets download` as `--api-key`.
 - `ENTREZ_EMAIL` or `NCBI_EMAIL`: optional contact email recorded as configured

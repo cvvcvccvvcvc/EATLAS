@@ -61,13 +61,13 @@
                 "fetch_max_forks": {
                     "type": "integer",
                     "minimum": 1,
-                    "default": 2,
+                    "default": 4,
                     "description": "Maximum concurrent NCBI fetch/parse tasks."
                 },
                 "alignment_max_forks": {
                     "type": "integer",
                     "minimum": 1,
-                    "default": 4,
+                    "default": 21,
                     "description": "Maximum concurrent tasks in each aligner process. The two minimap2 presets share one process and one limit; nucmer and BWA each have their own process. Total alignment concurrency is also bounded by executor CPU/queue limits."
                 },
                 "alignment_partition_size": {
@@ -79,7 +79,7 @@
                 "annotation_max_forks": {
                     "type": "integer",
                     "minimum": 1,
-                    "default": 4,
+                    "default": 8,
                     "description": "Maximum concurrent tasks for each annotation process, including bounded ClinVar/gnomAD partitions and VEP shards. Base partition tasks receive size-aware memory from event counts."
                 }
             }
