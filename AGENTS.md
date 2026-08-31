@@ -115,24 +115,28 @@ nextflow run . \
   -resume
 ```
 
-Cluster run:
+Ordinary cluster run of one or more inputs:
 
 ```bash
-nextflow run . -profile slurm \
-  --ids_file /path/gene_ids.txt \
-  --outdir /mnt/tank/scratch/$USER/gaph_v2/results/run_001 \
-  -work-dir /mnt/tank/scratch/$USER/gaph_v2/work/run_001 \
-  -resume
+bash scripts/slurm/run_pipelines.sh \
+  --results-root /mnt/tank/scratch/$USER/gaph_v2/results/run_group \
+  --expected-commit "$INTENDED_COMMIT" \
+  /path/batch_001.txt /path/batch_002.txt
 ```
 
 Task environments from `envs/*.yml` are mandatory. Local runs need no profile;
-ITMO runs use `-profile slurm`.
+ordinary ITMO runs use the launcher above. Direct `nextflow run` remains for
+local execution and documented validation only.
+
+For ordinary cluster work, use only `scripts/slurm/run_pipelines.sh` to run
+pipelines and `analytics/slurm/submit_strategy_report.sh` to submit reports. Do
+not create ad hoc launchers.
 
 ## Progressive Disclosure
 
 - `README.md` — human overview, quick start, outputs, and document index.
 - `docs/pipeline_launch.md` — ordinary ITMO launch or resume.
-- `docs/report_generation.md` — ordinary report or combined pipeline/report launch.
+- `docs/report_generation.md` — ordinary report launch from completed runs.
 - `docs/run_validation.md` — smoke tests and failure investigation.
 - `docs/project_map.md` — repository structure and ownership.
 - `docs/stage1_fetch_contract.md` — fetch selection and durable data contract.

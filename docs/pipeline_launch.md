@@ -1,16 +1,17 @@
 # Pipeline Launch
 
-Use this runbook for an ordinary GAPH Nextflow launch or resume on the ITMO CT
-cluster. Use `docs/run_validation.md` only for smoke tests, validation, or a
-concrete pipeline failure.
+Use this runbook to launch or resume one or more GAPH pipeline runs on the ITMO
+CT cluster. Ordinary cluster runs use `scripts/slurm/run_pipelines.sh`; use
+direct Nextflow commands only for the smoke tests and failure investigation in
+`docs/run_validation.md`.
 
 ## Required User Inputs
 
 Obtain or identify:
 
-- the input Gene ID file;
-- the durable result directory;
-- a dedicated Nextflow work directory retained while resume may be needed;
+- one or more input Gene ID files, in execution order;
+- one durable results root for their run directories;
+- the intended full Git commit from the authoritative local checkout;
 - any explicitly requested alignment strategies or concurrency overrides.
 
 The cluster environment must also declare the release-pinned local VEP
@@ -43,6 +44,7 @@ cd /nfs/home/$USER/gaph_v2
 git fetch origin main
 git merge --ff-only origin/main
 source "$HOME/.gaph_v2_cluster_env.sh"
+INTENDED_COMMIT=<paste-the-full-commit-captured-locally>
 test -z "$(git status --porcelain)"
 git rev-parse HEAD
 ```
@@ -51,6 +53,7 @@ The final cluster hash must equal the exact `INTENDED_COMMIT` captured in the
 authoritative local checkout. Do not infer currency from a clean cluster tree,
 from a commit-looking run name, or by comparing cluster `HEAD` with the
 cluster's `origin/main` before fetching: remote-tracking refs can be stale.
+The pipeline launcher repeats the fetch and equality checks before doing work.
 
 This revision gate applies again before report submission, even if the source
 pipeline run is already complete. After a pipeline creates `run_manifest.json`,
@@ -78,40 +81,44 @@ cluster-approved persistent terminal session on `sphinx`:
 tmux new -s gaph_run_name
 ```
 
-Inside the session:
+Inside the session, pass one input for a single run or several inputs for a
+sequential series:
 
 ```bash
 cd "$GAPH_CODE"
 source "$HOME/.gaph_v2_cluster_env.sh"
 
-IDS="$GAPH_ROOT/inputs/panel.ids"
-RUN="$GAPH_ROOT/results/run_name"
-WORK="$GAPH_ROOT/work/run_name"
+RESULTS_ROOT="$GAPH_ROOT/results/all_genes_8a6f666"
 
-micromamba run -p "$GAPH_ROOT/envs/controller" nextflow run . \
-  -profile slurm \
-  --ids_file "$IDS" \
-  --outdir "$RUN" \
-  --gnomad_cache_dir "$GAPH_GNOMAD_CACHE_DIR" \
-  -work-dir "$WORK" \
-  -resume
+bash scripts/slurm/run_pipelines.sh \
+  --results-root "$RESULTS_ROOT" \
+  --expected-commit "$INTENDED_COMMIT" \
+  "$GAPH_ROOT/inputs/all_genes/batch_001.txt" \
+  "$GAPH_ROOT/inputs/all_genes/batch_002.txt"
 ```
 
-Add only options requested by the user or required by a concrete run, for
-example an explicit strategy subset:
+The input basename becomes the run name, such as `batch_001`. The launcher
+creates `$RESULTS_ROOT/batch_001` and uses one internal work directory below
+`$GAPH_WORK_DIR` for the group. It runs only one pipeline at a time and stops at
+the first failure.
+
+Add only options requested by the user or required by a concrete run:
 
 ```bash
---alignment_strategies minimap2_asm20,nucmer
+--alignment-strategies minimap2_asm20,nucmer \
+--fetch-max-forks 2 \
+--alignment-max-forks 4 \
+--annotation-max-forks 4
 ```
 
 Ordinary launches use the configured concurrency defaults. Override
-`--fetch_max_forks`, `--alignment_max_forks`, or `--annotation_max_forks` only
+the three fork limits only
 when a specific run needs different limits.
 
 For the fixed opt-in `asm10` strategy, use:
 
 ```bash
---alignment_strategies minimap2_asm10
+--alignment-strategies minimap2_asm10
 ```
 
 Detach without stopping Nextflow with `Ctrl-b d`. Reattach with:
@@ -120,51 +127,27 @@ Detach without stopping Nextflow with `Ctrl-b d`. Reattach with:
 tmux attach -t gaph_run_name
 ```
 
-## Run And Report Together
-
-When a report should be submitted immediately after a successful pipeline run,
-use the combined launcher in the persistent session:
-
-```bash
-bash scripts/slurm/run_and_report.sh \
-  --ids-file "$IDS" \
-  --run-dir "$RUN" \
-  --work-dir "$WORK" \
-  --analytics-root "$GAPH_ROOT/analytics" \
-  --report-name strategy_compare \
-  -- \
-  --target-space-null
-```
-
-Everything after `--` is a report argument and is forwarded unchanged. Omit
-the target-space-null option unless the user requested it. See
-`docs/report_generation.md` for report and multi-run details.
-
-Before starting Nextflow, the combined launcher verifies the clean checkout,
-the external analytics path, and its own report arguments. It exposes the
-standard pipeline configuration plus optional `--alignment-strategies`. When a
-measured run requires concurrency overrides, use the direct Nextflow command
-above and submit its report separately after completion.
-
 ## Resume
 
-Resume with the same `RUN`, `WORK`, inputs, and relevant parameters. Use the
-same command with `-resume`; do not invent a new work directory for a resume.
-The pipeline refuses to reuse a successfully completed `RUN`; use a new run
-directory when source evidence must be regenerated.
+Rerun the same launcher command. It checks and skips successfully completed
+runs, resumes the first incomplete run with its recorded Nextflow session, and
+then continues in the original order. It refuses changed input paths, explicit
+launcher settings, result paths, or Git provenance. Use a new results root when
+completed evidence must be regenerated.
 
 ```bash
 tmux attach -t gaph_run_name
 ```
 
-If the original controller process ended, start a new persistent session and
-rerun the original command with `-resume`.
+If the original controller ended, start a new persistent session and rerun the
+same command. Submit reports separately after the required pipeline runs have
+completed; see `docs/report_generation.md`.
 
 ## Minimal Monitoring
 
 ```bash
 squeue -u "$USER"
-tail -n 50 "$GAPH_CODE/.nextflow.log"
+tail -n 50 "$RESULTS_ROOT/batch_001/reports/nextflow/nextflow.log"
 ```
 
 Do not run pipeline computation directly on `sphinx`; Nextflow submits compute

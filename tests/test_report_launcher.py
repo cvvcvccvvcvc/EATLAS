@@ -12,6 +12,7 @@ import pytest
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 LAUNCHER = PROJECT_ROOT / "analytics" / "slurm" / "submit_strategy_report.sh"
 BATCH = PROJECT_ROOT / "analytics" / "slurm" / "strategy_report.sbatch"
+COMMIT = "a" * 40
 
 
 def _read_argv(path: Path) -> list[str]:
@@ -32,7 +33,8 @@ def _fixture(tmp_path: Path) -> tuple[Path, dict[str, str]]:
     fake_bin.mkdir()
     (fake_bin / "git").write_text(
         "#!/usr/bin/env bash\n"
-        "if [[ \"$*\" == *'rev-parse HEAD'* ]]; then printf 'abc123\\n'; fi\n"
+        f"if [[ \"$*\" == *'rev-parse origin/main'* ]]; then printf '{COMMIT}\\n';\n"
+        f"elif [[ \"$*\" == *'rev-parse HEAD'* ]]; then printf '{COMMIT}\\n'; fi\n"
         "exit 0\n"
     )
     (fake_bin / "sbatch").write_text(
@@ -70,7 +72,7 @@ def _worker_fixture(tmp_path: Path) -> tuple[Path, Path, dict[str, str]]:
     git.write_text(
         "#!/usr/bin/env bash\n"
         "if [[ \"$*\" == *'rev-parse HEAD'* ]]; then\n"
-        "  printf 'abc123\\n'\n"
+        f"  printf '{COMMIT}\\n'\n"
         "  exit 0\n"
         "fi\n"
         "if [[ \"$*\" == *'diff --cached --quiet'* ]]; then\n"
@@ -128,6 +130,8 @@ def test_report_launcher_forwards_one_root_and_repeated_source_runs(
             str(second),
             "--report-name",
             "combined",
+            "--expected-commit",
+            COMMIT,
             "--",
             "--target-space-null",
             "--target-space-null-seed",
@@ -144,7 +148,7 @@ def test_report_launcher_forwards_one_root_and_repeated_source_runs(
     assert arguments[batch_index + 1 :] == [
         str(analytics_root),
         "combined",
-        "abc123",
+        COMMIT,
         str(launcher.parents[2]),
         "2",
         str(first),
@@ -161,7 +165,16 @@ def test_report_launcher_requires_external_analytics_root(tmp_path: Path) -> Non
     run = _run(tmp_path / "run")
 
     completed = subprocess.run(
-        ["bash", str(launcher), "--run-dir", str(run), "--report-name", "report"],
+        [
+            "bash",
+            str(launcher),
+            "--run-dir",
+            str(run),
+            "--report-name",
+            "report",
+            "--expected-commit",
+            COMMIT,
+        ],
         env=environment,
         text=True,
         capture_output=True,
@@ -186,6 +199,8 @@ def test_report_launcher_does_not_write_inside_source_run(tmp_path: Path) -> Non
             str(run),
             "--report-name",
             "report",
+            "--expected-commit",
+            COMMIT,
         ],
         env=environment,
         text=True,
@@ -210,7 +225,7 @@ def test_report_worker_forwards_sources_and_report_arguments(tmp_path: Path) -> 
             str(worker),
             str(analytics_root),
             "combined",
-            "abc123",
+            COMMIT,
             str(project),
             "2",
             str(first),
@@ -241,7 +256,7 @@ def test_report_worker_forwards_sources_and_report_arguments(tmp_path: Path) -> 
         "7",
     ]
     assert (analytics_root / "slurm" / "combined.git_commit").read_text() == (
-        "abc123\n"
+        f"{COMMIT}\n"
     )
 
 
@@ -266,7 +281,7 @@ def test_report_worker_rejects_changes_after_submission(
             str(worker),
             str(tmp_path / "analytics"),
             "report",
-            "abc123",
+            COMMIT,
             str(project),
             "1",
             str(tmp_path / "run"),

@@ -26,19 +26,18 @@ runs.
 
 ## Entrypoints
 
-- Pipeline execution: `nextflow run .`; workflow entrypoint: `main.nf`
+- Cluster pipeline launch or resume: `scripts/slurm/run_pipelines.sh`
+- Pipeline workflow entrypoint: `main.nf`
 - Runtime configuration: `nextflow.config`
 - Analytics report: `python -m analytics.strategy_report --analytics-root <root> --run-dir <run> --report-name <name>`
 - Cluster report submission: `analytics/slurm/submit_strategy_report.sh`
-- Combined cluster run and report: `scripts/slurm/run_and_report.sh`
 - Run archive: `python -m run_archiving`
 - Local execution: no profile required
 - Cluster run profile: `-profile slurm`
 
-The two shell launchers above are user-facing commands.
-`analytics/slurm/strategy_report.sbatch` is their internal Slurm report worker,
-not a third launch mode. Pipeline-only execution intentionally uses Nextflow
-directly rather than another wrapper.
+The pipeline and report shell launchers above are the two user-facing cluster
+commands. `analytics/slurm/strategy_report.sbatch` is the internal Slurm report
+worker, not a third launch mode.
 
 Runtime environments:
 - `envs/controller.yml` - Nextflow, Java, and Micromamba for the login/controller host.
@@ -231,7 +230,7 @@ environment variables are not set.
 Each operational question has one primary document:
 
 - ordinary pipeline launch or resume: `docs/pipeline_launch.md`
-- ordinary report or combined pipeline/report launch: `docs/report_generation.md`
+- ordinary report launch: `docs/report_generation.md`
 - smoke tests and failure investigation: `docs/run_validation.md`
 - first-time ITMO setup: `docs/itmo_cluster.md`
 - durable-versus-temporary data: `docs/storage_model.md`

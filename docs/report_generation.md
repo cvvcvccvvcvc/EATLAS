@@ -59,11 +59,13 @@ source "$HOME/.gaph_v2_cluster_env.sh"
 
 RUN="$GAPH_ROOT/results/<run-name>"
 ANALYTICS_ROOT="$GAPH_ROOT/analytics"
+INTENDED_COMMIT=<paste-the-full-commit-captured-locally>
 
 bash analytics/slurm/submit_strategy_report.sh \
   --analytics-root "$ANALYTICS_ROOT" \
   --run-dir "$RUN" \
-  --report-name strategy_compare
+  --report-name strategy_compare \
+  --expected-commit "$INTENDED_COMMIT"
 ```
 
 Tracked and staged code changes must be committed before submission. The Slurm
@@ -87,7 +89,8 @@ bash analytics/slurm/submit_strategy_report.sh \
   --analytics-root "$ANALYTICS_ROOT" \
   --run-dir "$GAPH_ROOT/results/panel_a" \
   --run-dir "$GAPH_ROOT/results/panel_b" \
-  --report-name combined_panel
+  --report-name combined_panel \
+  --expected-commit "$INTENDED_COMMIT"
 ```
 
 Source runs must use the same current pipeline contracts, target/reference
@@ -108,6 +111,7 @@ bash analytics/slurm/submit_strategy_report.sh \
   --analytics-root "$ANALYTICS_ROOT" \
   --run-dir "$RUN" \
   --report-name strategy_compare_with_target_null \
+  --expected-commit "$INTENDED_COMMIT" \
   -- \
   --target-space-null \
   --target-space-null-sample-size 5000 \
@@ -129,36 +133,6 @@ scientific options:
 micromamba run -p "$GAPH_ROOT/envs/analytics" \
   python -m analytics.strategy_report --help
 ```
-
-## Pipeline And Report In One Command
-
-For a new run that should submit a report after successful Nextflow completion:
-
-```bash
-IDS="$GAPH_ROOT/inputs/panel.ids"
-RUN="$GAPH_ROOT/results/run_name"
-WORK="$GAPH_ROOT/work/run_name"
-ANALYTICS_ROOT="$GAPH_ROOT/analytics"
-
-bash scripts/slurm/run_and_report.sh \
-  --ids-file "$IDS" \
-  --run-dir "$RUN" \
-  --work-dir "$WORK" \
-  --analytics-root "$ANALYTICS_ROOT" \
-  --report-name strategy_compare \
-  -- \
-  --target-space-null \
-  --target-space-null-sample-size 5000
-```
-
-Arguments before `--` belong to the launcher; arguments after it go unchanged
-to the report. The launcher uses `-profile slurm` and `-resume`, preserves the
-registry alignment default unless `--alignment-strategies` is supplied, and
-does not submit a report after a failed pipeline run. It validates the clean
-checkout and analytics path before starting Nextflow.
-
-Optional report-job resources are `--slurm-cpus`, `--slurm-memory`,
-`--slurm-time`, and `--slurm-partition`.
 
 ## Derived Data
 

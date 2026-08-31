@@ -9,6 +9,7 @@ Usage:
     --analytics-root /absolute/path/to/analytics \
     --run-dir /absolute/path/to/run [--run-dir /absolute/path/to/another_run ...] \
     --report-name report_name \
+    --expected-commit FULL_GIT_COMMIT \
     [--slurm-cpus 8] [--slurm-memory 128G] [--slurm-time 06:00:00] \
     [--slurm-partition main] [-- <analytics.strategy_report arguments>]
 
@@ -37,6 +38,7 @@ canonical_destination() {
 analytics_root=""
 run_dirs=()
 report_name=""
+expected_commit=""
 slurm_cpus=8
 slurm_memory=128G
 slurm_time=06:00:00
@@ -58,6 +60,11 @@ while (( $# > 0 )); do
     --report-name)
       (( $# >= 2 )) || fail "--report-name requires a value"
       report_name=$2
+      shift 2
+      ;;
+    --expected-commit)
+      (( $# >= 2 )) || fail "--expected-commit requires a value"
+      expected_commit=$2
       shift 2
       ;;
     --slurm-cpus)
@@ -118,6 +125,8 @@ for run_dir in "${run_dirs[@]}"; do
 done
 run_dirs=("${resolved_run_dirs[@]}")
 [[ -n "$report_name" ]] || fail "--report-name is required"
+[[ "$expected_commit" =~ ^[0-9a-f]{40}$ ]] || fail \
+  "--expected-commit must be a full 40-character Git commit"
 [[ "$report_name" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || fail \
   "--report-name may contain only letters, digits, dot, underscore, and hyphen"
 [[ "$slurm_cpus" =~ ^[1-9][0-9]*$ ]] || fail "--slurm-cpus must be a positive integer"
@@ -128,7 +137,7 @@ command -v sbatch >/dev/null || fail "sbatch was not found; run this on the Slur
 
 for argument in "${report_args[@]}"; do
   case "$argument" in
-    --analytics-root|--analytics-root=*|--run-dir|--run-dir=*|--report-name|--report-name=*)
+    --analytics-root|--analytics-root=*|--run-dir|--run-dir=*|--report-name|--report-name=*|--expected-commit|--expected-commit=*)
       fail "$argument is managed by the launcher and must appear before --"
       ;;
   esac
@@ -138,10 +147,16 @@ script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 project_root=$(cd "$script_dir/../.." && pwd)
 batch_script="$script_dir/strategy_report.sbatch"
 [[ -f "$batch_script" ]] || fail "missing Slurm batch script: $batch_script"
-git -C "$project_root" diff --quiet || fail "tracked changes must be committed before submission"
-git -C "$project_root" diff --cached --quiet || fail \
-  "staged changes must be committed before submission"
-git_commit=$(git -C "$project_root" rev-parse HEAD)
+git_status=$(git -C "$project_root" status --porcelain=v1 --untracked-files=normal) || fail \
+  "cannot inspect repository status: $project_root"
+[[ -z "$git_status" ]] || fail "report submission requires a clean working tree"
+git -C "$project_root" fetch origin main >/dev/null || fail "cannot fetch authoritative origin/main"
+git_commit=$(git -C "$project_root" rev-parse HEAD) || fail "cannot resolve repository HEAD"
+origin_commit=$(git -C "$project_root" rev-parse origin/main) || fail "cannot resolve origin/main"
+[[ "$git_commit" = "$expected_commit" ]] || fail \
+  "cluster HEAD $git_commit does not match expected commit $expected_commit"
+[[ "$origin_commit" = "$expected_commit" ]] || fail \
+  "fetched origin/main $origin_commit does not match expected commit $expected_commit"
 
 log_dir="$analytics_root/slurm"
 mkdir -p "$log_dir"

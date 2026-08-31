@@ -58,8 +58,8 @@ Candidate VEP annotation is part of the same workflow. Small local runs default
 to the REST backend. Production cluster runs use the release-pinned local VEP
 configuration from the cluster environment.
 
-For Slurm, use the `slurm` profile and put `work/`, results, and environment
-caches under the assigned shared scratch allocation.
+For Slurm, use the standard pipeline launcher and put `work/`, results, and
+environment caches under the assigned shared scratch allocation.
 The ITMO-specific bootstrap and validation procedure is documented in
 `docs/itmo_cluster.md`.
 
@@ -70,13 +70,12 @@ export GAPH_GNOMAD_CACHE_DIR="$GAPH_ROOT/cache/gnomad"
 export NXF_CONDA_CACHEDIR="$GAPH_ROOT/conda/envs"
 export MAMBA_ROOT_PREFIX="$GAPH_ROOT/micromamba"
 export NXF_HOME="$GAPH_ROOT/nextflow"
+INTENDED_COMMIT=<full-commit-captured-from-the-authoritative-local-checkout>
 
-nextflow run . \
-  -profile slurm \
-  --ids_file /path/to/gene_ids.txt \
-  --gnomad_cache_dir "$GAPH_GNOMAD_CACHE_DIR" \
-  --outdir "$GAPH_ROOT/results/run_001" \
-  -resume
+bash scripts/slurm/run_pipelines.sh \
+  --results-root "$GAPH_ROOT/results/run_group" \
+  --expected-commit "$INTENDED_COMMIT" \
+  /absolute/path/to/gene_ids.txt
 ```
 
 By default, `--alignment_strategies default` runs `minimap2_asm20`,
@@ -196,7 +195,7 @@ directory or home quota.
 ## Documentation
 
 - `docs/pipeline_launch.md` — ordinary ITMO launch or resume.
-- `docs/report_generation.md` — report-only and combined pipeline/report launch.
+- `docs/report_generation.md` — report launch from completed runs.
 - `docs/run_validation.md` — smoke tests, contract checks, and failure diagnosis.
 - `docs/stage1_fetch_contract.md` and `docs/stage2_alignment_contract.md` —
   normalized data contracts and their rationale.
