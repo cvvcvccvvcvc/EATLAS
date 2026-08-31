@@ -66,7 +66,8 @@ def test_filter_score_store_and_candidate_curves_are_allele_level(tmp_path: Path
         "gene_id",
         "strategy",
         "alt_support_ortholog_count",
-        "alt_support_genus_count",
+        "alt_support_family_count",
+        "site_aligned_ortholog_count",
     ]
     _write_gzip(
         support,
@@ -76,21 +77,32 @@ def test_filter_score_store_and_candidate_curves_are_allele_level(tmp_path: Path
                 "gene_id": "1",
                 "strategy": "s1",
                 "alt_support_ortholog_count": 3,
-                "alt_support_genus_count": 2,
+                "alt_support_family_count": 2,
+                "site_aligned_ortholog_count": 10,
             },
             {
                 "variant_key": "1:10:A>G",
                 "gene_id": "1",
                 "strategy": "s2",
                 "alt_support_ortholog_count": 2,
-                "alt_support_genus_count": 1,
+                "alt_support_family_count": 1,
+                "site_aligned_ortholog_count": 10,
+            },
+            {
+                "variant_key": "1:10:A>G",
+                "gene_id": "2",
+                "strategy": "s1",
+                "alt_support_ortholog_count": 2,
+                "alt_support_family_count": 1,
+                "site_aligned_ortholog_count": 20,
             },
             {
                 "variant_key": "1:20:C>T",
                 "gene_id": "1",
                 "strategy": "s1",
                 "alt_support_ortholog_count": 1,
-                "alt_support_genus_count": 1,
+                "alt_support_family_count": 1,
+                "site_aligned_ortholog_count": 10,
             },
         ],
         support_fields,
@@ -120,6 +132,18 @@ def test_filter_score_store_and_candidate_curves_are_allele_level(tmp_path: Path
     assert strategy_curve.loc[1, "retained_variant_count"] == 2
     assert strategy_curve.loc[2, "retained_variant_count"] == 1
     assert strategy_curve.loc[2, "gnomad_found_fraction"] == 1.0
+    union = curves[curves["strategy"].eq("union") & curves["filter_key"].eq("ortholog")]
+    assert union.set_index("threshold").loc[1, "total_variant_count"] == 2
+    assert union.set_index("threshold").loc[3, "retained_variant_count"] == 1
+    assert union.set_index("threshold").loc[4, "retained_variant_count"] == 0
+    minimum = curves[
+        curves["strategy"].eq("s1") & curves["filter_key"].eq("aligned_min")
+    ].set_index("threshold")
+    maximum = curves[
+        curves["strategy"].eq("s1") & curves["filter_key"].eq("aligned_max")
+    ].set_index("threshold")
+    assert minimum.loc[11, "retained_variant_count"] == 1
+    assert maximum.loc[10, "retained_variant_count"] == 2
 
 
 def test_clinvar_filter_curve_uses_support_threshold_as_observation(tmp_path: Path) -> None:
@@ -170,47 +194,42 @@ def test_clinvar_filter_curve_uses_support_threshold_as_observation(tmp_path: Pa
                 "strategy": "s1",
                 "ortholog_support": 3,
                 "strategy_support": 1,
-                "genus_support": 2,
+                "family_support": 2,
+                "site_aligned_min": 10,
+                "site_aligned_max": 10,
             },
             {
                 "variant_key": "b-low",
                 "strategy": "s1",
                 "ortholog_support": 1,
                 "strategy_support": 1,
-                "genus_support": 1,
+                "family_support": 1,
+                "site_aligned_min": 10,
+                "site_aligned_max": 10,
             },
             {
                 "variant_key": "p-low-1",
                 "strategy": "s1",
                 "ortholog_support": 1,
                 "strategy_support": 1,
-                "genus_support": 1,
+                "family_support": 1,
+                "site_aligned_min": 10,
+                "site_aligned_max": 10,
             },
             {
                 "variant_key": "p-low-2",
                 "strategy": "s1",
                 "ortholog_support": 1,
                 "strategy_support": 1,
-                "genus_support": 1,
+                "family_support": 1,
+                "site_aligned_min": 10,
+                "site_aligned_max": 10,
             },
         ]
     )
-    candidate_curves = pd.DataFrame(
-        [
-            {
-                "strategy": "s1",
-                "variant_type": "snv",
-                "filter_key": "ortholog",
-                "threshold": threshold,
-            }
-            for threshold in (1, 2, 3)
-        ]
-    )
-
     curves = compute_clinvar_filter_curves(
         cohort=ConservationCohort(cohort_frame, {}),
         clinvar_scores=scores,
-        candidate_curves=candidate_curves,
         strategies=["s1"],
         eligible_gene_ids_by_strategy={"s1": {"1"}},
     )
@@ -227,3 +246,119 @@ def test_clinvar_filter_curve_uses_support_threshold_as_observation(tmp_path: Pa
     assert row["pathogenic_observed"] == 0
     assert row["status"] == "estimated"
     assert row["result_or"] == float("inf")
+
+
+def test_local_thresholds_union_and_upper_bound_do_not_create_calls(tmp_path: Path) -> None:
+    from analytics.vep.consequences import VALIDATION_CONSEQUENCE_BITS
+
+    frame = pd.DataFrame(
+        [
+            {
+                "variant_key": key,
+                "variant_subtype": "snv",
+                "target_context": context,
+                "consequence_mask": VALIDATION_CONSEQUENCE_BITS["intronic"],
+                "label_class": label,
+                "gene_ids": "1",
+                "phyloP100way": phylop,
+            }
+            for key, context, label, phylop in [
+                ("b1", "intron", "benign", -2),
+                ("b2", "intron", "benign", 2),
+                ("p1", "intron", "pathogenic", -2),
+                ("p2", "intron", "pathogenic", 2),
+                ("missing", "intron", "benign", 0),
+                ("cds", "cds", "benign", 2),
+            ]
+        ]
+    )
+    scores = pd.DataFrame(
+        [
+            {
+                "variant_key": key,
+                "strategy": strategy,
+                "ortholog_support": score,
+                "strategy_support": 2 if key == "b1" else 1,
+                "family_support": 0,
+                "site_aligned_min": depth,
+                "site_aligned_max": depth,
+            }
+            for key, strategy, score, depth in [
+                ("b1", "s1", 1, 2),
+                ("b1", "s2", 3, 8),
+                ("b2", "s1", 2, 4),
+                ("p1", "s1", 1, 2),
+                ("p2", "s1", 3, 8),
+                ("cds", "s1", 500, 500),
+            ]
+        ]
+    )
+    curves = compute_clinvar_filter_curves(
+        cohort=ConservationCohort(frame, {}),
+        clinvar_scores=scores,
+        strategies=["s1", "s2"],
+        eligible_gene_ids_by_strategy={"s1": {"1"}, "s2": {"1"}},
+    )
+    local = curves[
+        curves["variant_type"].eq("snv")
+        & curves["strategy"].eq("s1")
+        & curves["target_context"].eq("intron")
+        & curves["consequence"].eq("intronic")
+        & curves["mode"].eq("fixed")
+        & curves["filter_key"].eq("ortholog")
+    ]
+    assert local["threshold"].tolist() == [1, 2, 3, 4]
+    assert local.iloc[-1]["status"] == "not_estimable"
+    upper = curves[
+        curves["strategy"].eq("union")
+        & curves["target_context"].eq("intron")
+        & curves["consequence"].eq("intronic")
+        & curves["mode"].eq("unadjusted")
+        & curves["filter_key"].eq("aligned_max")
+    ].set_index("threshold")
+    assert upper.loc[2, "benign_observed"] == 1
+    assert upper.loc[8, "benign_observed"] == 2
+    assert upper.loc[8, "benign_not_observed"] == 1
+    assert upper.loc[0, "benign_observed"] == 0
+    family = curves[
+        curves["strategy"].eq("union")
+        & curves["target_context"].eq("intron")
+        & curves["consequence"].eq("intronic")
+        & curves["mode"].eq("unadjusted")
+        & curves["filter_key"].eq("family")
+    ].set_index("threshold")
+    assert family.loc[0, "benign_observed"] == 2
+    assert family.loc[1, "benign_observed"] == 0
+
+    from analytics.analyses.basic_filtering import BasicFilteringAnalysis
+    from analytics.reporting.basic_filtering import build_basic_filtering_sections
+    from analytics.reporting.document import render_html
+
+    histograms = pd.DataFrame(
+        [
+            {
+                "strategy": strategy,
+                "variant_type": "snv",
+                "filter_key": key,
+                "score": score,
+                "gnomad_status": status,
+                "variant_count": 1,
+            }
+            for strategy in ("s1", "s2", "union")
+            for key in ("ortholog", "family", "strategy", "aligned_min", "aligned_max")
+            for score, status in ((1, "found"), (2, "not_found"), (3, "found"))
+        ]
+    )
+    analysis = BasicFilteringAnalysis(
+        tmp_path / "scores.parquet",
+        tmp_path / "manifest.json",
+        candidate_curves_from_histograms(histograms),
+        curves,
+    )
+    (tmp_path / "filtering_smoke.html").write_text(
+        render_html(
+            [
+                ("basic-filtering", "Basic Filtering", build_basic_filtering_sections(analysis)),
+            ]
+        )
+    )

@@ -247,7 +247,7 @@ def test_report_preflight_accepts_compact_production_contract(tmp_path: Path) ->
             "strategy",
             "alt_support_row_count",
             "alt_support_ortholog_count",
-            "alt_support_genus_count",
+            "alt_support_family_count",
         ],
     )
     evidence_columns = [
@@ -979,9 +979,11 @@ def test_basic_filtering_view_has_linear_threshold_controls_and_safe_json(
     html = basic_filtering_view(analysis)
 
     assert 'data-role="filter"' in html
-    assert 'data-role="strategy"' in html
+    assert 'data-role="candidate-strategy"' in html
+    assert 'data-role="clinvar-strategy"' in html
     assert 'data-role="target-context"' in html
-    assert "Independent genus support" in html
+    assert "Supporting families" in html
+    assert "Union (any strategy)" in html
     assert "type: 'linear'" in html
     assert "Infinity" not in html
     assert "NaN" not in html

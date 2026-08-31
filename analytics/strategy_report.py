@@ -447,7 +447,9 @@ def main() -> None:
         pathogenic_analysis = build_pathogenic_variant_analysis(
             summary=variant_summary,
             clinvar_universe=validation.universe,
-            conservation_cohort=conservation_analysis.validation.cohort.variants,
+            clinvar_vcf=args.clinvar_vcf,
+            condition_cache_dir=args.analytics_root / "cache" / "clinvar_conditions",
+            eligible_gene_ids_by_strategy=eligible_gene_ids_by_strategy,
             analytics_dir=analytics_dir,
         )
         timing["metrics"] = {
@@ -457,7 +459,7 @@ def main() -> None:
                 if not pathogenic_analysis.condition_counts.empty
                 else 0
             ),
-            "evolution_rows": int(len(pathogenic_analysis.evolution_rows)),
+            "support_rows": int(len(pathogenic_analysis.support_rows)),
         }
 
     print("Computing basic support-filter curves...")

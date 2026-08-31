@@ -469,7 +469,7 @@ def test_variant_summary_adds_per_strategy_pathogenic_support(tmp_path: Path) ->
                 "strategy",
                 "alt_support_row_count",
                 "alt_support_ortholog_count",
-                "alt_support_genus_count",
+                "alt_support_family_count",
                 "site_aligned_ortholog_count",
             ]
         )
@@ -488,9 +488,7 @@ def test_variant_summary_adds_per_strategy_pathogenic_support(tmp_path: Path) ->
     assert row["support_ortholog_mean"] == 5.0
     assert row["support_ortholog_min"] == 3
     assert row["support_ortholog_max"] == 7
-    assert summary.pathogenic_support_rows[
-        "alt_support_genus_count"
-    ].tolist() == [2, 4]
+    assert summary.pathogenic_support_rows["alt_support_family_count"].tolist() == [2, 4]
     assert summary.pathogenic_support_rows[
         "site_aligned_ortholog_count"
     ].tolist() == [10, 12]

@@ -144,15 +144,72 @@ The report derives fingerprinted caches from durable evidence:
   evidence plus Stage 3 event-to-variant lineage;
 - `derived/pathogenic_clinvar_hits.tsv.gz`, the complete unique P/LP allele
   table used by the second report tab. It includes ClinVar review strength and
-  conditions, VEP effects, phyloP100way, gnomAD AF, strategy membership, and
+  conditions, VEP effects, gnomAD AF, strategy membership, and
   exact ortholog-support summaries;
 - scientific tables used by report sections.
 
 The `Pathogenic ClinVar Hits` tab owns the P/LP-only review-star and molecular-
-effect plots, the condition and evolutionary-support views, and the paginated
+effect plots, the condition and exact-support views, and the paginated
 detail table. The table sorts the complete in-browser dataset by configurable
 primary and secondary columns; it is not a top-N extract. Candidate Profile and
 QC do not repeat these P/LP-only views.
+
+### Pathogenic support and condition backgrounds
+
+P/LP subtypes remain in the detail table but are combined in the plots.
+Exact-support distributions count one SNV per strategy, selecting the complete
+target-gene row with maximum ALT-supporting ortholog count (gene ID breaks
+ties). Violin densities use log10 counts with original-count axis labels and
+hover values; sparse distributions use points and a box. phyloP availability
+does not restrict this tab. Conservation-adjusted analyses still use phyloP.
+
+Conditions compare unique P/LP alleles against either ClinVar in the strategy's
+eligible target genes or the whole pinned GRCh38 VCF. Both arms use the selected
+variant type. The denominator includes alleles without named conditions;
+multiple conditions per allele mean the displayed fractions need not sum to
+one. Named-condition coverage and counts are available on hover. Disease IDs
+(MedGen, then MONDO, then OMIM) identify conditions when supplied; names are
+used otherwise, without inferred disease groups. The plot selects the top 15
+conditions across both arms and supports name search.
+
+The whole-VCF background is streamed locally and cached once per source identity
+under `cache/clinvar_conditions/`; it does not trigger VEP or network requests.
+It counts distinct VCF alleles, merging repeated records and excluding mixed
+B/LB–P/LP classifications. This describes the variants and associated conditions
+represented in the VCF, not all ClinVar record types or condition-specific
+clinical assertions.
+
+### Basic Filtering
+
+Filter and variant type apply to the whole tab. Retention and gnomAD share a
+strategy selector; ClinVar has independent strategy, adjustment, target-context,
+and consequence selectors. `Compare all strategies` draws separate curves with
+each strategy's own candidate denominator. `Union (any strategy)` counts each
+normalized allele once and requires it to pass in at least one calling
+strategy/context. Union OR is calculated from a new allele-level contingency
+table over the union of eligible target genes, never by averaging strategy ORs.
+
+Exact ALT support and strategy support use minimum thresholds. Supporting
+families count distinct known family IDs; an unresolved family is not a new
+family. Site-aligned ortholog counts support both maximum and minimum thresholds.
+Family and site-depth filters are SNV-only. Within an allele/strategy, maximum
+support is used for minimum thresholds and minimum site depth for maximum
+thresholds. Non-calls have missing scores and cannot pass a maximum threshold;
+zero known families is a valid score for a called SNV. Invalid or missing
+required SNV support fails validation rather than removing rows.
+
+ClinVar thresholds are derived after selecting the cohort (and finite phyloP
+scores for adjustment). Minimum-threshold membership changes at score + 1;
+maximum-threshold membership changes at the observed score. There is no fixed
+20-point limit. Cumulative counts avoid repeated scans at each threshold.
+Unestimable results retain their reasons and break the OR line. Triangles at
+the plot boundary denote zero or infinite OR, not finite point estimates.
+OR > 1 indicates relative enrichment of B/LB over P/LP among retained calls.
+BH q-values cover thresholds and strategies within each filter, variant type,
+context, consequence, and adjustment mode; intervals remain pointwise.
+
+Retention includes failed gnomAD lookups; the overlap denominator excludes them.
+Neither a missing lookup nor an unestimable OR is treated as a negative result.
 
 These files never replace pipeline evidence. Missing source partitions,
 mismatched schemas, changed files, and invalid empty outputs are errors. There

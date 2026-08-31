@@ -32,7 +32,7 @@ from analytics.derivations.support import (  # noqa: E402
     StrategySupport,
     aggregate_exact_support,
     build_variant_strategy_support,
-    load_snv_alt_genus_support,
+    load_snv_alt_family_support,
 )
 from analytics.io.artifacts import content_identity  # noqa: E402
 from genomics.variants import event_vcf_key, variant_aggregate_key  # noqa: E402
@@ -536,7 +536,7 @@ def test_partition_timings_are_preserved_and_summed(tmp_path: Path) -> None:
 
 def test_analytics_support_schema_is_not_part_of_stage3_manifest() -> None:
     assert VARIANT_STRATEGY_SUPPORT_FIELDS[-1] == "site_aligned_ortholog_count"
-    assert "alt_support_genus_count" in VARIANT_STRATEGY_SUPPORT_FIELDS
+    assert "alt_support_family_count" in VARIANT_STRATEGY_SUPPORT_FIELDS
     assert "variant_strategy_site_depth_count" not in COUNT_FIELDS
 
 
@@ -634,7 +634,7 @@ def test_exact_support_spool_counts_distinct_orthologs(tmp_path: Path) -> None:
             "strategy": "s1",
             "alt_support_row_count": 3,
             "alt_support_ortholog_count": 2,
-            "alt_support_genus_count": "",
+            "alt_support_family_count": "",
             "site_aligned_ortholog_count": "",
         },
         {
@@ -643,13 +643,13 @@ def test_exact_support_spool_counts_distinct_orthologs(tmp_path: Path) -> None:
             "strategy": "s2",
             "alt_support_row_count": 1,
             "alt_support_ortholog_count": 1,
-            "alt_support_genus_count": "",
+            "alt_support_family_count": "",
             "site_aligned_ortholog_count": "",
         },
     ]
 
 
-def test_variant_strategy_support_loads_exact_alt_genus_count(tmp_path: Path) -> None:
+def test_variant_strategy_support_loads_exact_alt_family_count(tmp_path: Path) -> None:
     path = tmp_path / "snv_alt_taxonomic_support.tsv.gz"
     with gzip.open(path, "wt", newline="") as handle:
         writer = csv.DictWriter(
@@ -660,7 +660,7 @@ def test_variant_strategy_support_loads_exact_alt_genus_count(tmp_path: Path) ->
                 "target_start0",
                 "ref",
                 "alt",
-                "all__genus",
+                "known_family_count",
             ],
             delimiter="\t",
             lineterminator="\n",
@@ -673,7 +673,7 @@ def test_variant_strategy_support_loads_exact_alt_genus_count(tmp_path: Path) ->
                 "target_start0": 4,
                 "ref": "a",
                 "alt": "g",
-                "all__genus": 2,
+                "known_family_count": 2,
             }
         )
     aggregate = {
@@ -688,14 +688,14 @@ def test_variant_strategy_support_loads_exact_alt_genus_count(tmp_path: Path) ->
         },
     }
 
-    genus_supports = load_snv_alt_genus_support(path)
+    family_supports = load_snv_alt_family_support(path)
     rows, _missing = build_variant_strategy_support(
         [aggregate],
         {("1", "s1", 4): 3},
-        genus_supports,
+        family_supports,
     )
 
-    assert rows[0]["alt_support_genus_count"] == 2
+    assert rows[0]["alt_support_family_count"] == 2
 
 
 def test_event_ortholog_support_stream_reads_consecutive_compact_groups(

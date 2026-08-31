@@ -679,8 +679,6 @@ def build_gnomad_stratification_sections(
 ) -> list[str]:
     sections = [
         "<h2>gnomAD Stratification</h2>",
-        "<p class=\"lead\">Descriptive comparison of candidate alleles found and not found in gnomAD. "
-        "This is not a matched-control analysis.</p>",
     ]
     strategy_order = sort_by_metric(
         strategy_stats[["Strategy", "gnomAD found %"]], "gnomAD found %"
@@ -720,10 +718,6 @@ def build_gnomad_stratification_sections(
     sections.append("<h3>Conservation</h3>")
     phylop_fig = candidate_phylop_figure(candidate_conservation, strategy_order)
     if phylop_fig is not None:
-        sections.append(
-            "<p class=\"lead\">Candidate phyloP100way distributions are shown separately for exact gnomAD hits "
-            "and alleles without a gnomAD hit. Select one strategy to compare the two strata.</p>"
-        )
         sections.append(fig_html(phylop_fig))
         phylop_summary_fig = candidate_phylop_summary_figure(candidate_conservation, strategy_order)
         if phylop_summary_fig is not None:
@@ -742,10 +736,6 @@ def build_gnomad_stratification_sections(
         CONSEQUENCE_GROUP_COLORS,
     )
     if consequence_fig is not None:
-        sections.append(
-            "<p class=\"lead\">Release-pinned RefSeq VEP consequence groups are compared "
-            "within completed gnomAD lookups. Failed lookups are excluded from both strata.</p>"
-        )
         sections.append(fig_html(consequence_fig))
     else:
         sections.append("<p>No VEP consequence counts were available for completed gnomAD lookups.</p>")

@@ -260,9 +260,6 @@ def build_ortholog_evidence_sections(
 ) -> list[str]:
     sections = [
         "<h2>Ortholog Evidence</h2>",
-        "<p class=\"lead\">SNV evidence strength by the number of selected evidence units aligned "
-        "at the variant site and carrying the exact ALT allele. Cell color is the "
-        "gnomAD found fraction; failed lookups are excluded.</p>",
     ]
     cells = variant_summary.ortholog_evidence_cells
     distributions = variant_summary.ortholog_evidence_distributions
@@ -447,9 +444,6 @@ def build_ortholog_evidence_sections(
         )
         distribution_html = (
             '<h3>Evidence distributions</h3>'
-            '<p class="analysis-note">CDS, UTR, and intron SNVs with at least one '
-            "site-aligned selected unit, pooled across genes. gnomAD lookup status "
-            "does not filter these distributions.</p>"
             '<div class="metric-grid" id="ortholog-evidence-distribution-stats"></div>'
             + initial_distribution.to_html(
                 full_html=False,

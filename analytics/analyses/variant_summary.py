@@ -81,7 +81,7 @@ PATHOGENIC_SUPPORT_COLUMNS = [
     "strategy",
     "alt_support_row_count",
     "alt_support_ortholog_count",
-    "alt_support_genus_count",
+    "alt_support_family_count",
     "site_aligned_ortholog_count",
 ]
 
@@ -558,7 +558,6 @@ def _ortholog_evidence_distributions(
     return pd.concat(distributions, ignore_index=True)[
         ORTHOLOG_EVIDENCE_DISTRIBUTION_COLUMNS
     ]
-
 
 
 def read_taxonomic_ortholog_evidence(

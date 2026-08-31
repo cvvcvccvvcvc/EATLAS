@@ -355,7 +355,7 @@ def validate_report_inputs(inputs: AnalysisInputs) -> None:
                 "strategy",
                 "alt_support_row_count",
                 "alt_support_ortholog_count",
-                "alt_support_genus_count",
+                "alt_support_family_count",
             },
         ),
         (

@@ -24,10 +24,10 @@ VARIANT_STRATEGY_SUPPORT_FIELDS = [
     "strategy",
     "alt_support_row_count",
     "alt_support_ortholog_count",
-    "alt_support_genus_count",
+    "alt_support_family_count",
     "site_aligned_ortholog_count",
 ]
-ALT_SUPPORT_GENUS_COLUMN = "all__genus"
+ALT_SUPPORT_FAMILY_COLUMN = "known_family_count"
 EVENT_ORTHOLOG_SUPPORT_FIELDS = [
     "event_group_id",
     "ortholog_gene_id",
@@ -269,7 +269,7 @@ def aggregate_exact_support(
 def build_variant_strategy_support(
     aggregates: Iterable[dict],
     site_depths: dict[tuple[str, str, int], int] | None = None,
-    genus_supports: dict[tuple[str, str, int, str, str], int] | None = None,
+    family_supports: dict[tuple[str, str, int, str, str], int] | None = None,
 ) -> tuple[list[dict[str, object]], int]:
     site_depths = site_depths or {}
     rows: list[dict[str, object]] = []
@@ -283,7 +283,7 @@ def build_variant_strategy_support(
         for strategy, support in support_by_strategy.items():
             alt_support_count = support.ortholog_count
             site_depth: int | str = ""
-            genus_support: int | str = ""
+            family_support: int | str = ""
             if aggregate.get("event_type") == "snv":
                 depth_key = (
                     str(aggregate.get("gene_id") or ""),
@@ -298,23 +298,21 @@ def build_variant_strategy_support(
                         "ALT-support ortholog count exceeds site-aligned ortholog count for "
                         f"{depth_key}: {alt_support_count} > {site_depth}"
                     )
-                if genus_supports is not None:
-                    genus_key = (
+                if family_supports is not None:
+                    family_key = (
                         str(aggregate.get("gene_id") or ""),
                         strategy,
                         int(aggregate.get("target_start0") or 0),
                         str(aggregate.get("ref") or "").upper(),
                         str(aggregate.get("alt") or "").upper(),
                     )
-                    if genus_key not in genus_supports:
+                    if family_key not in family_supports:
+                        raise ValueError(f"Missing family ALT-support count for SNV {family_key}")
+                    family_support = family_supports[family_key]
+                    if family_support < 0 or family_support > alt_support_count:
                         raise ValueError(
-                            f"Missing genus ALT-support count for SNV {genus_key}"
-                        )
-                    genus_support = genus_supports[genus_key]
-                    if genus_support < 0 or genus_support > alt_support_count:
-                        raise ValueError(
-                            "Genus ALT-support count exceeds ortholog ALT-support count for "
-                            f"{genus_key}: {genus_support} > {alt_support_count}"
+                            "Family ALT-support count exceeds ortholog ALT-support count for "
+                            f"{family_key}: {family_support} > {alt_support_count}"
                         )
             rows.append(
                 {
@@ -323,7 +321,7 @@ def build_variant_strategy_support(
                     "strategy": strategy,
                     "alt_support_row_count": support.row_count,
                     "alt_support_ortholog_count": alt_support_count,
-                    "alt_support_genus_count": genus_support,
+                    "alt_support_family_count": family_support,
                     "site_aligned_ortholog_count": site_depth,
                 }
             )
@@ -337,7 +335,7 @@ def build_variant_strategy_support(
     return rows, missing_key_count
 
 
-def load_snv_alt_genus_support(
+def load_snv_alt_family_support(
     path: Path,
 ) -> dict[tuple[str, str, int, str, str], int]:
     required = {
@@ -346,7 +344,7 @@ def load_snv_alt_genus_support(
         "target_start0",
         "ref",
         "alt",
-        ALT_SUPPORT_GENUS_COLUMN,
+        ALT_SUPPORT_FAMILY_COLUMN,
     }
     counts: dict[tuple[str, str, int, str, str], int] = {}
     with gzip.open(path, "rt", newline="") as handle:
@@ -367,9 +365,9 @@ def load_snv_alt_genus_support(
             )
             if key in counts:
                 raise ValueError(f"Duplicate SNV ALT taxonomic support row: {key}")
-            value = int(row[ALT_SUPPORT_GENUS_COLUMN])
+            value = int(row[ALT_SUPPORT_FAMILY_COLUMN])
             if value < 0:
-                raise ValueError(f"Negative SNV ALT genus support for {key}: {value}")
+                raise ValueError(f"Negative SNV ALT family support for {key}: {value}")
             counts[key] = value
     return counts
 

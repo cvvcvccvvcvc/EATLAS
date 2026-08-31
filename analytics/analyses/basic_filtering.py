@@ -44,8 +44,8 @@ from .variant_summary_aggregation import (
 )
 
 
-FILTER_SCORE_SCHEMA_VERSION = 1
-MAX_CLINVAR_THRESHOLDS = 20
+FILTER_SCORE_SCHEMA_VERSION = 2
+UNION_STRATEGY = "union"
 FILTER_SCORE_COLUMNS = [
     "variant_key",
     "strategy",
@@ -53,12 +53,16 @@ FILTER_SCORE_COLUMNS = [
     "gnomad_status",
     "ortholog_support",
     "strategy_support",
-    "genus_support",
+    "family_support",
+    "site_aligned_min",
+    "site_aligned_max",
 ]
 FILTER_OPTIONS = [
     ("ortholog", "Exact-ALT ortholog support", "ortholog_support"),
     ("strategy", "Strategy support", "strategy_support"),
-    ("genus", "Independent genus support", "genus_support"),
+    ("family", "Supporting families", "family_support"),
+    ("aligned_max", "Site-aligned orthologs (at most)", "site_aligned_min"),
+    ("aligned_min", "Site-aligned orthologs (at least)", "site_aligned_max"),
 ]
 
 
@@ -96,7 +100,6 @@ def build_basic_filtering_analysis(
     clinvar_curves = compute_clinvar_filter_curves(
         cohort=cohort,
         clinvar_scores=clinvar_scores,
-        candidate_curves=candidate_curves,
         strategies=strategies,
         eligible_gene_ids_by_strategy=eligible_gene_ids_by_strategy,
     )
@@ -132,7 +135,8 @@ def build_or_load_filter_score_store(
         "gene_id",
         "strategy",
         "alt_support_ortholog_count",
-        "alt_support_genus_count",
+        "alt_support_family_count",
+        "site_aligned_ortholog_count",
     }
     missing = required_support - set(support_columns)
     if missing:
@@ -239,21 +243,29 @@ def _build_filter_score_store(
             "FROM classified GROUP BY variant_key"
         )
         connection.execute(
-            "CREATE TEMP TABLE compact_support AS SELECT variant_key, trim(strategy) AS strategy, "
-            "max(try_cast(alt_support_ortholog_count AS BIGINT)) AS ortholog_support, "
-            "max(try_cast(nullif(alt_support_genus_count, '') AS BIGINT)) AS genus_support "
-            "FROM strategy_support_rows WHERE variant_key <> '' AND trim(strategy) <> '' "
-            "GROUP BY variant_key, trim(strategy)"
+            "CREATE TEMP VIEW typed_support AS SELECT variant_key, trim(strategy) AS strategy, "
+            "try_cast(alt_support_ortholog_count AS BIGINT) AS ortholog_support, "
+            "try_cast(nullif(alt_support_family_count, '') AS BIGINT) AS family_support, "
+            "try_cast(nullif(site_aligned_ortholog_count, '') AS BIGINT) AS site_aligned "
+            "FROM strategy_support_rows"
         )
         invalid = int(
             connection.execute(
-                "SELECT count(*) FROM compact_support WHERE ortholog_support IS NULL "
-                "OR ortholog_support < 1 OR genus_support < 0 "
-                "OR genus_support > ortholog_support"
+                "SELECT count(*) FROM typed_support s JOIN global_annotations a USING (variant_key) "
+                "WHERE coalesce(s.strategy, '') IN ('', 'union') OR ortholog_support IS NULL OR ortholog_support < 1 "
+                "OR family_support < 0 OR family_support > ortholog_support "
+                "OR (variant_type = 'snv' AND (family_support IS NULL OR site_aligned IS NULL "
+                "OR site_aligned < ortholog_support))"
             ).fetchone()[0]
         )
         if invalid:
             raise ValueError(f"Variant strategy support contains {invalid} invalid filter scores")
+        connection.execute(
+            "CREATE TEMP TABLE compact_support AS SELECT variant_key, strategy, "
+            "max(ortholog_support) AS ortholog_support, max(family_support) AS family_support, "
+            "min(site_aligned) AS site_aligned_min, max(site_aligned) AS site_aligned_max "
+            "FROM typed_support GROUP BY variant_key, strategy"
+        )
         missing_annotations = int(
             connection.execute(
                 "SELECT count(*) FROM compact_support s "
@@ -270,7 +282,8 @@ def _build_filter_score_store(
             "CREATE TEMP TABLE filter_scores AS SELECT s.variant_key, s.strategy, "
             "a.variant_type, a.gnomad_status, s.ortholog_support, "
             "count(*) OVER (PARTITION BY s.variant_key) AS strategy_support, "
-            "s.genus_support FROM compact_support s JOIN global_annotations a USING (variant_key)"
+            "s.family_support, s.site_aligned_min, s.site_aligned_max "
+            "FROM compact_support s JOIN global_annotations a USING (variant_key)"
         )
         row_count = int(connection.execute("SELECT count(*) FROM filter_scores").fetchone()[0])
         connection.execute(
@@ -287,19 +300,21 @@ def _build_filter_score_store(
 
 
 def read_filter_score_histograms(score_path: Path) -> pd.DataFrame:
-    unions = []
-    for filter_key, _label, column in FILTER_OPTIONS:
-        eligibility = " AND genus_support IS NOT NULL" if filter_key == "genus" else ""
-        unions.append(
-            "SELECT strategy, variant_type, "
-            f"{sql_string(filter_key)} AS filter_key, {column} AS score, gnomad_status, "
-            "count(*) AS variant_count FROM read_parquet(?) WHERE "
-            f"{column} IS NOT NULL{eligibility} GROUP BY ALL"
-        )
+    # Expand metrics only after deduplicating the union, so no allele is counted twice.
+    metrics = ", ".join(f"({sql_string(key)}, {column})" for key, _label, column in FILTER_OPTIONS)
     with duckdb.connect() as connection:
         return connection.execute(
-            " UNION ALL ".join(unions),
-            [str(score_path)] * len(unions),
+            "WITH individual AS MATERIALIZED (SELECT * FROM read_parquet(?)), "
+            "combined AS (SELECT variant_key, 'union' AS strategy, variant_type, gnomad_status, "
+            "max(ortholog_support) AS ortholog_support, max(strategy_support) AS strategy_support, "
+            "max(family_support) AS family_support, min(site_aligned_min) AS site_aligned_min, "
+            "max(site_aligned_max) AS site_aligned_max FROM individual "
+            "GROUP BY variant_key, variant_type, gnomad_status), "
+            "scores AS (SELECT * FROM individual UNION ALL SELECT * FROM combined) "
+            "SELECT strategy, variant_type, filter_key, score, gnomad_status, count(*) AS variant_count "
+            f"FROM scores, LATERAL (VALUES {metrics}) AS metric(filter_key, score) "
+            "WHERE score IS NOT NULL GROUP BY ALL",
+            [str(score_path)],
         ).fetchdf()
 
 
@@ -333,16 +348,18 @@ def candidate_curves_from_histograms(histograms: pd.DataFrame) -> pd.DataFrame:
             status: np.bincount(
                 subset.loc[subset["gnomad_status"].eq(status), "score"],
                 weights=subset.loc[subset["gnomad_status"].eq(status), "variant_count"],
-                minlength=max_score + 1,
+                minlength=max_score + 2,
             )
             for status in ("found", "not_found", "lookup_failed")
         }
         cumulative = {
-            status: np.cumsum(values[::-1])[::-1]
+            status: (
+                np.cumsum(values) if filter_key == "aligned_max" else np.cumsum(values[::-1])[::-1]
+            )
             for status, values in totals.items()
         }
         total = int(subset["variant_count"].sum())
-        for threshold in range(1, max_score + 1):
+        for threshold in range(0 if filter_key in {"family", "aligned_max"} else 1, max_score + 2):
             found = int(cumulative["found"][threshold])
             not_found = int(cumulative["not_found"][threshold])
             failed = int(cumulative["lookup_failed"][threshold])
@@ -374,7 +391,8 @@ def read_clinvar_filter_scores(score_path: Path, cohort: pd.DataFrame) -> pd.Dat
         connection.register("clinvar_keys", keys)
         return connection.execute(
             "SELECT s.variant_key, s.strategy, s.variant_type, s.ortholog_support, "
-            "s.strategy_support, s.genus_support FROM read_parquet(?) s "
+            "s.strategy_support, s.family_support, s.site_aligned_min, s.site_aligned_max "
+            "FROM read_parquet(?) s "
             "JOIN clinvar_keys c USING (variant_key)",
             [str(score_path)],
         ).fetchdf()
@@ -384,98 +402,77 @@ def compute_clinvar_filter_curves(
     *,
     cohort: ConservationCohort,
     clinvar_scores: pd.DataFrame,
-    candidate_curves: pd.DataFrame,
     strategies: list[str],
     eligible_gene_ids_by_strategy: dict[str, set[str]],
 ) -> pd.DataFrame:
-    """Compute unadjusted and fixed-band OR curves without repeated cohort scans."""
-
+    """Evaluate each selected cohort at every distinct change in call membership."""
     score_maps = _clinvar_score_maps(clinvar_scores)
-    threshold_map = {
-        (str(strategy), str(variant_type), str(filter_key)): _select_clinvar_thresholds(
-            group
-        )
-        for (strategy, variant_type, filter_key), group in candidate_curves.groupby(
-            ["strategy", "variant_type", "filter_key"], sort=False
-        )
-    }
+    eligible_sets = dict(eligible_gene_ids_by_strategy)
+    eligible_sets[UNION_STRATEGY] = set().union(
+        *(eligible_sets.get(strategy, set()) for strategy in strategies)
+    )
     rows: list[dict[str, object]] = []
-    for strategy in strategies:
-        eligible = eligible_gene_ids_by_strategy.get(strategy, set())
+    for strategy in [*strategies, UNION_STRATEGY]:
+        eligible = eligible_sets.get(strategy, set())
         strategy_frame = cohort.variants[
             cohort.variants["gene_ids"].map(
                 lambda value: bool(eligible.intersection(str(value).split("|")))
             )
         ].copy()
-        for filter_key, _filter_label, score_column in FILTER_OPTIONS:
-            score_map = score_maps.get((strategy, score_column), {})
+        for filter_key, _label, score_column in FILTER_OPTIONS:
+            # NaN means not called. A real zero (no known family) remains a call.
             strategy_frame["filter_score"] = (
-                strategy_frame["variant_key"].astype(str).map(score_map).fillna(0).astype(int)
+                strategy_frame["variant_key"]
+                .astype(str)
+                .map(score_maps.get((strategy, score_column), {}))
             )
             for variant_type, _variant_label in VARIANT_TYPE_OPTIONS:
-                thresholds = threshold_map.get((strategy, variant_type, filter_key), [])
-                if not thresholds:
+                if variant_type != "snv" and filter_key in {"family", "aligned_min", "aligned_max"}:
                     continue
                 type_frame = filter_variant_type(strategy_frame, variant_type)
                 for target_context, _context_label in TARGET_CONTEXT_OPTIONS:
                     context_frame = filter_target_context(type_frame, target_context)
                     for consequence, _consequence_label in CONSEQUENCE_OPTIONS:
                         working = filter_consequence(context_frame, consequence)
+                        dimensions = dict(
+                            strategy=strategy,
+                            variant_type=variant_type,
+                            target_context=target_context,
+                            consequence=consequence,
+                            filter_key=filter_key,
+                        )
                         rows.extend(
                             _unadjusted_curve_rows(
                                 working,
-                                thresholds,
-                                strategy=strategy,
-                                variant_type=variant_type,
-                                target_context=target_context,
-                                consequence=consequence,
-                                filter_key=filter_key,
+                                _select_clinvar_thresholds(working, filter_key),
+                                **dimensions,
                             )
                         )
+                        scored = working[
+                            np.isfinite(pd.to_numeric(working[SCORE_COLUMN], errors="coerce"))
+                        ]
                         rows.extend(
                             _fixed_curve_rows(
-                                working,
-                                thresholds,
-                                strategy=strategy,
-                                variant_type=variant_type,
-                                target_context=target_context,
-                                consequence=consequence,
-                                filter_key=filter_key,
+                                scored, _select_clinvar_thresholds(scored, filter_key), **dimensions
                             )
                         )
     results = pd.DataFrame(rows)
-    if results.empty:
-        return results
-    results = results[results["status"].astype(str).eq("estimated")].reset_index(drop=True)
-    if results.empty:
-        return results
-    add_grouped_bh(
-        results,
-        "result_p",
-        "result_q",
-        [
-            "mode",
-            "filter_key",
-            "threshold",
-            "variant_type",
-            "target_context",
-            "consequence",
-        ],
-    )
+    if not results.empty:
+        add_grouped_bh(
+            results,
+            "result_p",
+            "result_q",
+            ["mode", "filter_key", "variant_type", "target_context", "consequence"],
+        )
     return results
 
 
-def _select_clinvar_thresholds(group: pd.DataFrame) -> list[int]:
-    """Keep at most 20 informative thresholds across the retention curve."""
-
-    ordered = group.sort_values("threshold")
-    if "retained_variant_count" in ordered:
-        ordered = ordered.drop_duplicates("retained_variant_count", keep="first")
-    thresholds = ordered["threshold"].astype(int).drop_duplicates().tolist()
-    if len(thresholds) <= MAX_CLINVAR_THRESHOLDS:
-        return thresholds
-    indices = np.linspace(0, len(thresholds) - 1, MAX_CLINVAR_THRESHOLDS)
-    return [thresholds[index] for index in sorted(set(np.rint(indices).astype(int)))]
+def _select_clinvar_thresholds(working: pd.DataFrame, filter_key: str) -> list[int]:
+    scores = sorted(set(working["filter_score"].dropna().astype(int)))
+    if filter_key == "aligned_max":
+        return sorted({0, *scores})
+    baseline = 0 if filter_key == "family" else 1
+    return sorted({baseline, *(score + 1 for score in scores if score >= baseline)})
 
 
 def _unadjusted_curve_rows(
@@ -483,7 +480,9 @@ def _unadjusted_curve_rows(
     thresholds: list[int],
     **dimensions: object,
 ) -> list[dict[str, object]]:
-    count_rows = _count_curves(working, thresholds)
+    count_rows = _count_curves(
+        working, thresholds, at_most=dimensions["filter_key"] == "aligned_max"
+    )
     return [
         _association_row_from_counts(
             len(working),
@@ -501,13 +500,20 @@ def _fixed_curve_rows(
     thresholds: list[int],
     **dimensions: object,
 ) -> list[dict[str, object]]:
-    scored = working[np.isfinite(pd.to_numeric(working[SCORE_COLUMN], errors="coerce"))].copy()
+    scored = working.copy()
     scored["band"] = assign_phylop_band(scored[SCORE_COLUMN])
     band_count_curves = {
-        band_key: _count_curves(scored[scored["band"] == band_key], thresholds)
+        band_key: _count_curves(
+            scored[scored["band"] == band_key],
+            thresholds,
+            at_most=dimensions["filter_key"] == "aligned_max",
+        )
         for band_key, _band_label, _range_text in PHYLOP_BANDS
     }
     rows = []
+    benign_total = int(scored["label_class"].eq("benign").sum())
+    pathogenic_total = int(scored["label_class"].eq("pathogenic").sum())
+    populated_bands = scored["band"].nunique()
     for threshold_index, threshold in enumerate(thresholds):
         strata = []
         for band_key, _band_label, _range_text in PHYLOP_BANDS:
@@ -522,13 +528,11 @@ def _fixed_curve_rows(
                     float("nan"),
                 )
             )
-        benign_total = int((scored["label_class"].astype(str) == "benign").sum())
-        pathogenic_total = int((scored["label_class"].astype(str) == "pathogenic").sum())
-        observed_total = int((scored["filter_score"].astype(int) >= threshold).sum())
+        observed_total = sum(item.benign_observed + item.pathogenic_observed for item in strata)
         reason = _estimability_reason(
             len(scored), benign_total, pathogenic_total, observed_total
         )
-        if scored["band"].nunique() < 2:
+        if populated_bands < 2:
             reason = reason or "At least two populated phyloP bands are required."
         adjusted = mantel_haenszel_adjusted(strata) if not reason else None
         if adjusted is None or not math.isfinite(adjusted.cmh_p):
@@ -595,34 +599,33 @@ def _association_row_from_counts(
 def _count_curves(
     working: pd.DataFrame,
     thresholds: list[int],
+    *,
+    at_most: bool = False,
 ) -> list[tuple[int, int, int, int]]:
-    """Return 2x2 counts for all thresholds from two cumulative histograms."""
-
+    """Count selected calls; absent calls never pass even an upper-bound filter."""
     if not thresholds:
         return []
-    max_score = max(max(thresholds), int(working["filter_score"].max()) if len(working) else 0)
     labels = working["label_class"].astype(str)
-    scores = working["filter_score"].astype(int)
+    scores = working["filter_score"]
+    maximum = max(max(thresholds), int(scores.max()) if scores.notna().any() else 0)
     observed_by_label = {}
     totals = {}
     for label in ("benign", "pathogenic"):
-        values = scores[labels.eq(label)].to_numpy(dtype=int)
-        totals[label] = int(len(values))
-        histogram = np.bincount(values, minlength=max_score + 1)
-        observed_by_label[label] = np.cumsum(histogram[::-1])[::-1]
-    rows = []
-    for threshold in thresholds:
-        benign_observed = int(observed_by_label["benign"][threshold])
-        pathogenic_observed = int(observed_by_label["pathogenic"][threshold])
-        rows.append(
-            (
-                benign_observed,
-                pathogenic_observed,
-                totals["benign"] - benign_observed,
-                totals["pathogenic"] - pathogenic_observed,
-            )
+        totals[label] = int(labels.eq(label).sum())
+        values = scores[labels.eq(label) & scores.notna()].to_numpy(dtype=int)
+        histogram = np.bincount(values, minlength=maximum + 1)
+        observed_by_label[label] = (
+            np.cumsum(histogram) if at_most else np.cumsum(histogram[::-1])[::-1]
         )
-    return rows
+    return [
+        (
+            int(observed_by_label["benign"][t]),
+            int(observed_by_label["pathogenic"][t]),
+            totals["benign"] - int(observed_by_label["benign"][t]),
+            totals["pathogenic"] - int(observed_by_label["pathogenic"][t]),
+        )
+        for t in thresholds
+    ]
 
 
 def _estimability_reason(
@@ -644,12 +647,15 @@ def _clinvar_score_maps(
     scores: pd.DataFrame,
 ) -> dict[tuple[str, str], dict[str, int]]:
     maps: dict[tuple[str, str], dict[str, int]] = {}
-    for strategy, group in scores.groupby("strategy", sort=False):
-        for _filter_key, _label, column in FILTER_OPTIONS:
-            valid = group.dropna(subset=[column])
+    for _filter_key, _label, column in FILTER_OPTIONS:
+        valid = scores.dropna(subset=[column])
+        for strategy, group in valid.groupby("strategy", sort=False):
             maps[(str(strategy), column)] = dict(
-                zip(valid["variant_key"].astype(str), valid[column].astype(int))
+                zip(group["variant_key"], group[column].astype(int))
             )
+        grouped = valid.groupby("variant_key")[column]
+        union = grouped.min() if column == "site_aligned_min" else grouped.max()
+        maps[(UNION_STRATEGY, column)] = union.astype(int).to_dict()
     return maps
 
 

@@ -30,13 +30,14 @@ from analytics.derivations.ortholog_evidence import (
     write_ortholog_evidence_summary,
 )
 from analytics.derivations.support import (
+    ALT_SUPPORT_FAMILY_COLUMN,
     VARIANT_STRATEGY_SUPPORT_FIELDS,
     EventOrthologSupportStream,
     ExactSupportSpool,
     aggregate_exact_support,
     build_gnomad_statuses,
     build_variant_strategy_support,
-    load_snv_alt_genus_support,
+    load_snv_alt_family_support,
     merge_ortholog_evidence,
 )
 from analytics.derivations.taxonomy import (
@@ -54,8 +55,8 @@ from analytics.io.variant_source import (
 from genomics.variants import parse_variant_key, variant_aggregate_key
 
 
-CACHE_SCHEMA_VERSION = 6
-PARTITION_CACHE_SCHEMA_VERSION = 1
+CACHE_SCHEMA_VERSION = 7
+PARTITION_CACHE_SCHEMA_VERSION = 2
 CACHE_DIRNAME = "annotation_support"
 VARIANT_SUPPORT_FILENAME = "variant_strategy_support.tsv.gz"
 ORTHOLOG_EVIDENCE_FILENAME = "ortholog_evidence_summary.tsv.gz"
@@ -90,6 +91,7 @@ SNV_ALT_TAXONOMIC_SUPPORT_FIELDS = [
     "ref",
     "alt",
     *COUNT_KEYS,
+    ALT_SUPPORT_FAMILY_COLUMN,
 ]
 
 
@@ -661,7 +663,7 @@ def _build_partition_support(
     support_rows, missing_key_count = build_variant_strategy_support(
         aggregates,
         load_snv_site_depth(site_depth_path),
-        load_snv_alt_genus_support(alt_support_path),
+        load_snv_alt_family_support(alt_support_path),
     )
     if missing_key_count:
         raise ValueError(
@@ -1018,6 +1020,11 @@ def _alt_taxonomic_support_row(
     )
     if counts["all__ortholog"] < 1:
         return None
+    families = {
+        profiles[row["tax_id"]].family_id
+        for row in support_rows
+        if row.get("tax_id") and profiles[row["tax_id"]].family_id
+    }
     return {
         "gene_id": event_row["gene_id"],
         "strategy": event_row["strategy"],
@@ -1025,6 +1032,7 @@ def _alt_taxonomic_support_row(
         "ref": ref,
         "alt": alt,
         **counts,
+        ALT_SUPPORT_FAMILY_COLUMN: len(families),
     }
 
 

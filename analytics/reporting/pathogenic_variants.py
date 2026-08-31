@@ -12,7 +12,6 @@ import plotly.express as px
 import plotly.graph_objects as go
 
 from analytics.analyses.pathogenic_variants import PathogenicVariantAnalysis
-from genomics.clinvar import PATHOGENIC_SUBTYPE_ORDER
 from .components import (
     compact_figure,
     dataframe_records,
@@ -30,104 +29,40 @@ from .config import (
 from .variant_profile import group_consequence_counts
 
 
-SUBTYPE_COLORS = {
-    "Pathogenic": "#b2182b",
-    "Likely pathogenic": "#ef8a62",
-    "Pathogenic / likely pathogenic": "#7b3294",
-    "P/LP": "#666666",
-}
-
-
-def build_pathogenic_variant_sections(
-    analysis: PathogenicVariantAnalysis,
-) -> list[str]:
+def build_pathogenic_variant_sections(analysis: PathogenicVariantAnalysis) -> list[str]:
     variants = analysis.variants
     if variants.empty:
-        return [
-            "<h2>Pathogenic ClinVar Hits</h2>",
-            "<p>No candidate variants with an unambiguous pathogenic or likely "
-            "pathogenic ClinVar classification were found.</p>",
-        ]
-
+        return ["<h2>Pathogenic ClinVar Hits</h2>", "<p>No P/LP candidate alleles were found.</p>"]
     stars = pd.to_numeric(variants["clinvar_review_stars"], errors="coerce")
+    named = analysis.condition_counts
+    named = named[named["cohort"].eq("gaph") & named["variant_count"].gt(0)]
     sections = [
         "<h2>Pathogenic ClinVar Hits</h2>",
-        "<p class=\"lead\">This tab characterizes exact normalized candidate alleles "
-        "classified by ClinVar as pathogenic or likely pathogenic. Counts in the review-star "
-        "and disease panels are unique alleles per strategy; consequence counts are "
-        "allele–target-gene observations.</p>",
         metric_cards(
             [
                 ("Unique P/LP alleles", format_int(len(variants))),
                 ("With ≥2 review stars", format_int(stars.ge(2).sum())),
-                (
-                    "Named conditions",
-                    format_int(
-                        analysis.condition_counts["condition"].nunique()
-                        if not analysis.condition_counts.empty
-                        else 0
-                    ),
-                ),
-                ("SNV support rows plotted", format_int(len(analysis.evolution_rows))),
+                ("Named conditions", format_int(named["condition_key"].nunique())),
             ]
         ),
     ]
-
-    star_figure = pathogenic_star_figure(analysis.star_counts)
-    if star_figure is not None:
-        sections.extend(["<h3>ClinVar assertion strength</h3>", fig_html(star_figure)])
-
-    consequence_figure = pathogenic_consequence_figure(analysis.consequence_counts)
-    if consequence_figure is not None:
-        sections.extend(["<h3>Molecular effect</h3>", fig_html(consequence_figure)])
-
-    sections.append("<h3>Why could a P/LP allele pass the evolutionary filter?</h3>")
-    evolution_figure = pathogenic_evolution_figure(analysis.evolution_rows)
-    if evolution_figure is None:
-        sections.append(
-            "<p>No P/LP SNV had both a phyloP100way score and an aligned-site denominator. "
-            "Indels remain in the consequence analysis and detail table, but no denominator "
-            "is inferred for them.</p>"
-        )
-    else:
+    for title, figure in (
+        ("ClinVar review stars", pathogenic_star_figure(analysis.star_counts)),
+        ("Molecular effect", pathogenic_consequence_figure(analysis.consequence_counts)),
+        ("Exact ALT support", pathogenic_support_figure(analysis.support_rows)),
+    ):
         sections.extend(
             [
-                "<p class=\"lead\">Each point is one P/LP SNV × target gene × strategy. "
-                "The y-axis is the exact ALT-supporting ortholog fraction among orthologs "
-                "aligned at that site; point size is the number of supporting genera. "
-                "This separates weak evolutionary constraint from sparse or concentrated "
-                "ortholog support.</p>",
-                fig_html(evolution_figure),
+                f"<h3>{title}</h3>",
+                fig_html(figure) if figure is not None else "<p>No eligible observations.</p>",
             ]
         )
-
-    sections.append("<h3>Associated conditions</h3>")
-    condition_figure = pathogenic_condition_figure(analysis.condition_counts)
-    if condition_figure is None:
-        sections.append(
-            "<p>No named ClinVar conditions were available. <code>not provided</code> and "
-            "<code>not specified</code> are intentionally excluded.</p>"
-        )
-    else:
-        sections.extend(
-            [
-                "<p class=\"lead\">Top 15 ClinVar conditions for the selected strategy, "
-                "ranked by unique P/LP alleles. Broad disease categories are not inferred. "
-                "Bars retain the P versus LP distinction.</p>",
-                fig_html(condition_figure),
-            ]
-        )
-
     sections.extend(
         [
+            "<h3>Associated conditions</h3>",
+            pathogenic_condition_view(analysis.condition_counts),
             "<h3>Variant details</h3>",
-            "<p class=\"lead\">All P/LP alleles are available below and in the compressed "
-            "TSV artifact. Ortholog-support mean/min/max summarize target-gene × strategy "
-            "rows. Sorting is stable: after the selected primary and secondary columns, "
-            "the normalized variant key is used as the final tie-breaker.</p>",
-            "<p><a download href=\"../derived/"
-            f"{quote(analysis.variants_path.name)}\">Download complete P/LP TSV</a> "
-            f"(<code>{html.escape(str(analysis.variants_path))}</code>)</p>",
+            f'<p><a download href="../derived/{quote(analysis.variants_path.name)}">Download complete P/LP TSV</a></p>',
             pathogenic_variant_table_html(variants),
         ]
     )
@@ -143,16 +78,6 @@ def pathogenic_star_figure(counts: pd.DataFrame):
     shown.loc[~shown["Review stars"].isin({"0", "1", "2", "3", "4"}), "Review stars"] = (
         "Unmapped"
     )
-    subtype_order = [
-        subtype
-        for subtype in PATHOGENIC_SUBTYPE_ORDER
-        if subtype in set(shown["pathogenic_subtype"])
-    ]
-    subtype_order.extend(
-        subtype
-        for subtype in shown["pathogenic_subtype"].unique()
-        if subtype not in subtype_order
-    )
     present_stars = [star for star in REVIEW_STAR_ORDER if star in set(shown["Review stars"])]
     strategy_order = (
         shown.groupby("Strategy")["variant_count"].sum().sort_values(ascending=False).index.tolist()
@@ -162,21 +87,17 @@ def pathogenic_star_figure(counts: pd.DataFrame):
         x="Strategy",
         y="variant_count",
         color="Review stars",
-        facet_col="pathogenic_subtype",
         barmode="stack",
-        title="P/LP alleles by ClinVar review stars and assertion subtype",
+        title="P/LP alleles by ClinVar review stars",
         category_orders={
             "Strategy": strategy_order,
             "Review stars": present_stars,
-            "pathogenic_subtype": subtype_order,
         },
         color_discrete_map=REVIEW_STAR_COLORS,
         labels={
             "variant_count": "Unique P/LP alleles",
-            "pathogenic_subtype": "ClinVar subtype",
         },
     )
-    figure.for_each_annotation(lambda annotation: annotation.update(text=annotation.text.split("=")[-1]))
     compact_figure(figure, height=390)
     return figure
 
@@ -209,172 +130,130 @@ def pathogenic_consequence_figure(raw_counts: pd.DataFrame):
     return figure
 
 
-def pathogenic_evolution_figure(rows: pd.DataFrame):
+def pathogenic_support_figure(rows: pd.DataFrame):
     if rows.empty:
         return None
-    strategies = sorted(rows["strategy"].astype(str).unique(), key=strategy_label)
-    first_strategy = strategies[0]
     figure = go.Figure()
-    trace_strategies: list[str] = []
-    max_genera = pd.to_numeric(
-        rows["alt_support_genus_count"], errors="coerce"
-    ).max()
-    maximum_size = max(1.0, float(max_genera)) if pd.notna(max_genera) else 1.0
-    size_ref = 2.0 * maximum_size / 22.0**2
-    for strategy in strategies:
-        strategy_rows = rows[rows["strategy"].astype(str).eq(strategy)]
-        subtypes = [
-            subtype
-            for subtype in PATHOGENIC_SUBTYPE_ORDER
-            if subtype in set(strategy_rows["pathogenic_subtype"])
-        ]
-        subtypes.extend(
-            subtype
-            for subtype in strategy_rows["pathogenic_subtype"].unique()
-            if subtype not in subtypes
+    for strategy in sorted(rows["strategy"].unique(), key=strategy_label):
+        values = rows[rows["strategy"].eq(strategy)]
+        counts = values["alt_support_ortholog_count"].to_numpy(dtype=int)
+        common = dict(
+            y=np.log10(counts),
+            name=strategy_label(strategy),
+            customdata=values[
+                [
+                    "variant_key",
+                    "gene_id",
+                    "alt_support_ortholog_count",
+                    "site_aligned_ortholog_count",
+                    "alt_support_family_count",
+                ]
+            ],
+            marker_color="#356d8f",
+            line_color="#356d8f",
+            hovertemplate=(
+                "%{customdata[0]}<br>Gene: %{customdata[1]}<br>Supporting orthologs: "
+                "%{customdata[2]}<br>Site-aligned orthologs: %{customdata[3]}<br>"
+                "Supporting families: %{customdata[4]}<extra>%{fullData.name}</extra>"
+            ),
         )
-        for subtype in subtypes:
-            values = strategy_rows[strategy_rows["pathogenic_subtype"].eq(subtype)]
-            genera = pd.to_numeric(values["alt_support_genus_count"], errors="coerce").fillna(1)
+        if len(set(counts)) >= 3:
             figure.add_trace(
-                go.Scatter(
-                    x=values["phylop100way"],
-                    y=values["alt_support_fraction"],
-                    mode="markers",
-                    name=str(subtype),
-                    legendgroup=str(subtype),
-                    visible=strategy == first_strategy,
-                    marker={
-                        "size": np.maximum(genera.to_numpy(dtype=float), 1),
-                        "sizemode": "area",
-                        "sizeref": size_ref,
-                        "sizemin": 5,
-                        "color": SUBTYPE_COLORS.get(str(subtype), "#666666"),
-                        "opacity": 0.72,
-                    },
-                    customdata=values[
-                        [
-                            "variant_key",
-                            "gene_id",
-                            "alt_support_ortholog_count",
-                            "site_aligned_ortholog_count",
-                            "alt_support_genus_count",
-                        ]
-                    ],
-                    hovertemplate=(
-                        "%{customdata[0]}<br>Gene: %{customdata[1]}<br>"
-                        "phyloP100way: %{x:.3f}<br>Exact ALT support: "
-                        "%{customdata[2]:.0f}/%{customdata[3]:.0f} (%{y:.1%})<br>"
-                        "Supporting genera: %{customdata[4]:.0f}<extra>%{fullData.name}</extra>"
-                    ),
+                go.Violin(
+                    **common,
+                    points="all",
+                    jitter=0.25,
+                    pointpos=0,
+                    box_visible=True,
+                    spanmode="hard",
+                    hoveron="points",
                 )
             )
-            trace_strategies.append(strategy)
-    buttons = [
-        {
-            "label": strategy_label(strategy),
-            "method": "update",
-            "args": [
-                {"visible": [owner == strategy for owner in trace_strategies]},
-                {"title": f"Conservation and exact ortholog support — {strategy_label(strategy)}"},
-            ],
-        }
-        for strategy in strategies
+        else:
+            figure.add_trace(go.Box(**common, boxpoints="all", jitter=0.25, pointpos=0))
+    maximum = int(rows["alt_support_ortholog_count"].max())
+    ticks = [
+        multiplier * 10**power
+        for power in range(len(str(maximum)))
+        for multiplier in (1, 2, 5)
+        if multiplier * 10**power <= maximum
     ]
     figure.update_layout(
-        title=f"Conservation and exact ortholog support — {strategy_label(first_strategy)}",
-        xaxis_title="phyloP100way score",
-        yaxis_title="Exact ALT-supporting ortholog fraction",
-        yaxis_tickformat=".0%",
-        updatemenus=[
-            {
-                "buttons": buttons,
-                "direction": "down",
-                "x": 1.0,
-                "xanchor": "right",
-                "y": 1.18,
-                "yanchor": "top",
-            }
-        ],
+        showlegend=False,
+        yaxis=dict(
+            title="Supporting orthologs (log scale)",
+            tickmode="array",
+            tickvals=np.log10(ticks).tolist(),
+            ticktext=[str(value) for value in ticks],
+        ),
     )
-    compact_figure(figure, height=440, show_x_title=True)
+    compact_figure(figure, height=440)
     return figure
 
 
-def pathogenic_condition_figure(counts: pd.DataFrame):
+def pathogenic_condition_view(counts: pd.DataFrame) -> str:
     if counts.empty:
-        return None
-    strategies = sorted(counts["strategy"].astype(str).unique(), key=strategy_label)
-    first_strategy = strategies[0]
-    figure = go.Figure()
-    trace_strategies: list[str] = []
-    condition_orders: dict[str, list[str]] = {}
-    for strategy in strategies:
-        values = counts[counts["strategy"].astype(str).eq(strategy)]
-        top = (
-            values.groupby("condition")["variant_count"]
-            .sum()
-            .sort_values(ascending=False, kind="mergesort")
-            .head(15)
-        )
-        conditions = top.sort_values().index.tolist()
-        condition_orders[strategy] = conditions
-        for subtype in PATHOGENIC_SUBTYPE_ORDER:
-            subtype_values = (
-                values[values["pathogenic_subtype"].eq(subtype)]
-                .set_index("condition")["variant_count"]
-                .reindex(conditions, fill_value=0)
-            )
-            if not subtype_values.any():
-                continue
-            figure.add_trace(
-                go.Bar(
-                    x=subtype_values.to_numpy(),
-                    y=conditions,
-                    orientation="h",
-                    name=subtype,
-                    legendgroup=subtype,
-                    marker_color=SUBTYPE_COLORS[subtype],
-                    visible=strategy == first_strategy,
-                    hovertemplate="%{y}<br>Unique alleles: %{x:,}<extra>%{fullData.name}</extra>",
-                )
-            )
-            trace_strategies.append(strategy)
-    if not figure.data:
-        return None
-    buttons = [
+        return "<p>No ClinVar condition data.</p>"
+    strategies = counts.loc[counts["cohort"].eq("gaph"), "strategy"].drop_duplicates().tolist()
+    payload = json.dumps(
         {
-            "label": strategy_label(strategy),
-            "method": "update",
-            "args": [
-                {"visible": [owner == strategy for owner in trace_strategies]},
-                {
-                    "title": f"Top ClinVar conditions — {strategy_label(strategy)}",
-                    "yaxis.categoryorder": "array",
-                    "yaxis.categoryarray": condition_orders[strategy],
-                },
-            ],
-        }
-        for strategy in strategies
-    ]
-    figure.update_layout(
-        barmode="stack",
-        title=f"Top ClinVar conditions — {strategy_label(first_strategy)}",
-        xaxis_title="Unique P/LP alleles",
-        yaxis={"categoryorder": "array", "categoryarray": condition_orders[first_strategy]},
-        updatemenus=[
-            {
-                "buttons": buttons,
-                "direction": "down",
-                "x": 1.0,
-                "xanchor": "right",
-                "y": 1.18,
-                "yanchor": "top",
-            }
-        ],
+            "rows": dataframe_records(counts),
+            "strategies": [{"key": key, "label": strategy_label(key)} for key in strategies],
+        },
+        separators=(",", ":"),
+        allow_nan=False,
+    ).replace("</", "<\\/")
+    return (
+        """
+    <div class="analysis-controls" id="pathogenic-conditions-controls">
+      <label>Strategy<select data-role="strategy"></select></label>
+      <label>Variant type<select data-role="type"><option value="all">SNV + INDEL</option><option value="snv">SNV</option><option value="indel">INDEL</option></select></label>
+      <label>ClinVar background<select data-role="background"><option value="target">Matching target regions</option><option value="global">Whole GRCh38 VCF</option></select></label>
+      <label>Find condition<input data-role="search" type="search" placeholder="Condition name"></label>
+    </div>
+    <div id="pathogenic-conditions-plot" class="analysis-plot"></div>
+    <script>(() => {
+      const config = """
+        + payload
+        + """;
+      const controls = document.getElementById('pathogenic-conditions-controls');
+      const select = role => controls.querySelector('[data-role="' + role + '"]');
+      config.strategies.forEach(item => select('strategy').add(new Option(item.label, item.key)));
+      function render() {
+        const rows = config.rows.filter(row => row.variant_type === select('type').value);
+        const gaph = rows.filter(row => row.cohort === 'gaph' && row.strategy === select('strategy').value);
+        const background = rows.filter(row => row.cohort === select('background').value &&
+          (row.cohort === 'global' || row.strategy === select('strategy').value));
+        const a = new Map(gaph.map(row => [row.condition_key, row]));
+        const b = new Map(background.map(row => [row.condition_key, row]));
+        const fraction = row => row && row.total_variant_count ? row.variant_count / row.total_variant_count : 0;
+        const query = select('search').value.trim().toLowerCase();
+        const keys = [...new Set([...a.keys(), ...b.keys()])].filter(key => key &&
+          (a.get(key) || b.get(key)).condition.toLowerCase().includes(query))
+          .sort((x, y) => Math.max(fraction(a.get(y)), fraction(b.get(y))) - Math.max(fraction(a.get(x)), fraction(b.get(x))))
+          .slice(0, 15).reverse();
+        const traces = [[a, gaph, 'GAPH', '#356d8f'], [b, background, 'ClinVar', '#9ca3af']].map(([mapping, group, name, color]) => ({
+          type: 'bar', orientation: 'h', name, marker: {color},
+          y: keys.map(key => (a.get(key) || b.get(key)).condition),
+          x: keys.map(key => fraction(mapping.get(key))),
+          customdata: keys.map(key => [mapping.get(key)?.variant_count || 0, group[0]?.total_variant_count || 0,
+                                      group[0]?.named_variant_count || 0]),
+          hovertemplate: '%{y}<br>Alleles: %{customdata[0]} / %{customdata[1]}<br>Fraction: %{x:.2%}<br>Alleles with named conditions: %{customdata[2]}<extra>%{fullData.name}</extra>',
+        }));
+        Plotly.react('pathogenic-conditions-plot', traces, {
+          template: 'plotly_white', barmode: 'group', height: 600,
+          margin: {l: 300, r: 25, t: 25, b: 60},
+          xaxis: {title: {text: 'Fraction of P/LP alleles'}, tickformat: '.0%', rangemode: 'tozero'},
+          yaxis: {automargin: true},
+          annotations: keys.length ? [] : [{text: 'No matching named conditions.', x: 0.5, y: 0.5, xref: 'paper', yref: 'paper', showarrow: false}],
+        }, {responsive: true});
+      }
+      controls.querySelectorAll('select').forEach(item => item.addEventListener('change', render));
+      select('search').addEventListener('input', render);
+      render();
+    })();</script>
+    """
     )
-    compact_figure(figure, height=520, show_x_title=True)
-    return figure
 
 
 def pathogenic_variant_table_html(variants: pd.DataFrame) -> str:
@@ -401,7 +280,6 @@ def pathogenic_variant_table_html(variants: pd.DataFrame) -> str:
             "VEP transcript": variants["vep_transcript_id"],
             "MANE Select": variants["vep_mane_select"],
             "VEP status": variants["vep_status"],
-            "phyloP100way": variants["phylop100way"],
             "gnomAD AF": variants["gnomad_af"],
             "Mean ortholog support": variants["support_ortholog_mean"],
             "Min ortholog support": variants["support_ortholog_min"],
@@ -417,7 +295,6 @@ def pathogenic_variant_table_html(variants: pd.DataFrame) -> str:
     )
     numeric_columns = {
         "SCVs",
-        "phyloP100way",
         "gnomAD AF",
         "Mean ortholog support",
         "Min ortholog support",

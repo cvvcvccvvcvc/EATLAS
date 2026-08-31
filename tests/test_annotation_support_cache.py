@@ -401,7 +401,7 @@ def test_annotation_support_cache_reproduces_current_report_contract(tmp_path: P
     cache_manifest = json.loads(
         (analytics_dir / "annotation_support" / "manifest.json").read_text()
     )
-    assert cache_manifest["schema_version"] == 6
+    assert cache_manifest["schema_version"] == 7
     assert cache_manifest["exact_support"] == {
         "canonical_variant_count": 4,
         "canonical_support_edge_count": 8,
@@ -419,7 +419,7 @@ def test_annotation_support_cache_reproduces_current_report_contract(tmp_path: P
             "strategy": "s1",
             "alt_support_row_count": "3",
             "alt_support_ortholog_count": "2",
-            "alt_support_genus_count": "1",
+            "alt_support_family_count": "2",
             "site_aligned_ortholog_count": "3",
         },
         {
@@ -428,7 +428,7 @@ def test_annotation_support_cache_reproduces_current_report_contract(tmp_path: P
             "strategy": "s1",
             "alt_support_row_count": "1",
             "alt_support_ortholog_count": "1",
-            "alt_support_genus_count": "1",
+            "alt_support_family_count": "1",
             "site_aligned_ortholog_count": "3",
         },
         {
@@ -437,7 +437,7 @@ def test_annotation_support_cache_reproduces_current_report_contract(tmp_path: P
             "strategy": "s1",
             "alt_support_row_count": "2",
             "alt_support_ortholog_count": "2",
-            "alt_support_genus_count": "2",
+            "alt_support_family_count": "1",
             "site_aligned_ortholog_count": "3",
         },
         {
@@ -446,7 +446,7 @@ def test_annotation_support_cache_reproduces_current_report_contract(tmp_path: P
             "strategy": "s1",
             "alt_support_row_count": "4",
             "alt_support_ortholog_count": "2",
-            "alt_support_genus_count": "",
+            "alt_support_family_count": "",
             "site_aligned_ortholog_count": "",
         },
     ]

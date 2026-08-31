@@ -23,7 +23,7 @@ def test_pathogenic_subtype_preserves_low_penetrance_flag() -> None:
     )
 
 
-def test_pathogenic_analysis_builds_conditions_and_snv_support_fraction(
+def test_pathogenic_analysis_builds_condition_backgrounds_and_unique_snv_support(
     tmp_path: Path,
 ) -> None:
     common = {
@@ -83,7 +83,7 @@ def test_pathogenic_analysis_builds_conditions_and_snv_support_fraction(
                 "strategy": "s1",
                 "alt_support_row_count": 4,
                 "alt_support_ortholog_count": 4,
-                "alt_support_genus_count": 3,
+                "alt_support_family_count": 3,
                 "site_aligned_ortholog_count": 10,
             },
             {
@@ -92,7 +92,7 @@ def test_pathogenic_analysis_builds_conditions_and_snv_support_fraction(
                 "strategy": "s1",
                 "alt_support_row_count": 2,
                 "alt_support_ortholog_count": 2,
-                "alt_support_genus_count": 1,
+                "alt_support_family_count": 1,
                 "site_aligned_ortholog_count": 8,
             },
         ]
@@ -110,26 +110,39 @@ def test_pathogenic_analysis_builds_conditions_and_snv_support_fraction(
             {
                 "variant_key": "1:100:A>G",
                 "clinvar_disease_names": "Disease_one|not_provided",
+                "variant_type": "snv",
+                "gene_ids": "1",
+                "label_class": "pathogenic",
                 "clinvar_disease_ids": "MONDO:1|.",
             },
             {
                 "variant_key": "1:200:A>AT",
                 "clinvar_disease_names": "Disease_two",
+                "variant_type": "indel",
+                "gene_ids": "2",
+                "label_class": "pathogenic",
                 "clinvar_disease_ids": "OMIM:2,MedGen:C2",
             },
         ]
     )
-    conservation = pd.DataFrame(
-        [
-            {"variant_key": "1:100:A>G", "phyloP100way": 2.5},
-            {"variant_key": "1:200:A>AT", "phyloP100way": 1.0},
-        ]
+    vcf = tmp_path / "clinvar.vcf"
+    vcf.write_text(
+        "##fileformat=VCFv4.2\n#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n"
+        "1\t100\t1\tA\tG\t.\t.\tCLNSIG=Pathogenic;CLNDN=Disease_one;CLNDISDB=MONDO:1\n"
+        "1\t200\t2\tA\tAT\t.\t.\tCLNSIG=Likely_pathogenic;CLNDN=Disease_two;CLNDISDB=OMIM:2,MedGen:C2\n"
     )
+    support_rows.loc[len(support_rows)] = {
+        **support_rows.iloc[0].to_dict(),
+        "gene_id": "3",
+        "alt_support_ortholog_count": 3,
+    }
 
     analysis = build_pathogenic_variant_analysis(
         summary=summary,
         clinvar_universe=universe,
-        conservation_cohort=conservation,
+        clinvar_vcf=vcf,
+        condition_cache_dir=tmp_path / "cache",
+        eligible_gene_ids_by_strategy={"s1": {"1", "2"}, "s2": {"1"}},
         analytics_dir=tmp_path,
     )
 
@@ -139,12 +152,95 @@ def test_pathogenic_analysis_builds_conditions_and_snv_support_fraction(
     assert bool(first["low_penetrance"])
     assert first["conditions"] == "Disease one"
     assert first["condition_ids"] == "MONDO:1"
-    assert set(analysis.condition_counts["condition"]) == {"Disease one", "Disease two"}
-    assert len(analysis.evolution_rows) == 1
-    assert analysis.evolution_rows.iloc[0]["alt_support_fraction"] == 0.4
+    assert set(
+        analysis.condition_counts.loc[analysis.condition_counts["variant_count"].gt(0), "condition"]
+    ) == {"Disease one", "Disease two"}
+    assert len(analysis.support_rows) == 1
+    assert analysis.support_rows.iloc[0]["alt_support_ortholog_count"] == 4
+    assert analysis.support_rows.iloc[0]["gene_id"] == "1"
+    assert "phylop100way" not in analysis.variants
     exported = pd.read_csv(analysis.variants_path, sep="\t", compression="gzip")
     assert len(exported) == 2
     rendered = "".join(build_pathogenic_variant_sections(analysis))
     assert "Pathogenic ClinVar Hits" in rendered
     assert "Primary sort" in rendered
     assert "Disease one" in rendered
+    assert "SNV support rows plotted" not in rendered
+    assert "phyloP100way" not in rendered
+    from analytics.reporting.document import render_html
+
+    (tmp_path / "pathogenic_smoke.html").write_text(
+        render_html(
+            [
+                (
+                    "pathogenic-clinvar-hits",
+                    "Pathogenic ClinVar Hits",
+                    build_pathogenic_variant_sections(analysis),
+                ),
+            ]
+        )
+    )
+
+
+def test_clinvar_conditions_deduplicate_alleles_identifiers_and_preserve_denominators(
+    tmp_path: Path,
+) -> None:
+    from analytics.analyses.clinvar_conditions import (
+        global_condition_distribution,
+        parse_conditions,
+    )
+
+    vcf = tmp_path / "clinvar.vcf"
+    vcf.write_text(
+        "##fileformat=VCFv4.2\n#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n"
+        + "".join(
+            f"1\t{position}\t1\tA\tG\t.\t.\tCLNSIG={label};CLNDN={names};CLNDISDB={ids}\n"
+            for position, label, names, ids in [
+                (10, "Pathogenic", "Disease|Disease_alias", "MedGen:C1|MedGen:C1"),
+                (10, "Pathogenic", "Disease", "MedGen:C1"),
+                (20, "Likely_pathogenic", "not_provided", "."),
+                (30, "Benign", "Other", "MedGen:C2"),
+                (40, "Pathogenic", "Other", "MedGen:C2"),
+                (40, "Benign", "Other", "MedGen:C2"),
+            ]
+        )
+    )
+    counts = global_condition_distribution(vcf, tmp_path / "cache")
+    snv = counts[counts["variant_type"].eq("snv")]
+    assert len(snv) == 1
+    assert snv.iloc[0]["variant_count"] == 1
+    assert snv.iloc[0]["total_variant_count"] == 2
+    assert snv.iloc[0]["named_variant_count"] == 1
+    pd.testing.assert_frame_equal(counts, global_condition_distribution(vcf, tmp_path / "cache"))
+    assert len(parse_conditions("A|B", "MedGen:C1|MedGen:C1")) == 1
+
+
+def test_pathogenic_violin_displays_counts_on_log_ticks(tmp_path: Path) -> None:
+    import numpy as np
+    from analytics.reporting.pathogenic_variants import pathogenic_support_figure
+    from analytics.reporting.document import render_html
+    from analytics.reporting.components import fig_html
+
+    rows = pd.DataFrame(
+        [
+            {
+                "variant_key": f"1:{100 + index}:A>G",
+                "gene_id": "1",
+                "strategy": strategy,
+                "alt_support_ortholog_count": count,
+                "alt_support_family_count": 1,
+                "site_aligned_ortholog_count": 400,
+            }
+            for strategy in ["s1", "s2"]
+            for index, count in enumerate([1, 1, 1, 2, 2, 3, 4, 24, 330])
+        ]
+    )
+    figure = pathogenic_support_figure(rows)
+    assert all(trace.type == "violin" for trace in figure.data)
+    assert figure.data[0].marker.color == figure.data[1].marker.color
+    assert list(figure.layout.yaxis.ticktext)[:3] == ["1", "2", "5"]
+    assert np.isclose(figure.data[0].y[-1], np.log10(330))
+    assert figure.data[0].customdata[-1][2] == 330
+    (tmp_path / "violin_smoke.html").write_text(
+        render_html([("support", "Exact ALT support", [fig_html(figure)])])
+    )
