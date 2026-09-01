@@ -49,7 +49,7 @@ def build_pathogenic_variant_sections(analysis: PathogenicVariantAnalysis) -> li
     for title, figure in (
         ("ClinVar review stars", pathogenic_star_figure(analysis.star_counts)),
         ("Molecular effect", pathogenic_consequence_figure(analysis.consequence_counts)),
-        ("Exact ALT support", pathogenic_support_figure(analysis.support_rows)),
+        ("Supporting orthologs among P/LP hits", pathogenic_support_figure(analysis.support_rows)),
     ):
         sections.extend(
             [
@@ -212,6 +212,8 @@ def pathogenic_condition_view(counts: pd.DataFrame) -> str:
       <label>Find condition<input data-role="search" type="search" placeholder="Condition name"></label>
     </div>
     <div id="pathogenic-conditions-plot" class="analysis-plot"></div>
+    <h4>ClinVar condition distribution</h4>
+    <div id="pathogenic-clinvar-distribution-plot" class="analysis-plot"></div>
     <script>(() => {
       const config = """
         + payload
@@ -228,18 +230,21 @@ def pathogenic_condition_view(counts: pd.DataFrame) -> str:
         const b = new Map(background.map(row => [row.condition_key, row]));
         const fraction = row => row && row.total_variant_count ? row.variant_count / row.total_variant_count : 0;
         const query = select('search').value.trim().toLowerCase();
+        const matches = (mapping, key) => key && mapping.get(key).condition.toLowerCase().includes(query);
         const keys = [...new Set([...a.keys(), ...b.keys()])].filter(key => key &&
           (a.get(key) || b.get(key)).condition.toLowerCase().includes(query))
           .sort((x, y) => Math.max(fraction(a.get(y)), fraction(b.get(y))) - Math.max(fraction(a.get(x)), fraction(b.get(x))))
           .slice(0, 15).reverse();
-        const traces = [[a, gaph, 'GAPH', '#356d8f'], [b, background, 'ClinVar', '#9ca3af']].map(([mapping, group, name, color]) => ({
+        const trace = (mapping, group, name, color, shownKeys) => ({
           type: 'bar', orientation: 'h', name, marker: {color},
-          y: keys.map(key => (a.get(key) || b.get(key)).condition),
-          x: keys.map(key => fraction(mapping.get(key))),
-          customdata: keys.map(key => [mapping.get(key)?.variant_count || 0, group[0]?.total_variant_count || 0,
+          y: shownKeys.map(key => mapping.get(key)?.condition || a.get(key)?.condition || b.get(key)?.condition),
+          x: shownKeys.map(key => fraction(mapping.get(key))),
+          customdata: shownKeys.map(key => [mapping.get(key)?.variant_count || 0, group[0]?.total_variant_count || 0,
                                       group[0]?.named_variant_count || 0]),
           hovertemplate: '%{y}<br>Alleles: %{customdata[0]} / %{customdata[1]}<br>Fraction: %{x:.2%}<br>Alleles with named conditions: %{customdata[2]}<extra>%{fullData.name}</extra>',
-        }));
+        });
+        const traces = [[a, gaph, 'GAPH', '#356d8f'], [b, background, 'ClinVar', '#9ca3af']]
+          .map(([mapping, group, name, color]) => trace(mapping, group, name, color, keys));
         Plotly.react('pathogenic-conditions-plot', traces, {
           template: 'plotly_white', barmode: 'group', height: 600,
           margin: {l: 300, r: 25, t: 25, b: 60},
@@ -247,6 +252,21 @@ def pathogenic_condition_view(counts: pd.DataFrame) -> str:
           yaxis: {automargin: true},
           annotations: keys.length ? [] : [{text: 'No matching named conditions.', x: 0.5, y: 0.5, xref: 'paper', yref: 'paper', showarrow: false}],
         }, {responsive: true});
+        const clinvarKeys = [...b.keys()].filter(key => matches(b, key))
+          .sort((x, y) => fraction(b.get(y)) - fraction(b.get(x)))
+          .slice(0, 10).reverse();
+        Plotly.react(
+          'pathogenic-clinvar-distribution-plot',
+          [trace(b, background, 'ClinVar', '#9ca3af', clinvarKeys)],
+          {
+            template: 'plotly_white', height: 460, showlegend: false,
+            margin: {l: 300, r: 25, t: 25, b: 60},
+            xaxis: {title: {text: 'Fraction of P/LP alleles'}, tickformat: '.0%', rangemode: 'tozero'},
+            yaxis: {automargin: true},
+            annotations: clinvarKeys.length ? [] : [{text: 'No matching named conditions.', x: 0.5, y: 0.5, xref: 'paper', yref: 'paper', showarrow: false}],
+          },
+          {responsive: true},
+        );
       }
       controls.querySelectorAll('select').forEach(item => item.addEventListener('change', render));
       select('search').addEventListener('input', render);

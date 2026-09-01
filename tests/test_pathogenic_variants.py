@@ -165,6 +165,9 @@ def test_pathogenic_analysis_builds_condition_backgrounds_and_unique_snv_support
     assert "Pathogenic ClinVar Hits" in rendered
     assert "Primary sort" in rendered
     assert "Disease one" in rendered
+    assert "ClinVar condition distribution" in rendered
+    assert "pathogenic-clinvar-distribution-plot" in rendered
+    assert "Supporting orthologs among P/LP hits" in rendered
     assert "SNV support rows plotted" not in rendered
     assert "phyloP100way" not in rendered
     from analytics.reporting.document import render_html
