@@ -150,6 +150,102 @@ def test_bwa_pipeline_rejects_single_cpu_budget(tmp_path: Path) -> None:
         )
 
 
+@pytest.mark.parametrize(
+    ("reverse", "cigar", "query_length", "expected"),
+    [
+        (False, ((4, 10), (0, 120), (4, 20)), 150, (110, 230)),
+        (True, ((4, 10), (0, 120), (4, 20)), 150, (120, 240)),
+        (
+            False,
+            ((5, 5), (4, 10), (0, 115), (4, 15), (5, 5)),
+            140,
+            (115, 230),
+        ),
+        (
+            True,
+            ((5, 5), (4, 10), (0, 115), (4, 15), (5, 5)),
+            140,
+            (120, 235),
+        ),
+    ],
+)
+def test_pseudoread_query_interval_lifts_clipped_alignment(
+    reverse: bool,
+    cigar: tuple[tuple[int, int], ...],
+    query_length: int,
+    expected: tuple[int, int],
+) -> None:
+    read = bwa_runner.pysam.AlignedSegment()
+    read.query_name = "ortholog_101_pseudo_2_101-250"
+    read.query_sequence = "A" * query_length
+    read.flag = 16 if reverse else 0
+    read.cigar = cigar
+
+    ortholog_id, start0, end0 = bwa_runner.pseudoread_query_interval(read)
+
+    assert ortholog_id == "101"
+    assert (start0, end0) == expected
+
+
+def test_scan_bam_lifts_disjoint_windows_before_computing_coverage(
+    tmp_path: Path,
+) -> None:
+    bam_path = tmp_path / "reads.bam"
+    header = {
+        "HD": {"VN": "1.6", "SO": "coordinate"},
+        "SQ": [{"SN": "target", "LN": 300}],
+    }
+
+    def make_read(name: str, reference_start: int) -> bwa_runner.pysam.AlignedSegment:
+        read = bwa_runner.pysam.AlignedSegment()
+        read.query_name = name
+        read.query_sequence = "A" * 150
+        read.flag = 0
+        read.reference_id = 0
+        read.reference_start = reference_start
+        read.mapping_quality = 60
+        read.cigar = ((0, 150),)
+        read.query_qualities = bwa_runner.pysam.qualitystring_to_array("I" * 150)
+        read.set_tag("NM", 0)
+        return read
+
+    with bwa_runner.pysam.AlignmentFile(bam_path, "wb", header=header) as bam:
+        bam.write(make_read("ortholog_101_pseudo_1_1-150", 0))
+        bam.write(make_read("ortholog_101_pseudo_2_151-300", 150))
+    bwa_runner.pysam.index(str(bam_path))
+
+    segments, _event_support = bwa_runner.scan_bam(bam_path, "A" * 300)
+    segment_rows = bwa_runner.make_segment_rows(
+        segments,
+        gene_id="1",
+        target_id="target",
+        ortholog_meta_by_id={"101": {"tax_id": "1", "taxname": "species"}},
+        strategy="bwa_pseudoreads_150_150",
+    )
+    summaries = bwa_runner.make_summary_rows(
+        gene_id="1",
+        target_length=300,
+        ortholog_meta=[
+            {
+                "ortholog_gene_id": "101",
+                "tax_id": "1",
+                "taxname": "species",
+                "sequence_length": "300",
+            }
+        ],
+        query_lengths={"101": 300},
+        segment_rows=segment_rows,
+        event_rows=[],
+        strategy="bwa_pseudoreads_150_150",
+    )
+
+    assert [
+        (row["query_start0"], row["query_end0"]) for row in segments
+    ] == [(0, 150), (150, 300)]
+    assert summaries[0]["aligned_query_bp"] == 300
+    assert summaries[0]["query_coverage"] == "1.000000"
+
+
 def test_scan_bam_deduplicates_event_support_by_ortholog(tmp_path: Path) -> None:
     bam_path = tmp_path / "reads.bam"
     header = {"HD": {"VN": "1.6", "SO": "coordinate"}, "SQ": [{"SN": "target", "LN": 100}]}

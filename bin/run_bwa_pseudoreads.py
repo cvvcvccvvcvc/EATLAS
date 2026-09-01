@@ -191,11 +191,6 @@ def generate_pseudoreads(
     return PseudoreadGeneration(total_reads, query_lengths)
 
 
-def read_ortholog_gene_id(read_name: str) -> str:
-    prefix = read_name.split("_pseudo_", 1)[0]
-    return prefix.removeprefix("ortholog_")
-
-
 def genomic_coords(target_meta: dict[str, str], start0: int, end0: int) -> tuple[str, str]:
     begin_text = target_meta.get("genomic_begin") or ""
     if not begin_text:
@@ -232,6 +227,50 @@ def read_target_sequence(target_fasta: Path) -> str:
 
 def sequence_length_from_read(read: pysam.AlignedSegment) -> int:
     return read.infer_query_length(always=True) or len(read.query_sequence or "")
+
+
+def pseudoread_query_interval(
+    read: pysam.AlignedSegment,
+) -> tuple[str, int, int]:
+    """Lift one aligned pseudo-read interval to its complete ortholog."""
+
+    homologue_id, _read_number, source_start1, source_end1 = (
+        bwa_pseudoread_filter.parse_read_name(read.query_name)
+    )
+    if not homologue_id.startswith("ortholog_"):
+        raise ValueError(f"Unexpected pseudo-read source ID: {read.query_name}")
+    if source_start1 < 1 or source_end1 < source_start1:
+        raise ValueError(f"Invalid pseudo-read source interval: {read.query_name}")
+
+    source_length = source_end1 - source_start1 + 1
+    read_length = sequence_length_from_read(read)
+    if read_length != source_length:
+        raise ValueError(
+            "Pseudo-read source interval does not match its BAM query length: "
+            f"{read.query_name} ({source_length} != {read_length})"
+        )
+
+    local_start = read.query_alignment_start
+    local_end = read.query_alignment_end
+    if local_start is None or local_end is None:
+        raise ValueError(
+            f"Mapped pseudo-read has no aligned query interval: {read.query_name}"
+        )
+    if read.cigartuples and read.cigartuples[0][0] == 5:
+        hard_clip = read.cigartuples[0][1]
+        local_start += hard_clip
+        local_end += hard_clip
+    if not 0 <= local_start < local_end <= source_length:
+        raise ValueError(f"Invalid aligned pseudo-read interval: {read.query_name}")
+
+    if read.is_reverse:
+        local_start, local_end = source_length - local_end, source_length - local_start
+    source_start0 = source_start1 - 1
+    return (
+        homologue_id.removeprefix("ortholog_"),
+        source_start0 + local_start,
+        source_start0 + local_end,
+    )
 
 
 def cigar_block_length(read: pysam.AlignedSegment) -> int:
@@ -302,7 +341,7 @@ def scan_bam(
         for read in bam.fetch():
             if read.is_unmapped or read.reference_start is None or read.reference_end is None:
                 continue
-            ortholog_id = read_ortholog_gene_id(read.query_name)
+            ortholog_id, query_start0, query_end0 = pseudoread_query_interval(read)
             strand = "-" if read.is_reverse else "+"
             primary = not read.is_secondary and not read.is_supplementary
             native_alignment_type = sam_alignment_type(read)
@@ -314,8 +353,8 @@ def scan_bam(
                     "query_id": f"ortholog_{ortholog_id}",
                     "target_start0": read.reference_start,
                     "target_end0": read.reference_end,
-                    "query_start0": read.query_alignment_start or 0,
-                    "query_end0": read.query_alignment_end or sequence_length_from_read(read),
+                    "query_start0": query_start0,
+                    "query_end0": query_end0,
                     "strand": strand,
                     "matches": matches,
                     "block_length": block_length,
