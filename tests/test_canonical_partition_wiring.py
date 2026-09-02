@@ -20,6 +20,14 @@ def test_pipeline_has_one_end_to_end_partition_evidence_path() -> None:
     assert "--output-profile" not in final_merge
 
 
+def test_runtime_check_gates_fetch_stage() -> None:
+    main = (PROJECT_DIR / "main.nf").read_text()
+
+    assert "gated_ids = CHECK_RUNTIME.out.runtime_check.map { file(params.ids_file) }" in main
+    assert "FETCH_STAGE(gated_ids)" in main
+    assert "FETCH_STAGE(file(params.ids_file))" not in main
+
+
 def test_removed_stage_modes_are_not_public_parameters() -> None:
     main = (PROJECT_DIR / "main.nf").read_text()
     config = (PROJECT_DIR / "nextflow.config").read_text()

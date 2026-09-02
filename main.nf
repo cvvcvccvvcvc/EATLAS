@@ -619,15 +619,26 @@ workflow {
 
     runtime_check_script = file("${projectDir}/bin/check_runtime.py")
     runtime_bin_package_init = file("${projectDir}/bin/__init__.py")
+    runtime_genomics_package_init = file("${projectDir}/genomics/__init__.py")
+    runtime_vep_package_init = file("${projectDir}/genomics/vep/__init__.py")
+    runtime_vep_helper = file("${projectDir}/genomics/vep/local_runtime.py")
     CHECK_RUNTIME(
         runtime_check_script,
         runtime_bin_package_init,
-        SELECTED_ALIGNMENT_STRATEGIES.join(',')
+        runtime_genomics_package_init,
+        runtime_vep_package_init,
+        runtime_vep_helper,
+        SELECTED_ALIGNMENT_STRATEGIES.join(','),
+        params.vep_backend,
+        params.vep_release ?: '',
+        params.vep_executable,
+        params.vep_cache_dir ?: ''
     )
 
     clinvar_inputs = resolveClinvarInputs()
     log.info "Using ClinVar VCF: ${clinvar_inputs.path}"
-    FETCH_STAGE(file(params.ids_file))
+    gated_ids = CHECK_RUNTIME.out.runtime_check.map { file(params.ids_file) }
+    FETCH_STAGE(gated_ids)
     ALIGNMENT_STAGE(
         FETCH_STAGE.out.genes,
         FETCH_STAGE.out.target_features,

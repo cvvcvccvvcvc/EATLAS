@@ -17,13 +17,13 @@ from pathlib import Path
 
 import pandas as pd
 
+from .local_runtime import VEP_ASSEMBLY, local_vep_cache_args
 from .terms import VEP_CONSEQUENCE_ORDER
 from .result_cache import DEFAULT_TILE_SIZE_BP, VepResultCache
 
 
 VEP_BASE_URL = "https://rest.ensembl.org"
 VEP_BATCH_SIZE = 200
-VEP_ASSEMBLY = "GRCh38"
 VEP_OPTIONS = {
     "canonical": 1,
     "mane": 1,
@@ -392,18 +392,7 @@ def _run_local_vep(
 
         command = [
             str(executable),
-            "--offline",
-            "--cache",
-            "--refseq",
-            "--use_given_ref",
-            "--species",
-            "homo_sapiens",
-            "--assembly",
-            VEP_ASSEMBLY,
-            "--cache_version",
-            release,
-            "--dir_cache",
-            str(cache_dir),
+            *local_vep_cache_args(release=release, cache_dir=cache_dir),
             "--input_file",
             str(input_path),
             "--output_file",
