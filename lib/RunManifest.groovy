@@ -159,7 +159,7 @@ class RunManifest {
         }
         Map schema = (Map) new JsonSlurper().parse(parameterSchema.toFile())
         Set<String> declared = new HashSet<>()
-        Map definitions = (Map) (schema.definitions ?: [:])
+        Map definitions = (Map) (schema['$defs'] ?: [:])
         definitions.values().each { definition ->
             Map properties = (Map) (definition.properties ?: [:])
             declared.addAll(properties.keySet()*.toString())

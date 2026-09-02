@@ -32,7 +32,7 @@ def _command(
     schema_path.write_text(
         json.dumps(
             {
-                "definitions": {
+                "$defs": {
                     "test": {
                         "properties": {
                             name: {}
