@@ -15,7 +15,10 @@ import pandas as pd
 from analytics.analyses.target_context import read_disjoint_contexts
 from analytics.vep.consequences import UNANNOTATED_CONSEQUENCE
 from analytics.io.variant_source import resolve_variant_table_source
-from genomics.variants import read_failed_regions
+from genomics.variants import (
+    ALLELE_ANNOTATION_FIELDS,
+    read_failed_regions,
+)
 
 
 REQUIRED_COLUMNS = {
@@ -41,6 +44,28 @@ _MEMORY_UNITS = {
     "GIB": 1024**3,
     "TIB": 1024**4,
 }
+
+CLINVAR_PRESENCE_FIELDS = (
+    "clinvar_id",
+    "clinvar_allele_id",
+    "clinvar_sig",
+    "clinvar_revstat",
+    "clinvar_hgvs",
+    "clinvar_disease",
+    "clinvar_variant_type",
+)
+
+
+def allele_evidence_comparison_sql(field: str, *, alias: str = "") -> str:
+    """Return the canonical SQL value used to compare allele evidence."""
+
+    if field not in ALLELE_ANNOTATION_FIELDS:
+        raise ValueError(f"Unknown allele annotation field: {field}")
+    column = f"{alias}.{field}" if alias else field
+    value = f"nullif({column}, '')"
+    if field == "gnomad_af":
+        return f"try_cast({value} AS DOUBLE)"
+    return value
 
 
 @dataclass(frozen=True)
@@ -527,6 +552,59 @@ def _paths(value: Path | Sequence[Path]) -> tuple[Path, ...]:
     return (value,) if isinstance(value, Path) else tuple(value)
 
 
+def _materialize_allele_evidence(connection) -> None:
+    resolved = ", ".join(
+        f"max(nullif({field}, '')) AS {field}"
+        for field in ALLELE_ANNOTATION_FIELDS
+    )
+    counts = ", ".join(
+        f"count(DISTINCT {allele_evidence_comparison_sql(field)}) FILTER "
+        f"(WHERE {allele_evidence_comparison_sql(field)} IS NOT NULL) "
+        f"AS {field}_count"
+        for field in ALLELE_ANNOTATION_FIELDS
+    )
+    invalid_af = (
+        "count(*) FILTER (WHERE nullif(gnomad_af, '') IS NOT NULL AND "
+        "try_cast(nullif(gnomad_af, '') AS DOUBLE) IS NULL) "
+        "AS gnomad_af_invalid_count"
+    )
+    connection.execute(
+        "CREATE TEMP TABLE allele_evidence AS SELECT variant_id, "
+        f"{resolved}, max(try_cast(nullif(gnomad_af, '') AS DOUBLE)) "
+        f"AS gnomad_af_value, {counts}, {invalid_af} "
+        "FROM positioned_rows GROUP BY variant_id"
+    )
+
+    count_columns = [f"{field}_count" for field in ALLELE_ANNOTATION_FIELDS]
+    conflict_filter = " OR ".join(
+        [*(f"{column} > 1" for column in count_columns), "gnomad_af_invalid_count > 0"]
+    )
+    rows = connection.execute(
+        "SELECT variant_id, "
+        + ", ".join([*count_columns, "gnomad_af_invalid_count"])
+        + f" FROM allele_evidence WHERE {conflict_filter} LIMIT 10"
+    ).fetchall()
+    conflicts = [
+        (field, str(row[0]))
+        for row in rows
+        for field, count in zip(ALLELE_ANNOTATION_FIELDS, row[1:-1])
+        if int(count) > 1
+    ]
+    conflicts.extend(
+        ("gnomad_af invalid", str(row[0]))
+        for row in rows
+        if int(row[-1]) > 0
+    )
+    if conflicts:
+        examples = ", ".join(
+            f"{variant} ({field})" for field, variant in conflicts[:10]
+        )
+        raise ValueError(
+            "Variant annotations contain conflicting allele-level external "
+            f"evidence: {examples}"
+        )
+
+
 def _create_normalized_views(
     connection,
     source: VariantAggregationSource,
@@ -545,9 +623,11 @@ def _create_normalized_views(
         "CASE WHEN s.variant_key <> '' THEN s.variant_key ELSE "
         f"s.gene_id || ':' || s.event_type || ':' || {ref} || '>' || {alt} END"
     )
+    selected_fields = dict.fromkeys(
+        [*_pathogenic_source_columns(), *ALLELE_ANNOTATION_FIELDS]
+    )
     selected = ", ".join(
-        f"{column(name)} AS {name}"
-        for name in _pathogenic_source_columns()
+        f"{column(name)} AS {name}" for name in selected_fields
     )
     connection.execute(
         "CREATE VIEW keyed_rows AS SELECT "
@@ -573,43 +653,41 @@ def _create_normalized_views(
         f"{affected_start} AS affected_start0 FROM keyed_rows k {gene_join}"
     )
 
-    evidence_columns = [
-        name
-        for name in (
-            "clinvar_id",
-            "clinvar_allele_id",
-            "clinvar_sig",
-            "clinvar_revstat",
-            "clinvar_hgvs",
-            "clinvar_disease",
-            "clinvar_variant_type",
-        )
-        if name in source.columns
-    ]
-    clinvar_found = (
-        " OR ".join(f"coalesce(p.{name}, '') <> ''" for name in evidence_columns)
-        if evidence_columns
-        else "false"
+    _materialize_allele_evidence(connection)
+    excluded_evidence = ", ".join(ALLELE_ANNOTATION_FIELDS)
+    resolved_evidence = ", ".join(
+        f"coalesce(e.{field}, '') AS {field}"
+        for field in ALLELE_ANNOTATION_FIELDS
     )
-    sig = "lower(coalesce(p.clinvar_sig, ''))"
+    connection.execute(
+        f"CREATE VIEW reconciled_rows AS SELECT p.* EXCLUDE ({excluded_evidence}), "
+        "p.gnomad_af AS context_gnomad_af, "
+        f"{resolved_evidence}, e.gnomad_af_value FROM positioned_rows p "
+        "JOIN allele_evidence e USING (variant_id)"
+    )
+
+    clinvar_found = " OR ".join(
+        f"coalesce(r.{name}, '') <> ''" for name in CLINVAR_PRESENCE_FIELDS
+    )
+    sig = "lower(coalesce(r.clinvar_sig, ''))"
     consequence = (
-        "CASE WHEN p.vep_status = 'ok' "
-        "AND coalesce(p.vep_primary_consequence, '') <> '' "
-        "THEN p.vep_primary_consequence ELSE "
+        "CASE WHEN r.vep_status = 'ok' "
+        "AND coalesce(r.vep_primary_consequence, '') <> '' "
+        "THEN r.vep_primary_consequence ELSE "
         f"{_sql_string(UNANNOTATED_CONSEQUENCE)} END"
     )
     failed = (
-        "EXISTS (SELECT 1 FROM gnomad_failures f WHERE f.chrom = p.key_chrom "
-        "AND p.key_pos BETWEEN f.start1 AND f.end1)"
+        "EXISTS (SELECT 1 FROM gnomad_failures f WHERE f.chrom = r.key_chrom "
+        "AND r.key_pos BETWEEN f.start1 AND f.end1)"
     )
     context_join = (
-        "LEFT JOIN target_contexts c ON c.gene_id = p.gene_id "
-        "AND p.affected_start0 >= c.start0 AND p.affected_start0 < c.end0"
+        "LEFT JOIN target_contexts c ON c.gene_id = r.gene_id "
+        "AND r.affected_start0 >= c.start0 AND r.affected_start0 < c.end0"
     )
     connection.execute(
-        "CREATE VIEW normalized_rows AS SELECT p.*, "
+        "CREATE VIEW normalized_rows AS SELECT r.*, "
         f"({clinvar_found}) AS clinvar_found, "
-        "coalesce(p.clinvar_sig, '') <> '' AS clinvar_classified, "
+        "coalesce(r.clinvar_sig, '') <> '' AS clinvar_classified, "
         "CASE "
         f"WHEN NOT ({clinvar_found}) THEN 'Not in ClinVar' "
         f"WHEN {sig} = '' THEN 'Unclassified' "
@@ -618,18 +696,17 @@ def _create_normalized_views(
         f"WHEN contains({sig}, 'pathogenic') AND NOT contains({sig}, 'benign') THEN 'P/LP' "
         f"WHEN contains({sig}, 'benign') AND NOT contains({sig}, 'pathogenic') THEN 'B/LB' "
         "ELSE 'Other' END AS clinvar_category, "
-        "try_cast(nullif(p.gnomad_af, '') AS DOUBLE) AS gnomad_af_value, "
-        "CASE WHEN try_cast(nullif(p.gnomad_af, '') AS DOUBLE) IS NOT NULL THEN 'found' "
-        "WHEN coalesce(p.lookup_status, '') NOT IN ('', 'ok') OR p.key_pos IS NULL THEN 'lookup_failed' "
+        "CASE WHEN try_cast(nullif(r.context_gnomad_af, '') AS DOUBLE) IS NOT NULL THEN 'found' "
+        "WHEN coalesce(r.lookup_status, '') NOT IN ('', 'ok') OR r.key_pos IS NULL THEN 'lookup_failed' "
         f"WHEN {failed} THEN 'lookup_failed' ELSE 'not_found' END AS gnomad_status, "
-        "CASE WHEN p.event_type = 'snv' AND length(p.ref) = 1 AND length(p.alt) = 1 "
-        "THEN CASE WHEN p.ref || '>' || p.alt IN ('A>G','G>A','C>T','T>C') "
+        "CASE WHEN r.event_type = 'snv' AND length(r.ref) = 1 AND length(r.alt) = 1 "
+        "THEN CASE WHEN r.ref || '>' || r.alt IN ('A>G','G>A','C>T','T>C') "
         "THEN 'ti' ELSE 'tv' END ELSE '' END AS titv_kind, "
-        "CASE WHEN p.clinvar_review_stars IN ('0','1','2','3','4') "
-        "THEN p.clinvar_review_stars ELSE 'Unmapped' END AS review_stars, "
-        f"{consequence} AS consequence, CASE WHEN p.affected_start0 IS NULL THEN 'unknown' "
+        "CASE WHEN r.clinvar_review_stars IN ('0','1','2','3','4') "
+        "THEN r.clinvar_review_stars ELSE 'Unmapped' END AS review_stars, "
+        f"{consequence} AS consequence, CASE WHEN r.affected_start0 IS NULL THEN 'unknown' "
         "ELSE coalesce(c.target_context, 'other') END AS target_context "
-        f"FROM positioned_rows p {context_join}"
+        f"FROM reconciled_rows r {context_join}"
     )
 
 
@@ -637,7 +714,10 @@ def _materialize_compacted_relations(connection) -> tuple[int, int]:
     connection.execute(
         "CREATE TEMP TABLE allele_gene_rows AS SELECT variant_id, gene_id, "
         "bit_or(strategy_mask) AS strategy_mask, first(event_type) AS event_type, "
-        "first(target_context) AS target_context, first(gnomad_status) AS gnomad_status, "
+        "first(target_context) AS target_context, "
+        "CASE WHEN bool_or(gnomad_status = 'found') THEN 'found' "
+        "WHEN bool_or(gnomad_status = 'lookup_failed') THEN 'lookup_failed' "
+        "ELSE 'not_found' END AS gnomad_status, "
         "first(consequence) AS consequence, first(clinvar_category) AS clinvar_category, "
         "bool_or(clinvar_found) AS global_clinvar_found, "
         "bool_or(clinvar_classified) AS global_clinvar_classified, "
@@ -717,6 +797,11 @@ def _query_pathogenic_rows(
         if name == "gene_id":
             aggregate_columns.append(
                 "string_agg(DISTINCT gene_id, ', ' ORDER BY gene_id) AS gene_id"
+            )
+        elif name == "lookup_status":
+            aggregate_columns.append(
+                "string_agg(DISTINCT lookup_status, '|' ORDER BY lookup_status) "
+                "FILTER (WHERE lookup_status <> '') AS lookup_status"
             )
         elif name in {
             "vep_status",

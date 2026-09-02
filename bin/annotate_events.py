@@ -11,6 +11,7 @@ import sys
 import time
 import concurrent.futures
 from collections import Counter, defaultdict
+from collections.abc import Sequence
 from pathlib import Path
 
 import pysam
@@ -19,6 +20,8 @@ from genomics.clinvar import review_stars as clinvar_review_stars
 from genomics.gnomad import GNOMAD_API_URL, fetch_region_variants_recursive, select_af_metrics
 from genomics.gnomad_cache import GnomadRegionCache
 from genomics.variants import (
+    CLINVAR_ANNOTATION_FIELDS,
+    GNOMAD_ANNOTATION_FIELDS,
     add_context_normalized_record,
     build_context_index,
     event_vcf_key,
@@ -45,27 +48,6 @@ def finish_phase(timings: dict[str, float], name: str, started_at: float) -> Non
     timings[name] = elapsed
     logger.info("Timing %s: %.3f seconds", name, elapsed)
 
-CLINVAR_COLUMNS = [
-    "clinvar_sig",
-    "clinvar_revstat",
-    "clinvar_review_stars",
-    "clinvar_review_stars_status",
-    "clinvar_id",
-    "clinvar_allele_id",
-    "clinvar_scv_count",
-    "clinvar_hgvs",
-    "clinvar_disease",
-    "clinvar_variant_type",
-]
-
-GNOMAD_COLUMNS = [
-    "gnomad_af",
-    "gnomad_af_source",
-    "gnomad_csq",
-]
-
-ANNOTATION_COLUMNS = CLINVAR_COLUMNS + GNOMAD_COLUMNS
-
 VARIANT_ANNOTATION_FIELDS = [
     "variant_key",
     "gene_id",
@@ -74,7 +56,8 @@ VARIANT_ANNOTATION_FIELDS = [
     "alt",
     "lookup_status",
     "strategies",
-    *ANNOTATION_COLUMNS,
+    *CLINVAR_ANNOTATION_FIELDS,
+    *GNOMAD_ANNOTATION_FIELDS,
 ]
 
 VARIANT_ANNOTATION_SHARD_SIZE = 250_000
@@ -289,7 +272,7 @@ def format_review_status_value(value) -> str:
     return str(value)
 
 
-def empty_annotation(columns: list[str]) -> dict[str, str]:
+def empty_annotation(columns: Sequence[str]) -> dict[str, str]:
     return {column: "" for column in columns}
 
 
@@ -582,8 +565,8 @@ def main():
     variant_rows: list[dict] = []
     for aggregate in variant_aggregates.values():
         lookup_key = aggregate["_lookup_key"]
-        clinvar_annotation = empty_annotation(CLINVAR_COLUMNS)
-        gnomad_annotation = empty_annotation(GNOMAD_COLUMNS)
+        clinvar_annotation = empty_annotation(CLINVAR_ANNOTATION_FIELDS)
+        gnomad_annotation = empty_annotation(GNOMAD_ANNOTATION_FIELDS)
 
         if lookup_key:
             clinvar_annotation = clinvar_cache.get(lookup_key, clinvar_annotation)

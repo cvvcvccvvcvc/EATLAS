@@ -99,6 +99,12 @@ backend/release, and variant columns. Accepted Gene IDs must be disjoint.
 Overlap and incompatibility fail explicitly; analytics never silently
 deduplicates them.
 
+ClinVar and gnomAD record fields are allele-level evidence. Analytics reconciles
+their repeated values by canonical `variant_key`: a successful non-empty value
+is shared across its gene contexts, while conflicting non-empty values or a
+non-numeric gnomAD allele frequency fail explicitly. VEP consequences, target
+context, and lookup outcome remain gene-context evidence.
+
 `--clinvar-vcf` defaults to `CLINVAR_VCF`, then to
 `assets/reference/clinvar/clinvar.vcf.gz`. Its indexed contents must match the
 portable ClinVar identity recorded by every source run; the current file does

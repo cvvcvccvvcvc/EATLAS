@@ -50,7 +50,7 @@ VARIANT_USECOLS = [
     "vep_transcript_id",
     "vep_mane_select",
 ]
-SUMMARY_CACHE_VERSION = 18
+SUMMARY_CACHE_VERSION = 19
 SUMMARY_CACHE_NAME = "variant_summary.json.gz"
 SPECIAL_FLOAT_KEY = "__gaph_float__"
 ORTHOLOG_EVIDENCE_COLUMNS = [

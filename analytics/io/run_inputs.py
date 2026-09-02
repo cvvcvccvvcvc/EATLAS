@@ -14,7 +14,10 @@ from typing import Sequence
 import duckdb
 import pandas as pd
 
-from analytics.analyses.variant_summary_aggregation import resolve_variant_aggregation_source
+from analytics.analyses.variant_summary_aggregation import (
+    allele_evidence_comparison_sql,
+    resolve_variant_aggregation_source,
+)
 from analytics.io.alignment_aggregates import resolve_alignment_aggregate_paths
 from analytics.io.annotation_support import resolve_annotation_support_paths
 from analytics.io.artifacts import content_identity, write_json_atomic
@@ -28,6 +31,7 @@ from analytics.io.variant_source import (
     sql_string,
     variant_source_sql,
 )
+from genomics.variants import ALLELE_ANNOTATION_FIELDS
 
 
 ANALYSIS_CONTRACT_VERSION = 1
@@ -690,24 +694,9 @@ def _validate_shared_allele_evidence(
         tuple(item.variant_annotations_source for item in sources),
         required_columns=required,
     )
-    candidates = {
-        "gnomad_af": "try_cast(nullif(gnomad_af, '') AS DOUBLE)",
-        "gnomad_af_source": "nullif(gnomad_af_source, '')",
-        "gnomad_csq": "nullif(gnomad_csq, '')",
-        "clinvar_id": "nullif(clinvar_id, '')",
-        "clinvar_allele_id": "nullif(clinvar_allele_id, '')",
-        "clinvar_sig": "nullif(clinvar_sig, '')",
-        "clinvar_revstat": "nullif(clinvar_revstat, '')",
-        "clinvar_review_stars": "nullif(clinvar_review_stars, '')",
-        "clinvar_review_stars_status": "nullif(clinvar_review_stars_status, '')",
-        "clinvar_scv_count": "nullif(clinvar_scv_count, '')",
-        "clinvar_hgvs": "nullif(clinvar_hgvs, '')",
-        "clinvar_disease": "nullif(clinvar_disease, '')",
-        "clinvar_variant_type": "nullif(clinvar_variant_type, '')",
-    }
     checks = {
-        field: expression
-        for field, expression in candidates.items()
+        field: allele_evidence_comparison_sql(field)
+        for field in ALLELE_ANNOTATION_FIELDS
         if field in source.columns
     }
     count_sql = ", ".join(
@@ -715,7 +704,12 @@ def _validate_shared_allele_evidence(
         f"(WHERE {expression} IS NOT NULL) AS {field}_count"
         for field, expression in checks.items()
     )
-    conflict_sql = " OR ".join(f"{field}_count > 1" for field in checks)
+    conflict_sql = " OR ".join(
+        [
+            *(f"{field}_count > 1" for field in checks),
+            "gnomad_af_invalid_count > 0",
+        ]
+    )
     with tempfile.TemporaryDirectory(
         prefix=".shared_allele_preflight.",
         dir=temporary_root,
@@ -728,7 +722,9 @@ def _validate_shared_allele_evidence(
             )
             rows = connection.execute(
                 "WITH evidence_counts AS (SELECT variant_key, "
-                f"{count_sql} FROM source_rows WHERE variant_key <> '' "
+                f"{count_sql}, count(*) FILTER (WHERE nullif(gnomad_af, '') "
+                "IS NOT NULL AND try_cast(nullif(gnomad_af, '') AS DOUBLE) IS NULL) "
+                "AS gnomad_af_invalid_count FROM source_rows WHERE variant_key <> '' "
                 "GROUP BY variant_key) SELECT * FROM evidence_counts WHERE "
                 f"{conflict_sql} LIMIT 10"
             ).fetchall()
@@ -745,6 +741,12 @@ def _validate_shared_allele_evidence(
         raise ValueError(
             "Source runs disagree on successful allele-level external evidence: "
             + examples
+        )
+    invalid_af = [str(row[0]) for row in rows if int(row[-1]) > 0]
+    if invalid_af:
+        raise ValueError(
+            "Source runs contain non-numeric gnomad_af allele evidence: "
+            + ", ".join(invalid_af[:10])
         )
 
 

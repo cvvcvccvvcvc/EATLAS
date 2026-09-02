@@ -15,6 +15,28 @@ from typing import TypeAlias
 DNA_BASES = set("ACGT")
 RegionIndex: TypeAlias = dict[str, tuple[list[int], list[tuple[int, int]]]]
 
+CLINVAR_ANNOTATION_FIELDS = (
+    "clinvar_sig",
+    "clinvar_revstat",
+    "clinvar_review_stars",
+    "clinvar_review_stars_status",
+    "clinvar_id",
+    "clinvar_allele_id",
+    "clinvar_scv_count",
+    "clinvar_hgvs",
+    "clinvar_disease",
+    "clinvar_variant_type",
+)
+GNOMAD_ANNOTATION_FIELDS = (
+    "gnomad_af",
+    "gnomad_af_source",
+    "gnomad_csq",
+)
+ALLELE_ANNOTATION_FIELDS = (
+    *CLINVAR_ANNOTATION_FIELDS,
+    *GNOMAD_ANNOTATION_FIELDS,
+)
+
 
 def open_text(path: Path):
     return gzip.open(path, "rt", newline="") if str(path).endswith(".gz") else path.open(newline="")

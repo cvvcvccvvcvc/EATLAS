@@ -21,8 +21,46 @@ from analytics.analyses.variant_summary_aggregation import (
     available_cpu_count,
     resolve_variant_aggregation_source,
 )
+from genomics.variants import ALLELE_ANNOTATION_FIELDS
+
+
 CORE_COLUMNS = ["variant_key", "gene_id", "event_type", "ref", "alt", "strategies"]
 COLUMNS = [*CORE_COLUMNS, "vep_status", "vep_primary_consequence"]
+EVIDENCE_COLUMNS = [
+    *CORE_COLUMNS,
+    "lookup_status",
+    *ALLELE_ANNOTATION_FIELDS,
+    "vep_status",
+    "vep_primary_consequence",
+]
+
+
+def _evidence_row(gene_id: str, **overrides: str) -> dict[str, str]:
+    row = dict.fromkeys(EVIDENCE_COLUMNS, "")
+    row.update(
+        {
+            "variant_key": "1:100:A>G",
+            "gene_id": gene_id,
+            "event_type": "snv",
+            "ref": "A",
+            "alt": "G",
+            "strategies": "s1",
+            "lookup_status": "ok",
+            "vep_status": "ok",
+            "vep_primary_consequence": "missense_variant",
+        }
+    )
+    row.update(overrides)
+    return row
+
+
+def _write_evidence_rows(path: Path, rows: list[dict[str, str]]) -> None:
+    pd.DataFrame(rows, columns=EVIDENCE_COLUMNS).to_csv(
+        path,
+        sep="\t",
+        index=False,
+        compression="gzip",
+    )
 
 
 def test_available_cpu_count_prefers_slurm_allocation(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -283,6 +321,135 @@ def test_variant_groups_keep_gene_specific_context_and_consequence(tmp_path: Pat
             list(getattr(built_summary, name).columns)
         ).reset_index(drop=True)
         pd.testing.assert_frame_equal(left, right, check_dtype=False)
+
+
+def test_allele_evidence_is_reconciled_independently_of_row_order(
+    tmp_path: Path,
+) -> None:
+    missing = _evidence_row(
+        "gene_a",
+        lookup_status="failed",
+        vep_primary_consequence="intron_variant",
+    )
+    found = _evidence_row(
+        "gene_b",
+        clinvar_id="VCV1",
+        clinvar_sig="Pathogenic",
+        clinvar_review_stars="3",
+        clinvar_scv_count="2",
+        gnomad_af="0.01",
+        gnomad_af_source="exomes",
+        gnomad_csq="missense_variant",
+    )
+    results = []
+    for index, rows in enumerate(([missing, found], [found, missing])):
+        path = tmp_path / f"variants_{index}.tsv.gz"
+        _write_evidence_rows(path, rows)
+        result = aggregate_variant_groups(
+            resolve_variant_aggregation_source(path),
+            threads=1,
+        )
+        results.append(result)
+
+        global_row = result.global_groups.iloc[0]
+        assert bool(global_row["clinvar_found"])
+        assert global_row["clinvar_category"] == "P/LP"
+        assert global_row["review_stars"] == "3"
+        assert global_row["gnomad_status"] == "found"
+
+        contexts = result.allele_gene_groups.set_index("gene_id")
+        assert set(contexts["clinvar_category"]) == {"P/LP"}
+        assert contexts.loc["gene_a", "gnomad_status"] == "lookup_failed"
+        assert contexts.loc["gene_b", "gnomad_status"] == "found"
+
+        pathogenic = result.pathogenic_rows.iloc[0]
+        assert pathogenic["gene_id"] == "gene_a, gene_b"
+        assert pathogenic["lookup_status"] == "failed|ok"
+        assert pathogenic["clinvar_sig"] == "Pathogenic"
+        assert pathogenic["vep_primary_consequence"] == (
+            "intron_variant|missense_variant"
+        )
+
+    pd.testing.assert_frame_equal(results[0].global_groups, results[1].global_groups)
+    pd.testing.assert_frame_equal(
+        results[0].allele_gene_groups,
+        results[1].allele_gene_groups,
+    )
+    pd.testing.assert_frame_equal(results[0].pathogenic_rows, results[1].pathogenic_rows)
+
+
+def test_same_gene_gnomad_status_reduction_is_order_independent(tmp_path: Path) -> None:
+    found = _evidence_row("gene_a", gnomad_af="0.01")
+    failed = _evidence_row("gene_a", lookup_status="failed")
+    statuses = []
+    for index, rows in enumerate(([found, failed], [failed, found])):
+        path = tmp_path / f"same_gene_{index}.tsv.gz"
+        _write_evidence_rows(path, rows)
+        result = aggregate_variant_groups(
+            resolve_variant_aggregation_source(path),
+            threads=1,
+        )
+        statuses.append(result.allele_gene_groups.iloc[0]["gnomad_status"])
+
+    assert statuses == ["found", "found"]
+
+
+@pytest.mark.parametrize(
+    ("field", "left", "right"),
+    [
+        ("clinvar_sig", "Pathogenic", "Benign"),
+        ("gnomad_af", "0.01", "0.02"),
+    ],
+)
+def test_allele_evidence_rejects_conflicting_nonempty_values(
+    tmp_path: Path,
+    field: str,
+    left: str,
+    right: str,
+) -> None:
+    path = tmp_path / f"conflicting_{field}.tsv.gz"
+    _write_evidence_rows(
+        path,
+        [
+            _evidence_row("gene_a", **{field: left}),
+            _evidence_row("gene_b", **{field: right}),
+        ],
+    )
+
+    with pytest.raises(ValueError, match=rf"1:100:A>G \({field}\)"):
+        aggregate_variant_groups(
+            resolve_variant_aggregation_source(path),
+            threads=1,
+        )
+
+
+def test_allele_evidence_rejects_non_numeric_gnomad_af(tmp_path: Path) -> None:
+    path = tmp_path / "invalid_af.tsv.gz"
+    _write_evidence_rows(path, [_evidence_row("gene_a", gnomad_af="invalid")])
+
+    with pytest.raises(ValueError, match=r"1:100:A>G \(gnomad_af invalid\)"):
+        aggregate_variant_groups(
+            resolve_variant_aggregation_source(path),
+            threads=1,
+        )
+
+
+def test_allele_evidence_accepts_equivalent_numeric_af_values(tmp_path: Path) -> None:
+    path = tmp_path / "equivalent_af.tsv.gz"
+    _write_evidence_rows(
+        path,
+        [
+            _evidence_row("gene_a", gnomad_af="0.1"),
+            _evidence_row("gene_b", gnomad_af="0.10"),
+        ],
+    )
+
+    result = aggregate_variant_groups(
+        resolve_variant_aggregation_source(path),
+        threads=1,
+    )
+
+    assert result.gnomad_af_summary.iloc[0]["Median gnomAD AF"] == 0.1
 
 
 def test_duckdb_memory_override_takes_precedence(
