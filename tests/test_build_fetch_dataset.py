@@ -126,3 +126,43 @@ def test_validate_gene_outcomes_rejects_unaccounted_gene() -> None:
             ["1"],
             [],
         )
+
+
+def test_validate_sequence_gene_ids_accepts_exact_identity() -> None:
+    fetch_dataset.validate_sequence_gene_ids(
+        "Ortholog",
+        {"1", "2"},
+        {"2", "1"},
+    )
+
+
+@pytest.mark.parametrize(
+    ("expected", "observed", "message"),
+    [
+        ({"1", "2"}, {"1"}, "missing_count=1, missing_sample=\\['2'\\]"),
+        ({"1"}, {"1", "2"}, "unexpected_count=1, unexpected_sample=\\['2'\\]"),
+    ],
+)
+def test_copied_sequence_gene_ids_reject_metadata_mismatch(
+    tmp_path: Path,
+    expected: set[str],
+    observed: set[str],
+    message: str,
+) -> None:
+    chunk_dir = tmp_path / "chunk"
+    ortholog_dir = chunk_dir / "sequences" / "orthologs"
+    ortholog_dir.mkdir(parents=True)
+    for gene_id in observed:
+        (ortholog_dir / f"{gene_id}.fa.gz").write_bytes(b"sequence")
+
+    _, copied_gene_ids = fetch_dataset.copy_sequences(
+        [chunk_dir],
+        tmp_path / "fetch",
+    )
+
+    with pytest.raises(ValueError, match=message):
+        fetch_dataset.validate_sequence_gene_ids(
+            "Ortholog",
+            expected,
+            copied_gene_ids,
+        )

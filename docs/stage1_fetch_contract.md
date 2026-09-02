@@ -129,6 +129,11 @@ FASTA files.
 of the Stage 1 contract: Stage 2 can prepare one gene at a time without loading
 all ortholog metadata into memory.
 
+Before Stage 2 starts, the temporary ortholog FASTA handoff must contain exactly
+one `<query_gene_id>.fa.gz` file for every query gene represented in
+`orthologs.selected.tsv.gz`, with no additional files. `BUILD_FETCH_DATASET`
+rejects missing or unexpected sequence identities.
+
 `taxonomy.tsv.gz` is one gzip-compressed wide table with one row per unique
 selected `tax_id`. Its stable columns are:
 

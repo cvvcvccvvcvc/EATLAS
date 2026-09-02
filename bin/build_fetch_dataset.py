@@ -440,22 +440,38 @@ def copy_or_keep(src: Path, dst: Path) -> None:
     shutil.copy2(src, dst)
 
 
-def copy_sequences(chunk_dirs: list[Path], outdir: Path) -> tuple[int, int]:
-    target_count = 0
-    ortholog_count = 0
+def copy_sequences(chunk_dirs: list[Path], outdir: Path) -> tuple[set[str], set[str]]:
+    target_gene_ids: set[str] = set()
+    ortholog_gene_ids: set[str] = set()
     for chunk_dir in chunk_dirs:
         targets_dir = chunk_dir / "sequences" / "targets"
         if targets_dir.exists():
             for src in sorted(targets_dir.glob("*.fa.gz")):
                 copy_file_once(src, outdir / "sequences" / "targets" / src.name)
-                target_count += 1
+                target_gene_ids.add(src.name.removesuffix(".fa.gz"))
 
         orthologs_dir = chunk_dir / "sequences" / "orthologs"
         if orthologs_dir.exists():
             for src in sorted(orthologs_dir.glob("*.fa.gz")):
                 copy_file_once(src, outdir / "sequences" / "orthologs" / src.name)
-                ortholog_count += 1
-    return target_count, ortholog_count
+                ortholog_gene_ids.add(src.name.removesuffix(".fa.gz"))
+    return target_gene_ids, ortholog_gene_ids
+
+
+def validate_sequence_gene_ids(
+    label: str,
+    expected_gene_ids: set[str],
+    observed_gene_ids: set[str],
+) -> None:
+    missing = expected_gene_ids - observed_gene_ids
+    unexpected = observed_gene_ids - expected_gene_ids
+    if missing or unexpected:
+        raise ValueError(
+            f"{label} FASTA identity mismatch: "
+            f"missing_count={len(missing)}, missing_sample={sorted(missing)[:10] or '-'}, "
+            f"unexpected_count={len(unexpected)}, "
+            f"unexpected_sample={sorted(unexpected)[:10] or '-'}"
+        )
 
 
 def read_input_counts(ids_tsv: Path) -> tuple[int, int]:
@@ -625,14 +641,23 @@ def main() -> None:
         table_counts["genes.tsv.gz"],
         table_counts["orthologs.selected.tsv.gz"],
     )
-    target_files, ortholog_files = copy_sequences(chunk_dirs, outdir)
+    target_sequence_gene_ids, ortholog_sequence_gene_ids = copy_sequences(
+        chunk_dirs,
+        outdir,
+    )
     gene_ids = read_tsv_gz_column(outdir / "genes.tsv.gz", "gene_id")
+    selected_ortholog_gene_ids = read_tsv_gz_column(
+        outdir / "orthologs.selected.tsv.gz",
+        "query_gene_id",
+    )
     failure_ids = read_tsv_gz_column(outdir / "failures.tsv.gz", "gene_id")
     validate_gene_outcomes(accepted_gene_ids, gene_ids, failure_ids)
-    if target_files != len(gene_ids):
-        raise ValueError(
-            f"Target FASTA count mismatch: files={target_files}, genes={len(gene_ids)}"
-        )
+    validate_sequence_gene_ids("Target", set(gene_ids), target_sequence_gene_ids)
+    validate_sequence_gene_ids(
+        "Ortholog",
+        set(selected_ortholog_gene_ids),
+        ortholog_sequence_gene_ids,
+    )
 
     with gzip.open(outdir / "failures.tsv.gz", "rt", newline="") as handle:
         failure_rows = list(csv.DictReader(handle, delimiter="\t"))
@@ -684,8 +709,8 @@ def main() -> None:
         "failure_count": table_counts["failures.tsv.gz"],
         "download_failed_gene_count": download_failed_gene_count,
         "singleton_fallback_chunk_count": singleton_fallback_chunk_count,
-        "target_sequence_files": target_files,
-        "ortholog_sequence_files": ortholog_files,
+        "target_sequence_files": len(target_sequence_gene_ids),
+        "ortholog_sequence_files": len(ortholog_sequence_gene_ids),
         "target_feature_count": target_feature_count,
         **target_metadata,
         "ortholog_scope": "all",
