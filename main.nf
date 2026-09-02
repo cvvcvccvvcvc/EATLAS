@@ -3,7 +3,19 @@ nextflow.enable.dsl = 2
 import groovy.json.JsonSlurper
 import RunManifest
 
-include { validateParameters; paramsHelp } from 'plugin/nf-validation'
+include { validateParameters; paramsHelp } from 'plugin/nf-schema'
+
+if (params.helpFull) {
+    log.info paramsHelp(command: 'nextflow run .', fullHelp: true)
+    exit 0
+}
+if (params.help) {
+    def helpOptions = [command: 'nextflow run .']
+    def helpText = params.help instanceof Boolean ?
+        paramsHelp(helpOptions) : paramsHelp(helpOptions, params.help.toString())
+    log.info helpText
+    exit 0
+}
 
 ALIGNMENT_STRATEGY_REGISTRY = [
     [name: 'minimap2_asm10', default_enabled: false, minimap2_preset: 'asm10'],
@@ -141,12 +153,6 @@ def resolveClinvarInputs() {
         error "ClinVar VCF index not found: ${selectedTbi}. Place the .tbi next to the VCF."
     }
     return [vcf: file(selectedVcf), tbi: file(selectedTbi), path: selectedVcf]
-}
-
-// Print help message
-if (params.help) {
-    log.info paramsHelp("gaph_v2")
-    exit 0
 }
 
 def removedExecutionParameters = ['stage', 'fetch_dir', 'alignment_dir'].findAll {

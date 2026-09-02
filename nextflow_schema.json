@@ -1,18 +1,24 @@
 {
-    "$schema": "http://json-schema.org/draft-07/schema",
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
     "$id": "https://raw.githubusercontent.com/cvv/gaph_v2/master/nextflow_schema.json",
     "title": "gaph_v2 pipeline parameters",
     "description": "GAPH v2 end-to-end comparative variant evidence pipeline",
     "type": "object",
-    "definitions": {
+    "$defs": {
         "input_output_options": {
             "title": "Input/output options",
             "type": "object",
             "description": "Define where the pipeline should find input data and save output data.",
             "properties": {
                 "help": {
+                    "type": ["boolean", "string"],
+                    "default": false,
+                    "description": "Display general help, or detailed help for a named parameter, and exit."
+                },
+                "helpFull": {
                     "type": "boolean",
-                    "description": "Display help text."
+                    "default": false,
+                    "description": "Display help for every pipeline parameter and exit."
                 },
                 "ids_file": {
                     "type": "string",
@@ -95,7 +101,8 @@
                     "description": "Ensembl VEP backend. Production cluster runs use the configured local release/cache; REST is available for small local runs."
                 },
                 "vep_release": {
-                    "type": "string",
+                    "type": "integer",
+                    "minimum": 1,
                     "description": "Declared Ensembl VEP release. Required for the local backend; REST resolves the current release when omitted."
                 },
                 "vep_executable": {
@@ -128,16 +135,16 @@
     },
     "allOf": [
         {
-            "$ref": "#/definitions/input_output_options"
+            "$ref": "#/$defs/input_output_options"
         },
         {
-            "$ref": "#/definitions/fetch_options"
+            "$ref": "#/$defs/fetch_options"
         },
         {
-            "$ref": "#/definitions/execution_options"
+            "$ref": "#/$defs/execution_options"
         },
         {
-            "$ref": "#/definitions/annotation_options"
+            "$ref": "#/$defs/annotation_options"
         }
     ]
 }
