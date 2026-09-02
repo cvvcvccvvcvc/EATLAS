@@ -3,15 +3,17 @@
 
 from __future__ import annotations
 
+import fcntl
 import gzip
 import json
 import logging
 import os
 import tempfile
 import threading
+from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Iterator
 from urllib.error import HTTPError, URLError
 
 from .gnomad import (
@@ -162,8 +164,18 @@ class GnomadRegionCache:
             else:
                 records_by_tile[tile] = records
 
-        for group in _consecutive_groups(missing_tiles):
-            records_by_tile.update(self._fetch_and_store(group))
+        if missing_tiles:
+            with self._tile_locks(missing_tiles):
+                still_missing: list[Tile] = []
+                for tile in missing_tiles:
+                    records = self._read_tile(tile, report_invalid=False)
+                    if records is None:
+                        still_missing.append(tile)
+                    else:
+                        records_by_tile[tile] = records
+                        self._increment("tile_hit_count")
+                for group in _consecutive_groups(still_missing):
+                    records_by_tile.update(self._fetch_and_store(group))
         return records_by_tile
 
     def read_cached_tile(self, tile: Tile) -> list[dict] | None:
@@ -237,7 +249,12 @@ class GnomadRegionCache:
         assert self.namespace_dir is not None
         return self.namespace_dir / tile.chrom / f"{tile.start:012d}-{tile.end:012d}.json.gz"
 
-    def _read_tile(self, tile: Tile) -> list[dict] | None:
+    def _read_tile(
+        self,
+        tile: Tile,
+        *,
+        report_invalid: bool = True,
+    ) -> list[dict] | None:
         path = self._tile_path(tile)
         if not path.exists():
             return None
@@ -247,9 +264,33 @@ class GnomadRegionCache:
             self._validate_payload(payload, tile)
             return payload["variants"]
         except (EOFError, OSError, UnicodeDecodeError, json.JSONDecodeError, TypeError, ValueError) as exc:
-            self._increment("corrupt_tile_count")
-            logger.warning("Ignoring invalid gnomAD cache tile %s: %s", path, exc)
+            if report_invalid:
+                self._increment("corrupt_tile_count")
+                logger.warning("Ignoring invalid gnomAD cache tile %s: %s", path, exc)
             return None
+
+    @contextmanager
+    def _tile_locks(self, tiles: list[Tile]) -> Iterator[None]:
+        with ExitStack() as stack:
+            ordered_tiles = sorted(
+                set(tiles),
+                key=lambda item: (item.chrom, item.start, item.end),
+            )
+            for tile in ordered_tiles:
+                stack.enter_context(self._tile_lock(tile))
+            yield
+
+    @contextmanager
+    def _tile_lock(self, tile: Tile) -> Iterator[None]:
+        tile_path = self._tile_path(tile)
+        tile_path.parent.mkdir(parents=True, exist_ok=True)
+        lock_path = tile_path.with_name(f".{tile_path.name}.lock")
+        with lock_path.open("a+b") as handle:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
     def _validate_payload(self, payload: object, tile: Tile) -> None:
         if not isinstance(payload, dict):

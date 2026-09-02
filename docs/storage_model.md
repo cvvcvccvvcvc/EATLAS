@@ -99,7 +99,9 @@ When `GAPH_GNOMAD_CACHE_DIR` or `--gnomad_cache_dir` is set, complete gnomAD
 regional responses are also stored in a shared reusable cache. The cache uses
 25-kb gzip-compressed tiles under a dataset/reference/schema namespace. It is
 neither a run result nor Nextflow resume state: multiple pipeline and analytics
-runs may reuse it, and a run remains valid when the cache is absent.
+runs may reuse it, and a run remains valid when the cache is absent. Concurrent
+misses for the same tiles are serialized with per-tile advisory locks and
+rechecked before network access; independent regions remain parallel.
 
 `GAPH_VEP_RESULT_CACHE_DIR` is a second reusable infrastructure cache. It keeps
 only complete release/config-matched variant/gene results and is distinct from
