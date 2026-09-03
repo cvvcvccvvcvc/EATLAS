@@ -29,6 +29,7 @@ from bin.alignment_task_io import (
     materialize_task_fastas,
     write_fasta_record,
 )
+from bin.alignment_runtime import minimap2_software
 
 
 CS_OP_RE = re.compile(r"(:\d+|=[A-Za-z]+|\*[A-Za-z][A-Za-z]|[+\-][A-Za-z]+|~[A-Za-z]{2}\d+[A-Za-z]{2})")
@@ -681,6 +682,7 @@ def main() -> None:
     if args.threads < 1:
         raise ValueError("--threads must be at least 1")
     validate_query_mode(args.preset, args.pseudoread_len, args.pseudoread_step)
+    software = minimap2_software(args.minimap2_bin)
     args.outdir.mkdir(parents=True, exist_ok=True)
 
     task, target_meta, ortholog_meta = load_task_context(args.task_dir)
@@ -778,6 +780,7 @@ def main() -> None:
         "preset": args.preset,
         "mapq_policy": "aligner_reported_unfiltered",
         "non_primary_policy": "retained_native_type",
+        "software": software,
     }
     if pseudoreads is not None:
         strategy_parameters.update(

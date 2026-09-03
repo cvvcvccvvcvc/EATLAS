@@ -21,6 +21,7 @@ from bin.alignment_table_schema import (
     SUMMARY_FIELDS,
 )
 from bin.alignment_task_io import load_task_context, materialize_task_fastas
+from bin.alignment_runtime import nucmer_software
 
 
 TSV_NULL = ""
@@ -460,6 +461,7 @@ def main() -> None:
     args = parse_args()
     if args.threads < 1:
         raise ValueError("--threads must be at least 1")
+    software = nucmer_software(args.nucmer_bin)
     args.outdir.mkdir(parents=True, exist_ok=True)
 
     task, target_meta, ortholog_meta = load_task_context(args.task_dir)
@@ -529,7 +531,7 @@ def main() -> None:
     manifest = {
         "gene_ids": [gene_id],
         "strategies": ["nucmer"],
-        "strategy_parameters": {"nucmer": {}},
+        "strategy_parameters": {"nucmer": {"software": software}},
         "tool": "nucmer",
         "commands": commands,
         "ortholog_alignment_summary_count": len(summary_rows),

@@ -1115,6 +1115,11 @@ def test_bwa_parameters_survive_partition_and_final_merge(tmp_path: Path) -> Non
         "pseudoread_len": 150,
         "pseudoread_step": 75,
         "pseudoread_phred": 30,
+        "software": {
+            "python": "3.11.14",
+            "pysam": "0.23.3",
+            "tools": {"bwa": "0.7.19-r1273", "samtools": "samtools 1.22.1"},
+        },
     }
     result_dir = write_result_dir(
         tmp_path,

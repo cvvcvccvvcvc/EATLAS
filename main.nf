@@ -301,7 +301,13 @@ workflow ALIGNMENT_STAGE {
     bin_package_init = file("${projectDir}/bin/__init__.py")
     alignment_table_schema = file("${projectDir}/bin/alignment_table_schema.py")
     alignment_task_io = file("${projectDir}/bin/alignment_task_io.py")
-    alignment_bin_sources = [bin_package_init, alignment_table_schema, alignment_task_io]
+    alignment_runtime = file("${projectDir}/bin/alignment_runtime.py")
+    alignment_bin_sources = [
+        bin_package_init,
+        alignment_table_schema,
+        alignment_task_io,
+        alignment_runtime,
+    ]
     bwa_bin_sources = [*alignment_bin_sources, bwa_filter_source]
     merge_bin_sources = [bin_package_init, alignment_table_schema]
 

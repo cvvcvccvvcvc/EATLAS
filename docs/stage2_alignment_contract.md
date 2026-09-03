@@ -189,6 +189,10 @@ file. Individual tables and prior layouts are not independent pipeline inputs.
 Every per-gene result and partition uses plural `gene_ids` and `strategies`,
 nested `strategy_parameters`, canonical evidence counts, and an explicit
 `alignment_event_mode`. Merge rejects any other schema.
+Each strategy's parameters include the Python, pysam, and selected aligner
+versions observed by the task that produced its evidence. Because these values
+travel through the task and partition manifests, a resumed merge reports the
+versions of cached producers rather than the environment of the later merge.
 
 The four normalized per-aligner tables have one exact ordered schema, defined
 in `bin/alignment_table_schema.py`: summaries, segments, raw events, and

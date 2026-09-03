@@ -15,6 +15,8 @@ from pathlib import Path
 
 import pysam
 
+from bin import bwa_pseudoread_filter
+from bin.alignment_runtime import bwa_software
 from bin.alignment_table_schema import (
     EVENT_FIELDS,
     FAILURE_FIELDS,
@@ -22,7 +24,6 @@ from bin.alignment_table_schema import (
     SUMMARY_FIELDS,
 )
 from bin.alignment_task_io import load_task_context, materialize_task_fastas
-from bin import bwa_pseudoread_filter
 
 EventKey = tuple[str, int, int, str, str]
 EventSupport = dict[EventKey, dict[str, dict[str, object]]]
@@ -596,6 +597,7 @@ def make_summary_rows(
 
 def main() -> None:
     args = parse_args()
+    software = bwa_software(args.bwa_bin, args.samtools_bin)
     task_dir = args.task_dir
     outdir = args.outdir
     outdir.mkdir(parents=True, exist_ok=True)
@@ -679,6 +681,7 @@ def main() -> None:
                     "pseudoread_len": args.pseudoread_len,
                     "pseudoread_step": args.pseudoread_step,
                     "pseudoread_phred": args.pseudoread_phred,
+                    "software": software,
                 }
             },
             "tool": "bwa",

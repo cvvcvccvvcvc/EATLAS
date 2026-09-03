@@ -115,6 +115,22 @@ def test_pipeline_python_modules_are_staged_packages_without_path_bridges() -> N
         "bin.finalize_annotation_partitions",
     ):
         assert f"python3 -m {module_name}" in module_text
+    main = (PROJECT_DIR / "main.nf").read_text()
+    assert 'file("${projectDir}/bin/alignment_runtime.py")' in main
+    alignment_sources = re.search(
+        r"(?ms)^    alignment_bin_sources = \[(.*?)^    \]",
+        main,
+    )
+    assert alignment_sources is not None
+    assert "alignment_runtime" in alignment_sources.group(1)
+    for entrypoint in (
+        "run_minimap2_alignment.py",
+        "run_nucmer_alignment.py",
+        "run_bwa_pseudoreads.py",
+    ):
+        assert "from bin.alignment_runtime import" in (
+            PROJECT_DIR / "bin" / entrypoint
+        ).read_text()
 
 
 def test_vep_entrypoint_starts_with_only_declared_staged_sources(tmp_path: Path) -> None:
