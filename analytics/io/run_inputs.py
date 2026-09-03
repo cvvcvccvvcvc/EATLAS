@@ -44,7 +44,8 @@ from provenance.evidence_inventory import (
 )
 
 
-ANALYSIS_CONTRACT_VERSION = 2
+SOURCE_ID_VERSION = 2
+ANALYSIS_CONTRACT_VERSION = 3
 
 
 @dataclass(frozen=True)
@@ -109,9 +110,14 @@ class AnalysisInputs:
 class AnalysisWorkspace:
     analytics_root: Path
     analysis_id: str
+    calculation_id: str
     analysis_dir: Path
     derived_dir: Path
     contract: dict[str, object]
+
+    @property
+    def shared_calculation_cache(self) -> Path:
+        return self.analytics_root / "cache" / "calculations" / self.calculation_id
 
 
 def safe_report_name(name: str) -> str:
@@ -164,6 +170,8 @@ def build_analysis_inputs(
     *,
     analytics_root: Path,
     scientific_config: dict[str, object],
+    calculation_identity: dict[str, object],
+    code_provenance: dict[str, object] | None = None,
     annotation_support_workers: int = 1,
     workspace: AnalysisWorkspace | None = None,
     performance_profile: PerformanceProfile | None = None,
@@ -177,6 +185,7 @@ def build_analysis_inputs(
         source_runs,
         analytics_root=analytics_root,
         scientific_config=scientific_config,
+        calculation_identity=calculation_identity,
     )
     if workspace is not None and workspace != expected_workspace:
         raise ValueError("Analysis workspace does not match the requested inputs")
@@ -205,7 +214,13 @@ def build_analysis_inputs(
     annotation_paths = []
     taxonomy_paths = []
     for source in source_runs:
-        source_cache = analytics_root / "cache" / source.source_id
+        source_cache = (
+            analytics_root
+            / "cache"
+            / source.source_id
+            / "calculations"
+            / workspace.calculation_id
+        )
         with profile_stage(
             performance_profile,
             f"Alignment aggregates [{source.run_dir.name}]",
@@ -297,6 +312,10 @@ def build_analysis_inputs(
             "status": "ready",
             "analysis_id": analysis_id,
             "contract": contract,
+            "software": {
+                "runtime": calculation_identity.get("runtime"),
+                "code": code_provenance,
+            },
             "sources": [
                 {
                     "source_id": source.source_id,
@@ -318,6 +337,7 @@ def resolve_analysis_workspace(
     *,
     analytics_root: Path,
     scientific_config: dict[str, object],
+    calculation_identity: dict[str, object],
 ) -> AnalysisWorkspace:
     """Resolve the stable report location before expensive cache preparation."""
 
@@ -328,10 +348,17 @@ def resolve_analysis_workspace(
         analytics_root,
         [source.run_dir for source in source_runs],
     )
+    calculation_id = hashlib.sha256(
+        _canonical_json(calculation_identity)
+    ).hexdigest()[:24]
     contract = {
         "contract_version": ANALYSIS_CONTRACT_VERSION,
         "source_ids": [source.source_id for source in source_runs],
         "scientific_config": scientific_config,
+        "calculation": {
+            "calculation_id": calculation_id,
+            "identity": calculation_identity,
+        },
     }
     analysis_id = hashlib.sha256(_canonical_json(contract)).hexdigest()[:24]
     analysis_dir = analytics_root / "analyses" / analysis_id
@@ -339,6 +366,7 @@ def resolve_analysis_workspace(
     return AnalysisWorkspace(
         analytics_root=analytics_root,
         analysis_id=analysis_id,
+        calculation_id=calculation_id,
         analysis_dir=analysis_dir,
         derived_dir=derived_dir,
         contract=contract,
@@ -507,7 +535,7 @@ def _resolve_source_run(run_dir: Path) -> SourceRun:
             f"Alignment manifest gene_ids do not match fetch/genes.tsv.gz: {run_dir}"
         )
     identity = {
-        "contract_version": ANALYSIS_CONTRACT_VERSION,
+        "contract_version": SOURCE_ID_VERSION,
         "root_manifest": content_identity(root_path),
         "evidence_tree_sha256": inventory["tree_sha256"],
     }

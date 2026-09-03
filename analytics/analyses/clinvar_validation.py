@@ -62,6 +62,7 @@ UNIVERSE_FIELDS = [
 ]
 CACHE_VERSION = 7
 OBSERVED_MEMBERSHIP_CACHE_VERSION = 1
+VEP_CACHE_VERSION = 2
 VALIDATION_TYPES = ["snv", "indel"]
 OBSERVED_MEMBERSHIP_COLUMNS = ["strategy", "variant_type", "variant_key"]
 
@@ -190,7 +191,7 @@ def build_or_load_vep_universe(
     output_path = analytics_dir / "clinvar_universe.snv_indel.vep.tsv.gz"
     manifest_path = analytics_dir / "clinvar_universe.snv_indel.vep.manifest.json"
     contract = {
-        "schema_version": 2,
+        "schema_version": VEP_CACHE_VERSION,
         "source": path_metadata(universe_path),
         "backend": backend,
         "release": release,

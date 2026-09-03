@@ -427,6 +427,7 @@ def build_methods_sections(
     negative_controls: TargetSpaceNullAnalysis | None = None,
     report_timings: list[dict[str, object]] | None = None,
     report_profile_path: Path | None = None,
+    software_provenance: dict[str, object] | None = None,
 ) -> list[str]:
     files = [
         ("Analysis workspace", inputs.analysis_dir),
@@ -527,6 +528,48 @@ def build_methods_sections(
                 "computed over their union without copying source evidence.</p>",
                 table_html(
                     pd.DataFrame(provenance_rows),
+                    classes="table table-sm table-striped",
+                ),
+                "</details>",
+            ]
+        )
+    if software_provenance is not None:
+        runtime = dict(software_provenance.get("runtime") or {})
+        python_runtime = dict(runtime.get("python") or {})
+        r_runtime = dict(runtime.get("R") or {})
+        code = dict(software_provenance.get("code") or {})
+        software_rows = [
+            {
+                "Component": "Analytics code",
+                "Version": str(code.get("git_commit", "")),
+                "Notes": (
+                    "dirty working tree"
+                    if code.get("git_dirty")
+                    else "clean checkout"
+                ),
+            },
+            {
+                "Component": str(python_runtime.get("implementation", "Python")),
+                "Version": str(python_runtime.get("version", "")),
+                "Notes": "",
+            },
+            *[
+                {"Component": name, "Version": version, "Notes": ""}
+                for name, version in sorted(dict(runtime.get("packages") or {}).items())
+            ],
+            *[
+                {"Component": name, "Version": version, "Notes": ""}
+                for name, version in sorted(r_runtime.items())
+            ],
+        ]
+        sections.extend(
+            [
+                "<details><summary>Computation software</summary>",
+                "<p class=\"lead\">These are the versions actually loaded for this "
+                "analysis. They are also part of the calculation identity used to "
+                "separate scientific caches.</p>",
+                table_html(
+                    pd.DataFrame(software_rows),
                     classes="table table-sm table-striped",
                 ),
                 "</details>",

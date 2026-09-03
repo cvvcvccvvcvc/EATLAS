@@ -43,6 +43,12 @@ VARIANT_FIELDS = [
     "vep_status",
     "vep_primary_consequence",
 ]
+TEST_CALCULATION_IDENTITY = {
+    "semantics_version": 1,
+    "cache_versions": {"test": 1},
+    "runtime": {"python": {"version": "test"}},
+}
+TEST_CODE_PROVENANCE = {"git_commit": "a" * 40, "git_dirty": False}
 
 
 def _json(path: Path, payload: dict[str, object]) -> None:
@@ -385,21 +391,38 @@ def test_analysis_workspace_is_order_independent_and_source_runs_are_read_only(
         first_sources,
         analytics_root=tmp_path / "analytics",
         scientific_config={"test": True},
+        calculation_identity=TEST_CALCULATION_IDENTITY,
+        code_provenance=TEST_CODE_PROVENANCE,
     )
     second = build_analysis_inputs(
         second_sources,
         analytics_root=tmp_path / "analytics",
         scientific_config={"test": True},
+        calculation_identity=TEST_CALCULATION_IDENTITY,
+        code_provenance=TEST_CODE_PROVENANCE,
     )
 
     assert first.analysis_id == second.analysis_id
     assert first.analysis_dir == second.analysis_dir
+    changed_runtime = {
+        **TEST_CALCULATION_IDENTITY,
+        "runtime": {"python": {"version": "different"}},
+    }
+    changed_workspace = resolve_analysis_workspace(
+        first_sources,
+        analytics_root=tmp_path / "analytics",
+        scientific_config={"test": True},
+        calculation_identity=changed_runtime,
+    )
+    assert changed_workspace.analysis_id != first.analysis_id
     assert first.analysis_dir.is_relative_to(tmp_path / "analytics")
+    assert "/calculations/" in first.feature_coverage_tsvs[0].as_posix()
     assert len(resolve_variant_aggregation_source(first.variant_annotation_sources).paths) == 2
     assert all(not (run / "analytics").exists() for run in (run_a, run_b))
     assert {run: _snapshot(run) for run in (run_a, run_b)} == before
     manifest = json.loads(first.analysis_manifest_json.read_text())
     assert manifest["status"] == "ready"
+    assert manifest["software"]["code"] == TEST_CODE_PROVENANCE
     assert len(manifest["sources"]) == 2
     assert first.annotation_manifest["gnomad_observation_window"] == {
         "started_at_utc": "2026-03-01T00:00:00+00:00",
@@ -421,6 +444,7 @@ def test_analysis_input_preparation_is_profiled_before_cache_builds(
         sources,
         analytics_root=tmp_path / "analytics",
         scientific_config={"test": True},
+        calculation_identity=TEST_CALCULATION_IDENTITY,
     )
     assert not workspace.analytics_root.exists()
     report_path = resolve_report_html(workspace, "report")
@@ -439,6 +463,7 @@ def test_analysis_input_preparation_is_profiled_before_cache_builds(
             sources,
             analytics_root=tmp_path / "analytics",
             scientific_config={"test": True},
+            calculation_identity=TEST_CALCULATION_IDENTITY,
             annotation_support_workers=2,
             workspace=workspace,
             performance_profile=profile,
@@ -566,6 +591,7 @@ def test_analysis_rejects_conflicting_shared_allele_evidence(
             sources,
             analytics_root=tmp_path / "analytics",
             scientific_config={"test": True},
+            calculation_identity=TEST_CALCULATION_IDENTITY,
         )
 
 
@@ -585,6 +611,7 @@ def test_analysis_root_must_be_outside_source_run(
             sources,
             analytics_root=run / "analytics",
             scientific_config={"test": True},
+            calculation_identity=TEST_CALCULATION_IDENTITY,
         )
 
     assert not (run / "analytics").exists()

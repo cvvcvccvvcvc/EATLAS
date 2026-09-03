@@ -36,7 +36,15 @@ from analytics.io.run_inputs import (
     variant_annotation_descriptor,
     variant_annotation_release,
 )
-from analytics.io.artifacts import cached_content_identity, path_metadata, write_text_atomic
+from analytics.io.artifacts import (
+    cached_content_identity,
+    path_metadata,
+    write_text_atomic,
+)
+from analytics.io.calculation_identity import (
+    build_calculation_identity,
+    repository_provenance,
+)
 from analytics.io.performance import PerformanceProfile
 from analytics.io.root_lock import analytics_root_lock
 from analytics.reporting.components import strategy_label
@@ -311,6 +319,11 @@ def _run_report(args: argparse.Namespace) -> None:
         executable=args.vep_executable,
         cache_dir=args.vep_cache_dir,
     )
+    firth_runtime = validate_firth_runtime()
+    calculation_identity = build_calculation_identity(
+        firth_runtime=firth_runtime,
+    )
+    code_provenance = repository_provenance(Path(__file__).resolve().parents[1])
     phylop_identity = (
         cached_content_identity(
             args.phylop_bigwig,
@@ -341,6 +354,7 @@ def _run_report(args: argparse.Namespace) -> None:
         source_runs,
         analytics_root=args.analytics_root,
         scientific_config=scientific_config,
+        calculation_identity=calculation_identity,
     )
     _build_report(
         args,
@@ -348,6 +362,8 @@ def _run_report(args: argparse.Namespace) -> None:
         scientific_config,
         workspace,
         phylop_identity=phylop_identity,
+        calculation_identity=calculation_identity,
+        code_provenance=code_provenance,
     )
 
 
@@ -358,6 +374,8 @@ def _build_report(
     workspace: AnalysisWorkspace,
     *,
     phylop_identity: dict[str, object] | None,
+    calculation_identity: dict[str, object],
+    code_provenance: dict[str, object],
 ) -> None:
     out_html = resolve_report_html(workspace, args.report_name)
     performance_path = workspace.analysis_dir / "performance" / f"{out_html.stem}.json"
@@ -374,6 +392,8 @@ def _build_report(
             source_runs,
             analytics_root=args.analytics_root,
             scientific_config=scientific_config,
+            calculation_identity=calculation_identity,
+            code_provenance=code_provenance,
             annotation_support_workers=args.annotation_support_workers,
             workspace=workspace,
             performance_profile=performance,
@@ -389,9 +409,6 @@ def _build_report(
         f"Analysis {inputs.analysis_id}: {len(inputs.source_runs)} source run(s), "
         f"workspace {inputs.analysis_dir}"
     )
-
-    with performance.stage("Firth runtime preflight") as timing:
-        timing["metrics"] = validate_firth_runtime()
 
     if args.vep_result_cache_dir is None:
         print("Shared VEP result cache: disabled")
@@ -513,7 +530,9 @@ def _build_report(
             summary=variant_summary,
             clinvar_universe=validation.universe,
             clinvar_vcf=args.clinvar_vcf,
-            condition_cache_dir=args.analytics_root / "cache" / "clinvar_conditions",
+            condition_cache_dir=(
+                workspace.shared_calculation_cache / "clinvar_conditions"
+            ),
             eligible_gene_ids_by_strategy=eligible_gene_ids_by_strategy,
             analytics_dir=analytics_dir,
         )
@@ -655,6 +674,10 @@ def _build_report(
                     negative_controls=negative_controls,
                     report_timings=performance.table_rows(),
                     report_profile_path=performance_path,
+                    software_provenance={
+                        "runtime": calculation_identity["runtime"],
+                        "code": code_provenance,
+                    },
                 ),
             ),
         ]

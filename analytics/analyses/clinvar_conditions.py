@@ -23,6 +23,7 @@ CONDITION_COLUMNS = [
     "total_variant_count",
     "named_variant_count",
 ]
+CACHE_SCHEMA_VERSION = 1
 
 
 def parse_conditions(names_text: str, ids_text: str) -> list[tuple[str, str, str]]:
@@ -79,7 +80,10 @@ def condition_distribution(keys: set[str], memberships: pd.DataFrame) -> pd.Data
 
 def global_condition_distribution(clinvar_vcf: Path, cache_dir: Path) -> pd.DataFrame:
     """Stream the release once; keep duplicate-allele state for one chromosome only."""
-    inputs = {"schema_version": 1, "vcf": path_metadata(clinvar_vcf)}
+    inputs = {
+        "schema_version": CACHE_SCHEMA_VERSION,
+        "vcf": path_metadata(clinvar_vcf),
+    }
     fingerprint = hashlib.sha256(json.dumps(inputs, sort_keys=True).encode()).hexdigest()[:24]
     path = cache_dir / f"{fingerprint}.json"
     if path.exists():

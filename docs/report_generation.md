@@ -19,9 +19,12 @@ contains reusable source caches and analysis-specific outputs:
   .strategy_report.lock
   cache/<source-id>/
     evidence_inventory.verified.json
-    alignment_aggregates/
-    annotation_support/
-    taxonomy_summary/
+    calculations/<calculation-id>/
+      alignment_aggregates/
+      annotation_support/
+      taxonomy_summary/
+  cache/calculations/<calculation-id>/clinvar_conditions/
+  cache/reference_identity/
   analyses/<analysis-id>/
     manifest.json
     derived/
@@ -30,10 +33,24 @@ contains reusable source caches and analysis-specific outputs:
   slurm/
 ```
 
-`source-id` depends on completed pipeline provenance. `analysis-id` depends on
-the unordered set of source IDs and scientific report options. Repeating the
-same analysis reuses the same workspace. Report names only select an HTML file
-inside `reports/`; they do not create a second scientific cache.
+`source-id` depends only on completed pipeline provenance. `calculation-id`
+depends on explicit analytics algorithm/cache versions and the Python, R, and
+computation-library versions actually loaded. `analysis-id` depends on the
+unordered set of source IDs, scientific report options, and calculation ID.
+Repeating the same analysis reuses the same workspace. Report names only select
+an HTML file inside `reports/`; they do not create a second scientific cache.
+
+Every change to a scientific calculation must bump its owning cache version,
+or the top-level analytics semantics version when no narrower owner exists.
+Documentation and HTML-only changes do not require a bump. The analysis
+manifest records the code revision and loaded software; the report repeats a
+compact software table in QC.
+
+A local phyloP BigWig is identified by its SHA-256 content hash, not its path.
+The hash is streamed once and cached under `cache/reference_identity/` while
+the file's filesystem identity and timestamps remain unchanged. Moving an
+unchanged file therefore preserves the scientific analysis identity; replacing
+its contents does not.
 
 Before using a source cache, analytics validates the root manifest's binding to
 `evidence_inventory.json` and hashes every inventoried evidence file. It stores
@@ -197,8 +214,9 @@ one. Named-condition coverage and counts are available on hover. Disease IDs
 used otherwise, without inferred disease groups. The plot selects the top 15
 conditions across both arms and supports name search.
 
-The whole-VCF background is streamed locally and cached once per source identity
-under `cache/clinvar_conditions/`; it does not trigger VEP or network requests.
+The whole-VCF background is streamed locally and cached once per calculation
+identity under `cache/calculations/<calculation-id>/clinvar_conditions/`; it
+does not trigger VEP or network requests.
 It counts distinct VCF alleles, merging repeated records and excluding mixed
 B/LB–P/LP classifications. This describes the variants and associated conditions
 represented in the VCF, not all ClinVar record types or condition-specific
