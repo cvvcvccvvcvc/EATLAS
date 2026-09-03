@@ -6,11 +6,13 @@ from pathlib import Path
 import pandas as pd
 
 from analytics.io.artifacts import (
+    cached_content_identity,
     directory_metadata,
     path_metadata,
     write_json_atomic,
     write_tsv_atomic,
 )
+from analytics.io import artifacts
 
 
 def test_artifact_helpers_write_and_identify_outputs(tmp_path: Path) -> None:
@@ -32,3 +34,29 @@ def test_artifact_helpers_write_and_identify_outputs(tmp_path: Path) -> None:
     assert path_metadata(table_path)["mtime_ns"] > 0
     assert stat.S_IMODE(table_path.stat().st_mode) == 0o644
     assert stat.S_IMODE(manifest_path.stat().st_mode) == 0o644
+
+
+def test_cached_content_identity_rehashes_only_after_file_change(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    source = tmp_path / "reference.bw"
+    source.write_bytes(b"first")
+    calls = 0
+    original = artifacts.sha256_file
+
+    def count_hashes(path: Path, *, chunk_size: int = 16 * 1024 * 1024) -> str:
+        nonlocal calls
+        calls += 1
+        return original(path, chunk_size=chunk_size)
+
+    monkeypatch.setattr(artifacts, "sha256_file", count_hashes)
+    cache_dir = tmp_path / "cache"
+    first = cached_content_identity(source, cache_dir=cache_dir)
+    assert cached_content_identity(source, cache_dir=cache_dir) == first
+    assert calls == 1
+
+    source.write_bytes(b"other")
+    second = cached_content_identity(source, cache_dir=cache_dir)
+    assert second != first
+    assert calls == 2

@@ -45,6 +45,7 @@ def build_conservation_analysis(
     firth_workers: int = 1,
     performance_profile: PerformanceProfile | None = None,
     phylop_bigwig: Path | None = None,
+    phylop_identity: dict[str, object] | None = None,
 ) -> ConservationAnalysis:
     with profile_stage(performance_profile, "Candidate phyloP distributions"):
         candidate = build_candidate_conservation(
@@ -56,6 +57,7 @@ def build_conservation_analysis(
             strategies=strategies,
             performance_profile=performance_profile,
             phylop_bigwig=phylop_bigwig,
+            phylop_identity=phylop_identity,
         )
     with profile_stage(performance_profile, "ClinVar phyloP annotations"):
         conservation = build_conservation_annotations(
@@ -65,6 +67,7 @@ def build_conservation_analysis(
             track_names=DEFAULT_TRACK_NAMES,
             position_scores=candidate.position_scores,
             phylop_bigwig=phylop_bigwig,
+            phylop_identity=phylop_identity,
         )
     with profile_stage(performance_profile, "ClinVar model cohort"):
         cohort = build_conservation_cohort(

@@ -70,6 +70,7 @@ def build_candidate_conservation(
     strategies: list[str] | None = None,
     performance_profile: PerformanceProfile | None = None,
     phylop_bigwig: Path | None = None,
+    phylop_identity: dict[str, object] | None = None,
 ) -> CandidateConservation:
     """Compute compact exact percentile curves with temporary allele-level scores."""
     tracks = parse_tracks(track_names, phylop_bigwig=phylop_bigwig)
@@ -91,7 +92,7 @@ def build_candidate_conservation(
             if annotation_failures_tsv is not None
             else None
         ),
-        "track": track_identity(track),
+        "track": track_identity(track, local_content=phylop_identity),
         "max_block_bp": max_block_bp,
         "max_gap_bp": max_gap_bp,
         "remote_retries": remote_retries,

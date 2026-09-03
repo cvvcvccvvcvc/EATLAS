@@ -104,6 +104,7 @@ def build_target_space_null(
     seed: int = 20_260_721,
     gnomad_cache_dir: Path | None = None,
     phylop_bigwig: Path | None = None,
+    phylop_identity: dict[str, object] | None = None,
     vep_backend: str = "rest",
     vep_release: str,
     vep_executable: str | Path = "vep",
@@ -168,7 +169,10 @@ def build_target_space_null(
             "refseq": True,
             "pick_allele_gene": True,
         },
-        "conservation_track": track_identity(conservation_track),
+        "conservation_track": track_identity(
+            conservation_track,
+            local_content=phylop_identity,
+        ),
     }
     with profile_stage(performance_profile, "Target-null cache lookup") as timing:
         cache_hit = _cache_is_valid(

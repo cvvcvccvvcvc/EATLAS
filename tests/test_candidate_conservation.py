@@ -10,7 +10,7 @@ from analytics.analyses.candidate_conservation_aggregation import (
     build_candidate_allele_store,
     resolve_candidate_aggregation_source,
 )
-from analytics.analyses.conservation import PositionScores, parse_tracks
+from analytics.analyses.conservation import PositionScores, parse_tracks, track_identity
 
 
 def test_candidate_conservation_deduplicates_memberships_and_reuses_cache(
@@ -148,9 +148,7 @@ def test_candidate_conservation_deduplicates_memberships_and_reuses_cache(
     assert len(cached.distributions) == len(result.distributions)
     assert len(cached.histograms) == len(result.histograms)
     assert result.manifest["aggregation"]["engine"] == "duckdb"
-    assert result.manifest["inputs"]["track"]["file"]["path"] == str(
-        local_bigwig.resolve()
-    )
+    assert result.manifest["inputs"]["track"] == track_identity(track)
     assert not list((tmp_path / "analytics").glob("*.sqlite3"))
 
 

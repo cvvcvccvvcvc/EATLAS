@@ -51,7 +51,14 @@ def test_local_phylop_source_is_validated_and_fingerprinted(tmp_path: Path) -> N
     first_identity = track_identity(track)
 
     assert track.url == str(local_bigwig.resolve())
-    assert first_identity["file"]["path"] == str(local_bigwig.resolve())
+    assert "url" not in first_identity
+    assert first_identity["content"]["size_bytes"] == 5
+
+    relocated = tmp_path / "relocated.bw"
+    relocated.write_bytes(local_bigwig.read_bytes())
+    relocated_track = parse_tracks("phyloP100way", phylop_bigwig=relocated)[0]
+    assert track_identity(relocated_track) == first_identity
+
     local_bigwig.write_bytes(b"changed-size")
     assert track_identity(track) != first_identity
 

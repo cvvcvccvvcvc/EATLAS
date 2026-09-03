@@ -8,6 +8,7 @@ import pandas as pd
 import pytest
 
 from analytics.analyses import matched_control as controls
+from analytics.analyses.conservation import track_identity
 from analytics.analyses.matched_control import (
     _build_matched_rows,
     _generate_candidate_controls,
@@ -187,8 +188,8 @@ def test_build_target_space_null_end_to_end_with_mocked_annotations(
     assert set(matched["alt"]) == {"G"}
     assert analysis.manifest["matched_focal_count"] == 1
     assert analysis.manifest["inputs"]["version"] == controls.CONTROL_VERSION
-    assert analysis.manifest["inputs"]["conservation_track"]["file"]["path"] == str(
-        phylop_bigwig.resolve()
+    assert analysis.manifest["inputs"]["conservation_track"] == track_identity(
+        controls.parse_tracks("phyloP100way", phylop_bigwig=phylop_bigwig)[0]
     )
     assert (
         analysis.manifest["inputs"]["focal_rank_method"]

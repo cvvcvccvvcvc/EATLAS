@@ -8,12 +8,17 @@ import json
 import math
 import sys
 import time
-from dataclasses import asdict, dataclass, replace
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 import pandas as pd
 
-from analytics.io.artifacts import path_metadata, write_json_atomic, write_tsv_atomic
+from analytics.io.artifacts import (
+    content_identity,
+    path_metadata,
+    write_json_atomic,
+    write_tsv_atomic,
+)
 
 try:
     import pyBigWig
@@ -92,6 +97,7 @@ def build_conservation_annotations(
     precision: int = 6,
     position_scores: PositionScores | None = None,
     phylop_bigwig: Path | None = None,
+    phylop_identity: dict[str, object] | None = None,
 ) -> ConservationAnnotations:
     tracks = parse_tracks(track_names, phylop_bigwig=phylop_bigwig)
     analytics_dir.mkdir(parents=True, exist_ok=True)
@@ -101,7 +107,9 @@ def build_conservation_annotations(
     expected_inputs = {
         "cache_version": CACHE_VERSION,
         "universe": path_metadata(universe_path),
-        "tracks": [track_identity(track) for track in tracks],
+        "tracks": [
+            track_identity(track, local_content=phylop_identity) for track in tracks
+        ],
         "max_block_bp": max_block_bp,
         "max_gap_bp": max_gap_bp,
         "remote_retries": remote_retries,
@@ -197,14 +205,25 @@ def parse_tracks(
     return tracks
 
 
-def track_identity(track: Track) -> dict[str, object]:
-    """Return a cache identity that fingerprints local track files."""
+def track_identity(
+    track: Track,
+    *,
+    local_content: dict[str, object] | None = None,
+) -> dict[str, object]:
+    """Return a scientific identity; local paths are locators, not identity."""
 
-    identity: dict[str, object] = asdict(track)
     local_path = _local_track_path(track)
-    if local_path is not None:
-        identity["file"] = path_metadata(local_path)
-    return identity
+    if local_path is None:
+        return {
+            "name": track.name,
+            "url": track.url,
+            "chrom_style": track.chrom_style,
+        }
+    return {
+        "name": track.name,
+        "chrom_style": track.chrom_style,
+        "content": local_content or content_identity(local_path),
+    }
 
 
 def universe_rows(universe: pd.DataFrame) -> list[dict[str, str]]:

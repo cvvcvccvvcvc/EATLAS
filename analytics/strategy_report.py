@@ -36,7 +36,7 @@ from analytics.io.run_inputs import (
     variant_annotation_descriptor,
     variant_annotation_release,
 )
-from analytics.io.artifacts import path_metadata, write_text_atomic
+from analytics.io.artifacts import cached_content_identity, path_metadata, write_text_atomic
 from analytics.io.performance import PerformanceProfile
 from analytics.io.root_lock import analytics_root_lock
 from analytics.reporting.components import strategy_label
@@ -311,14 +311,20 @@ def _run_report(args: argparse.Namespace) -> None:
         executable=args.vep_executable,
         cache_dir=args.vep_cache_dir,
     )
+    phylop_identity = (
+        cached_content_identity(
+            args.phylop_bigwig,
+            cache_dir=args.analytics_root / "cache" / "reference_identity",
+        )
+        if args.phylop_bigwig is not None
+        else None
+    )
     scientific_config = {
         "clinvar": {
             "vcf": path_metadata(args.clinvar_vcf),
             "tbi": path_metadata(Path(f"{args.clinvar_vcf}.tbi")),
         },
-        "phylop": path_metadata(args.phylop_bigwig)
-        if args.phylop_bigwig is not None
-        else None,
+        "phylop": phylop_identity,
         "target_space_null": (
             {
                 "enabled": True,
@@ -336,7 +342,13 @@ def _run_report(args: argparse.Namespace) -> None:
         analytics_root=args.analytics_root,
         scientific_config=scientific_config,
     )
-    _build_report(args, source_runs, scientific_config, workspace)
+    _build_report(
+        args,
+        source_runs,
+        scientific_config,
+        workspace,
+        phylop_identity=phylop_identity,
+    )
 
 
 def _build_report(
@@ -344,6 +356,8 @@ def _build_report(
     source_runs: tuple[SourceRun, ...],
     scientific_config: dict[str, object],
     workspace: AnalysisWorkspace,
+    *,
+    phylop_identity: dict[str, object] | None,
 ) -> None:
     out_html = resolve_report_html(workspace, args.report_name)
     performance_path = workspace.analysis_dir / "performance" / f"{out_html.stem}.json"
@@ -490,6 +504,7 @@ def _build_report(
             firth_workers=args.firth_workers,
             performance_profile=performance,
             phylop_bigwig=args.phylop_bigwig,
+            phylop_identity=phylop_identity,
         )
 
     print("Characterizing pathogenic ClinVar hits...")
@@ -547,6 +562,7 @@ def _build_report(
                 seed=args.target_space_null_seed,
                 gnomad_cache_dir=args.gnomad_cache_dir,
                 phylop_bigwig=args.phylop_bigwig,
+                phylop_identity=phylop_identity,
                 vep_backend=args.vep_backend,
                 vep_release=args.vep_release,
                 vep_executable=args.vep_executable,
