@@ -874,7 +874,6 @@ def build_variant_summary(
     genes_path: Path | Sequence[Path] | None = None,
     annotation_failures_path: Path | Sequence[Path] | None = None,
     variant_strategy_support_path: Path | Sequence[Path] | None = None,
-    chunk_size: int = 100_000,
     performance_profile: PerformanceProfile | None = None,
 ) -> VariantSummary:
     """Aggregate a variant annotation table without retaining row-level data in memory."""
@@ -922,7 +921,6 @@ def build_variant_summary(
             variant_strategy_support_path,
             ortholog_evidence_summary_path,
             strategy_label,
-            chunk_size,
             performance_profile,
         )
         if performance_profile is not None:
@@ -960,10 +958,8 @@ def _compute_variant_summary(
     variant_strategy_support_path: Path | Sequence[Path] | None,
     ortholog_evidence_summary_path: Path | Sequence[Path],
     strategy_label: Callable[[str], str],
-    chunk_size: int,
     performance_profile: PerformanceProfile | None,
 ) -> VariantSummary:
-    del chunk_size
     started = time.perf_counter()
     source = resolve_variant_aggregation_source(path)
     source_resolution_seconds = time.perf_counter() - started

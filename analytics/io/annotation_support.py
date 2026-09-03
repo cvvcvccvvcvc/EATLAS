@@ -1267,14 +1267,6 @@ def _iter_required_tsv(path: Path, required: set[str]):
         yield from reader
 
 
-def _require_tsv_header(path: Path, required: set[str]) -> None:
-    with gzip.open(path, "rt", newline="") as handle:
-        fields = set(next(csv.reader(handle, delimiter="\t"), []))
-    missing = required - fields
-    if missing:
-        raise ValueError(f"{path} missing columns: {', '.join(sorted(missing))}")
-
-
 def _positive_int(value: object, label: str) -> int:
     try:
         result = int(value)
