@@ -27,7 +27,7 @@ from analytics.io.artifacts import (
     write_tsv_atomic,
 )
 from analytics.io.performance import PerformanceProfile, profile_stage
-from genomics.clinvar import parse_vcf_record_fields
+from genomics.clinvar import parse_vcf_record_fields, significance_class
 from genomics.variants import (
     build_context_index,
     contexts_for_variant,
@@ -688,20 +688,13 @@ def parse_molecular_consequences(value: str) -> list[tuple[str, str]]:
 
 
 def clinvar_label(clnsig: str) -> str:
-    text = str(clnsig or "").lower()
-    if not text:
-        return "excluded_missing"
-    if "conflicting" in text:
-        return "excluded_other"
-    if "uncertain" in text or "vus" in text:
-        return "excluded_vus"
-    benign = "benign" in text
-    pathogenic = "pathogenic" in text
-    if benign and not pathogenic:
-        return "benign"
-    if pathogenic and not benign:
-        return "pathogenic"
-    return "excluded_other"
+    return {
+        None: "excluded_missing",
+        "Other": "excluded_other",
+        "VUS": "excluded_vus",
+        "B/LB": "benign",
+        "P/LP": "pathogenic",
+    }[significance_class(clnsig)]
 
 
 def gene_sort_key(value: str) -> tuple[int, str]:

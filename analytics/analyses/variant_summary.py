@@ -18,7 +18,6 @@ import numpy as np
 import pandas as pd
 
 from analytics.io.performance import PerformanceProfile
-from genomics.clinvar import CLINVAR_CLASS_ORDER
 from .variant_summary_aggregation import (
     VariantGroupedAggregation,
     aggregate_variant_groups,
@@ -400,26 +399,6 @@ def _write_summary_cache(
         temporary_path.replace(cache_path)
     finally:
         temporary_path.unlink(missing_ok=True)
-
-
-def _categorize_clinvar(values: pd.Series, record_presence: pd.Series) -> pd.Categorical:
-    text = values.fillna("").astype(str).str.lower()
-    category = pd.Series("Other", index=values.index, dtype="object")
-    if pd.api.types.is_bool_dtype(record_presence.dtype):
-        found = record_presence.fillna(False)
-    else:
-        found = record_presence.fillna("").astype(str).ne("")
-    category[~found] = "Not in ClinVar"
-    category[found & text.eq("")] = "Unclassified"
-    conflicting = text.str.contains("conflicting", na=False)
-    uncertain = text.str.contains("uncertain|vus", regex=True, na=False)
-    benign = text.str.contains("benign", na=False)
-    pathogenic = text.str.contains("pathogenic", na=False)
-    category[found & conflicting] = "Other"
-    category[found & uncertain & ~conflicting] = "VUS"
-    category[found & pathogenic & ~benign & ~uncertain & ~conflicting] = "P/LP"
-    category[found & benign & ~pathogenic & ~uncertain & ~conflicting] = "B/LB"
-    return pd.Categorical(category, categories=CLINVAR_CLASS_ORDER, ordered=True)
 
 
 def _add_pathogenic_strategy_support(

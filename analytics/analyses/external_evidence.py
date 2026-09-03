@@ -18,7 +18,6 @@ from analytics.io.performance import PerformanceProfile, profile_stage
 from genomics.clinvar import (
     parse_vcf_record_fields,
     record_category,
-    significance_class,
 )
 from genomics.gnomad_cache import GnomadRegionCache
 from genomics.gnomad_index import GnomadAlleleIndex
@@ -195,11 +194,6 @@ def _read_evidence(path: Path) -> pd.DataFrame:
         frame[column] = frame[column].astype(str).str.lower().isin({"true", "1"})
     frame["gnomad_af"] = pd.to_numeric(frame["gnomad_af"], errors="coerce")
     return frame
-
-
-def categorize_clinvar_sig(value: str) -> str:
-    """Map unambiguous ClinVar significance text to a report class."""
-    return significance_class(value) or ""
 
 
 def _annotate_clinvar(variants: pd.DataFrame, clinvar_vcf: Path) -> pd.DataFrame:

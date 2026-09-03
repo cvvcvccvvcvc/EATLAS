@@ -7,17 +7,9 @@ import pandas as pd
 import pytest
 
 from analytics.analyses import external_evidence
-from analytics.analyses.external_evidence import _annotate_gnomad, categorize_clinvar_sig
+from analytics.analyses.external_evidence import _annotate_gnomad
 from genomics.gnomad_cache import GnomadRegionCache
 from genomics.gnomad_index import GnomadAlleleIndex
-
-
-def test_clinvar_categories_keep_missing_classification_separate() -> None:
-    assert categorize_clinvar_sig("") == ""
-    assert categorize_clinvar_sig("Benign") == "B/LB"
-    assert categorize_clinvar_sig("Likely_pathogenic") == "P/LP"
-    assert categorize_clinvar_sig("Uncertain_significance") == "VUS"
-    assert categorize_clinvar_sig("Conflicting_classifications_of_pathogenicity") == "Other"
 
 
 def test_clinvar_annotation_queries_exact_alleles_with_temporary_bed(

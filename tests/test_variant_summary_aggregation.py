@@ -21,6 +21,7 @@ from analytics.analyses.variant_summary_aggregation import (
     available_cpu_count,
     resolve_variant_aggregation_source,
 )
+from genomics.clinvar import record_category
 from genomics.variants import ALLELE_ANNOTATION_FIELDS
 
 
@@ -376,6 +377,44 @@ def test_allele_evidence_is_reconciled_independently_of_row_order(
         results[1].allele_gene_groups,
     )
     pd.testing.assert_frame_equal(results[0].pathogenic_rows, results[1].pathogenic_rows)
+
+
+def test_duckdb_clinvar_categories_match_shared_semantics(tmp_path: Path) -> None:
+    signatures = [
+        ("", False),
+        ("", True),
+        ("Likely_benign", True),
+        ("Likely_pathogenic", True),
+        ("Uncertain_significance", True),
+        ("Conflicting_classifications_of_pathogenicity", True),
+    ]
+    rows = [
+        _evidence_row(
+            f"gene_{index}",
+            variant_key=f"1:{100 + index}:A>G",
+            clinvar_id=f"VCV{index}" if found else "",
+            clinvar_sig=significance,
+        )
+        for index, (significance, found) in enumerate(signatures)
+    ]
+    path = tmp_path / "variant_annotations.tsv.gz"
+    _write_evidence_rows(path, rows)
+
+    result = aggregate_variant_groups(
+        resolve_variant_aggregation_source(path),
+        threads=1,
+    )
+    observed = result.global_groups.set_index("clinvar_category")[
+        "variant_count"
+    ].to_dict()
+    expected = pd.Series(
+        [
+            record_category(significance, found=found)
+            for significance, found in signatures
+        ]
+    ).value_counts().to_dict()
+
+    assert observed == expected
 
 
 def test_same_gene_gnomad_status_reduction_is_order_independent(tmp_path: Path) -> None:

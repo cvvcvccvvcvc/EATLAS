@@ -14,6 +14,23 @@ from analytics.analyses.observed_variant_store import (
 )
 
 
+@pytest.mark.parametrize(
+    ("significance", "expected"),
+    [
+        ("", "excluded_missing"),
+        ("Conflicting_classifications_of_pathogenicity", "excluded_other"),
+        ("Uncertain_significance", "excluded_vus"),
+        ("Likely_benign", "benign"),
+        ("Likely_pathogenic", "pathogenic"),
+    ],
+)
+def test_clinvar_universe_labels_use_shared_significance_semantics(
+    significance: str,
+    expected: str,
+) -> None:
+    assert clinvar_validation.clinvar_label(significance) == expected
+
+
 def test_clinvar_universe_writer_preserves_schema_and_shared_permissions(
     tmp_path: Path,
 ) -> None:
