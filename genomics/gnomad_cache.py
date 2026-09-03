@@ -17,6 +17,7 @@ from typing import Callable, Iterator
 from urllib.error import HTTPError, URLError
 
 from .gnomad import (
+    GNOMAD_DATASET,
     GNOMAD_MAX_ATTEMPTS,
     fetch_region_variants_recursive,
     is_retryable_network_error,
@@ -28,7 +29,6 @@ logger = logging.getLogger(__name__)
 CACHE_SCHEMA_VERSION = 1
 DEFAULT_TILE_SIZE_BP = 25_000
 DEFAULT_GROUP_ATTEMPTS = 2
-GNOMAD_DATASET = "gnomad_r4"
 GNOMAD_REFERENCE_GENOME = "GRCh38"
 
 FetchRegion = Callable[..., list[dict]]

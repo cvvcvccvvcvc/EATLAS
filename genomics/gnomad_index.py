@@ -15,10 +15,9 @@ from pathlib import Path
 import duckdb
 import pandas as pd
 
-from .gnomad import select_af_metrics
+from .gnomad import GNOMAD_DATASET, select_af_metrics
 from .gnomad_cache import (
     CACHE_SCHEMA_VERSION as REGION_CACHE_SCHEMA_VERSION,
-    GNOMAD_DATASET,
     GNOMAD_REFERENCE_GENOME,
     GnomadRegionCache,
     Tile,

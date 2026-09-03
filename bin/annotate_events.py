@@ -17,7 +17,12 @@ from pathlib import Path
 import pysam
 
 from genomics.clinvar import review_stars as clinvar_review_stars
-from genomics.gnomad import GNOMAD_API_URL, fetch_region_variants_recursive, select_af_metrics
+from genomics.gnomad import (
+    GNOMAD_API_URL,
+    GNOMAD_DATASET,
+    fetch_region_variants_recursive,
+    select_af_metrics,
+)
 from genomics.gnomad_cache import GnomadRegionCache
 from genomics.variants import (
     CLINVAR_ANNOTATION_FIELDS,
@@ -70,7 +75,6 @@ EVENT_VARIANT_MAP_FIELDS = [
 ]
 
 FAILURE_FIELDS = ["source", "scope", "chrom", "start", "end", "failure_type", "message"]
-GNOMAD_DATASET = "gnomad_r4"
 
 
 def parse_args():

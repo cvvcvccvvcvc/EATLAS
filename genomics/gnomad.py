@@ -10,6 +10,7 @@ from urllib.error import HTTPError, URLError
 logger = logging.getLogger(__name__)
 
 GNOMAD_API_URL = "https://gnomad.broadinstitute.org/api"
+GNOMAD_DATASET = "gnomad_r4"
 GNOMAD_MAX_ATTEMPTS = 10
 GNOMAD_RETRY_BASE_SECONDS = 5.0
 GNOMAD_RETRY_MAX_SECONDS = 60.0
@@ -19,7 +20,7 @@ GNOMAD_REGION_MIN_WINDOW_BP = 500
 GNOMAD_REGION_QUERY = """
 query VariantsInRegion($chrom: String!, $start: Int!, $stop: Int!) {
   region(chrom: $chrom, start: $start, stop: $stop, reference_genome: GRCh38) {
-    variants(dataset: gnomad_r4) {
+    variants(dataset: %s) {
       variant_id
       chrom
       pos
@@ -34,7 +35,8 @@ query VariantsInRegion($chrom: String!, $start: Int!, $stop: Int!) {
     }
   }
 }
-"""
+""" % GNOMAD_DATASET
+
 
 def _to_float(value) -> float | None:
     if value is None:

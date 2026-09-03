@@ -31,6 +31,7 @@ from analytics.io.variant_source import (
     sql_string,
     variant_source_sql,
 )
+from genomics.gnomad import GNOMAD_DATASET
 from genomics.variants import ALLELE_ANNOTATION_FIELDS
 
 
@@ -563,7 +564,7 @@ def _validate_compatibility(
         "alignment_event_mode": "compact_support",
         "event_ortholog_support_format": "event_group_id_v2",
         "annotation_schema": "normalized_annotation_evidence_v4",
-        "gnomad_dataset": "gnomad_r4",
+        "gnomad_dataset": GNOMAD_DATASET,
     }
     invalid = [
         key for key, value in required.items() if str(baseline.get(key)) != value

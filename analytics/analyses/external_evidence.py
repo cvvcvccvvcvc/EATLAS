@@ -23,6 +23,7 @@ from genomics.gnomad_cache import GnomadRegionCache
 from genomics.gnomad_index import GnomadAlleleIndex
 from genomics.gnomad import (
     GNOMAD_API_URL,
+    GNOMAD_DATASET,
     fetch_region_variants_recursive,
     select_af_metrics,
 )
@@ -31,7 +32,6 @@ from genomics.variants import normalize_chrom
 
 
 CACHE_VERSION = 2
-GNOMAD_DATASET = "gnomad_r4"
 GNOMAD_CLUSTER_GAP_BP = 200_000
 GNOMAD_WORKERS = 5
 EVIDENCE_COLUMNS = [
