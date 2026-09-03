@@ -471,10 +471,9 @@ def parse_paf(
     target_meta: dict[str, str],
     meta_by_sequence: dict[str, dict[str, str]],
     summaries: dict[str, dict[str, object]],
-    event_start_index: int,
     query_slices: dict[str, QuerySlice] | None = None,
     accepted_record_ids: frozenset[str] | None = None,
-) -> tuple[list[dict[str, object]], list[dict[str, object]], int]:
+) -> tuple[list[dict[str, object]], list[dict[str, object]]]:
     segments: list[dict[str, object]] = []
     event_by_key: dict[tuple[object, ...], dict[str, object]] = {}
     query_slices = query_slices or full_query_slices(meta_by_sequence)
@@ -625,7 +624,7 @@ def parse_paf(
         event.pop("_is_primary", None)
         summaries[str(event["query_id"])]["event_count"] += 1
 
-    return segments, events, event_start_index + len(events)
+    return segments, events
 
 
 def empty_summary(gene_id: str, strategy: str, preset: str, meta: dict[str, str], target_length: int) -> dict[str, object]:
@@ -704,7 +703,6 @@ def main() -> None:
     all_events: list[dict[str, object]] = []
     failures: list[dict[str, object]] = []
     commands: list[str] = []
-    event_index = 1
 
     with tempfile.TemporaryDirectory(prefix=f"{args.strategy}_", dir=args.outdir) as tmp_name:
         work_dir = Path(tmp_name)
@@ -745,7 +743,7 @@ def main() -> None:
             if pseudoreads is not None:
                 backbone = select_pseudoread_backbone(paf_path, query_slices)
                 accepted_record_ids = backbone.accepted_record_ids
-            segments, events, event_index = parse_paf(
+            segments, events = parse_paf(
                 paf_path,
                 gene_id,
                 args.strategy,
@@ -753,7 +751,6 @@ def main() -> None:
                 target_meta,
                 meta_by_sequence,
                 summaries,
-                event_index,
                 query_slices,
                 accepted_record_ids,
             )

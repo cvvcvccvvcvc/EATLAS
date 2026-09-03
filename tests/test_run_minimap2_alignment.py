@@ -120,7 +120,7 @@ def parse_rows(path: Path, lines: list[str]):
         query_id: empty_summary("1", "minimap2_asm20", "asm20", meta, 10)
         for query_id, meta in metadata.items()
     }
-    segments, events, _ = parse_paf(
+    segments, events = parse_paf(
         path,
         "1",
         "minimap2_asm20",
@@ -128,7 +128,6 @@ def parse_rows(path: Path, lines: list[str]):
         {"genomic_accession": "NC_1", "genomic_begin": "100"},
         metadata,
         summaries,
-        1,
     )
     return (
         sorted(tuple(row[field] for field in SEGMENT_FIELDS) for row in segments),
@@ -183,7 +182,6 @@ def test_paf_rejects_query_source_without_metadata(tmp_path: Path) -> None:
             {"genomic_accession": "NC_1", "genomic_begin": "100"},
             {},
             {},
-            1,
             query_slices={
                 "q1": QuerySlice("missing", 0, 10, 10, 1, False),
             },
@@ -211,7 +209,7 @@ def test_paf_preserves_native_type_and_prefers_primary_duplicates(tmp_path: Path
         for query_id, meta in metadata.items()
     }
 
-    _segments, events, next_index = parse_paf(
+    _segments, events = parse_paf(
         path,
         "1",
         "minimap2_asm20",
@@ -219,11 +217,9 @@ def test_paf_preserves_native_type_and_prefers_primary_duplicates(tmp_path: Path
         {"genomic_accession": "NC_1", "genomic_begin": "100"},
         metadata,
         summaries,
-        1,
     )
 
     assert len(events) == 2
-    assert next_index == 3
     by_query = {row["query_id"]: row for row in events}
     assert by_query["q1"]["qc_flags"] == ""
     assert by_query["q1"]["mapq"] == 60
@@ -250,7 +246,7 @@ def test_paf_reports_actual_mapq_without_threshold_flag(tmp_path: Path) -> None:
     }
     summaries = {"q1": empty_summary("1", "minimap2_asm20", "asm20", metadata["q1"], 10)}
 
-    segments, events, _ = parse_paf(
+    segments, events = parse_paf(
         path,
         "1",
         "minimap2_asm20",
@@ -258,7 +254,6 @@ def test_paf_reports_actual_mapq_without_threshold_flag(tmp_path: Path) -> None:
         {"genomic_accession": "NC_1", "genomic_begin": "100"},
         metadata,
         summaries,
-        1,
     )
 
     assert segments[0]["mapq"] == 0
@@ -308,7 +303,7 @@ def test_long_pseudoread_coordinates_are_lifted_and_events_deduplicated(
         )
     }
 
-    segments, events, _ = parse_paf(
+    segments, events = parse_paf(
         path,
         "1",
         "minimap2_map_ont_pseudoreads_30000_15000",
@@ -316,7 +311,6 @@ def test_long_pseudoread_coordinates_are_lifted_and_events_deduplicated(
         {"genomic_accession": "NC_1", "genomic_begin": "100"},
         metadata,
         summaries,
-        1,
         query_slices,
     )
 
@@ -360,7 +354,7 @@ def test_long_secondary_backbone_record_keeps_flagged_alt_support(
     }
     backbone = select_pseudoread_backbone(path, query_slices)
 
-    segments, events, _ = parse_paf(
+    segments, events = parse_paf(
         path,
         "1",
         "minimap2_map_ont_pseudoreads_30000_15000",
@@ -368,7 +362,6 @@ def test_long_secondary_backbone_record_keeps_flagged_alt_support(
         {"genomic_accession": "NC_1", "genomic_begin": "100"},
         metadata,
         summaries,
-        1,
         query_slices,
         backbone.accepted_record_ids,
     )
