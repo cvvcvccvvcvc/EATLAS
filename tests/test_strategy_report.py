@@ -18,6 +18,7 @@ from analytics.io.run_inputs import (
     validate_report_inputs,
     variant_annotation_release,
 )
+from analytics.io.root_lock import analytics_root_lock
 from analytics.reporting.components import dataframe_records, format_table_dataframe
 from analytics.reporting.basic_filtering import basic_filtering_view
 from analytics.reporting.config import CONSEQUENCE_GROUP_COLORS
@@ -107,6 +108,30 @@ def test_report_cli_has_one_workspace_and_repeatable_run_inputs(
     assert not hasattr(args, "cohort_manifest")
 
 
+def test_busy_analytics_root_fails_before_source_resolution(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "analytics"
+    monkeypatch.setattr(
+        strategy_report,
+        "parse_args",
+        lambda: SimpleNamespace(
+            analytics_root=root,
+            run_dir=[tmp_path / "run"],
+        ),
+    )
+    monkeypatch.setattr(
+        strategy_report,
+        "resolve_source_runs",
+        lambda *_args, **_kwargs: pytest.fail("source resolution must not start"),
+    )
+
+    with analytics_root_lock(root):
+        with pytest.raises(RuntimeError, match="already writing analytics root"):
+            strategy_report.main()
+
+
 def test_clinvar_default_prefers_environment(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -183,6 +208,7 @@ def test_local_vep_preflight_runs_before_workspace_resolution(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     args = SimpleNamespace(
+        analytics_root=tmp_path / "analytics",
         clinvar_vcf=tmp_path / "clinvar.vcf.gz",
         phylop_bigwig=None,
         target_space_null=False,

@@ -21,12 +21,15 @@ from analytics.analyses.observed_variant_store import (
 from analytics.analyses.pathogenic_variants import build_pathogenic_variant_analysis
 from analytics.analyses.variant_summary import build_variant_summary
 from analytics.io.run_inputs import (
+    AnalysisWorkspace,
+    SourceRun,
     build_analysis_inputs,
     read_failures,
     read_feature_coverage,
     read_input_gene_count,
     read_strategy_summary,
     read_taxonomy_summary,
+    resolve_analytics_root,
     resolve_analysis_workspace,
     resolve_report_html,
     resolve_source_runs,
@@ -35,6 +38,7 @@ from analytics.io.run_inputs import (
 )
 from analytics.io.artifacts import path_metadata, write_text_atomic
 from analytics.io.performance import PerformanceProfile
+from analytics.io.root_lock import analytics_root_lock
 from analytics.reporting.components import strategy_label
 from analytics.reporting.basic_filtering import build_basic_filtering_sections
 from analytics.reporting.conservation import build_clinvar_association_sections
@@ -265,6 +269,12 @@ def _require_local_vep_runtime(
 
 def main() -> None:
     args = parse_args()
+    args.analytics_root = resolve_analytics_root(args.analytics_root, args.run_dir)
+    with analytics_root_lock(args.analytics_root):
+        _run_report(args)
+
+
+def _run_report(args: argparse.Namespace) -> None:
     args.clinvar_vcf = args.clinvar_vcf.expanduser().resolve()
     if args.phylop_bigwig is not None:
         args.phylop_bigwig = args.phylop_bigwig.expanduser().resolve()
@@ -326,6 +336,15 @@ def main() -> None:
         analytics_root=args.analytics_root,
         scientific_config=scientific_config,
     )
+    _build_report(args, source_runs, scientific_config, workspace)
+
+
+def _build_report(
+    args: argparse.Namespace,
+    source_runs: tuple[SourceRun, ...],
+    scientific_config: dict[str, object],
+    workspace: AnalysisWorkspace,
+) -> None:
     out_html = resolve_report_html(workspace, args.report_name)
     performance_path = workspace.analysis_dir / "performance" / f"{out_html.stem}.json"
     performance = PerformanceProfile(

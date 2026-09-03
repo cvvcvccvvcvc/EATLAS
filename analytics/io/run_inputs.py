@@ -116,6 +116,23 @@ def safe_report_name(name: str) -> str:
     return value
 
 
+def resolve_analytics_root(
+    analytics_root: Path,
+    run_dirs: Sequence[Path],
+) -> Path:
+    """Resolve an analytics root and reject writes below immutable source runs."""
+
+    root = analytics_root.expanduser().resolve()
+    for run_dir in run_dirs:
+        source = run_dir.expanduser().resolve()
+        if root == source or source in root.parents:
+            raise ValueError(
+                "--analytics-root must be outside every immutable source run: "
+                f"{source}"
+            )
+    return root
+
+
 def resolve_source_runs(
     run_dirs: Sequence[Path],
     *,
@@ -162,6 +179,7 @@ def build_analysis_inputs(
     analysis_dir = workspace.analysis_dir
     derived_dir = workspace.derived_dir
     contract = workspace.contract
+    derived_dir.mkdir(parents=True, exist_ok=True)
     _validate_shared_allele_evidence(source_runs, derived_dir)
 
     alignment_paths = []
@@ -285,13 +303,10 @@ def resolve_analysis_workspace(
     if not source_runs:
         raise ValueError("Analysis requires at least one source run")
     source_runs = tuple(sorted(source_runs, key=lambda source: source.source_id))
-    analytics_root = analytics_root.expanduser().resolve()
-    for source in source_runs:
-        if analytics_root == source.run_dir or source.run_dir in analytics_root.parents:
-            raise ValueError(
-                "--analytics-root must be outside every immutable source run: "
-                f"{source.run_dir}"
-            )
+    analytics_root = resolve_analytics_root(
+        analytics_root,
+        [source.run_dir for source in source_runs],
+    )
     contract = {
         "contract_version": ANALYSIS_CONTRACT_VERSION,
         "source_ids": [source.source_id for source in source_runs],
@@ -300,7 +315,6 @@ def resolve_analysis_workspace(
     analysis_id = hashlib.sha256(_canonical_json(contract)).hexdigest()[:24]
     analysis_dir = analytics_root / "analyses" / analysis_id
     derived_dir = analysis_dir / "derived"
-    derived_dir.mkdir(parents=True, exist_ok=True)
     return AnalysisWorkspace(
         analytics_root=analytics_root,
         analysis_id=analysis_id,

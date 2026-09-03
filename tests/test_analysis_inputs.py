@@ -411,6 +411,7 @@ def test_analysis_input_preparation_is_profiled_before_cache_builds(
         analytics_root=tmp_path / "analytics",
         scientific_config={"test": True},
     )
+    assert not workspace.analytics_root.exists()
     report_path = resolve_report_html(workspace, "report")
     profile_path = workspace.analysis_dir / "performance" / "report.json"
     profile = PerformanceProfile(

@@ -16,6 +16,7 @@ contains reusable source caches and analysis-specific outputs:
 
 ```text
 <analytics-root>/
+  .strategy_report.lock
   cache/<source-id>/
     alignment_aggregates/
     annotation_support/
@@ -38,6 +39,12 @@ dataset. Small gene, feature, failure, coverage, and support tables are read
 directly from each source. Analytics materializes only reusable per-source
 derivations and genuine run-set results; it does not build a synthetic combined
 run, copy source TSV files, or create target-FASTA symlink trees.
+
+One report process owns an analytics root at a time. A concurrent report for
+the same root exits immediately instead of writing shared caches concurrently;
+reports using different roots remain independent. The lock file itself is only
+a stable rendezvous point. Process exit, including a crash, releases ownership,
+so the file may safely remain in place.
 
 Annotation-support preparation is partition-local. Each worker reads only the
 variant-annotation shards owned by its evidence partition, uses one DuckDB
