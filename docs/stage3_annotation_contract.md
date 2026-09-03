@@ -34,7 +34,9 @@ The cluster uses local release-pinned VEP. Small local runs may use Ensembl REST
 Local VEP requires `vep_release`, `vep_executable`, and `vep_cache_dir`. Completed
 variant/gene results can be reused through the shared immutable
 `vep_result_cache_dir`; the official VEP reference cache and the result cache are
-different resources.
+different resources. REST resolves the server release when none is declared and
+rejects a declared release that does not match the server before querying new
+variants.
 
 ## Processing
 

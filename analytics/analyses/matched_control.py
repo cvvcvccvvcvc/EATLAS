@@ -52,7 +52,7 @@ from genomics.vep.annotator import annotate_vep_consequences
 from genomics.vep.result_cache import DEFAULT_TILE_SIZE_BP
 
 
-CONTROL_VERSION = 7
+CONTROL_VERSION = 8
 FOCAL_CACHE_VERSION = 3
 MATCHED_POOL_SIZE = 5
 CANDIDATE_POOL_SIZE = MATCHED_POOL_SIZE * 3
@@ -105,7 +105,7 @@ def build_target_space_null(
     gnomad_cache_dir: Path | None = None,
     phylop_bigwig: Path | None = None,
     vep_backend: str = "rest",
-    vep_release: str | None = None,
+    vep_release: str,
     vep_executable: str | Path = "vep",
     vep_cache_dir: Path | None = None,
     vep_forks: int = 1,
@@ -119,6 +119,12 @@ def build_target_space_null(
         raise ValueError("target-space-null sample size must be >= 1")
     if resamples < 100:
         raise ValueError("target-space-null resamples must be >= 100")
+    vep_backend = str(vep_backend).strip()
+    if not vep_backend:
+        raise ValueError("target-space-null VEP backend must be non-empty")
+    if vep_release is None or not str(vep_release).strip():
+        raise ValueError("target-space-null VEP release must be pinned")
+    vep_release = str(vep_release).strip()
 
     outdir = analytics_dir / "negative_control"
     outdir.mkdir(parents=True, exist_ok=True)
@@ -157,7 +163,8 @@ def build_target_space_null(
         "focal_rank_method": FOCAL_RANK_METHOD,
         "matching": ["gene_id", "target_context", "ref", "alt", "vep_primary_consequence"],
         "vep": {
-            "release": str(vep_release) if vep_release is not None else "current",
+            "backend": vep_backend,
+            "release": vep_release,
             "refseq": True,
             "pick_allele_gene": True,
         },

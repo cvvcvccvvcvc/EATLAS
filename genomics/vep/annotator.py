@@ -65,9 +65,11 @@ def annotate_vep_consequences(
     if vep_forks < 1:
         raise ValueError("VEP forks must be >= 1")
 
+    rest_release_verified = False
     if backend == "rest":
-        release = release or _fetch_release(base_url, retries, timeout_seconds)
-        # Preserve the original REST hash so existing caches remain reusable.
+        if release is None:
+            release = _fetch_release(base_url, retries, timeout_seconds)
+            rest_release_verified = True
         config = vep_result_cache_config(
             backend=backend,
             release=str(release),
@@ -177,6 +179,18 @@ def annotate_vep_consequences(
                 )
                 batch_count = 1
             elif missing_rows:
+                if not rest_release_verified:
+                    actual_release = _fetch_release(
+                        base_url,
+                        retries,
+                        timeout_seconds,
+                    )
+                    if actual_release != str(release):
+                        raise RuntimeError(
+                            "Ensembl REST reports release "
+                            f"{actual_release}, but release {release} was required; "
+                            "use the local VEP backend for historical releases"
+                        )
                 batches = [
                     missing_rows[index : index + VEP_BATCH_SIZE]
                     for index in range(0, len(missing_rows), VEP_BATCH_SIZE)
@@ -273,9 +287,10 @@ def vep_result_cache_config(
     if backend == "rest":
         return {
             "base_url": base_url.rstrip("/"),
+            "backend": "rest",
             "options": VEP_OPTIONS,
             "release": str(release),
-            "schema_version": 1,
+            "schema_version": 2,
         }
     if backend == "local":
         return {

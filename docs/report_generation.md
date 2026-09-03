@@ -224,7 +224,9 @@ are no legacy aggregate, cohort-workspace, or separate bulk-VEP fallbacks.
 Rows with non-`ok` pipeline VEP status remain explicit and appear as
 `Not annotated` where a complete denominator is required. The optional
 target-space null may make additional VEP and gnomAD requests for generated
-control alleles.
+control alleles. It always uses the VEP release pinned by the pipeline
+artifacts; both that release and the selected VEP backend are part of its cache
+identity.
 
 ## Monitoring And Completion
 

@@ -103,7 +103,7 @@
                 "vep_release": {
                     "type": "integer",
                     "minimum": 1,
-                    "description": "Declared Ensembl VEP release. Required for the local backend; REST resolves the current release when omitted."
+                    "description": "Declared Ensembl VEP release. Required for the local backend; REST resolves it when omitted and verifies it against the server when provided."
                 },
                 "vep_executable": {
                     "type": "string",

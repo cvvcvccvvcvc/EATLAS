@@ -5,6 +5,7 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+import pytest
 
 from analytics.analyses import matched_control as controls
 from analytics.analyses.matched_control import (
@@ -173,6 +174,8 @@ def test_build_target_space_null_end_to_end_with_mocked_annotations(
         seed=3,
         gnomad_cache_dir=tmp_path / "gnomad_cache",
         phylop_bigwig=phylop_bigwig,
+        vep_backend="rest",
+        vep_release="116",
         vep_result_cache_dir=tmp_path / "vep_result_cache",
         performance_profile=performance,
     )
@@ -224,6 +227,33 @@ def test_build_target_space_null_end_to_end_with_mocked_annotations(
     )
     assert observed_stage["details"] == "shared run-level store"
 
+    controls.build_target_space_null(
+        analytics_dir=analytics_dir,
+        variant_annotations_source=annotations_path,
+        target_features_tsv=features_path,
+        genes_tsv=genes_path,
+        target_sequences_dir=target_dir,
+        clinvar_vcf=tmp_path / "clinvar.vcf.gz",
+        strategies=["s1"],
+        observed_store=observed_store,
+        sample_size_per_strategy=10,
+        resamples=100,
+        seed=3,
+        gnomad_cache_dir=tmp_path / "gnomad_cache",
+        phylop_bigwig=phylop_bigwig,
+        vep_backend="local",
+        vep_release="116",
+        vep_result_cache_dir=tmp_path / "vep_result_cache",
+        performance_profile=performance,
+    )
+    assert len(vep_calls) == 4
+    assert json.loads(analysis.manifest_path.read_text())["inputs"]["vep"] == {
+        "backend": "local",
+        "release": "116",
+        "refseq": True,
+        "pick_allele_gene": True,
+    }
+
     analysis.manifest_path.unlink()
     analysis.matched_path.unlink()
     analysis.conservation_path.unlink()
@@ -248,6 +278,8 @@ def test_build_target_space_null_end_to_end_with_mocked_annotations(
         seed=3,
         gnomad_cache_dir=tmp_path / "gnomad_cache",
         phylop_bigwig=phylop_bigwig,
+        vep_backend="local",
+        vep_release="116",
         vep_result_cache_dir=tmp_path / "vep_result_cache",
         performance_profile=performance,
     )
@@ -257,6 +289,28 @@ def test_build_target_space_null_end_to_end_with_mocked_annotations(
         if stage["name"] == "Target-null focal sampling"
     ]
     assert focal_stages[-1]["details"] == "cache hit"
+
+
+@pytest.mark.parametrize("vep_release", [None, "", " "])
+def test_target_space_null_requires_pinned_vep_release(
+    tmp_path: Path,
+    vep_release: str | None,
+) -> None:
+    analytics_dir = tmp_path / "analytics"
+
+    with pytest.raises(ValueError, match="VEP release must be pinned"):
+        controls.build_target_space_null(
+            analytics_dir=analytics_dir,
+            variant_annotations_source=tmp_path / "variants.tsv.gz",
+            target_features_tsv=tmp_path / "features.tsv.gz",
+            genes_tsv=tmp_path / "genes.tsv.gz",
+            target_sequences_dir=tmp_path / "targets",
+            clinvar_vcf=tmp_path / "clinvar.vcf.gz",
+            strategies=["s1"],
+            vep_release=vep_release,  # type: ignore[arg-type]
+        )
+
+    assert not analytics_dir.exists()
 
 
 def test_target_space_genes_use_accession_chromosome_for_par_loci(

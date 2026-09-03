@@ -10,6 +10,11 @@ import pytest
 from genomics.vep import annotator as vep
 
 
+@pytest.fixture(autouse=True)
+def _current_rest_release(monkeypatch) -> None:
+    monkeypatch.setattr(vep, "_fetch_release", lambda *_args: "116")
+
+
 def test_parse_record_selects_target_gene_and_most_severe_term() -> None:
     row = {"variant_key": "1:10:A>G", "gene_id": "25"}
     record = {
@@ -47,6 +52,7 @@ def test_sqlite_cache_reuses_completed_annotations(tmp_path: Path, monkeypatch) 
         ]
     )
     calls = []
+    release_calls = []
 
     def fake_request(batch, *_args):
         calls.append(batch)
@@ -67,15 +73,64 @@ def test_sqlite_cache_reuses_completed_annotations(tmp_path: Path, monkeypatch) 
         ]
 
     monkeypatch.setattr(vep, "_request_batch", fake_request)
+    monkeypatch.setattr(
+        vep,
+        "_fetch_release",
+        lambda *_args: release_calls.append(True) or "116",
+    )
     cache = tmp_path / "vep.sqlite"
     first, first_summary = vep.annotate_vep_consequences(rows, cache, release="116")
     second, second_summary = vep.annotate_vep_consequences(rows, cache, release="116")
 
     assert len(calls) == 1
+    assert len(release_calls) == 1
     assert len(calls[0]) == 1
     assert first_summary["queried"] == 1
     assert second_summary["cached"] == 1
     pd.testing.assert_frame_equal(first, second)
+
+
+def test_rest_vep_rejects_release_mismatch_before_query(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    rows = pd.DataFrame(
+        [
+            {
+                "variant_key": "1:10:A>G",
+                "gene_id": "25",
+                "chrom": "1",
+                "pos": 10,
+                "ref": "A",
+                "alt": "G",
+            }
+        ]
+    )
+    monkeypatch.setattr(vep, "_fetch_release", lambda *_args: "117")
+    monkeypatch.setattr(
+        vep,
+        "_request_batch",
+        lambda *_args: (_ for _ in ()).throw(
+            AssertionError("REST query ran before release validation")
+        ),
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match="reports release 117, but release 116 was required",
+    ):
+        vep.annotate_vep_consequences(
+            rows,
+            tmp_path / "vep.sqlite",
+            release="116",
+        )
+
+
+def test_rest_cache_namespace_requires_verified_release() -> None:
+    config = vep.vep_result_cache_config(backend="rest", release="116")
+
+    assert config["backend"] == "rest"
+    assert config["schema_version"] == 2
 
 
 def test_shared_cache_reuses_annotations_across_run_caches(

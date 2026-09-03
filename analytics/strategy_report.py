@@ -133,8 +133,8 @@ def parse_args() -> argparse.Namespace:
         "--vep-release",
         default=os.environ.get("GAPH_VEP_RELEASE") or None,
         help=(
-            "Pinned Ensembl VEP release. Required for local VEP; REST detects "
-            "the current release."
+            "Pinned Ensembl VEP release. Local VEP requires it; REST verifies "
+            "that the server reports the same release."
         ),
     )
     parser.add_argument(
