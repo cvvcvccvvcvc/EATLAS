@@ -1,3 +1,7 @@
+import re
+import shutil
+import subprocess
+import sys
 from pathlib import Path
 
 
@@ -111,6 +115,38 @@ def test_pipeline_python_modules_are_staged_packages_without_path_bridges() -> N
         "bin.finalize_annotation_partitions",
     ):
         assert f"python3 -m {module_name}" in module_text
+
+
+def test_vep_entrypoint_starts_with_only_declared_staged_sources(tmp_path: Path) -> None:
+    main = (PROJECT_DIR / "main.nf").read_text()
+    source_block = re.search(r"(?ms)^    vep_sources = \[(.*?)^    \]", main)
+    assert source_block is not None
+    vep_sources = re.findall(
+        r'file\("\$\{projectDir\}/([^\"]+)"\)', source_block.group(1)
+    )
+    assert vep_sources
+    sources = [
+        "bin/__init__.py",
+        "bin/annotate_vep_partition.py",
+        "genomics/__init__.py",
+        "genomics/variants.py",
+        *vep_sources,
+    ]
+    for relative in sources:
+        destination = tmp_path / relative
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(PROJECT_DIR / relative, destination)
+
+    completed = subprocess.run(
+        [sys.executable, "-sE", "-m", "bin.annotate_vep_partition", "--help"],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    assert "--vep-backend" in completed.stdout
 
 
 def test_small_annotation_partitions_do_not_request_large_run_memory() -> None:

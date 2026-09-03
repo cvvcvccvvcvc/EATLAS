@@ -504,6 +504,7 @@ workflow PARTITIONED_ANNOTATION_STAGE {
     vep_sources = [
         file("${projectDir}/genomics/vep/__init__.py"),
         file("${projectDir}/genomics/vep/annotator.py"),
+        file("${projectDir}/genomics/vep/local_runtime.py"),
         file("${projectDir}/genomics/vep/result_cache.py"),
         file("${projectDir}/genomics/vep/terms.py"),
     ]
