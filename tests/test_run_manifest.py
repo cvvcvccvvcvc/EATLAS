@@ -25,7 +25,10 @@ def _command(
 ) -> list[str]:
     nextflow = shutil.which("nextflow")
     if nextflow is None:
-        pytest.skip("nextflow is not installed")
+        raise RuntimeError(
+            "nextflow is required for run-manifest tests; add the controller "
+            "environment bin directory to PATH"
+        )
     empty_config = tmp_path / "empty.config"
     empty_config.write_text("")
     schema_path = tmp_path / "parameters.schema.json"
@@ -80,6 +83,16 @@ def _command(
     if resume:
         command.insert(command.index(str(FIXTURE)) + 1, "-resume")
     return command
+
+
+def test_run_manifest_tests_require_nextflow(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(shutil, "which", lambda _name: None)
+
+    with pytest.raises(RuntimeError, match="nextflow is required"):
+        _command(tmp_path, tmp_path / "run", fail=False, hold_seconds=0)
 
 
 def _environment(tmp_path: Path) -> dict[str, str]:

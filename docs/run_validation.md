@@ -55,6 +55,20 @@ The NCBI Datasets CLI and aligners come from their declared task environments.
 `FETCH_PARSE_CHUNK` also loads an ignored project `.env` file when present. Use
 `.env.example` as the template for `ENTREZ_EMAIL` and `ENTREZ_API_KEY`.
 
+## Automated Test Suite
+
+Run pytest with the analytics Python and expose the controller environment's
+Nextflow/Java binaries on `PATH`:
+
+```bash
+PATH="$GAPH_ROOT/envs/controller/bin:$PATH" \
+  micromamba run -p "$GAPH_ROOT/envs/analytics" \
+  python -m pytest -q
+```
+
+Nextflow is mandatory for the pipeline launch and run-manifest tests. A missing
+controller executable fails the suite instead of silently skipping those tests.
+
 ## Cluster Run
 
 Use `docs/pipeline_launch.md` for an ordinary launch or resume. Use

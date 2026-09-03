@@ -18,7 +18,10 @@ def _run_nextflow(
 ) -> subprocess.CompletedProcess[str]:
     nextflow = shutil.which("nextflow")
     if nextflow is None:
-        pytest.skip("nextflow is not installed")
+        raise RuntimeError(
+            "nextflow is required for pipeline launch tests; add the controller "
+            "environment bin directory to PATH"
+        )
     return subprocess.run(
         [
             nextflow,
@@ -36,6 +39,16 @@ def _run_nextflow(
         capture_output=True,
         timeout=30,
     )
+
+
+def test_pipeline_launch_tests_require_nextflow(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(shutil, "which", lambda _name: None)
+
+    with pytest.raises(RuntimeError, match="nextflow is required"):
+        _run_nextflow(tmp_path, "--help")
 
 
 def test_unknown_parameter_stops_pipeline_before_execution(tmp_path: Path) -> None:
