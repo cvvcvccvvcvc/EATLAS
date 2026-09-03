@@ -11,17 +11,19 @@ process FINALIZE_FETCH_OUTPUT {
     path source_sequences, stageAs: "source/sequences"
     path taxonomy, stageAs: "source/taxonomy.tsv.gz"
     path taxonomy_failures, stageAs: "source/taxonomy_failures.tsv.gz"
+    path provenance_sources, stageAs: "provenance/*"
 
     output:
-    path "manifest.json"
-    path "input.ids.tsv"
-    path "genes.tsv.gz"
-    path "target_features.tsv.gz"
-    path "orthologs.selected.tsv.gz"
-    path "failures.tsv.gz"
-    path "sequences"
-    path "taxonomy.tsv.gz"
-    path "taxonomy_failures.tsv.gz"
+    path "manifest.json", emit: manifest
+    path "input.ids.tsv", emit: input_ids
+    path "genes.tsv.gz", emit: genes
+    path "target_features.tsv.gz", emit: target_features
+    path "orthologs.selected.tsv.gz", emit: orthologs_selected
+    path "failures.tsv.gz", emit: failures
+    path "sequences", emit: sequences
+    path "taxonomy.tsv.gz", emit: taxonomy
+    path "taxonomy_failures.tsv.gz", emit: taxonomy_failures
+    path "fetch.inventory.json", emit: inventory
 
     script:
     """
@@ -35,5 +37,16 @@ process FINALIZE_FETCH_OUTPUT {
     cp -R "${source_sequences}/targets" sequences/targets
     cp "${taxonomy}" taxonomy.tsv.gz
     cp "${taxonomy_failures}" taxonomy_failures.tsv.gz
+    python3 -m provenance.evidence_inventory create --scope fetch \\
+        --output fetch.inventory.json \\
+        --input fetch/manifest.json=manifest.json \\
+        --input fetch/input.ids.tsv=input.ids.tsv \\
+        --input fetch/genes.tsv.gz=genes.tsv.gz \\
+        --input fetch/target_features.tsv.gz=target_features.tsv.gz \\
+        --input fetch/orthologs.selected.tsv.gz=orthologs.selected.tsv.gz \\
+        --input fetch/failures.tsv.gz=failures.tsv.gz \\
+        --input fetch/sequences=sequences \\
+        --input fetch/taxonomy.tsv.gz=taxonomy.tsv.gz \\
+        --input fetch/taxonomy_failures.tsv.gz=taxonomy_failures.tsv.gz
     """
 }

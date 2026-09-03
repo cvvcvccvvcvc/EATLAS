@@ -5,6 +5,7 @@ import json
 import os
 import re
 import shutil
+import stat
 import tempfile
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -13,6 +14,12 @@ from typing import Any
 
 from run_archiving import __version__
 from run_archiving.rclone import RcloneClient, remote_join
+from provenance.evidence_inventory import (
+    INVENTORY_FILENAME,
+    EvidenceInventoryError,
+    assert_inventory_matches_records,
+    load_bound_evidence_inventory,
+)
 
 
 SCHEMA_VERSION = 1
@@ -54,7 +61,6 @@ class RunSnapshot:
     files: tuple[FileRecord, ...]
     total_bytes: int
     tree_sha256: str
-    legacy_run: bool
 
     @property
     def file_count(self) -> int:
@@ -80,8 +86,13 @@ def _validate_run_id(run_id: str) -> str:
 
 
 def _validate_run_dir(
-    run_dir: Path, *, allow_legacy_run: bool
-) -> tuple[Path, str, bool]:
+    run_dir: Path,
+) -> tuple[
+    Path,
+    str,
+    dict[str, object],
+    dict[str, tuple[int, str]],
+]:
     if run_dir.is_symlink():
         raise ArchiveError(f"Run directory must not be a symlink: {run_dir}")
     resolved = run_dir.expanduser().resolve(strict=True)
@@ -89,29 +100,28 @@ def _validate_run_dir(
         raise ArchiveError(f"Run path is not a directory: {resolved}")
     run_id = _validate_run_id(resolved.name)
     run_manifest_path = resolved / "run_manifest.json"
-    legacy_run = not run_manifest_path.is_file()
-    if legacy_run:
-        if not allow_legacy_run:
-            raise ArchiveError(
-                "run_manifest.json is missing. New runs require a successful root "
-                "run manifest; use --allow-legacy-run only for historical runs "
-                "created before that contract existed."
-            )
-    else:
-        try:
-            run_manifest = json.loads(run_manifest_path.read_text())
-        except (OSError, json.JSONDecodeError) as exc:
-            raise ArchiveError(f"Invalid JSON manifest: {run_manifest_path}") from exc
-        if (
-            run_manifest.get("schema_version") != 2
-            or run_manifest.get("status") != "complete"
-            or run_manifest.get("success") is not True
-            or run_manifest.get("exit_status") != 0
-            or not run_manifest.get("completed_at")
-        ):
-            raise ArchiveError(
-                f"Run is not marked successfully complete: {run_manifest_path}"
-            )
+    try:
+        run_manifest_bytes = _read_stable_regular_bytes(run_manifest_path)
+        run_manifest = json.loads(run_manifest_bytes)
+    except (ArchiveError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ArchiveError(f"Invalid JSON manifest: {run_manifest_path}") from exc
+    if (
+        run_manifest.get("schema_version") != 3
+        or run_manifest.get("status") != "complete"
+        or run_manifest.get("success") is not True
+        or run_manifest.get("exit_status") != 0
+        or not run_manifest.get("completed_at")
+    ):
+        raise ArchiveError(
+            f"Run is not marked successfully complete: {run_manifest_path}"
+        )
+    inventory_path = resolved / INVENTORY_FILENAME
+    try:
+        evidence_inventory, inventory_descriptor = load_bound_evidence_inventory(
+            inventory_path, run_manifest.get("evidence_inventory")
+        )
+    except EvidenceInventoryError as exc:
+        raise ArchiveError(f"Invalid run evidence inventory: {inventory_path}") from exc
     for relative in REQUIRED_MANIFESTS:
         path = resolved / relative
         if not path.is_file():
@@ -144,7 +154,50 @@ def _validate_run_dir(
                 "Source-run reports may contain only pipeline execution reports; "
                 f"move analytics output outside the run: {unexpected[0]}"
             )
-    return resolved, run_id, legacy_run
+    control_identities = {
+        "run_manifest.json": (
+            len(run_manifest_bytes),
+            hashlib.sha256(run_manifest_bytes).hexdigest(),
+        ),
+        INVENTORY_FILENAME: (
+            int(inventory_descriptor["size_bytes"]),
+            str(inventory_descriptor["sha256"]),
+        ),
+    }
+    return resolved, run_id, evidence_inventory, control_identities
+
+
+def _read_stable_regular_bytes(path: Path) -> bytes:
+    try:
+        before = path.stat(follow_symlinks=False)
+        if not stat.S_ISREG(before.st_mode):
+            raise ArchiveError(f"Run control path is not a regular file: {path}")
+        content = path.read_bytes()
+        after = path.stat(follow_symlinks=False)
+    except OSError as exc:
+        raise ArchiveError(f"Cannot read run control file: {path}") from exc
+    before_identity = (
+        before.st_dev,
+        before.st_ino,
+        before.st_size,
+        before.st_mtime_ns,
+        before.st_ctime_ns,
+    )
+    after_identity = (
+        after.st_dev,
+        after.st_ino,
+        after.st_size,
+        after.st_mtime_ns,
+        after.st_ctime_ns,
+    )
+    if before_identity != after_identity:
+        raise ArchiveError(f"Run control file changed while reading: {path}")
+    return content
+
+
+def _raise_walk_error(error: OSError) -> None:
+    path = error.filename or "<unknown>"
+    raise ArchiveError(f"Cannot read archive tree: {path}") from error
 
 
 def _hash_file(path: Path) -> tuple[int, int, str, str]:
@@ -165,15 +218,13 @@ def _hash_file(path: Path) -> tuple[int, int, str, str]:
     return after.st_size, after.st_mtime_ns, md5.hexdigest(), sha256.hexdigest()
 
 
-def build_snapshot(
-    run_dir: Path, *, allow_legacy_run: bool = False
-) -> RunSnapshot:
-    resolved, run_id, legacy_run = _validate_run_dir(
-        run_dir, allow_legacy_run=allow_legacy_run
+def build_snapshot(run_dir: Path) -> RunSnapshot:
+    resolved, run_id, evidence_inventory, control_identities = _validate_run_dir(
+        run_dir
     )
     paths: list[Path] = []
     for root, directory_names, file_names in os.walk(
-        resolved, topdown=True, followlinks=False
+        resolved, topdown=True, onerror=_raise_walk_error, followlinks=False
     ):
         root_path = Path(root)
         directory_names.sort()
@@ -225,13 +276,27 @@ def build_snapshot(
 
     if not records:
         raise ArchiveError(f"Run directory contains no files: {resolved}")
+    record_identities = {
+        record.path: (record.size, record.sha256) for record in records
+    }
+    for relative, expected in control_identities.items():
+        if record_identities.get(relative) != expected:
+            raise ArchiveError(
+                f"Run control file changed while building archive snapshot: {relative}"
+            )
+    try:
+        assert_inventory_matches_records(
+            evidence_inventory,
+            record_identities,
+        )
+    except EvidenceInventoryError as exc:
+        raise ArchiveError(str(exc)) from exc
     return RunSnapshot(
         run_dir=resolved,
         run_id=run_id,
         files=tuple(records),
         total_bytes=total_bytes,
         tree_sha256=tree_digest.hexdigest(),
-        legacy_run=legacy_run,
     )
 
 
@@ -241,7 +306,10 @@ def assert_snapshot_unchanged(snapshot: RunSnapshot) -> None:
     }
     observed: dict[str, tuple[int, int]] = {}
     for root, directory_names, file_names in os.walk(
-        snapshot.run_dir, topdown=True, followlinks=False
+        snapshot.run_dir,
+        topdown=True,
+        onerror=_raise_walk_error,
+        followlinks=False,
     ):
         root_path = Path(root)
         for directory_name in directory_names:
@@ -269,7 +337,7 @@ def _manifest_payload(snapshot: RunSnapshot) -> dict[str, Any]:
         "file_count": snapshot.file_count,
         "total_bytes": snapshot.total_bytes,
         "tree_sha256": snapshot.tree_sha256,
-        "legacy_run": snapshot.legacy_run,
+        "legacy_run": False,
         "files": [record.as_dict() for record in snapshot.files],
     }
 
@@ -508,10 +576,9 @@ def archive_run(
     run_dir: Path,
     remote_root: str,
     dry_run: bool = False,
-    allow_legacy_run: bool = False,
 ) -> dict[str, Any]:
     client.preflight(remote_root)
-    snapshot = build_snapshot(run_dir, allow_legacy_run=allow_legacy_run)
+    snapshot = build_snapshot(run_dir)
     paths = _archive_paths(remote_root, snapshot.run_id)
 
     complete_text = client.read_text_optional(paths["complete"])
@@ -531,7 +598,6 @@ def archive_run(
             "file_count": snapshot.file_count,
             "total_bytes": snapshot.total_bytes,
             "tree_sha256": snapshot.tree_sha256,
-            "legacy_run": snapshot.legacy_run,
         }
 
     with tempfile.TemporaryDirectory(prefix="run-archive-") as temporary:
@@ -546,7 +612,6 @@ def archive_run(
                 "file_count": snapshot.file_count,
                 "total_bytes": snapshot.total_bytes,
                 "tree_sha256": snapshot.tree_sha256,
-                "legacy_run": snapshot.legacy_run,
             }
 
         client.verify_checksum("md5", control_files["md5sums"], paths["data"])
@@ -589,7 +654,6 @@ def archive_run(
         "file_count": snapshot.file_count,
         "total_bytes": snapshot.total_bytes,
         "tree_sha256": snapshot.tree_sha256,
-        "legacy_run": snapshot.legacy_run,
     }
 
 
@@ -602,6 +666,8 @@ def restore_run(
 ) -> dict[str, Any]:
     _validate_run_id(run_id)
     manifest = verify_remote(client, remote_root=remote_root, run_id=run_id)
+    if manifest["legacy_run"]:
+        raise ArchiveError("Legacy archives without evidence inventory cannot be restored")
     resolved_destination = destination.expanduser().resolve()
     if resolved_destination.exists():
         if not resolved_destination.is_dir() or any(resolved_destination.iterdir()):
@@ -621,10 +687,7 @@ def restore_run(
         _archive_paths(remote_root, run_id)["data"],
         partial_destination,
     )
-    restored = build_snapshot(
-        partial_destination,
-        allow_legacy_run=bool(manifest["legacy_run"]),
-    )
+    restored = build_snapshot(partial_destination)
     if restored.tree_sha256 != manifest["tree_sha256"]:
         raise ArchiveError("Restored run does not match the archived tree checksum.")
     if resolved_destination.exists():
@@ -668,15 +731,14 @@ def remove_local_run(
     remote_manifest = verify_remote(
         client, remote_root=remote_root, run_id=run_id
     )
+    if remote_manifest["legacy_run"]:
+        raise ArchiveError("Legacy archives cannot authorize local run removal")
     quarantine = resolved_root / f"{run_id}.removing"
     if quarantine.exists():
         raise ArchiveError(f"Removal quarantine already exists: {quarantine}")
     resolved_run.rename(quarantine)
     try:
-        local_snapshot = build_snapshot(
-            quarantine,
-            allow_legacy_run=bool(remote_manifest["legacy_run"]),
-        )
+        local_snapshot = build_snapshot(quarantine)
         if local_snapshot.tree_sha256 != remote_manifest["tree_sha256"]:
             raise ArchiveError(
                 "Local run differs from the verified remote archive; "

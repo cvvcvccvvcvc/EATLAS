@@ -38,7 +38,9 @@ canonical_destination() {
 
 inspect_manifest() {
   python3 - "$1" <<'PY'
+import hashlib
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -47,6 +49,32 @@ payload = json.loads(path.read_text())
 parameters = payload.get("parameters")
 if not isinstance(parameters, dict):
     raise ValueError(f"run manifest has no parameter map: {path}")
+
+if payload.get("status") == "complete":
+    descriptor = payload.get("evidence_inventory")
+    if (
+        not isinstance(descriptor, dict)
+        or set(descriptor) != {"path", "schema_version", "size_bytes", "sha256"}
+        or descriptor.get("path") != "evidence_inventory.json"
+        or descriptor.get("schema_version") != 1
+        or isinstance(descriptor.get("size_bytes"), bool)
+        or not isinstance(descriptor.get("size_bytes"), int)
+        or descriptor["size_bytes"] < 0
+        or not isinstance(descriptor.get("sha256"), str)
+        or re.fullmatch(r"[0-9a-f]{64}", descriptor["sha256"]) is None
+    ):
+        raise ValueError(f"completed run has an invalid evidence inventory descriptor: {path}")
+    inventory_path = path.parent / descriptor["path"]
+    if inventory_path.is_symlink() or not inventory_path.is_file():
+        raise ValueError(f"completed run has no evidence inventory: {inventory_path}")
+    inventory_bytes = inventory_path.read_bytes()
+    if (
+        len(inventory_bytes) != descriptor["size_bytes"]
+        or hashlib.sha256(inventory_bytes).hexdigest() != descriptor["sha256"]
+    ):
+        raise ValueError(
+            f"completed run evidence inventory differs from its descriptor: {inventory_path}"
+        )
 
 values = (
     payload.get("schema_version"),
@@ -210,7 +238,7 @@ for index in "${!resolved_ids_files[@]}"; do
       manifest_commit git_dirty manifest_ids manifest_outdir manifest_strategies \
       manifest_fetch_forks manifest_alignment_forks manifest_annotation_forks \
       <<< "$manifest_info"
-    [[ "$schema" = 2 && "$pipeline" = gaph_v2 ]] || fail \
+    [[ "$schema" = 3 && "$pipeline" = gaph_v2 ]] || fail \
       "unsupported run manifest: $manifest"
     [[ "$manifest_commit" = "$expected_commit" && "$git_dirty" = false ]] || fail \
       "run $run_name was not created from the expected clean commit"

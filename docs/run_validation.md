@@ -121,11 +121,21 @@ Expected layout:
 ```text
 /tmp/gaph_v2_smoke_run/
   run_manifest.json
+  evidence_inventory.json
   fetch/
   alignment/
   annotation/
   reports/nextflow/
 ```
+
+Root-boundary expected properties:
+
+- `run_manifest.json` has `schema_version=3`, a successful completion state,
+  and an `evidence_inventory` descriptor matching the inventory file's exact
+  size and SHA-256.
+- `evidence_inventory.json` contains exactly every regular file below
+  `fetch/`, `alignment/`, and `annotation/`, in sorted path order, with matching
+  sizes and SHA-256 values. No stage inventory fragment is published.
 
 Fetch-boundary expected properties:
 - `fetch/manifest.json` exists.

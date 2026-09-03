@@ -7,8 +7,9 @@ code.
 An archive preserves every regular file below the run directory. Nextflow
 `work/` remains outside the run and is never archived. Symlinks and embedded
 execution-cache directories are rejected instead of being silently skipped.
-New runs must have a root `run_manifest.json` with `status=complete`,
-`success=true`, and `exit_status=0`.
+Runs must have a current root `run_manifest.json` with `status=complete`,
+`success=true`, `exit_status=0`, and a valid `evidence_inventory.json`.
+Historical runs without the inventory contract are rejected.
 
 A completed source run is immutable. Analytics belongs in its separate external
 workspace and is not included in a run archive. The archiver rejects a top-level
@@ -98,17 +99,8 @@ The command is resumable at file boundaries. A repeated command verifies and
 returns `already_archived` when the same run is already complete. It refuses to
 replace different data under an existing run ID.
 
-Historical runs created before `run_manifest.json` existed require an explicit
-exception:
-
-```bash
-sbatch run_archiving/slurm/run_archiving.sbatch archive \
-  --run-dir "$GAPH_ROOT/results/<legacy-run-id>" \
-  --allow-legacy-run
-```
-
-The exception applies only when the root manifest is absent. A manifest that
-says `running` or `failed` is always rejected.
+During its normal hashing pass, the archiver compares every evidence file with
+the pipeline-owned inventory. It does not read file contents a second time.
 
 ## List archives
 

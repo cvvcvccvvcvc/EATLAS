@@ -9,11 +9,13 @@ process MERGE_ALIGNMENT {
     val expected_strategies
     path merge_script, stageAs: 'bin/merge_alignment_results.py'
     path bin_sources, stageAs: 'bin/*'
+    path provenance_sources, stageAs: 'provenance/*'
 
     output:
     path "manifest.json", emit: manifest
     path "evidence", emit: evidence
     path "failures.tsv.gz", emit: failures
+    path "alignment.inventory.json", emit: inventory
 
     script:
     """
@@ -24,5 +26,10 @@ process MERGE_ALIGNMENT {
         --result-root partitions \\
         --expected-strategies "${expected_strategies}" \\
         --outdir .
+    python3 -m provenance.evidence_inventory create --scope alignment \\
+        --output alignment.inventory.json \\
+        --input alignment/manifest.json=manifest.json \\
+        --input alignment/evidence=evidence \\
+        --input alignment/failures.tsv.gz=failures.tsv.gz
     """
 }

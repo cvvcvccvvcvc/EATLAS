@@ -224,10 +224,12 @@ include { ANNOTATE_EVENTS_PARTITION } from './modules/local/annotate_events_part
 include { ANNOTATE_VEP_PARTITION } from './modules/local/annotate_vep_partition.nf'
 include { FINALIZE_ANNOTATION } from './modules/local/finalize_annotation.nf'
 include { PREPARE_ANNOTATION_CONTEXTS } from './modules/local/prepare_annotation_contexts.nf'
+include { BUILD_EVIDENCE_INVENTORY } from './modules/local/build_evidence_inventory.nf'
 
 workflow FETCH_STAGE {
     take:
     ids
+    provenance_sources
 
     main:
     normalize_script = file("${projectDir}/bin/normalize_ids.py")
@@ -269,7 +271,8 @@ workflow FETCH_STAGE {
         BUILD_FETCH_DATASET.out.failures,
         BUILD_FETCH_DATASET.out.sequences,
         FETCH_TAXONOMY.out.taxonomy,
-        FETCH_TAXONOMY.out.taxonomy_failures
+        FETCH_TAXONOMY.out.taxonomy_failures,
+        provenance_sources
     )
 
     emit:
@@ -277,6 +280,7 @@ workflow FETCH_STAGE {
     target_features = BUILD_FETCH_DATASET.out.target_features
     orthologs_selected = BUILD_FETCH_DATASET.out.orthologs_selected
     sequences = BUILD_FETCH_DATASET.out.sequences
+    inventory = FINALIZE_FETCH_OUTPUT.out.inventory
 }
 
 workflow ALIGNMENT_STAGE {
@@ -285,6 +289,7 @@ workflow ALIGNMENT_STAGE {
     target_features
     orthologs_selected
     sequences
+    provenance_sources
 
     main:
     prepare_script = file("${projectDir}/bin/prepare_alignment_tasks.py")
@@ -463,11 +468,13 @@ workflow ALIGNMENT_STAGE {
         MERGE_ALIGNMENT_PARTITION.out.partition_dirs.map { meta, dir -> dir }.collect(),
         SELECTED_ALIGNMENT_STRATEGIES.join(','),
         merge_script,
-        merge_bin_sources
+        merge_bin_sources,
+        provenance_sources
     )
 
     emit:
     evidence = MERGE_ALIGNMENT.out.evidence
+    inventory = MERGE_ALIGNMENT.out.inventory
 }
 
 workflow PARTITIONED_ANNOTATION_STAGE {
@@ -478,6 +485,7 @@ workflow PARTITIONED_ANNOTATION_STAGE {
     clinvar_vcf
     clinvar_vcf_tbi
     gnomad_cache_dir
+    provenance_sources
 
     main:
     annotate_script = file("${projectDir}/bin/annotate_events.py")
@@ -603,9 +611,12 @@ workflow PARTITIONED_ANNOTATION_STAGE {
         bin_package_init,
         genomics_package_init,
         file("${projectDir}/genomics/gnomad.py"),
-        variants_source
+        variants_source,
+        provenance_sources
     )
 
+    emit:
+    inventory = FINALIZE_ANNOTATION.out.inventory
 }
 
 workflow {
@@ -645,12 +656,17 @@ workflow {
     clinvar_inputs = resolveClinvarInputs()
     log.info "Using ClinVar VCF: ${clinvar_inputs.path}"
     gated_ids = CHECK_RUNTIME.out.runtime_check.map { file(params.ids_file) }
-    FETCH_STAGE(gated_ids)
+    provenance_sources = [
+        file("${projectDir}/provenance/__init__.py"),
+        file("${projectDir}/provenance/evidence_inventory.py"),
+    ]
+    FETCH_STAGE(gated_ids, provenance_sources)
     ALIGNMENT_STAGE(
         FETCH_STAGE.out.genes,
         FETCH_STAGE.out.target_features,
         FETCH_STAGE.out.orthologs_selected,
-        FETCH_STAGE.out.sequences
+        FETCH_STAGE.out.sequences,
+        provenance_sources
     )
     PARTITIONED_ANNOTATION_STAGE(
         ALIGNMENT_STAGE.out.evidence,
@@ -658,7 +674,14 @@ workflow {
         FETCH_STAGE.out.sequences.map { sequences_dir -> file("${sequences_dir}/targets") },
         clinvar_inputs.vcf,
         clinvar_inputs.tbi,
-        params.gnomad_cache_dir ?: ''
+        params.gnomad_cache_dir ?: '',
+        provenance_sources
+    )
+    BUILD_EVIDENCE_INVENTORY(
+        FETCH_STAGE.out.inventory,
+        ALIGNMENT_STAGE.out.inventory,
+        PARTITIONED_ANNOTATION_STAGE.out.inventory,
+        provenance_sources
     )
 }
 

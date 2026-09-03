@@ -20,6 +20,11 @@ from analytics.analyses.variant_summary_aggregation import (
     resolve_variant_aggregation_source,
 )
 from genomics.taxonomy import TAXONOMY_FIELDS
+from provenance.evidence_inventory import (
+    EVIDENCE_SCOPES,
+    inventory_file_descriptor,
+    write_evidence_inventory,
+)
 
 
 VARIANT_FIELDS = [
@@ -201,7 +206,7 @@ def _make_source_run(
     _json(
         path / "run_manifest.json",
         {
-            "schema_version": 2,
+            "schema_version": 3,
             "pipeline": "gaph_v2",
             "status": "complete",
             "success": True,
@@ -251,6 +256,12 @@ def _make_source_run(
             "variant_annotations": descriptor,
         },
     )
+    inventory_path = path / "evidence_inventory.json"
+    write_evidence_inventory(inventory_path, {scope: path / scope for scope in EVIDENCE_SCOPES})
+    root_path = path / "run_manifest.json"
+    root = json.loads(root_path.read_text())
+    root["evidence_inventory"] = inventory_file_descriptor(inventory_path)
+    _json(root_path, root)
     return path
 
 
@@ -509,6 +520,20 @@ def test_analysis_rejects_previous_annotation_schema(tmp_path: Path) -> None:
     _json(manifest_path, manifest)
 
     with pytest.raises(ValueError, match="Unsupported pipeline annotation contract"):
+        resolve_source_runs([run], clinvar_vcf=clinvar)
+
+
+def test_analysis_rejects_previous_root_manifest_schema(tmp_path: Path) -> None:
+    clinvar = tmp_path / "clinvar.vcf.gz"
+    clinvar.write_bytes(b"clinvar")
+    Path(f"{clinvar}.tbi").write_bytes(b"index")
+    run = _make_source_run(tmp_path / "run", gene_id="1", clinvar_vcf=clinvar)
+    manifest_path = run / "run_manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    manifest["schema_version"] = 2
+    _json(manifest_path, manifest)
+
+    with pytest.raises(ValueError, match="Unsupported run manifest schema"):
         resolve_source_runs([run], clinvar_vcf=clinvar)
 
 

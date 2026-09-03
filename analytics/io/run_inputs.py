@@ -21,6 +21,7 @@ from analytics.analyses.variant_summary_aggregation import (
 from analytics.io.alignment_aggregates import resolve_alignment_aggregate_paths
 from analytics.io.annotation_support import resolve_annotation_support_paths
 from analytics.io.artifacts import content_identity, write_json_atomic
+from analytics.io.evidence_verification import verify_source_evidence
 from analytics.io.performance import PerformanceProfile, profile_stage
 from analytics.io.taxonomy_summary import (
     build_or_load_taxonomy_summary_many,
@@ -37,9 +38,13 @@ from genomics.gnomad import (
     validate_observation_window,
 )
 from genomics.variants import ALLELE_ANNOTATION_FIELDS
+from provenance.evidence_inventory import (
+    INVENTORY_FILENAME,
+    load_bound_evidence_inventory,
+)
 
 
-ANALYSIS_CONTRACT_VERSION = 1
+ANALYSIS_CONTRACT_VERSION = 2
 
 
 @dataclass(frozen=True)
@@ -66,6 +71,8 @@ class SourceRun:
     alignment_manifest: dict[str, object]
     annotation_manifest: dict[str, object]
     variant_annotation_descriptor: dict[str, object]
+    evidence_inventory: dict[str, object]
+    evidence_inventory_descriptor: dict[str, object]
 
 
 @dataclass(frozen=True)
@@ -179,6 +186,18 @@ def build_analysis_inputs(
     analysis_dir = workspace.analysis_dir
     derived_dir = workspace.derived_dir
     contract = workspace.contract
+    for source in source_runs:
+        with profile_stage(
+            performance_profile, f"Verify source evidence [{source.run_dir.name}]"
+        ) as timing:
+            cached = verify_source_evidence(
+                run_dir=source.run_dir,
+                source_id=source.source_id,
+                inventory=source.evidence_inventory,
+                inventory_descriptor=source.evidence_inventory_descriptor,
+                cache_dir=analytics_root / "cache" / source.source_id,
+            )
+            timing["details"] = "unchanged verified source" if cached else "full SHA-256 verification"
     derived_dir.mkdir(parents=True, exist_ok=True)
     _validate_shared_allele_evidence(source_runs, derived_dir)
 
@@ -284,6 +303,8 @@ def build_analysis_inputs(
                     "run_dir": str(source.run_dir),
                     "requested_gene_count": len(source.requested_gene_ids),
                     "target_gene_count": len(source.target_gene_ids),
+                    "evidence_inventory": source.evidence_inventory_descriptor,
+                    "evidence_tree_sha256": source.evidence_inventory["tree_sha256"],
                 }
                 for source in source_runs
             ],
@@ -453,6 +474,10 @@ def _resolve_source_run(run_dir: Path) -> SourceRun:
     alignment = _required_json(alignment_path)
     annotation = _required_json(annotation_path)
     _validate_completed_run(root, run_dir)
+    inventory_path = run_dir / INVENTORY_FILENAME
+    inventory, inventory_descriptor = load_bound_evidence_inventory(
+        inventory_path, root.get("evidence_inventory")
+    )
     variant_source = resolve_variant_annotations_source(annotation_path)
     genes = run_dir / "fetch" / "genes.tsv.gz"
     features = run_dir / "fetch" / "target_features.tsv.gz"
@@ -484,9 +509,7 @@ def _resolve_source_run(run_dir: Path) -> SourceRun:
     identity = {
         "contract_version": ANALYSIS_CONTRACT_VERSION,
         "root_manifest": content_identity(root_path),
-        "fetch_manifest": content_identity(fetch_path),
-        "alignment_manifest": content_identity(alignment_path),
-        "annotation_manifest": content_identity(annotation_path),
+        "evidence_tree_sha256": inventory["tree_sha256"],
     }
     source_id = hashlib.sha256(_canonical_json(identity)).hexdigest()[:24]
     return SourceRun(
@@ -510,13 +533,15 @@ def _resolve_source_run(run_dir: Path) -> SourceRun:
         alignment_manifest=alignment,
         annotation_manifest=annotation,
         variant_annotation_descriptor=_variant_annotation_descriptor(annotation_path),
+        evidence_inventory=inventory,
+        evidence_inventory_descriptor=inventory_descriptor,
     )
 
 
 def _validate_completed_run(manifest: dict[str, object], run_dir: Path) -> None:
     if manifest.get("pipeline") != "gaph_v2":
         raise ValueError(f"Not a gaph_v2 run: {run_dir}")
-    if manifest.get("schema_version") != 2:
+    if manifest.get("schema_version") != 3:
         raise ValueError(f"Unsupported run manifest schema: {run_dir}")
     if manifest.get("status") != "complete" or manifest.get("success") is not True:
         raise ValueError(f"Run is not successfully complete: {run_dir}")

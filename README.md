@@ -104,6 +104,7 @@ Default durable output layout:
 ```text
 results/run_test/
   run_manifest.json
+  evidence_inventory.json
   fetch/
   alignment/
   annotation/
@@ -111,6 +112,10 @@ results/run_test/
 ```
 
 The published end-to-end output is intentionally compact.
+
+`evidence_inventory.json` records the size and SHA-256 of every durable file
+below `fetch/`, `alignment/`, and `annotation/`. Its own size and SHA-256 are
+bound into `run_manifest.json`; a run is not complete without both files.
 
 Fetch outputs:
 

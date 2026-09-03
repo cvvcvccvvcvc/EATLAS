@@ -28,6 +28,7 @@ For the default end-to-end run, `params.outdir` is a run root:
 ```text
 results/run_001/
   run_manifest.json
+  evidence_inventory.json
   fetch/
   alignment/
   annotation/
@@ -45,12 +46,20 @@ launch fail before stage work begins, even with `-resume`. An existing
 `running` or `failed` manifest can be continued only with `-resume`; a fresh
 launch must use a new output directory.
 
+`evidence_inventory.json` lists every regular evidence file below `fetch/`,
+`alignment/`, and `annotation/`, with its size and SHA-256, plus a deterministic
+digest of that inventory. Each stage hashes its final local outputs once; a
+small final task combines the three stage fragments, without reading all
+published evidence again. Temporary fragments are not durable outputs.
+
 `run_manifest.json` is written when the workflow starts and atomically finalized
 when Nextflow terminates. It records the launch-time Git commit and dirty state,
 selected profiles, schema-declared launch parameters with secret-like values
-redacted, and the workflow completion status. A manifest left in `running`
-state identifies an interrupted run whose completion handler did not execute.
-Archival tools must treat this file as the provenance source of truth.
+redacted, and the workflow completion status. Successful finalization binds the
+inventory file by its own size and SHA-256. A manifest left in `running` state
+identifies an interrupted run whose completion handler did not execute.
+Archival tools must require both files and treat the root manifest as the
+completion and provenance source of truth.
 
 For an end-to-end run, `fetch/` contains:
 
@@ -226,6 +235,7 @@ implementation.
 
 Keep:
 - `<run>/run_manifest.json`
+- `<run>/evidence_inventory.json`
 - `<run>/fetch/`, `<run>/alignment/`, and `<run>/annotation/`
 - `<run>/reports/nextflow/` for execution trace and resource review
 - the separate analytics root when derived caches or reports should be retained

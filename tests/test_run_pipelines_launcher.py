@@ -37,7 +37,7 @@ def _fixture(tmp_path: Path) -> tuple[Path, dict[str, str]]:
     micromamba = fake_bin / "micromamba"
     micromamba.write_text(
         "#!/usr/bin/env python3\n"
-        "import json, os, sys\n"
+        "import hashlib, json, os, sys\n"
         "from pathlib import Path\n"
         "args = sys.argv[1:]\n"
         "def value(flag, default=None):\n"
@@ -49,12 +49,24 @@ def _fixture(tmp_path: Path) -> tuple[Path, dict[str, str]]:
         "old = json.loads(manifest_path.read_text()) if manifest_path.exists() else {}\n"
         "session = value('-resume', old.get('session_id', f'session-{run_name}'))\n"
         "failed = run_name == os.environ.get('FAIL_RUN')\n"
+        "outdir.mkdir(parents=True, exist_ok=True)\n"
+        "inventory_descriptor = None\n"
+        "if not failed:\n"
+        "    inventory_bytes = (json.dumps({'schema_version': 1}) + '\\n').encode()\n"
+        "    inventory_path = outdir / 'evidence_inventory.json'\n"
+        "    inventory_path.write_bytes(inventory_bytes)\n"
+        "    inventory_descriptor = {\n"
+        "        'path': inventory_path.name, 'schema_version': 1,\n"
+        "        'size_bytes': len(inventory_bytes),\n"
+        "        'sha256': hashlib.sha256(inventory_bytes).hexdigest(),\n"
+        "    }\n"
         "manifest = {\n"
-        "    'schema_version': 2, 'pipeline': 'gaph_v2',\n"
+        "    'schema_version': 3, 'pipeline': 'gaph_v2',\n"
         "    'status': 'failed' if failed else 'complete',\n"
         "    'success': not failed, 'exit_status': 17 if failed else 0,\n"
         "    'session_id': session, 'git_commit': os.environ['HEAD_COMMIT'],\n"
         "    'git_dirty': False,\n"
+        "    'evidence_inventory': inventory_descriptor,\n"
         "    'parameters': {\n"
         "        'ids_file': ids_file, 'outdir': str(outdir),\n"
         "        'alignment_strategies': value('--alignment_strategies', 'default'),\n"
@@ -63,7 +75,6 @@ def _fixture(tmp_path: Path) -> tuple[Path, dict[str, str]]:
         "        'annotation_max_forks': int(value('--annotation_max_forks', 4)),\n"
         "    },\n"
         "}\n"
-        "outdir.mkdir(parents=True, exist_ok=True)\n"
         "manifest_path.write_text(json.dumps(manifest) + '\\n')\n"
         "with Path(os.environ['PIPELINE_CAPTURE']).open('a') as handle:\n"
         "    handle.write(json.dumps(args) + '\\n')\n"
@@ -213,6 +224,31 @@ def test_stops_on_failure_then_skips_complete_and_resumes_exact_session(tmp_path
     assert resumed_call[resumed_call.index("-resume") + 1] == "session-batch_002"
     assert resumed_call[resumed_call.index("--alignment_strategies") + 1] == "default"
     assert "Skipping completed run batch_001" in resumed.stdout
+
+
+def test_rejects_completed_run_with_modified_evidence_inventory(tmp_path: Path) -> None:
+    launcher, environment = _fixture(tmp_path)
+    [ids_file] = _ids(tmp_path, "batch.txt")
+    results = tmp_path / "results" / "group"
+    command = [
+        "bash",
+        str(launcher),
+        "--results-root",
+        str(results),
+        "--expected-commit",
+        COMMIT,
+        str(ids_file),
+    ]
+
+    first = subprocess.run(command, env=environment, text=True, capture_output=True)
+    assert first.returncode == 0, first.stderr
+    (results / "batch" / "evidence_inventory.json").write_text("{}\n")
+
+    repeated = subprocess.run(command, env=environment, text=True, capture_output=True)
+
+    assert repeated.returncode == 2
+    assert "cannot read run manifest" in repeated.stderr
+    assert len(_calls(environment)) == 1
 
 
 def test_rejects_duplicate_run_names_before_launch(tmp_path: Path) -> None:

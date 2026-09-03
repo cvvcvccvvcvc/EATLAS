@@ -10,6 +10,12 @@ from pathlib import Path
 
 import pytest
 
+from provenance.evidence_inventory import (
+    inventory_file_descriptor,
+    load_evidence_inventory,
+    verify_run_evidence,
+)
+
 
 ROOT = Path(__file__).resolve().parents[1]
 FIXTURE = ROOT / "tests" / "fixtures" / "run_manifest_workflow.nf"
@@ -31,7 +37,13 @@ def _command(
             "environment bin directory to PATH"
         )
     empty_config = tmp_path / "empty.config"
-    empty_config.write_text("")
+    empty_config.write_text(
+        "process {\n"
+        "  withName: BUILD_EVIDENCE_INVENTORY {\n"
+        "    publishDir = [path: { params.outdir }, mode: 'move']\n"
+        "  }\n"
+        "}\n"
+    )
     schema_path = tmp_path / "parameters.schema.json"
     schema_path.write_text(
         json.dumps(
@@ -125,7 +137,7 @@ def _assert_provenance(payload: dict) -> None:
     ).stdout.strip()
     serialized = json.dumps(payload)
 
-    assert payload["schema_version"] == 2
+    assert payload["schema_version"] == 3
     assert payload["pipeline"] == "gaph_v2"
     assert payload["git_commit"] == expected_commit
     assert isinstance(payload["git_dirty"], bool)
@@ -146,6 +158,13 @@ def _assert_provenance(payload: dict) -> None:
     assert "super-secret" not in serialized
     assert "query-secret" not in serialized
     assert "user:password" not in serialized
+
+
+def _assert_evidence_inventory(outdir: Path, payload: dict) -> None:
+    inventory_path = outdir / "evidence_inventory.json"
+    inventory = load_evidence_inventory(inventory_path)
+    assert payload["evidence_inventory"] == inventory_file_descriptor(inventory_path)
+    assert verify_run_evidence(outdir, inventory)
 
 
 def test_run_manifest_records_running_and_complete_states(tmp_path: Path) -> None:
@@ -173,6 +192,8 @@ def test_run_manifest_records_running_and_complete_states(tmp_path: Path) -> Non
     assert completed["success"] is True
     assert completed["exit_status"] == 0
     assert completed["completed_at"]
+    _assert_evidence_inventory(outdir, completed)
+    assert not list(outdir.rglob("*.inventory.json"))
     assert stat.S_IMODE(manifest_path.stat().st_mode) == 0o644
 
 
@@ -194,6 +215,8 @@ def test_run_manifest_records_failed_completion(tmp_path: Path) -> None:
     assert payload["success"] is False
     assert payload["exit_status"] != 0
     assert payload["completed_at"]
+    assert payload["evidence_inventory"] is None
+    assert not (outdir / "evidence_inventory.json").exists()
 
 
 def test_completed_run_cannot_be_reused(tmp_path: Path) -> None:

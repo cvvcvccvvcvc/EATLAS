@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+from run_archiving import archive as archive_module
 from run_archiving.archive import (
     ArchiveError,
     archive_run,
@@ -15,6 +16,11 @@ from run_archiving.archive import (
     remove_local_run,
     restore_run,
     verify_remote,
+)
+from provenance.evidence_inventory import (
+    EVIDENCE_SCOPES,
+    inventory_file_descriptor,
+    write_evidence_inventory,
 )
 
 
@@ -118,7 +124,7 @@ def _make_run(results_root: Path, run_id: str = "run_001") -> Path:
     (run_dir / "run_manifest.json").write_text(
         json.dumps(
             {
-                "schema_version": 2,
+                "schema_version": 3,
                 "status": "complete",
                 "success": True,
                 "exit_status": 0,
@@ -138,6 +144,15 @@ def _make_run(results_root: Path, run_id: str = "run_001") -> Path:
     (run_dir / "annotation" / "variant_annotations.tsv.gz").write_bytes(
         b"variants"
     )
+    inventory_path = run_dir / "evidence_inventory.json"
+    write_evidence_inventory(
+        inventory_path,
+        {scope: run_dir / scope for scope in EVIDENCE_SCOPES},
+    )
+    manifest_path = run_dir / "run_manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    manifest["evidence_inventory"] = inventory_file_descriptor(inventory_path)
+    manifest_path.write_text(json.dumps(manifest) + "\n")
     return run_dir
 
 
@@ -203,7 +218,7 @@ def test_archive_requires_successful_root_run_manifest(tmp_path: Path) -> None:
     (run_dir / "run_manifest.json").write_text(
         json.dumps(
             {
-                "schema_version": 2,
+                "schema_version": 3,
                 "status": "failed",
                 "success": False,
                 "exit_status": 1,
@@ -217,22 +232,39 @@ def test_archive_requires_successful_root_run_manifest(tmp_path: Path) -> None:
         archive_run(client, run_dir=run_dir, remote_root="drive:GAPH")
 
 
-def test_archive_legacy_run_requires_explicit_exception(tmp_path: Path) -> None:
+def test_archive_rejects_run_without_current_inventory(tmp_path: Path) -> None:
     run_dir = _make_run(tmp_path / "results")
     client = LocalRemote(tmp_path / "remote")
     (run_dir / "run_manifest.json").unlink()
 
-    with pytest.raises(ArchiveError, match="allow-legacy-run"):
+    with pytest.raises(ArchiveError, match="run_manifest.json"):
         archive_run(client, run_dir=run_dir, remote_root="drive:GAPH")
 
-    result = archive_run(
-        client,
-        run_dir=run_dir,
-        remote_root="drive:GAPH",
-        allow_legacy_run=True,
-    )
-    assert result["status"] == "archived"
-    assert result["legacy_run"] is True
+
+def test_archive_rejects_evidence_that_differs_from_inventory(tmp_path: Path) -> None:
+    run_dir = _make_run(tmp_path / "results")
+    target = run_dir / "annotation" / "variant_annotations.tsv.gz"
+    target.write_bytes(b"different")
+
+    with pytest.raises(ArchiveError, match="differs from inventory"):
+        build_snapshot(run_dir)
+
+
+def test_snapshot_rejects_control_file_changed_after_validation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    run_dir = _make_run(tmp_path / "results")
+    original_hash_file = archive_module._hash_file
+
+    def mutate_before_hash(path: Path):
+        if path.name == "evidence_inventory.json":
+            path.write_text('{"schema_version": 9}\n')
+        return original_hash_file(path)
+
+    monkeypatch.setattr(archive_module, "_hash_file", mutate_before_hash)
+
+    with pytest.raises(ArchiveError, match="control file changed"):
+        build_snapshot(run_dir)
 
 
 def test_restore_resumes_matching_partial_directory(tmp_path: Path) -> None:
@@ -265,7 +297,7 @@ def test_complete_archive_refuses_changed_local_run(tmp_path: Path) -> None:
     archive_run(client, run_dir=run_dir, remote_root="drive:GAPH")
     (run_dir / "annotation" / "variant_annotations.tsv.gz").write_bytes(b"changed")
 
-    with pytest.raises(ArchiveError, match="different data"):
+    with pytest.raises(ArchiveError, match="differs from inventory"):
         archive_run(client, run_dir=run_dir, remote_root="drive:GAPH")
 
 

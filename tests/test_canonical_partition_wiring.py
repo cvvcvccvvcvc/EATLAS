@@ -24,7 +24,7 @@ def test_runtime_check_gates_fetch_stage() -> None:
     main = (PROJECT_DIR / "main.nf").read_text()
 
     assert "gated_ids = CHECK_RUNTIME.out.runtime_check.map { file(params.ids_file) }" in main
-    assert "FETCH_STAGE(gated_ids)" in main
+    assert "FETCH_STAGE(gated_ids, provenance_sources)" in main
     assert "FETCH_STAGE(file(params.ids_file))" not in main
 
 

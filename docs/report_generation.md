@@ -18,6 +18,7 @@ contains reusable source caches and analysis-specific outputs:
 <analytics-root>/
   .strategy_report.lock
   cache/<source-id>/
+    evidence_inventory.verified.json
     alignment_aggregates/
     annotation_support/
     taxonomy_summary/
@@ -33,6 +34,13 @@ contains reusable source caches and analysis-specific outputs:
 the unordered set of source IDs and scientific report options. Repeating the
 same analysis reuses the same workspace. Report names only select an HTML file
 inside `reports/`; they do not create a second scientific cache.
+
+Before using a source cache, analytics validates the root manifest's binding to
+`evidence_inventory.json` and hashes every inventoried evidence file. It stores
+only a verification marker under the external source cache. Later report runs
+skip content re-hashing while the exact file set and filesystem metadata are
+unchanged; any metadata change triggers full verification, and any content or
+membership mismatch fails instead of producing a partial report.
 
 Large variant shards remain in source runs and are queried as one virtual
 dataset. Small gene, feature, failure, coverage, and support tables are read

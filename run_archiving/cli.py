@@ -83,14 +83,6 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="hash the run and execute rclone copy with --dry-run",
     )
-    archive_parser.add_argument(
-        "--allow-legacy-run",
-        action="store_true",
-        help=(
-            "allow a historical run without root run_manifest.json; "
-            "failed or running manifests are never accepted"
-        ),
-    )
     _add_remote_arguments(archive_parser)
 
     list_parser = subparsers.add_parser(
@@ -160,7 +152,6 @@ def main(argv: Sequence[str] | None = None) -> int:
                 run_dir=args.run_dir,
                 remote_root=args.remote,
                 dry_run=args.dry_run,
-                allow_legacy_run=args.allow_legacy_run,
             )
         elif args.command == "list":
             archives = list_archives(client, remote_root=args.remote)

@@ -5,14 +5,17 @@ import java.io.FileOutputStream
 import java.nio.charset.StandardCharsets
 import java.nio.file.AtomicMoveNotSupportedException
 import java.nio.file.Files
+import java.nio.file.LinkOption
 import java.nio.file.Path
 import java.nio.file.StandardCopyOption
 import java.nio.file.attribute.PosixFilePermissions
+import java.security.MessageDigest
 import java.util.regex.Pattern
 
 
 class RunManifest {
-    static final int SCHEMA_VERSION = 2
+    static final int SCHEMA_VERSION = 3
+    static final int EVIDENCE_INVENTORY_SCHEMA_VERSION = 1
     static final String REDACTED = '<redacted>'
     private static final Set<String> ACTIVE_RUNS = Collections.synchronizedSet(
         new HashSet<String>()
@@ -54,6 +57,7 @@ class RunManifest {
             nextflow_version: workflow.nextflow?.version?.toString(),
             git_commit: git.commit,
             git_dirty: git.dirty,
+            evidence_inventory: null,
             parameters: sanitizeParameters(parameters, parameterSchema),
         ]
         writeAtomic(manifestPath, payload)
@@ -129,7 +133,39 @@ class RunManifest {
         payload.completed_at = workflow.complete?.toString()
         payload.success = success
         payload.exit_status = workflow.exitStatus as Integer
+        payload.evidence_inventory = success
+            ? evidenceInventoryDescriptor(manifestPath.parent.resolve('evidence_inventory.json'))
+            : null
         writeAtomic(manifestPath, payload)
+    }
+
+    private static Map evidenceInventoryDescriptor(Path path) {
+        if (!Files.isRegularFile(path, LinkOption.NOFOLLOW_LINKS)) {
+            throw new IllegalStateException("Evidence inventory not found: ${path}")
+        }
+        byte[] content = Files.readAllBytes(path)
+        Map inventory = (Map) new JsonSlurper().parseText(
+            new String(content, StandardCharsets.UTF_8)
+        )
+        if (
+            inventory.schema_version != EVIDENCE_INVENTORY_SCHEMA_VERSION ||
+            inventory.scope != ['fetch', 'alignment', 'annotation'] ||
+            !(inventory.file_count instanceof Number) ||
+            (inventory.file_count as Long) < 1L ||
+            !(inventory.total_bytes instanceof Number) ||
+            (inventory.total_bytes as Long) < 0L ||
+            !(inventory.tree_sha256 ==~ /[0-9a-f]{64}/) ||
+            !(inventory.files instanceof List)
+        ) {
+            throw new IllegalStateException("Invalid evidence inventory: ${path}")
+        }
+        MessageDigest digest = MessageDigest.getInstance('SHA-256')
+        return [
+            path: 'evidence_inventory.json',
+            schema_version: EVIDENCE_INVENTORY_SCHEMA_VERSION,
+            size_bytes: content.length,
+            sha256: digest.digest(content).encodeHex().toString(),
+        ]
     }
 
     private static String runKey(Path manifestPath, def workflow) {

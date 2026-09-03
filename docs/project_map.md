@@ -189,6 +189,7 @@ Default end-to-end layout:
 ```text
 results/run_001/
   run_manifest.json
+  evidence_inventory.json
   fetch/
   alignment/
   annotation/
