@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 
 CLINVAR_REVIEW_STARS = {
     "practice_guideline": "4",
@@ -24,6 +26,28 @@ PATHOGENIC_SUBTYPE_ORDER = (
     "Likely pathogenic",
     "Pathogenic / likely pathogenic",
 )
+
+
+def parse_vcf_record_fields(
+    line: str,
+    *,
+    source: str | Path,
+    line_number: int,
+) -> list[str] | None:
+    """Parse one tabix VCF output line without hiding malformed records."""
+
+    record = line.rstrip("\r\n")
+    if not record or record.startswith("#"):
+        return None
+    fields = record.split("\t")
+    if len(fields) < 8:
+        preview = record[:200] + ("..." if len(record) > 200 else "")
+        raise ValueError(
+            f"Malformed ClinVar VCF record from {source} at tabix output line "
+            f"{line_number}: expected at least 8 tab-separated fields, "
+            f"observed {len(fields)}; record={preview!r}"
+        )
+    return fields
 
 
 def normalize_review_status(value: object) -> str:

@@ -100,6 +100,33 @@ def test_clinvar_universe_preserves_clndisdb_source_structure(
     )
 
 
+def test_clinvar_universe_rejects_malformed_tabix_record(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    @contextmanager
+    def fake_tabix_output_lines(*_args, **_kwargs):
+        yield iter(["#header\n", "\n", "1\t10\tbroken\n"])
+
+    monkeypatch.setattr(clinvar_validation.shutil, "which", lambda _name: "tabix")
+    monkeypatch.setattr(
+        clinvar_validation,
+        "tabix_output_lines",
+        fake_tabix_output_lines,
+    )
+    clinvar_vcf = tmp_path / "clinvar.vcf.gz"
+
+    with pytest.raises(
+        ValueError,
+        match=r"clinvar\.vcf\.gz.*output line 3.*observed 3",
+    ):
+        clinvar_validation.query_clinvar_variant_universe(
+            clinvar_vcf,
+            tmp_path / "regions.bed",
+            {},
+        )
+
+
 def test_tabix_output_is_streamed_and_errors_are_reported(tmp_path: Path) -> None:
     tabix = tmp_path / "tabix"
     tabix.write_text(

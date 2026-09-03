@@ -4,6 +4,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pandas as pd
+import pytest
 
 from analytics.analyses import external_evidence
 from analytics.analyses.external_evidence import _annotate_gnomad, categorize_clinvar_sig
@@ -60,6 +61,42 @@ def test_clinvar_annotation_queries_exact_alleles_with_temporary_bed(
             "clinvar_class": "B/LB",
         }
     ]
+
+
+def test_clinvar_annotation_rejects_malformed_tabix_record(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    clinvar_vcf = tmp_path / "clinvar.vcf.gz"
+    clinvar_vcf.write_bytes(b"vcf")
+    Path(f"{clinvar_vcf}.tbi").write_bytes(b"index")
+    variants = pd.DataFrame(
+        [
+            {
+                "variant_key": "1:100:A>G",
+                "chrom": "1",
+                "pos": 100,
+                "ref": "A",
+                "alt": "G",
+            }
+        ]
+    )
+    monkeypatch.setattr(external_evidence.shutil, "which", lambda _name: "tabix")
+    monkeypatch.setattr(
+        external_evidence.subprocess,
+        "run",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            returncode=0,
+            stdout="#header\n1\t100\tbroken\n",
+            stderr="",
+        ),
+    )
+
+    with pytest.raises(
+        ValueError,
+        match=r"clinvar\.vcf\.gz.*output line 2.*observed 3",
+    ):
+        external_evidence._annotate_clinvar(variants, clinvar_vcf)
 
 
 def test_gnomad_annotation_distinguishes_absence_from_failed_lookup(

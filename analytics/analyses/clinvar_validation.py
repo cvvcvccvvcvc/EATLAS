@@ -27,6 +27,7 @@ from analytics.io.artifacts import (
     write_tsv_atomic,
 )
 from analytics.io.performance import PerformanceProfile, profile_stage
+from genomics.clinvar import parse_vcf_record_fields
 from genomics.variants import (
     build_context_index,
     contexts_for_variant,
@@ -489,12 +490,13 @@ def query_clinvar_variant_universe(
     raw_by_key: dict[str, dict[str, object]] = {}
     counts = Counter()
     with tabix_output_lines(tabix, clinvar_vcf, regions_path) as output_lines:
-        for line in output_lines:
-            line = line.rstrip("\n")
-            if not line or line.startswith("#"):
-                continue
-            fields = line.split("\t")
-            if len(fields) < 8:
+        for line_number, line in enumerate(output_lines, start=1):
+            fields = parse_vcf_record_fields(
+                line,
+                source=clinvar_vcf,
+                line_number=line_number,
+            )
+            if fields is None:
                 continue
             chrom, pos_text, rec_id, ref, alt_text, _qual, _filter, info_text = fields[:8]
             chrom = normalize_chrom(chrom) or ""

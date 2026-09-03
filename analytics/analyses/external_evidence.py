@@ -15,7 +15,11 @@ import pandas as pd
 
 from analytics.io.artifacts import path_metadata, write_json_atomic, write_tsv_atomic
 from analytics.io.performance import PerformanceProfile, profile_stage
-from genomics.clinvar import record_category, significance_class
+from genomics.clinvar import (
+    parse_vcf_record_fields,
+    record_category,
+    significance_class,
+)
 from genomics.gnomad_cache import GnomadRegionCache
 from genomics.gnomad_index import GnomadAlleleIndex
 from genomics.gnomad import (
@@ -227,9 +231,13 @@ def _annotate_clinvar(variants: pd.DataFrame, clinvar_vcf: Path) -> pd.DataFrame
     if proc.returncode not in (0, 1):
         raise RuntimeError(f"tabix ClinVar query failed: {proc.stderr.strip()}")
 
-    for line in proc.stdout.splitlines():
-        fields = line.split("\t")
-        if len(fields) < 8:
+    for line_number, line in enumerate(proc.stdout.splitlines(), start=1):
+        fields = parse_vcf_record_fields(
+            line,
+            source=clinvar_vcf,
+            line_number=line_number,
+        )
+        if fields is None:
             continue
         chrom = normalize_chrom(fields[0]) or ""
         pos = int(fields[1])
