@@ -7,6 +7,7 @@ from types import SimpleNamespace
 import pandas as pd
 import pytest
 
+from analytics import strategy_report
 from analytics.analyses.candidate_conservation import CandidateConservation
 from analytics.analyses.basic_filtering import BasicFilteringAnalysis
 from analytics.analyses.matched_control import TargetSpaceNullAnalysis
@@ -52,6 +53,7 @@ from analytics.strategy_report import (
     _default_annotation_support_workers,
     _default_clinvar_vcf,
     _default_phylop_bigwig,
+    _require_local_vep_runtime,
     parse_args,
 )
 
@@ -135,6 +137,89 @@ def test_annotation_support_worker_default_uses_slurm_allocation(
 
     monkeypatch.setenv("GAPH_ANNOTATION_SUPPORT_WORKERS", "2")
     assert _default_annotation_support_workers() == 2
+
+
+def test_local_vep_runtime_reports_missing_inputs(
+    tmp_path: Path,
+) -> None:
+    with pytest.raises(RuntimeError) as caught:
+        _require_local_vep_runtime(
+            backend="local",
+            release="116",
+            executable=str(tmp_path / "missing-vep"),
+            cache_dir=None,
+        )
+
+    message = str(caught.value)
+    assert "Local VEP is not executable or was not found" in message
+    assert "Local VEP cache directory is empty" in message
+
+
+def test_empty_local_vep_cache_cli_path_is_rejected(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "strategy_report",
+            "--analytics-root",
+            str(tmp_path / "analytics"),
+            "--run-dir",
+            str(tmp_path / "run"),
+            "--report-name",
+            "report",
+            "--vep-cache-dir",
+            "",
+        ],
+    )
+
+    with pytest.raises(SystemExit):
+        parse_args()
+
+
+def test_local_vep_preflight_runs_before_workspace_resolution(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    args = SimpleNamespace(
+        clinvar_vcf=tmp_path / "clinvar.vcf.gz",
+        phylop_bigwig=None,
+        target_space_null=False,
+        target_space_null_sample_size=1,
+        target_space_null_resamples=100,
+        vep_forks=1,
+        annotation_support_workers=1,
+        firth_workers=1,
+        vep_result_cache_tile_size_bp=1,
+        run_dir=[tmp_path / "run"],
+        vep_release=None,
+        vep_backend="local",
+        vep_executable="vep",
+        vep_cache_dir=tmp_path / "vep-cache",
+    )
+    monkeypatch.setattr(strategy_report, "parse_args", lambda: args)
+    monkeypatch.setattr(
+        strategy_report,
+        "resolve_source_runs",
+        lambda *_args, **_kwargs: [SimpleNamespace(variant_annotation_descriptor={})],
+    )
+    monkeypatch.setattr(strategy_report, "variant_annotation_release", lambda _value: "116")
+    monkeypatch.setattr(
+        strategy_report,
+        "_require_local_vep_runtime",
+        lambda **_kwargs: (_ for _ in ()).throw(RuntimeError("preflight stopped")),
+    )
+    monkeypatch.setattr(
+        strategy_report,
+        "resolve_analysis_workspace",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("workspace resolved before local VEP preflight")
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="preflight stopped"):
+        strategy_report.main()
 
 
 def write_pipeline_variant_dataset(annotation_dir: Path) -> tuple[Path, dict]:

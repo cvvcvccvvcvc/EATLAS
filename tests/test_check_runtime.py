@@ -7,6 +7,7 @@ from pathlib import Path
 
 
 from bin import check_runtime
+from genomics.vep import local_runtime
 
 
 def test_explicit_relative_executable_resolves_to_absolute_path(
@@ -17,7 +18,7 @@ def test_explicit_relative_executable_resolves_to_absolute_path(
     executable.touch(mode=0o755)
     monkeypatch.chdir(tmp_path)
 
-    assert check_runtime.resolve_executable("./vep") == str(executable)
+    assert local_runtime.resolve_executable("./vep") == str(executable)
 
 
 def test_map_ont_strategy_checks_minimap2_dependency(
@@ -72,13 +73,13 @@ def test_local_vep_probe_uses_annotation_cache_contract(
 
     def fake_run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
         commands.append(command)
-        assert kwargs["timeout"] == check_runtime.LOCAL_VEP_PROBE_TIMEOUT_SECONDS
+        assert kwargs["timeout"] == local_runtime.LOCAL_VEP_PROBE_TIMEOUT_SECONDS
         return subprocess.CompletedProcess(command, 0, stdout="cache ok", stderr="")
 
-    monkeypatch.setattr(check_runtime.subprocess, "run", fake_run)
+    monkeypatch.setattr(local_runtime.subprocess, "run", fake_run)
     errors: list[str] = []
 
-    result = check_runtime.probe_local_vep(
+    result = local_runtime.probe_local_vep(
         release="116",
         executable=str(executable),
         cache_dir=str(cache_dir),
@@ -117,7 +118,7 @@ def test_local_vep_probe_failure_is_reported_in_runtime_json(
     cache_dir.mkdir()
     output = tmp_path / "runtime.json"
     monkeypatch.setattr(
-        check_runtime.subprocess,
+        local_runtime.subprocess,
         "run",
         lambda command, **_kwargs: subprocess.CompletedProcess(
             command,

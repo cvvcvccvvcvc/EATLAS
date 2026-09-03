@@ -50,6 +50,7 @@ from analytics.reporting.variant_profile import (
     build_gnomad_stratification_sections,
     build_variant_sections,
 )
+from genomics.vep.local_runtime import probe_local_vep
 
 
 def parse_args() -> argparse.Namespace:
@@ -144,7 +145,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--vep-cache-dir",
-        type=Path,
+        type=_non_empty_path,
         default=os.environ.get("GAPH_VEP_CACHE_DIR") or None,
         help="Local indexed VEP cache root. Required with --vep-backend local.",
     )
@@ -189,6 +190,12 @@ def parse_args() -> argparse.Namespace:
 
 def project_root() -> Path:
     return Path(__file__).resolve().parents[1]
+
+
+def _non_empty_path(raw: str) -> Path:
+    if not raw.strip():
+        raise argparse.ArgumentTypeError("path must not be empty")
+    return Path(raw)
 
 
 def _default_clinvar_vcf() -> Path:
@@ -236,6 +243,26 @@ def _default_annotation_support_workers() -> int:
     return 1
 
 
+def _require_local_vep_runtime(
+    *,
+    backend: str,
+    release: str,
+    executable: str,
+    cache_dir: Path | None,
+) -> None:
+    if backend != "local":
+        return
+    errors: list[str] = []
+    probe_local_vep(
+        release=release,
+        executable=executable,
+        cache_dir=cache_dir,
+        errors=errors,
+    )
+    if errors:
+        raise RuntimeError("Local VEP runtime check failed:\n- " + "\n- ".join(errors))
+
+
 def main() -> None:
     args = parse_args()
     args.clinvar_vcf = args.clinvar_vcf.expanduser().resolve()
@@ -268,8 +295,12 @@ def main() -> None:
         )
     if not args.vep_release:
         args.vep_release = artifact_release
-    if args.vep_backend == "local" and args.vep_cache_dir is None:
-        raise ValueError("--vep-cache-dir is required with --vep-backend local")
+    _require_local_vep_runtime(
+        backend=args.vep_backend,
+        release=str(args.vep_release),
+        executable=args.vep_executable,
+        cache_dir=args.vep_cache_dir,
+    )
     scientific_config = {
         "clinvar": {
             "vcf": path_metadata(args.clinvar_vcf),

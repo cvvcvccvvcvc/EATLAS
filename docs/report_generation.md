@@ -110,6 +110,10 @@ context, and lookup outcome remain gene-context evidence.
 portable ClinVar identity recorded by every source run; the current file does
 not need to be at the path used when the pipeline ran.
 
+With the local VEP backend, report startup probes the configured executable and
+release-specific cache before creating the analysis workspace or derived data.
+An unavailable executable, cache, or release fails the report immediately.
+
 Pass scientific report options unchanged after `--`. For example:
 
 ```bash
