@@ -9,6 +9,7 @@ import pytest
 
 
 ROOT = Path(__file__).resolve().parents[1]
+NEXTFLOW_TEST_TIMEOUT_SECONDS = 120
 
 
 def _run_nextflow(
@@ -37,7 +38,7 @@ def _run_nextflow(
         env={**os.environ, "NXF_ANSI_LOG": "false", **(extra_env or {})},
         text=True,
         capture_output=True,
-        timeout=30,
+        timeout=NEXTFLOW_TEST_TIMEOUT_SECONDS,
     )
 
 

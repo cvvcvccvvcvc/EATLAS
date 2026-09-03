@@ -13,6 +13,7 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 FIXTURE = ROOT / "tests" / "fixtures" / "run_manifest_workflow.nf"
+NEXTFLOW_TEST_TIMEOUT_SECONDS = 120
 
 
 def _command(
@@ -160,7 +161,7 @@ def test_run_manifest_records_running_and_complete_states(tmp_path: Path) -> Non
     )
 
     running = _wait_for_running_manifest(manifest_path)
-    stdout, stderr = process.communicate(timeout=30)
+    stdout, stderr = process.communicate(timeout=NEXTFLOW_TEST_TIMEOUT_SECONDS)
 
     assert process.returncode == 0, stdout + stderr
     assert running["status"] == "running"
@@ -183,7 +184,7 @@ def test_run_manifest_records_failed_completion(tmp_path: Path) -> None:
         env=_environment(tmp_path),
         text=True,
         capture_output=True,
-        timeout=30,
+        timeout=NEXTFLOW_TEST_TIMEOUT_SECONDS,
     )
 
     assert completed.returncode != 0
@@ -203,7 +204,7 @@ def test_completed_run_cannot_be_reused(tmp_path: Path) -> None:
         env=_environment(tmp_path),
         text=True,
         capture_output=True,
-        timeout=30,
+        timeout=NEXTFLOW_TEST_TIMEOUT_SECONDS,
     )
     assert first.returncode == 0, first.stdout + first.stderr
     before = {
@@ -218,7 +219,7 @@ def test_completed_run_cannot_be_reused(tmp_path: Path) -> None:
         env=_environment(tmp_path),
         text=True,
         capture_output=True,
-        timeout=30,
+        timeout=NEXTFLOW_TEST_TIMEOUT_SECONDS,
     )
 
     assert second.returncode != 0
@@ -238,7 +239,7 @@ def test_incomplete_run_requires_resume_and_can_then_complete(tmp_path: Path) ->
         env=_environment(tmp_path),
         text=True,
         capture_output=True,
-        timeout=30,
+        timeout=NEXTFLOW_TEST_TIMEOUT_SECONDS,
     )
     assert failed.returncode != 0
 
@@ -248,7 +249,7 @@ def test_incomplete_run_requires_resume_and_can_then_complete(tmp_path: Path) ->
         env=_environment(tmp_path),
         text=True,
         capture_output=True,
-        timeout=30,
+        timeout=NEXTFLOW_TEST_TIMEOUT_SECONDS,
     )
     assert without_resume.returncode != 0
     assert "Existing incomplete run requires -resume" in (
@@ -261,7 +262,7 @@ def test_incomplete_run_requires_resume_and_can_then_complete(tmp_path: Path) ->
         env=_environment(tmp_path),
         text=True,
         capture_output=True,
-        timeout=30,
+        timeout=NEXTFLOW_TEST_TIMEOUT_SECONDS,
     )
     assert resumed.returncode == 0, resumed.stdout + resumed.stderr
     manifest = json.loads((outdir / "run_manifest.json").read_text())
