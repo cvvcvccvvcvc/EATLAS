@@ -25,13 +25,15 @@ from genomics.gnomad import (
     GNOMAD_API_URL,
     GNOMAD_DATASET,
     fetch_region_variants_recursive,
+    merge_observation_windows,
     select_af_metrics,
+    validate_observation_window,
 )
 
 from genomics.variants import normalize_chrom
 
 
-CACHE_VERSION = 2
+CACHE_VERSION = 3
 GNOMAD_CLUSTER_GAP_BP = 200_000
 GNOMAD_WORKERS = 5
 EVIDENCE_COLUMNS = [
@@ -77,6 +79,8 @@ def build_external_evidence(
                 cached_evidence = _read_evidence(output_path)
         except (OSError, json.JSONDecodeError):
             cached_manifest = {}
+        if cached_evidence is not None:
+            _cached_gnomad_observation(cached_manifest, cached_evidence)
         if cached_evidence is not None and cached_manifest.get("complete"):
             return cached_evidence, {**cached_manifest, "cache_hit": True}
 
@@ -90,6 +94,13 @@ def build_external_evidence(
         variants["variant_key"].astype(str)
     ):
         cached_evidence = None
+
+    previous_gnomad_window = None
+    if cached_evidence is not None:
+        previous_gnomad_window = _cached_gnomad_observation(
+            cached_manifest,
+            cached_evidence,
+        )
 
     if cached_evidence is None:
         with profile_stage(performance_profile, "External evidence ClinVar lookup") as timing:
@@ -157,6 +168,12 @@ def build_external_evidence(
                 else cached_evidence["gnomad_status"].eq("ok").sum()
             ),
             "failed_allele_count": failed_allele_count,
+            "observation_window": merge_observation_windows(
+                [
+                    previous_gnomad_window,
+                    gnomad_summary.get("observation_window"),
+                ]
+            ),
         }
     )
 
@@ -173,6 +190,23 @@ def build_external_evidence(
     }
     write_json_atomic(manifest_path, manifest)
     return evidence, {**manifest, "cache_hit": False}
+
+
+def _cached_gnomad_observation(
+    manifest: dict[str, object],
+    evidence: pd.DataFrame,
+) -> dict[str, str] | None:
+    gnomad = manifest.get("gnomad")
+    if not isinstance(gnomad, dict) or "observation_window" not in gnomad:
+        raise ValueError("Cached external evidence lacks gnomAD observation provenance")
+    observed = gnomad["observation_window"]
+    if observed is not None:
+        observed = validate_observation_window(observed)
+    if evidence["gnomad_status"].eq("ok").any() and observed is None:
+        raise ValueError(
+            "Cached successful gnomAD evidence lacks an observation window"
+        )
+    return observed
 
 
 def _empty_gnomad_evidence(variants: pd.DataFrame) -> pd.DataFrame:
@@ -347,6 +381,13 @@ def _annotate_gnomad(
         "post_fetch_unresolved_count": int(len(still_unresolved)),
     }
     regional_summary["shared_cache"] = region_cache.snapshot()
+    regional_summary["observation_window"] = merge_observation_windows(
+        [
+            index_summary.get("observation_window"),
+            post_fetch.get("observation_window"),
+            regional_summary["shared_cache"].get("observation_window"),
+        ]
+    )
     return evidence, regional_summary
 
 
@@ -460,6 +501,7 @@ def _annotate_gnomad_regional(
                 "gnomad_af": found_by_key.get(variant_key),
             }
         )
+    cache_snapshot = region_cache.snapshot()
     summary = {
         "dataset": GNOMAD_DATASET,
         "region_count": len(tasks),
@@ -467,7 +509,8 @@ def _annotate_gnomad_regional(
         "failed_region_count": len(errors),
         "raw_variant_count": raw_variant_count,
         "errors": errors,
-        "shared_cache": region_cache.snapshot(),
+        "shared_cache": cache_snapshot,
+        "observation_window": cache_snapshot.get("observation_window"),
     }
     return pd.DataFrame.from_records(
         rows,

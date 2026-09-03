@@ -53,7 +53,7 @@ def canonical_partition_manifest(partition_id: str) -> dict:
     return {
         "partition_id": partition_id,
         "stage": "annotation",
-        "schema": "normalized_annotation_evidence_partition_v2",
+        "schema": "normalized_annotation_evidence_partition_v3",
         **{field: 0 for field in COUNT_FIELDS},
         **{field: {} for field in COUNTER_FIELDS},
         "failure_count": 0,
@@ -399,6 +399,15 @@ def test_partition_manifest_validation_requires_current_contract(tmp_path: Path)
         validate_partition_manifests([(partition, manifest)])
 
 
+def test_successful_gnomad_partition_requires_observation_window(tmp_path: Path) -> None:
+    partition = tmp_path / "annotation_partition_000001"
+    manifest = canonical_partition_manifest("partition_000001")
+    manifest["gnomad_region_success_count"] = 1
+
+    with pytest.raises(ValueError, match="without an observation window"):
+        validate_partition_manifests([(partition, manifest)])
+
+
 def test_finalizer_publishes_only_source_annotation_evidence(tmp_path: Path) -> None:
     partition_root = tmp_path / "partitions"
     partition = partition_root / "annotation_partition_000001"
@@ -416,6 +425,25 @@ def test_finalizer_publishes_only_source_annotation_evidence(tmp_path: Path) -> 
             "annotated_variant_context_count": 1,
             "clinvar_vcf": path_metadata(clinvar_vcf),
             "clinvar_tbi": path_metadata(clinvar_tbi),
+            "gnomad_region_success_count": 1,
+            "gnomad_shared_cache": {
+                "enabled": True,
+                "directory": "/cache/gnomad",
+                "schema_version": 2,
+                "dataset": "gnomad_r4",
+                "reference_genome": "GRCh38",
+                "tile_size_bp": 25_000,
+                "tile_hit_count": 1,
+                "tile_miss_count": 0,
+                "tile_write_count": 0,
+                "corrupt_tile_count": 0,
+                "fetch_batch_count": 0,
+                "split_count": 0,
+                "observation_window": {
+                    "started_at_utc": "2026-03-01T00:00:00+00:00",
+                    "finished_at_utc": "2026-03-01T00:00:01+00:00",
+                },
+            },
         }
     )
     source_rows = [
@@ -482,7 +510,11 @@ def test_finalizer_publishes_only_source_annotation_evidence(tmp_path: Path) -> 
     }
     final_manifest = json.loads((outdir / "manifest.json").read_text())
     assert final_manifest["stage"] == "annotation"
-    assert final_manifest["schema"] == "normalized_annotation_evidence_v4"
+    assert final_manifest["schema"] == "normalized_annotation_evidence_v5"
+    assert final_manifest["gnomad_observation_window"] == {
+        "started_at_utc": "2026-03-01T00:00:00+00:00",
+        "finished_at_utc": "2026-03-01T00:00:01+00:00",
+    }
     assert final_manifest["clinvar_vcf"] == content_identity(clinvar_vcf)
     assert final_manifest["clinvar_tbi"] == content_identity(clinvar_tbi)
     dataset_manifest = json.loads(
@@ -548,7 +580,7 @@ def test_partitioned_manifest_aggregates_shared_gnomad_cache_metrics(tmp_path: P
     identity = {
         "enabled": True,
         "directory": "/cache/gnomad",
-        "schema_version": 1,
+        "schema_version": 2,
         "dataset": "gnomad_r4",
         "reference_genome": "GRCh38",
         "tile_size_bp": 25_000,
@@ -565,6 +597,10 @@ def test_partitioned_manifest_aggregates_shared_gnomad_cache_metrics(tmp_path: P
                     "corrupt_tile_count": 0,
                     "fetch_batch_count": 1,
                     "split_count": 0,
+                    "observation_window": {
+                        "started_at_utc": "2026-03-02T00:00:00+00:00",
+                        "finished_at_utc": "2026-03-02T00:00:01+00:00",
+                    },
                 }
             },
         ),
@@ -579,6 +615,10 @@ def test_partitioned_manifest_aggregates_shared_gnomad_cache_metrics(tmp_path: P
                     "corrupt_tile_count": 0,
                     "fetch_batch_count": 0,
                     "split_count": 0,
+                    "observation_window": {
+                        "started_at_utc": "2026-03-01T00:00:00+00:00",
+                        "finished_at_utc": "2026-03-03T00:00:00+00:00",
+                    },
                 }
             },
         ),
@@ -591,6 +631,10 @@ def test_partitioned_manifest_aggregates_shared_gnomad_cache_metrics(tmp_path: P
     assert merged["tile_miss_count"] == 3
     assert merged["tile_write_count"] == 3
     assert merged["fetch_batch_count"] == 1
+    assert merged["observation_window"] == {
+        "started_at_utc": "2026-03-01T00:00:00+00:00",
+        "finished_at_utc": "2026-03-03T00:00:00+00:00",
+    }
 
 
 def test_exact_support_spool_counts_distinct_orthologs(tmp_path: Path) -> None:

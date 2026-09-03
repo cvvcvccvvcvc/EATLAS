@@ -15,6 +15,7 @@ from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
 
+from genomics.gnomad import merge_observation_windows, validate_observation_window
 from genomics.variants import parse_variant_key
 
 
@@ -156,13 +157,35 @@ def validate_partition_manifests(partitions: list[tuple[Path, dict]]) -> None:
             raise ValueError(f"Annotation partition has unexpected stage: {partition}")
         if (
             manifest_string(manifest, "schema", partition)
-            != "normalized_annotation_evidence_partition_v2"
+            != "normalized_annotation_evidence_partition_v3"
         ):
             raise ValueError(f"Annotation partition has unexpected schema: {partition}")
         for field in [*COUNT_FIELDS, "failure_count"]:
             manifest_count(manifest, field, partition)
         for field in COUNTER_FIELDS:
             manifest_counter(manifest, field, partition)
+
+        shared_cache = manifest.get("gnomad_shared_cache")
+        if shared_cache is not None:
+            if not isinstance(shared_cache, dict):
+                raise ValueError(
+                    f"Annotation partition has invalid gnomAD shared-cache metadata: {partition}"
+                )
+            observed = required_manifest_value(
+                shared_cache,
+                "observation_window",
+                partition,
+            )
+            if observed is not None:
+                validate_observation_window(observed)
+        if manifest_count(manifest, "gnomad_region_success_count", partition) > 0 and (
+            not isinstance(shared_cache, dict)
+            or shared_cache["observation_window"] is None
+        ):
+            raise ValueError(
+                "Annotation partition has successful gnomAD regions without an "
+                f"observation window: {partition}"
+            )
 
         clinvar_vcf = required_manifest_value(manifest, "clinvar_vcf", partition)
         clinvar_tbi = required_manifest_value(manifest, "clinvar_tbi", partition)
@@ -607,6 +630,10 @@ def merge_gnomad_shared_cache(partitions: list[tuple[Path, dict]]) -> dict[str, 
             raise ValueError("gnomAD shared-cache configuration differs across annotation partitions")
     return {
         **identity,
+        "observation_window": merge_observation_windows(
+            required_manifest_value(snapshot, "observation_window", partition)
+            for (partition, _manifest), snapshot in zip(partitions, snapshots)
+        ),
         **{
             field: sum(
                 manifest_count(snapshot, field, partition)
@@ -696,7 +723,7 @@ def main() -> None:
     manifest = {
         "created_at": utc_now(),
         "stage": "annotation",
-        "schema": "normalized_annotation_evidence_v4",
+        "schema": "normalized_annotation_evidence_v5",
         "partition_count": len(partitions),
         "partition_ids": [manifest_string(item, "partition_id", path) for path, item in partitions],
         **counts,
@@ -712,6 +739,11 @@ def main() -> None:
         "clinvar_tbi": clinvar_tbi_identity,
         "gnomad_api_url": first_manifest["gnomad_api_url"],
         "gnomad_dataset": first_manifest["gnomad_dataset"],
+        "gnomad_observation_window": (
+            gnomad_shared_cache.get("observation_window")
+            if gnomad_shared_cache is not None
+            else None
+        ),
         "cache_count_semantics": "ClinVar and gnomAD cache counts are sums across partitions.",
     }
     if gnomad_shared_cache is not None:

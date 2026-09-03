@@ -102,6 +102,10 @@ neither a run result nor Nextflow resume state: multiple pipeline and analytics
 runs may reuse it, and a run remains valid when the cache is absent. Concurrent
 misses for the same tiles are serialized with per-tile advisory locks and
 rechecked before network access; independent regions remain parallel.
+Every tile records the successful GraphQL batch's UTC observation window.
+Manifests aggregate the windows of the evidence actually used. The rolling
+`gnomad_r4` selector is not represented as an exact minor release. Cache schema
+v1 is obsolete and is not read by current code.
 
 `GAPH_VEP_RESULT_CACHE_DIR` is a second reusable infrastructure cache. It keeps
 only complete release/config-matched variant/gene results and is distinct from

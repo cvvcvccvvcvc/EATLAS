@@ -9,6 +9,7 @@ process FINALIZE_ANNOTATION {
     path finalize_script, stageAs: 'bin/finalize_annotation_partitions.py'
     path bin_package_init, stageAs: 'bin/__init__.py'
     path genomics_package_init, stageAs: 'genomics/__init__.py'
+    path gnomad_source, stageAs: 'genomics/gnomad.py'
     path variants_source, stageAs: 'genomics/variants.py'
 
     output:

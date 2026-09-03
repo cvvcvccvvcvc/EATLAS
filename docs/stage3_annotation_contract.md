@@ -73,9 +73,14 @@ annotation/
 ```
 
 `annotation/manifest.json` uses
-`schema=normalized_annotation_evidence_v4`. Its `clinvar_vcf` and
+`schema=normalized_annotation_evidence_v5`. Its `clinvar_vcf` and
 `clinvar_tbi` fields store content identities (`size_bytes` and `sha256`), not
-machine-specific paths. Its `variant_annotations` object is
+machine-specific paths. `gnomad_dataset=gnomad_r4` identifies the rolling API
+selector, not a minor gnomAD release. `gnomad_observation_window` records the
+earliest UTC request start and latest UTC completion contributing to the run,
+including observations reused from the shared cache. It can be compared with
+the provider's release history but does not claim an exact minor release.
+Its `variant_annotations` object is
 identical to `annotation/variant_annotations/manifest.json` and declares:
 
 - `schema=gaph_variant_annotation_dataset_v1`;

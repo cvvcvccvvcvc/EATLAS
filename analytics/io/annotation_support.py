@@ -151,7 +151,7 @@ def resolve_annotation_support_paths(
         raise ValueError(
             f"Annotation manifest has invalid stage: {annotation_manifest_path}"
         )
-    if annotation_manifest.get("schema") != "normalized_annotation_evidence_v4":
+    if annotation_manifest.get("schema") != "normalized_annotation_evidence_v5":
         raise ValueError(
             f"Annotation manifest has unsupported schema: {annotation_manifest_path}"
         )

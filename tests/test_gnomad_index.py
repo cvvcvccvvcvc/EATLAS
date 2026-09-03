@@ -61,6 +61,7 @@ def test_allele_index_builds_from_json_and_reuses_parquet(tmp_path: Path) -> Non
     assert first_summary["fragment_build_count"] == 1
     assert first_summary["indexed_variant_count"] == 1
     assert first_summary["raw_tile_missing_count"] == 0
+    assert first_summary["observation_window"] is not None
     assert first.loc["1:100:A>G", "gnomad_status"] == "ok"
     assert bool(first.loc["1:100:A>G", "gnomad_found"])
     assert first.loc["1:100:A>G", "gnomad_af"] == 0.04
@@ -83,6 +84,7 @@ def test_allele_index_builds_from_json_and_reuses_parquet(tmp_path: Path) -> Non
     assert second_unresolved.empty
     assert second_summary["tile_hit_count"] == 1
     assert second_summary["tile_build_count"] == 0
+    assert second_summary["observation_window"] == first_summary["observation_window"]
     assert warm_region_cache.snapshot()["fetch_batch_count"] == 0
     assert warm_region_cache.snapshot()["tile_hit_count"] == 0
 
@@ -202,7 +204,9 @@ def test_modified_coverage_manifest_fails_instead_of_claiming_absence(
     index.lookup(_requests())
     manifest_path = next(index.namespace_dir.glob("chrom=*/fragment-*.json"))
     manifest = json.loads(manifest_path.read_text())
-    manifest["tiles"][0]["start"] = 2
+    manifest["tiles"][0]["observation_window"]["finished_at_utc"] = (
+        "2099-01-01T00:00:00+00:00"
+    )
     manifest_path.write_text(json.dumps(manifest))
 
     with pytest.raises(ValueError, match="manifest identity changed"):

@@ -31,7 +31,11 @@ from analytics.io.variant_source import (
     sql_string,
     variant_source_sql,
 )
-from genomics.gnomad import GNOMAD_DATASET
+from genomics.gnomad import (
+    GNOMAD_DATASET,
+    merge_observation_windows,
+    validate_observation_window,
+)
 from genomics.variants import ALLELE_ANNOTATION_FIELDS
 
 
@@ -563,7 +567,7 @@ def _validate_compatibility(
         "ortholog_scope": "all",
         "alignment_event_mode": "compact_support",
         "event_ortholog_support_format": "event_group_id_v2",
-        "annotation_schema": "normalized_annotation_evidence_v4",
+        "annotation_schema": "normalized_annotation_evidence_v5",
         "gnomad_dataset": GNOMAD_DATASET,
     }
     invalid = [
@@ -820,6 +824,9 @@ def _combined_annotation_manifest(
         "variant_annotations": descriptor,
         "gnomad_api_url": baseline.get("gnomad_api_url"),
         "gnomad_dataset": baseline.get("gnomad_dataset"),
+        "gnomad_observation_window": merge_observation_windows(
+            manifest.get("gnomad_observation_window") for manifest in manifests
+        ),
         "failure_count": sum(
             int(value.get("failure_count", 0) or 0) for value in manifests
         ),
@@ -843,9 +850,14 @@ def _variant_annotation_descriptor(path: Path) -> dict[str, object]:
     manifest = _required_json(path)
     if (
         manifest.get("stage") != "annotation"
-        or manifest.get("schema") != "normalized_annotation_evidence_v4"
+        or manifest.get("schema") != "normalized_annotation_evidence_v5"
     ):
         raise ValueError(f"Unsupported pipeline annotation contract: {path}")
+    if "gnomad_observation_window" not in manifest:
+        raise ValueError(f"Annotation manifest lacks gnomAD observation provenance: {path}")
+    observed = manifest["gnomad_observation_window"]
+    if observed is not None:
+        validate_observation_window(observed)
     descriptor = manifest.get("variant_annotations")
     if not isinstance(descriptor, dict):
         raise ValueError(f"Annotation manifest does not declare variant_annotations: {path}")

@@ -277,7 +277,8 @@ def write_pipeline_variant_dataset(annotation_dir: Path) -> tuple[Path, dict]:
         json.dumps(
             {
                 "stage": "annotation",
-                "schema": "normalized_annotation_evidence_v4",
+                "schema": "normalized_annotation_evidence_v5",
+                "gnomad_observation_window": None,
                 "variant_annotations": descriptor,
             },
             indent=2,

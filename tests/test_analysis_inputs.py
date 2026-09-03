@@ -239,9 +239,13 @@ def _make_source_run(
         annotation / "manifest.json",
         {
             "stage": "annotation",
-            "schema": "normalized_annotation_evidence_v4",
+            "schema": "normalized_annotation_evidence_v5",
             "gnomad_api_url": "https://example.invalid",
             "gnomad_dataset": "gnomad_r4",
+            "gnomad_observation_window": {
+                "started_at_utc": f"2026-03-0{gene_id}T00:00:00+00:00",
+                "finished_at_utc": f"2026-03-0{gene_id}T00:00:01+00:00",
+            },
             "clinvar_vcf": content_identity(clinvar_vcf),
             "clinvar_tbi": content_identity(Path(f"{clinvar_vcf}.tbi")),
             "variant_annotations": descriptor,
@@ -386,6 +390,10 @@ def test_analysis_workspace_is_order_independent_and_source_runs_are_read_only(
     manifest = json.loads(first.analysis_manifest_json.read_text())
     assert manifest["status"] == "ready"
     assert len(manifest["sources"]) == 2
+    assert first.annotation_manifest["gnomad_observation_window"] == {
+        "started_at_utc": "2026-03-01T00:00:00+00:00",
+        "finished_at_utc": "2026-03-02T00:00:01+00:00",
+    }
 
 
 def test_analysis_input_preparation_is_profiled_before_cache_builds(
@@ -496,7 +504,7 @@ def test_analysis_rejects_previous_annotation_schema(tmp_path: Path) -> None:
     run = _make_source_run(tmp_path / "run", gene_id="1", clinvar_vcf=clinvar)
     manifest_path = run / "annotation" / "manifest.json"
     manifest = json.loads(manifest_path.read_text())
-    manifest["schema"] = "normalized_annotation_evidence_v3"
+    manifest["schema"] = "normalized_annotation_evidence_v4"
     _json(manifest_path, manifest)
 
     with pytest.raises(ValueError, match="Unsupported pipeline annotation contract"):

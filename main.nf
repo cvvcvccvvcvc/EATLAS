@@ -602,6 +602,7 @@ workflow PARTITIONED_ANNOTATION_STAGE {
         finalize_script,
         bin_package_init,
         genomics_package_init,
+        file("${projectDir}/genomics/gnomad.py"),
         variants_source
     )
 

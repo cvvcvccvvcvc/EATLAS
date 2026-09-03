@@ -21,12 +21,16 @@ from .gnomad import (
     GNOMAD_MAX_ATTEMPTS,
     fetch_region_variants_recursive,
     is_retryable_network_error,
+    merge_observation_windows,
+    observation_window,
+    utc_now,
+    validate_observation_window,
 )
 
 
 logger = logging.getLogger(__name__)
 
-CACHE_SCHEMA_VERSION = 1
+CACHE_SCHEMA_VERSION = 2
 DEFAULT_TILE_SIZE_BP = 25_000
 DEFAULT_GROUP_ATTEMPTS = 2
 GNOMAD_REFERENCE_GENOME = "GRCh38"
@@ -116,6 +120,7 @@ class GnomadRegionCache:
             "fetch_batch_count": 0,
             "split_count": 0,
         }
+        self._observation_window: dict[str, str] | None = None
 
     @property
     def enabled(self) -> bool:
@@ -129,7 +134,14 @@ class GnomadRegionCache:
             raise ValueError(f"Invalid region: {normalized_chrom}:{start}-{end}")
 
         if not self.enabled:
-            return self._call_fetcher(normalized_chrom, start, end, self.max_attempts)
+            records, observed = self._call_fetcher(
+                normalized_chrom,
+                start,
+                end,
+                self.max_attempts,
+            )
+            self._record_observation(observed)
+            return records
 
         tiles = tiles_for_region(normalized_chrom, start, end, self.tile_size_bp)
         records_by_tile = self.fetch_tiles(tiles)
@@ -168,11 +180,11 @@ class GnomadRegionCache:
             with self._tile_locks(missing_tiles):
                 still_missing: list[Tile] = []
                 for tile in missing_tiles:
-                    records = self._read_tile(tile, report_invalid=False)
-                    if records is None:
+                    cached = self._read_tile(tile, report_invalid=False)
+                    if cached is None:
                         still_missing.append(tile)
                     else:
-                        records_by_tile[tile] = records
+                        records_by_tile[tile] = cached[0]
                         self._increment("tile_hit_count")
                 for group in _consecutive_groups(still_missing):
                     records_by_tile.update(self._fetch_and_store(group))
@@ -183,12 +195,27 @@ class GnomadRegionCache:
 
         if not self.enabled:
             return None
-        records = self._read_tile(tile)
-        if records is None:
+        cached = self._read_tile(tile)
+        if cached is None:
             self._increment("tile_miss_count")
         else:
             self._increment("tile_hit_count")
-        return records
+        return None if cached is None else cached[0]
+
+    def read_cached_tile_with_observation(
+        self,
+        tile: Tile,
+    ) -> tuple[list[dict], dict[str, str]] | None:
+        """Read one tile and its validated source-observation window."""
+
+        if not self.enabled:
+            return None
+        cached = self._read_tile(tile)
+        if cached is None:
+            self._increment("tile_miss_count")
+        else:
+            self._increment("tile_hit_count")
+        return cached
 
     def tile_path(self, tile: Tile) -> Path:
         """Return the durable JSON path for a fixed tile."""
@@ -200,6 +227,7 @@ class GnomadRegionCache:
     def snapshot(self) -> dict[str, object]:
         with self._stats_lock:
             stats = dict(self._stats)
+            observed = self._observation_window
         return {
             "enabled": self.enabled,
             "directory": str(self.namespace_dir) if self.namespace_dir else "",
@@ -207,6 +235,7 @@ class GnomadRegionCache:
             "dataset": GNOMAD_DATASET,
             "reference_genome": GNOMAD_REFERENCE_GENOME,
             "tile_size_bp": self.tile_size_bp,
+            "observation_window": observed,
             **stats,
         }
 
@@ -217,7 +246,12 @@ class GnomadRegionCache:
         last = tiles[-1]
         attempts = self.max_attempts if len(tiles) == 1 else self.group_attempts
         try:
-            records = self._call_fetcher(first.chrom, first.start, last.end, attempts)
+            records, observed = self._call_fetcher(
+                first.chrom,
+                first.start,
+                last.end,
+                attempts,
+            )
         except Exception as exc:
             if len(tiles) > 1 and (
                 _is_split_worthy(exc) or _is_retryable_fetch_error(exc)
@@ -232,7 +266,8 @@ class GnomadRegionCache:
 
         records_by_tile = _partition_records(records, tiles)
         for tile in tiles:
-            self._write_tile(tile, records_by_tile[tile])
+            self._write_tile(tile, records_by_tile[tile], observed)
+        self._record_observation(observed)
         return records_by_tile
 
     def _call_fetcher(
@@ -241,9 +276,12 @@ class GnomadRegionCache:
         start: int,
         end: int,
         max_attempts: int,
-    ) -> list[dict]:
+    ) -> tuple[list[dict], dict[str, str]]:
         self._increment("fetch_batch_count")
-        return self.fetcher(chrom, start, end, max_attempts=max_attempts)
+        started_at = utc_now()
+        records = self.fetcher(chrom, start, end, max_attempts=max_attempts)
+        observed = observation_window(started_at, utc_now())
+        return records, observed
 
     def _tile_path(self, tile: Tile) -> Path:
         assert self.namespace_dir is not None
@@ -254,7 +292,7 @@ class GnomadRegionCache:
         tile: Tile,
         *,
         report_invalid: bool = True,
-    ) -> list[dict] | None:
+    ) -> tuple[list[dict], dict[str, str]] | None:
         path = self._tile_path(tile)
         if not path.exists():
             return None
@@ -262,8 +300,18 @@ class GnomadRegionCache:
             with gzip.open(path, "rt", encoding="utf-8") as handle:
                 payload = json.load(handle)
             self._validate_payload(payload, tile)
-            return payload["variants"]
-        except (EOFError, OSError, UnicodeDecodeError, json.JSONDecodeError, TypeError, ValueError) as exc:
+            observed = validate_observation_window(payload["observation_window"])
+            self._record_observation(observed)
+            return payload["variants"], observed
+        except (
+            EOFError,
+            KeyError,
+            OSError,
+            UnicodeDecodeError,
+            json.JSONDecodeError,
+            TypeError,
+            ValueError,
+        ) as exc:
             if report_invalid:
                 self._increment("corrupt_tile_count")
                 logger.warning("Ignoring invalid gnomAD cache tile %s: %s", path, exc)
@@ -319,7 +367,12 @@ class GnomadRegionCache:
             if not tile.start <= position <= tile.end:
                 raise ValueError("variant position is outside the tile")
 
-    def _write_tile(self, tile: Tile, records: list[dict]) -> None:
+    def _write_tile(
+        self,
+        tile: Tile,
+        records: list[dict],
+        observed: dict[str, str],
+    ) -> None:
         path = self._tile_path(tile)
         path.parent.mkdir(parents=True, exist_ok=True)
         payload = {
@@ -330,6 +383,7 @@ class GnomadRegionCache:
             "chrom": tile.chrom,
             "start": tile.start,
             "end": tile.end,
+            "observation_window": validate_observation_window(observed),
             "variants": records,
         }
         temporary: Path | None = None
@@ -352,6 +406,12 @@ class GnomadRegionCache:
     def _increment(self, key: str) -> None:
         with self._stats_lock:
             self._stats[key] += 1
+
+    def _record_observation(self, observed: dict[str, str]) -> None:
+        with self._stats_lock:
+            self._observation_window = merge_observation_windows(
+                [self._observation_window, observed]
+            )
 
 
 def _consecutive_groups(tiles: list[Tile]) -> list[list[Tile]]:

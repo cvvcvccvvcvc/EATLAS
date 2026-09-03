@@ -244,6 +244,19 @@ def test_warm_allele_index_is_equivalent_and_avoids_network(
     assert second_summary["region_count"] == 0
     assert second_summary["allele_index"]["resolved_count"] == len(variants)
     assert second_summary["shared_cache"]["fetch_batch_count"] == 0
+    assert second_summary["observation_window"] == _first_summary["observation_window"]
+
+
+def test_cached_successful_gnomad_evidence_requires_observation_window() -> None:
+    evidence = pd.DataFrame({"gnomad_status": ["ok"]})
+
+    with pytest.raises(ValueError, match="lacks an observation window"):
+        external_evidence._cached_gnomad_observation(
+            {"gnomad": {"observation_window": None}},
+            evidence,
+        )
+    with pytest.raises(ValueError, match="lacks gnomAD observation provenance"):
+        external_evidence._cached_gnomad_observation({}, evidence)
 
 
 def test_indexed_allele_is_not_failed_by_missing_neighbor_tile(
@@ -410,7 +423,14 @@ def test_incomplete_external_evidence_retries_only_failed_alleles(
                         "gnomad_af": None,
                     },
                 ]
-            ), {"failed_region_count": 1, "errors": [{"chrom": "1"}]}
+            ), {
+                "failed_region_count": 1,
+                "errors": [{"chrom": "1"}],
+                "observation_window": {
+                    "started_at_utc": "2026-03-01T00:00:00+00:00",
+                    "finished_at_utc": "2026-03-01T00:00:01+00:00",
+                },
+            }
         return pd.DataFrame(
             [
                 {
@@ -420,7 +440,14 @@ def test_incomplete_external_evidence_retries_only_failed_alleles(
                     "gnomad_af": None,
                 }
             ]
-        ), {"failed_region_count": 0, "errors": []}
+        ), {
+            "failed_region_count": 0,
+            "errors": [],
+            "observation_window": {
+                "started_at_utc": "2026-03-02T00:00:00+00:00",
+                "finished_at_utc": "2026-03-02T00:00:01+00:00",
+            },
+        }
 
     monkeypatch.setattr(external_evidence, "_annotate_gnomad", fake_gnomad)
 
@@ -444,6 +471,10 @@ def test_incomplete_external_evidence_retries_only_failed_alleles(
     assert calls == [["1:100:A>G", "1:500000:C>T"], ["1:500000:C>T"]]
     assert second_manifest["gnomad"]["cached_ok_allele_count"] == 1
     assert second_manifest["gnomad"]["queried_allele_count"] == 1
+    assert second_manifest["gnomad"]["observation_window"] == {
+        "started_at_utc": "2026-03-01T00:00:00+00:00",
+        "finished_at_utc": "2026-03-02T00:00:01+00:00",
+    }
     preserved = second.set_index("variant_key").loc["1:100:A>G"]
     assert bool(preserved["gnomad_found"])
     assert preserved["gnomad_af"] == 0.1

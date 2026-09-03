@@ -354,7 +354,7 @@ def _write_source_contract(run_dir: Path) -> dict[str, object]:
         json.dumps(
             {
                 "stage": "annotation",
-                "schema": "normalized_annotation_evidence_v4",
+                "schema": "normalized_annotation_evidence_v5",
                 "partition_ids": [partition_id],
                 "event_variant_map": {
                     "layout": "partitioned",
@@ -765,7 +765,7 @@ def test_annotation_support_resolution_rejects_missing_or_incomplete_contract(
         json.dumps(
             {
                 "stage": "annotation",
-                "schema": "normalized_annotation_evidence_v4",
+                "schema": "normalized_annotation_evidence_v5",
             }
         )
         + "\n"
@@ -777,7 +777,7 @@ def test_annotation_support_resolution_rejects_missing_or_incomplete_contract(
         json.dumps(
             {
                 "stage": "annotation",
-                "schema": "normalized_annotation_evidence_v4",
+                "schema": "normalized_annotation_evidence_v5",
                 "partition_ids": ["partition_000001"],
                 "event_variant_map": {
                     "layout": "partitioned",

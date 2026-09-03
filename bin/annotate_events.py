@@ -602,7 +602,7 @@ def main():
     finish_phase(timings_seconds, "write_failures", phase_started)
     manifest = {
         "stage": "annotation",
-        "schema": "normalized_annotation_evidence_partition_v2",
+        "schema": "normalized_annotation_evidence_partition_v3",
         "partition_id": args.partition_id,
         "event_row_count": input_row_count,
         "event_variant_map_count": input_row_count,

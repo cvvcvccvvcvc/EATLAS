@@ -5,6 +5,8 @@ import logging
 import random
 import time
 import urllib.request
+from collections.abc import Iterable
+from datetime import datetime, timedelta, timezone
 from urllib.error import HTTPError, URLError
 
 logger = logging.getLogger(__name__)
@@ -16,6 +18,7 @@ GNOMAD_RETRY_BASE_SECONDS = 5.0
 GNOMAD_RETRY_MAX_SECONDS = 60.0
 GNOMAD_TRANSIENT_HTTP_STATUSES = {408, 429, 500, 502, 503, 504}
 GNOMAD_REGION_MIN_WINDOW_BP = 500
+OBSERVATION_WINDOW_FIELDS = frozenset({"started_at_utc", "finished_at_utc"})
 
 GNOMAD_REGION_QUERY = """
 query VariantsInRegion($chrom: String!, $start: Int!, $stop: Int!) {
@@ -36,6 +39,64 @@ query VariantsInRegion($chrom: String!, $start: Int!, $stop: Int!) {
   }
 }
 """ % GNOMAD_DATASET
+
+
+def utc_now() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def observation_window(started_at_utc: str, finished_at_utc: str) -> dict[str, str]:
+    window = {
+        "started_at_utc": started_at_utc,
+        "finished_at_utc": finished_at_utc,
+    }
+    validate_observation_window(window)
+    return window
+
+
+def validate_observation_window(value: object) -> dict[str, str]:
+    if not isinstance(value, dict) or set(value) != OBSERVATION_WINDOW_FIELDS:
+        raise ValueError("gnomAD observation window must contain UTC start and finish")
+    started_at = _parse_utc_timestamp(value["started_at_utc"])
+    finished_at = _parse_utc_timestamp(value["finished_at_utc"])
+    if finished_at < started_at:
+        raise ValueError("gnomAD observation window finishes before it starts")
+    return {
+        "started_at_utc": str(value["started_at_utc"]),
+        "finished_at_utc": str(value["finished_at_utc"]),
+    }
+
+
+def merge_observation_windows(values: Iterable[object]) -> dict[str, str] | None:
+    windows = [
+        validate_observation_window(value)
+        for value in values
+        if value is not None
+    ]
+    if not windows:
+        return None
+    return {
+        "started_at_utc": min(
+            windows,
+            key=lambda value: _parse_utc_timestamp(value["started_at_utc"]),
+        )["started_at_utc"],
+        "finished_at_utc": max(
+            windows,
+            key=lambda value: _parse_utc_timestamp(value["finished_at_utc"]),
+        )["finished_at_utc"],
+    }
+
+
+def _parse_utc_timestamp(value: object) -> datetime:
+    if not isinstance(value, str) or not value:
+        raise ValueError("gnomAD observation timestamp must be a non-empty string")
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError as exc:
+        raise ValueError(f"Invalid gnomAD observation timestamp: {value!r}") from exc
+    if parsed.tzinfo is None or parsed.utcoffset() != timedelta(0):
+        raise ValueError(f"gnomAD observation timestamp is not UTC: {value!r}")
+    return parsed
 
 
 def _to_float(value) -> float | None:

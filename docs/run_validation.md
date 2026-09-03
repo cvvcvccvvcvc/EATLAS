@@ -180,13 +180,16 @@ Annotation expected properties:
   consecutive within the partition; non-concrete alleles have an empty
   `variant_key` and retain their normalization status.
 - `annotation/manifest.json` declares `stage=annotation` and
-  `schema=normalized_annotation_evidence_v4`; its `variant_annotations`
+  `schema=normalized_annotation_evidence_v5`; its `variant_annotations`
   descriptor exactly matches the child dataset manifest.
 - Pipeline-owned `variant_strategy_support`, `variant_ortholog_support`, and
   `ortholog_evidence_summary` outputs are absent.
 - `annotation/manifest.json` records event and unique variant-context row counts,
   source metadata, useful provider/cache diagnostics, and per-partition phase
   timings.
+- `gnomad_dataset=gnomad_r4` is treated as a rolling API selector, while
+  `gnomad_observation_window` records the UTC range in which the used live or
+  cached responses were observed.
 - VEP-enriched shards are copied to the durable dataset byte for byte; no
   duplicate global variant table is built. The event map also stays partitioned.
 - `annotation/failures.tsv.gz` records non-fatal external lookup failures.

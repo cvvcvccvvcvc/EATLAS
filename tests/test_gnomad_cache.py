@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import gzip
+import json
 import multiprocessing
 from pathlib import Path
 from urllib.error import HTTPError
 
 import pytest
 
+from genomics import gnomad_cache as gnomad_cache_module
 from genomics.gnomad_cache import GnomadRegionCache, tiles_for_region
 
 
@@ -105,8 +108,13 @@ def test_tile_boundaries_are_one_based_and_inclusive() -> None:
     ]
 
 
-def test_cold_grouped_fetch_populates_tiles_and_warm_read_uses_cache(tmp_path: Path) -> None:
+def test_cold_grouped_fetch_populates_tiles_and_warm_read_uses_cache(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
     calls = []
+    timestamps = iter(["2026-03-01T10:00:00+00:00", "2026-03-01T10:00:02+00:00"])
+    monkeypatch.setattr(gnomad_cache_module, "utc_now", lambda: next(timestamps))
 
     def fetch(chrom, start, end, *, max_attempts):
         calls.append((chrom, start, end, max_attempts))
@@ -118,6 +126,11 @@ def test_cold_grouped_fetch_populates_tiles_and_warm_read_uses_cache(tmp_path: P
     assert [record["pos"] for record in records] == [10_000, 30_000, 60_000]
     assert calls == [("1", 1, 75_000, 2)]
     assert cache.snapshot()["tile_write_count"] == 3
+    expected_window = {
+        "started_at_utc": "2026-03-01T10:00:00+00:00",
+        "finished_at_utc": "2026-03-01T10:00:02+00:00",
+    }
+    assert cache.snapshot()["observation_window"] == expected_window
     assert len(list(tmp_path.rglob("*.json.gz"))) == 3
 
     def unexpected_fetch(*_args, **_kwargs):
@@ -129,6 +142,7 @@ def test_cold_grouped_fetch_populates_tiles_and_warm_read_uses_cache(tmp_path: P
     assert warm_records == records
     assert warm_cache.snapshot()["tile_hit_count"] == 3
     assert warm_cache.snapshot()["fetch_batch_count"] == 0
+    assert warm_cache.snapshot()["observation_window"] == expected_window
 
 
 def test_concurrent_cold_tile_is_fetched_once(tmp_path: Path) -> None:
@@ -231,8 +245,10 @@ def test_empty_and_corrupt_tiles_are_handled_safely(tmp_path: Path) -> None:
     assert repaired_cache.snapshot()["tile_write_count"] == 1
 
 
-def test_disabled_cache_preserves_direct_fetch_behavior() -> None:
+def test_disabled_cache_preserves_direct_fetch_behavior(monkeypatch) -> None:
     calls = []
+    timestamps = iter(["2026-03-02T10:00:00+00:00", "2026-03-02T10:00:01+00:00"])
+    monkeypatch.setattr(gnomad_cache_module, "utc_now", lambda: next(timestamps))
 
     def fetch(chrom, start, end, *, max_attempts):
         calls.append((chrom, start, end, max_attempts))
@@ -243,3 +259,82 @@ def test_disabled_cache_preserves_direct_fetch_behavior() -> None:
     assert cache.fetch_region("1", 90, 110) == [variant(100)]
     assert calls == [("1", 90, 110, 10)]
     assert cache.snapshot()["enabled"] is False
+    assert cache.snapshot()["observation_window"] == {
+        "started_at_utc": "2026-03-02T10:00:00+00:00",
+        "finished_at_utc": "2026-03-02T10:00:01+00:00",
+    }
+
+
+def test_mixed_warm_and_fresh_tiles_merge_observation_windows(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    timestamps = iter(
+        [
+            "2026-03-01T10:00:00+00:00",
+            "2026-03-01T10:00:01+00:00",
+            "2026-03-02T11:00:00+00:00",
+            "2026-03-02T11:00:01+00:00",
+        ]
+    )
+    monkeypatch.setattr(gnomad_cache_module, "utc_now", lambda: next(timestamps))
+    GnomadRegionCache(
+        tmp_path,
+        fetcher=lambda *_args, **_kwargs: [variant(100)],
+    ).fetch_region("1", 1, 25_000)
+
+    calls = []
+    cache = GnomadRegionCache(
+        tmp_path,
+        fetcher=lambda *_args, **_kwargs: calls.append(True) or [variant(30_000)],
+    )
+    records = cache.fetch_region("1", 1, 50_000)
+
+    assert [record["pos"] for record in records] == [100, 30_000]
+    assert calls == [True]
+    assert cache.snapshot()["observation_window"] == {
+        "started_at_utc": "2026-03-01T10:00:00+00:00",
+        "finished_at_utc": "2026-03-02T11:00:01+00:00",
+    }
+
+
+def test_tile_without_observation_window_is_refetched(tmp_path: Path) -> None:
+    initial = GnomadRegionCache(tmp_path, fetcher=lambda *_args, **_kwargs: [])
+    initial.fetch_region("1", 1, 25_000)
+    tile_path = next(tmp_path.rglob("*.json.gz"))
+
+    with gzip.open(tile_path, "rt", encoding="utf-8") as handle:
+        payload = json.load(handle)
+    del payload["observation_window"]
+    with gzip.open(tile_path, "wt", encoding="utf-8") as handle:
+        json.dump(payload, handle)
+
+    repaired = GnomadRegionCache(
+        tmp_path,
+        fetcher=lambda *_args, **_kwargs: [variant(100)],
+    )
+    assert [item["pos"] for item in repaired.fetch_region("1", 1, 25_000)] == [100]
+    assert repaired.snapshot()["corrupt_tile_count"] == 1
+
+
+def test_schema_v1_cache_is_not_reused(tmp_path: Path) -> None:
+    legacy = (
+        tmp_path
+        / "gnomad_r4"
+        / "GRCh38"
+        / "schema_v1"
+        / "tiles_25000bp"
+        / "1"
+        / "000000000001-000000025000.json.gz"
+    )
+    legacy.parent.mkdir(parents=True)
+    legacy.write_bytes(b"legacy")
+    calls = []
+    cache = GnomadRegionCache(
+        tmp_path,
+        fetcher=lambda *_args, **_kwargs: calls.append(True) or [],
+    )
+
+    assert cache.fetch_region("1", 1, 25_000) == []
+    assert calls == [True]
+    assert "schema_v2" in str(cache.namespace_dir)

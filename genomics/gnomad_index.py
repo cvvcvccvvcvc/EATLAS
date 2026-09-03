@@ -10,12 +10,18 @@ import tempfile
 from collections import defaultdict
 from collections.abc import Iterator
 from contextlib import contextmanager
+from dataclasses import dataclass
 from pathlib import Path
 
 import duckdb
 import pandas as pd
 
-from .gnomad import GNOMAD_DATASET, select_af_metrics
+from .gnomad import (
+    GNOMAD_DATASET,
+    merge_observation_windows,
+    select_af_metrics,
+    validate_observation_window,
+)
 from .gnomad_cache import (
     CACHE_SCHEMA_VERSION as REGION_CACHE_SCHEMA_VERSION,
     GNOMAD_REFERENCE_GENOME,
@@ -25,7 +31,7 @@ from .gnomad_cache import (
 from .variants import normalize_chrom, parse_variant_key
 
 
-INDEX_SCHEMA_VERSION = 1
+INDEX_SCHEMA_VERSION = 2
 AF_POLICY_VERSION = 1
 FRAGMENT_TILE_COUNT = 64
 INDEX_COLUMNS = [
@@ -50,6 +56,12 @@ EVIDENCE_COLUMNS = [
     "gnomad_af",
 ]
 REQUEST_COLUMNS = ["variant_key", "chrom", "pos", "ref", "alt"]
+
+
+@dataclass(frozen=True, slots=True)
+class IndexedTile:
+    parquet_path: Path
+    observation_window: dict[str, str]
 
 
 class GnomadAlleleIndex:
@@ -124,7 +136,12 @@ class GnomadAlleleIndex:
                 ),
             )
 
-        parquet_files = sorted({str(coverage[tile]) for tile in covered_tiles})
+        parquet_files = sorted(
+            {str(coverage[tile].parquet_path) for tile in covered_tiles}
+        )
+        observed = merge_observation_windows(
+            coverage[tile].observation_window for tile in covered_tiles
+        )
         try:
             with duckdb.connect() as connection:
                 connection.register("gnomad_requests", covered[REQUEST_COLUMNS])
@@ -172,6 +189,7 @@ class GnomadAlleleIndex:
                 int(preparation["tile_build_count"]),
                 len(parquet_files),
                 preparation=preparation,
+                observation_window=observed,
             ),
         )
 
@@ -217,16 +235,18 @@ class GnomadAlleleIndex:
                             if not raw_path.exists():
                                 raw_missing += 1
                                 continue
-                            records = self.region_cache.read_cached_tile(tile)
-                            if records is None:
+                            cached = self.region_cache.read_cached_tile_with_observation(tile)
+                            if cached is None:
                                 raw_missing += 1
                                 continue
+                            records, observed = cached
                             frames.append(_index_frame(records, tile))
                             manifest_tiles.append(
                                 {
                                     "start": tile.start,
                                     "end": tile.end,
                                     "row_count": len(records),
+                                    "observation_window": observed,
                                 }
                             )
                             built_tiles += 1
@@ -273,7 +293,7 @@ class GnomadAlleleIndex:
         connection,
         chrom: str,
         frame: pd.DataFrame,
-        tiles: list[dict[str, int]],
+        tiles: list[dict[str, object]],
     ) -> None:
         directory = self._chrom_dir(chrom)
         parquet_temporary: Path | None = None
@@ -342,12 +362,12 @@ class GnomadAlleleIndex:
             if manifest_temporary is not None:
                 manifest_temporary.unlink(missing_ok=True)
 
-    def _coverage(self, requested_tiles: list[Tile]) -> dict[Tile, Path]:
+    def _coverage(self, requested_tiles: list[Tile]) -> dict[Tile, IndexedTile]:
         if not requested_tiles or not self.namespace_dir.exists():
             return {}
         self._validate_metadata_for_read()
         requested = set(requested_tiles)
-        coverage: dict[Tile, Path] = {}
+        coverage: dict[Tile, IndexedTile] = {}
         for chrom in sorted({tile.chrom for tile in requested}):
             directory = self._chrom_dir(chrom)
             for manifest_path in sorted(directory.glob("fragment-*.json")):
@@ -391,6 +411,9 @@ class GnomadAlleleIndex:
                     try:
                         tile = Tile(chrom, int(item["start"]), int(item["end"]))
                         tile_row_count = int(item["row_count"])
+                        observed = validate_observation_window(
+                            item["observation_window"]
+                        )
                     except (KeyError, TypeError, ValueError) as exc:
                         raise ValueError(
                             f"Invalid gnomAD allele-index tile: {manifest_path}"
@@ -406,8 +429,9 @@ class GnomadAlleleIndex:
                     manifest_row_count += tile_row_count
                     if tile not in requested:
                         continue
-                    previous = coverage.setdefault(tile, parquet_path)
-                    if previous != parquet_path:
+                    indexed_tile = IndexedTile(parquet_path, observed)
+                    previous = coverage.setdefault(tile, indexed_tile)
+                    if previous != indexed_tile:
                         raise ValueError(
                             f"Duplicate gnomAD allele-index coverage for {tile}"
                         )
@@ -480,6 +504,7 @@ class GnomadAlleleIndex:
         fragment_count: int,
         *,
         preparation: dict[str, object] | None = None,
+        observation_window: dict[str, str] | None = None,
     ) -> dict[str, object]:
         preparation = preparation or {}
         return {
@@ -494,6 +519,7 @@ class GnomadAlleleIndex:
             "tile_hit_count": tile_hit_count,
             "tile_build_count": tile_build_count,
             "fragment_count": fragment_count,
+            "observation_window": observation_window,
             "fragment_build_count": int(
                 preparation.get("fragment_build_count", 0)
             ),
