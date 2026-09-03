@@ -235,6 +235,10 @@ stable record identifier, and the event ordinal within the PAF `cs` tag. These
 identifiers therefore remain stable when Minimap2 emits identical records in a
 different order at another thread count.
 
+Stage 2 rejects malformed non-empty PAF records and query identities outside
+the staged ortholog metadata. It never reinterprets such records as an
+unaligned ortholog.
+
 Minimap2, Nucmer, and BWA retain events from accepted primary and non-primary
 alignment records. Raw event rows and exact ortholog support carry nullable
 `mapq` and `native_alignment_type`; the compact event aggregate does not copy

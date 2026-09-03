@@ -146,6 +146,50 @@ def test_paf_identifiers_do_not_depend_on_record_order(tmp_path: Path) -> None:
     assert all(str(row[22]).startswith("paf:") for row in forward_segments)
 
 
+def test_paf_rejects_malformed_record(tmp_path: Path) -> None:
+    path = tmp_path / "malformed.paf"
+    path.write_text("\nq1\t10\tbroken\n")
+
+    with pytest.raises(
+        ValueError,
+        match=r"malformed\.paf at line 2.*observed 3",
+    ):
+        list(iter_paf_records(path))
+
+
+def test_paf_rejects_unknown_query_id(tmp_path: Path) -> None:
+    path = tmp_path / "unknown.paf"
+
+    with pytest.raises(
+        ValueError,
+        match=r"unknown\.paf at line 1.*unknown query ID 'q3'",
+    ):
+        parse_rows(path, [PAF_LINES[0].replace("q1", "q3", 1)])
+
+
+def test_paf_rejects_query_source_without_metadata(tmp_path: Path) -> None:
+    path = tmp_path / "missing_source.paf"
+    path.write_text(PAF_LINES[0] + "\n")
+
+    with pytest.raises(
+        ValueError,
+        match=r"missing_source\.paf at line 1.*'missing'.*without metadata",
+    ):
+        parse_paf(
+            path,
+            "1",
+            "minimap2_asm20",
+            "asm20",
+            {"genomic_accession": "NC_1", "genomic_begin": "100"},
+            {},
+            {},
+            1,
+            query_slices={
+                "q1": QuerySlice("missing", 0, 10, 10, 1, False),
+            },
+        )
+
+
 def test_paf_preserves_native_type_and_prefers_primary_duplicates(tmp_path: Path) -> None:
     path = tmp_path / "records.paf"
     path.write_text(
@@ -360,7 +404,7 @@ def test_pseudoread_backbone_keeps_dominant_monotonic_order(tmp_path: Path) -> N
     selected = select_pseudoread_backbone(path, slices)
     retained_query_names = {
         fields[0]
-        for fields, native_record_id in iter_paf_records(path)
+        for fields, native_record_id, _line_number in iter_paf_records(path)
         if native_record_id in selected.accepted_record_ids
     }
 

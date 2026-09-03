@@ -229,13 +229,18 @@ def stable_paf_record_id(record_digest: str, occurrence: int) -> str:
 def iter_paf_records(path: Path):
     record_occurrences: dict[str, int] = defaultdict(int)
     with path.open() as handle:
-        for line in handle:
+        for line_number, line in enumerate(handle, start=1):
             line = line.rstrip("\n")
             if not line:
                 continue
             fields = line.split("\t")
             if len(fields) < 12:
-                continue
+                preview = line[:200] + ("..." if len(line) > 200 else "")
+                raise ValueError(
+                    f"Malformed PAF record in {path} at line {line_number}: "
+                    f"expected at least 12 tab-separated fields, observed "
+                    f"{len(fields)}; record={preview!r}"
+                )
             native_record_id = ""
             if fields[5] != "*" and fields[4] != "*":
                 record_digest = paf_record_digest(line)
@@ -244,7 +249,22 @@ def iter_paf_records(path: Path):
                     record_digest,
                     record_occurrences[record_digest],
                 )
-            yield fields, native_record_id
+            yield fields, native_record_id, line_number
+
+
+def require_query_slice(
+    query_slices: dict[str, QuerySlice],
+    query_name: str,
+    paf_path: Path,
+    line_number: int,
+) -> QuerySlice:
+    query_slice = query_slices.get(query_name)
+    if query_slice is None:
+        raise ValueError(
+            f"PAF record in {paf_path} at line {line_number} references "
+            f"unknown query ID {query_name!r}"
+        )
+    return query_slice
 
 
 def longest_increasing_indices(values: list[int]) -> set[int]:
@@ -278,11 +298,14 @@ def select_pseudoread_backbone(
     query_slices: dict[str, QuerySlice],
 ) -> BackboneSelection:
     records_by_source: dict[str, list[dict[str, object]]] = defaultdict(list)
-    for fields, native_record_id in iter_paf_records(paf_path):
+    for fields, native_record_id, line_number in iter_paf_records(paf_path):
+        query_slice = require_query_slice(
+            query_slices,
+            fields[0],
+            paf_path,
+            line_number,
+        )
         if not native_record_id:
-            continue
-        query_slice = query_slices.get(fields[0])
-        if query_slice is None:
             continue
         records_by_source[query_slice.source_sequence_id].append(
             {
@@ -456,15 +479,21 @@ def parse_paf(
     event_by_key: dict[tuple[object, ...], dict[str, object]] = {}
     query_slices = query_slices or full_query_slices(meta_by_sequence)
 
-    for fields, native_record_id in iter_paf_records(paf_path):
+    for fields, native_record_id, line_number in iter_paf_records(paf_path):
         qname = fields[0]
-        query_slice = query_slices.get(qname)
-        if query_slice is None:
-            continue
+        query_slice = require_query_slice(
+            query_slices,
+            qname,
+            paf_path,
+            line_number,
+        )
         source_id = query_slice.source_sequence_id
         meta = meta_by_sequence.get(source_id)
         if meta is None:
-            continue
+            raise ValueError(
+                f"PAF query {qname!r} in {paf_path} at line {line_number} "
+                f"references source sequence {source_id!r} without metadata"
+            )
         summary = summaries[source_id]
 
         if fields[5] == "*" or fields[4] == "*":
