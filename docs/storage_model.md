@@ -2,6 +2,11 @@
 
 GAPH v2 separates durable biological outputs from temporary execution cache.
 
+`lib/RunManifest.groovy` and `provenance/evidence_inventory.py` own root
+completion and integrity semantics. Stage finalizers own their durable
+directories; analytics artifact ownership is documented in
+`analytics_contract.md`.
+
 ## Evidence-First Invariant
 
 Durable pipeline data is normalized evidence, not necessarily a raw provider
@@ -105,16 +110,17 @@ The fetch, alignment, and annotation directories together form the durable
 pipeline evidence layer and should be kept as one run.
 
 When `GAPH_GNOMAD_CACHE_DIR` or `--gnomad_cache_dir` is set, complete gnomAD
-regional responses are also stored in a shared reusable cache. The cache uses
-25-kb gzip-compressed tiles under a dataset/reference/schema namespace. It is
+regional responses are also stored in a shared reusable cache under a
+dataset/reference/schema namespace. It is
 neither a run result nor Nextflow resume state: multiple pipeline and analytics
 runs may reuse it, and a run remains valid when the cache is absent. Concurrent
 misses for the same tiles are serialized with per-tile advisory locks and
 rechecked before network access; independent regions remain parallel.
 Every tile records the successful GraphQL batch's UTC observation window.
 Manifests aggregate the windows of the evidence actually used. The rolling
-`gnomad_r4` selector is not represented as an exact minor release. Cache schema
-v1 is obsolete and is not read by current code.
+`gnomad_r4` selector is not represented as an exact minor release. Tile
+geometry and cache schema versions belong to `genomics/gnomad_cache.py`;
+durable manifests record the evidence observation window actually used.
 
 `GAPH_VEP_RESULT_CACHE_DIR` is a second reusable infrastructure cache. It keeps
 only complete release/config-matched variant/gene results and is distinct from
@@ -260,3 +266,11 @@ Raw aligner outputs are not retained as durable results:
 
 For debugging, inspect the task directory of a retained failed or interrupted
 run before removing its Nextflow work cache.
+
+## Checks
+
+Changes to root completion or integrity require
+`tests/test_run_manifest.py` and `tests/test_evidence_inventory.py`. Changes
+to source immutability or analytics verification also require
+`tests/test_analysis_inputs.py`. Archive acceptance and removal rules are
+checked by `tests/test_run_archiving.py`.

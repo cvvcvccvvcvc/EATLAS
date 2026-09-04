@@ -3,6 +3,10 @@
 Stage 1 turns a list of Entrez Gene IDs into normalized target and ortholog
 sequence data for downstream alignment and annotation.
 
+The workflow boundary is `FETCH_STAGE` in `main.nf`; deterministic fetch
+normalization is owned by `bin/normalize_ids.py`, `bin/fetch_parse_chunk.py`,
+`bin/build_fetch_dataset.py`, and `bin/fetch_taxonomy.py`.
+
 ## Fixed Constants
 
 - Target organism: Homo sapiens (`tax_id=9606`)
@@ -18,10 +22,9 @@ design.
 Required:
 - `--ids_file`: text file with Entrez Gene IDs, separated by whitespace or commas.
 
-Optional operational parameters:
-- `--outdir`: final output directory.
+Operational parameters:
 - `--chunk_size`: accepted IDs per NCBI package request.
-- `--fetch_max_forks`: max concurrent NCBI fetch/parse tasks. Default is 4.
+- `--fetch_max_forks`: maximum concurrent NCBI fetch/parse tasks.
 - `ENTREZ_API_KEY` or `NCBI_API_KEY`: optional NCBI API key passed to
   `datasets download` as `--api-key`.
 - `ENTREZ_EMAIL` or `NCBI_EMAIL`: optional contact email recorded as configured
@@ -30,10 +33,11 @@ Optional operational parameters:
   `GCF_000001405.40`; defaults to `GAPH_TARGET_ANNOTATION_GFF3`, then
   `assets/reference/ncbi/refseq/GCF_000001405.40_GRCh38.p14/genomic.gff.gz`.
 
-The fetch implementation fixes its NCBI request policy: request starts are at
-least 5 seconds apart, each download gets up to 4 retries after its initial
-attempt, and retry backoff starts at 30 seconds. The NCBI Datasets executable
-comes from the mandatory task environment.
+Current parameter types and defaults belong to `nextflow_schema.json`.
+Request pacing, retry counts, and process resources belong to the fetch
+implementation and `nextflow.config`; they are operational policy, not table
+contract. The NCBI Datasets executable comes from the mandatory task
+environment.
 
 ## Processing Steps
 
@@ -104,11 +108,11 @@ Taxonomy is acquired only in the fetch boundary. Alignment and annotation do
 not consume it or issue taxonomy requests; analytics joins it to durable
 alignment evidence when taxonomic views are requested.
 
-## Final Output Files
+## Durable Fetch Boundary
 
-There is no standalone fetch output contract. Ortholog FASTA, chunk tables, and
-the candidate table remain in Nextflow `work/` only as long as downstream
-alignment or `-resume` needs them. The durable `fetch/` directory keeps `manifest.json`,
+There is no standalone fetch launch mode. Ortholog FASTA, chunk tables, and the
+candidate table remain in Nextflow `work/` only as long as downstream alignment
+or `-resume` needs them. The durable `fetch/` directory keeps `manifest.json`,
 `input.ids.tsv`, `genes.tsv.gz`, `target_features.tsv.gz`,
 `orthologs.selected.tsv.gz`, taxonomy metadata, `failures.tsv.gz`, and target
 FASTA files.
@@ -175,3 +179,15 @@ Downstream alignment is expected to handle forward/reverse mapping.
 GRCh38 1-based inclusive coordinates. Exon, CDS, and UTR intervals are collapsed
 across transcripts to avoid alternative-transcript double counting. Introns are
 the gene body minus the collapsed exon union.
+
+## Checks
+
+Use the fetch-focused tests for the changed owner:
+
+- `tests/test_normalize_ids.py`
+- `tests/test_fetch_fallback.py`
+- `tests/test_build_fetch_dataset.py`
+- `tests/test_taxonomy_stage_ownership.py`
+
+Use the end-to-end boundary checks in `run_validation.md` after workflow or
+publication changes.

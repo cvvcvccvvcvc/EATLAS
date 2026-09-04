@@ -21,7 +21,7 @@ The pipeline always runs fetch, alignment, and annotation in order. Every run us
 a profile.
 Annotation fetches gnomAD data from the live API for clustered event regions and
 uses an in-memory lookup bounded to each genomic partition. Set
-`GAPH_GNOMAD_CACHE_DIR` or `--gnomad_cache_dir` to reuse complete 25-kb regional
+`GAPH_GNOMAD_CACHE_DIR` or `--gnomad_cache_dir` to reuse complete regional
 responses across runs and analytics reports. When `GAPH_ROOT` is set, the cache
 defaults to `$GAPH_ROOT/cache/gnomad`. End-to-end runs may process up to
 `--annotation_max_forks` tasks per annotation process concurrently. Initial memory
@@ -69,6 +69,18 @@ PATH="$GAPH_ROOT/envs/controller/bin:$PATH" \
 Nextflow is mandatory for the pipeline launch and run-manifest tests. A missing
 controller executable fails the suite instead of silently skipping those tests.
 
+For documentation or interface changes, also exercise the current help paths:
+
+```bash
+micromamba run -p "$GAPH_ROOT/envs/controller" nextflow run . --helpFull
+bash scripts/slurm/run_pipelines.sh --help
+bash analytics/slurm/submit_strategy_report.sh --help
+micromamba run -p "$GAPH_ROOT/envs/analytics" \
+  python -m analytics.strategy_report --help
+micromamba run -p "$GAPH_ROOT/envs/analytics" \
+  python -m run_archiving --help
+```
+
 ## Cluster Run
 
 Use `docs/pipeline_launch.md` for an ordinary launch or resume. Use
@@ -90,15 +102,16 @@ jobs. These settings are not one global worker count.
 Small multi-chunk smoke test:
 
 ```bash
-printf '59067\n12\n59067\n355\n' > /tmp/gaph_v2_ids.txt
+SMOKE_ROOT=$(mktemp -d "${TMPDIR:-/tmp}/gaph_v2_smoke.XXXXXX")
+printf '59067\n12\n59067\n355\n' > "$SMOKE_ROOT/ids.txt"
 
 nextflow run . \
-  --ids_file /tmp/gaph_v2_ids.txt \
-  --outdir /tmp/gaph_v2_smoke_run \
+  --ids_file "$SMOKE_ROOT/ids.txt" \
+  --outdir "$SMOKE_ROOT/run_default" \
   --chunk_size 1 \
   --fetch_max_forks 1 \
   --alignment_max_forks 1 \
-  -work-dir /tmp/gaph_v2_smoke_work \
+  -work-dir "$SMOKE_ROOT/work_default" \
   -resume
 ```
 
@@ -106,20 +119,20 @@ Run only one alignment strategy when debugging strategy-specific failures:
 
 ```bash
 nextflow run . \
-  --ids_file /tmp/gaph_v2_ids.txt \
-  --outdir /tmp/gaph_v2_smoke_run_asm20 \
+  --ids_file "$SMOKE_ROOT/ids.txt" \
+  --outdir "$SMOKE_ROOT/run_asm20" \
   --alignment_strategies minimap2_asm20 \
   --chunk_size 1 \
   --fetch_max_forks 1 \
   --alignment_max_forks 1 \
-  -work-dir /tmp/gaph_v2_smoke_work_asm20 \
+  -work-dir "$SMOKE_ROOT/work_asm20" \
   -resume
 ```
 
 Expected layout:
 
 ```text
-/tmp/gaph_v2_smoke_run/
+$SMOKE_ROOT/run_default/
   run_manifest.json
   evidence_inventory.json
   fetch/
@@ -183,8 +196,8 @@ Annotation expected properties:
   gzip dataset, exact fields/counts, VEP configuration, and VEP status counts.
 - Every declared
   `annotation/variant_annotations/partitions/<partition_id>/<shard_id>.tsv.gz`
-  exists, has the declared compressed size/header, and contains no more than
-  250,000 rows.
+  exists and has the compressed size, header, and row count declared by the
+  dataset manifest.
 - `annotation/event_variant_map/partitions/<partition_id>/event_variant_map.tsv.gz`
   has one row per compact Stage 2 event. Its `event_group_id` values are
   consecutive within the partition; non-concrete alleles have an empty
@@ -212,12 +225,15 @@ Annotation expected properties:
 
 Analytics expected properties after the first report/preflight build:
 
-- `<analytics-root>/cache/<source-id>/alignment_aggregates/` contains strategy
+- `<analytics-root>/cache/<source-id>/calculations/<calculation-id>/alignment_aggregates/`
+  contains strategy
   summary and feature coverage derived from partition summaries and segments.
-- `<analytics-root>/cache/<source-id>/taxonomy_summary/` contains the taxonomy
+- `<analytics-root>/cache/<source-id>/calculations/<calculation-id>/taxonomy_summary/`
+  contains the taxonomy
   summary derived from `fetch/taxonomy.tsv.gz` and
   `fetch/orthologs.selected.tsv.gz`.
-- `<analytics-root>/cache/<source-id>/annotation_support/` contains
+- `<analytics-root>/cache/<source-id>/calculations/<calculation-id>/annotation_support/`
+  contains
   variant-strategy support and ortholog-evidence histograms derived from Stage 2
   evidence and the Stage 3 event map.
 - `<analytics-root>/analyses/<analysis-id>/` contains only run-set derivations,

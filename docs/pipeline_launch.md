@@ -19,11 +19,10 @@ executable, indexed cache, and optional shared result cache described in
 `docs/itmo_cluster.md`. Candidate VEP is part of annotation, not a later report
 precompute.
 
-When an option is not specified, keep the Nextflow/config default. The pipeline
-always runs end to end, and the default strategy selection runs
-`minimap2_asm20`, `minimap2_map_ont_pseudoreads_30000_15000`, `nucmer`, and
-`bwa_pseudoreads_150_75`. The `minimap2_asm10` comparator must be selected
-explicitly.
+When an option is not specified, keep the schema/config default. The pipeline
+always runs end to end. `ALIGNMENT_STRATEGY_REGISTRY` in `main.nf` owns the
+current default strategy set; `stage2_alignment_contract.md` explains each
+strategy's scientific policy.
 
 ## Connect And Update
 
@@ -88,7 +87,7 @@ sequential series:
 cd "$GAPH_CODE"
 source "$HOME/.gaph_v2_cluster_env.sh"
 
-RESULTS_ROOT="$GAPH_ROOT/results/all_genes_8a6f666"
+RESULTS_ROOT="$GAPH_ROOT/results/all_genes"
 
 bash scripts/slurm/run_pipelines.sh \
   --results-root "$RESULTS_ROOT" \
@@ -114,12 +113,6 @@ Add only options requested by the user or required by a concrete run:
 Ordinary launches use the configured concurrency defaults. Override
 the three fork limits only
 when a specific run needs different limits.
-
-For the fixed opt-in `asm10` strategy, use:
-
-```bash
---alignment-strategies minimap2_asm10
-```
 
 Detach without stopping Nextflow with `Ctrl-b d`. Reattach with:
 
@@ -154,3 +147,9 @@ Do not run pipeline computation directly on `sphinx`; Nextflow submits compute
 tasks to Slurm. Do not perform broad disk, environment, or scheduler audits
 before every ordinary launch. Use the deeper checks in `docs/run_validation.md`
 or `docs/itmo_cluster.md` only for a first-time setup or a concrete failure.
+
+Use the launcher help for the current accepted operational overrides:
+
+```bash
+bash scripts/slurm/run_pipelines.sh --help
+```

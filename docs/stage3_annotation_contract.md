@@ -4,6 +4,11 @@ Stage 3 turns partitioned alignment events into durable variant-context evidence
 It is an internal boundary of the one end-to-end pipeline, not a standalone CLI
 mode.
 
+The workflow boundary is `PARTITIONED_ANNOTATION_STAGE` in `main.nf`.
+`bin/annotate_events.py` owns event normalization and ClinVar/gnomAD source
+shards, `bin/annotate_vep_partition.py` owns VEP enrichment, and
+`bin/finalize_annotation_partitions.py` owns final dataset validation.
+
 ## Ownership
 
 Stage 3 owns external evidence whose lookup is required for every candidate
@@ -47,8 +52,7 @@ For each genomic partition:
 2. collapse repeated events to unique gene/variant contexts without losing
    strategy membership;
 3. fetch bounded ClinVar and gnomAD evidence and retain explicit lookup failures;
-4. write deterministic headered gzip shards of at most 250,000 variant-context
-   rows;
+4. write deterministic bounded headered gzip shards;
 5. run VEP independently for each shard, preserving input row order and adding
    the declared VEP fields;
 6. validate the complete shard set and copy each completed enriched shard into
@@ -137,3 +141,16 @@ The shared VEP result cache is reusable infrastructure, not part of a run and
 not a substitute for durable shard output. Compare performance only on the same
 candidate rows, backend/release, cache state, resources, and partition size.
 Use the Nextflow trace for per-task runtime, RSS, and I/O.
+
+Current shard bounds, process resources, and retry policy belong to
+`bin/annotate_events.py`, `nextflow_schema.json`, and `nextflow.config`.
+Consumers use the declared manifest rather than assuming a prose-copied bound.
+
+## Checks
+
+Use `tests/test_annotate_events.py`,
+`tests/test_vep_annotation_partition.py`,
+`tests/test_prepare_annotation_contexts.py`, and provider-specific ClinVar,
+gnomAD, and VEP tests for the changed owner. Final layout or workflow changes
+also need `tests/test_canonical_partition_wiring.py` and the smoke checks in
+`run_validation.md`.

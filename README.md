@@ -1,108 +1,82 @@
 # GAPH v2
 
-GAPH v2 implements one end-to-end gene-level comparative variant pipeline with
-three internal workflow boundaries:
+GAPH v2 is an evidence-first comparative variant pipeline for Entrez Gene IDs.
+One Nextflow DSL2 run:
 
-1. fetch human target gene loci and NCBI ortholog gene sequences for Entrez Gene IDs
-2. align selected ortholog gene sequences against the fixed human target loci
-3. annotate emitted alignment events with ClinVar, gnomAD, and Ensembl VEP evidence
+1. fetches the fixed GRCh38.p14 human loci and the complete NCBI ortholog set;
+2. aligns selected ortholog gene sequences with one or more registered methods;
+3. annotates normalized alignment events with ClinVar, gnomAD, and Ensembl VEP.
 
-The pipeline is implemented with Nextflow DSL2. It keeps raw NCBI packages and
-native aligner outputs in temporary task work directories by default and
-publishes normalized compressed FASTA/TSV outputs.
+The pipeline publishes durable row-level evidence. A separate analytics command
+derives scientific tables and an HTML report without modifying completed runs.
 
-## Run
+## Quick Start
 
-The pipeline has one end-to-end execution path:
+Create the controller environment once:
 
 ```bash
-RUN="results/run_default_strategies_$(date +%Y%m%d_%H%M%S)"
+micromamba create --yes -f envs/controller.yml
+```
 
-nextflow run . \
+Place the required reference files at the repository defaults or pass their
+paths explicitly:
+
+```text
+assets/reference/ncbi/refseq/GCF_000001405.40_GRCh38.p14/genomic.gff.gz
+assets/reference/clinvar/clinvar.vcf.gz
+assets/reference/clinvar/clinvar.vcf.gz.tbi
+```
+
+Run a small local panel:
+
+```bash
+RUN="results/run_$(date +%Y%m%d_%H%M%S)"
+
+micromamba run -n gaph-v2-controller nextflow run . \
   --ids_file assets/inputs/gene_ids/panel_10_genes.txt \
-  --outdir "$RUN" \
-  --alignment_strategies default
+  --outdir "$RUN"
 ```
 
-Every run uses the declared `envs/*.yml` task environments through Micromamba;
-local execution needs no profile and never depends on the active shell's Python
-or command-line tools. Set machine-specific data paths through environment
-variables when needed:
+Every process uses its declared environment from `envs/`. Local execution needs
+no Nextflow profile. The target assembly is fixed to GRCh38.p14
+(`GCF_000001405.40`), and ortholog retrieval always uses NCBI
+`--ortholog all`.
+
+The GFF3 defaults to the path above. ClinVar is required and defaults to the
+indexed VCF above. Small local runs use Ensembl REST for VEP by default;
+production cluster runs use a release-pinned local VEP configuration.
+
+Use the schema-generated help for current pipeline parameters and defaults:
 
 ```bash
-export ENTREZ_EMAIL=you@example.org
-export ENTREZ_API_KEY=your_ncbi_api_key
-export GAPH_TARGET_ANNOTATION_GFF3=/path/to/genomic.gff.gz
-export CLINVAR_VCF=/path/to/clinvar.vcf.gz
-export GAPH_VEP_BACKEND=local
-export GAPH_VEP_RELEASE=116
-export GAPH_VEP_EXECUTABLE=/path/to/gaph-vep116
-export GAPH_VEP_CACHE_DIR=/path/to/vep-cache
-export GAPH_VEP_RESULT_CACHE_DIR=/path/to/shared/vep-results
+micromamba run -n gaph-v2-controller nextflow run . --helpFull
 ```
 
-For local runs, these values can also be stored in an ignored `.env` file using
-the format shown in `.env.example`. `FETCH_PARSE_CHUNK` loads `.env` before
-calling NCBI Datasets. The API key is passed to `datasets download` as
-`--api-key`; the email is recorded as configured contact metadata for NCBI/API
-auditability.
+Only NCBI credentials are loaded from an ignored project `.env` by the fetch
+task. Copy `.env.example` and set `ENTREZ_EMAIL` and `ENTREZ_API_KEY` there if
+needed. Machine paths and pipeline configuration must be exported in the
+controller environment or passed as Nextflow parameters; they are not loaded
+from `.env` into the controller.
 
-If `--target_annotation_gff3` and `GAPH_TARGET_ANNOTATION_GFF3` are unset, the
-fetch stage uses
-`assets/reference/ncbi/refseq/GCF_000001405.40_GRCh38.p14/genomic.gff.gz`.
-If `--clinvar_vcf` and `CLINVAR_VCF` are unset, annotation uses
-`assets/reference/clinvar/clinvar.vcf.gz` when present. Annotation requires a
-ClinVar VCF and matching `.tbi`; the workflow fails early when neither the
-parameter, environment variable, nor default asset is available.
-Candidate VEP annotation is part of the same workflow. Small local runs default
-to the REST backend. Production cluster runs use the release-pinned local VEP
-configuration from the cluster environment.
+## Cluster Runs
 
-For Slurm, use the standard pipeline launcher and put `work/`, results, and
-environment caches under the assigned shared scratch allocation.
-The ITMO-specific bootstrap and validation procedure is documented in
-`docs/itmo_cluster.md`.
+Ordinary ITMO runs use the validated launcher, not a direct `nextflow run`:
 
 ```bash
-export GAPH_ROOT="/mnt/tank/scratch/$USER/gaph_v2"
-export GAPH_WORK_DIR="$GAPH_ROOT/work"
-export GAPH_GNOMAD_CACHE_DIR="$GAPH_ROOT/cache/gnomad"
-export NXF_CONDA_CACHEDIR="$GAPH_ROOT/conda/envs"
-export MAMBA_ROOT_PREFIX="$GAPH_ROOT/micromamba"
-export NXF_HOME="$GAPH_ROOT/nextflow"
-INTENDED_COMMIT=<full-commit-captured-from-the-authoritative-local-checkout>
-
 bash scripts/slurm/run_pipelines.sh \
   --results-root "$GAPH_ROOT/results/run_group" \
   --expected-commit "$INTENDED_COMMIT" \
   /absolute/path/to/gene_ids.txt
 ```
 
-By default, `--alignment_strategies default` runs `minimap2_asm20`,
-`minimap2_map_ont_pseudoreads_30000_15000`, `nucmer`, and
-`bwa_pseudoreads_150_75`. `minimap2_asm10` remains available only when named
-explicitly. Use a comma-separated list to select a different set:
+Read [Pipeline launch](docs/pipeline_launch.md) before launching or resuming.
+Use [ITMO cluster operations](docs/itmo_cluster.md) only for first-time setup or
+infrastructure diagnosis.
 
-```bash
-nextflow run . \
-  --ids_file assets/inputs/gene_ids/panel_10_genes.txt \
-  --outdir results/run_minimap2_asm20 \
-  --alignment_strategies minimap2_asm20 \
-  -resume
-```
-
-The opt-in `asm10` comparator is selected with:
-
-```bash
---alignment_strategies minimap2_asm10
-```
-
-## Outputs
-
-Default durable output layout:
+## Durable Output
 
 ```text
-results/run_test/
+<run>/
   run_manifest.json
   evidence_inventory.json
   fetch/
@@ -111,101 +85,47 @@ results/run_test/
   reports/nextflow/
 ```
 
-The published end-to-end output is intentionally compact.
+- `fetch/` keeps normalized target, selected-ortholog, feature, taxonomy, and
+  failure evidence plus target FASTA.
+- `alignment/` keeps partitioned summaries, segments, compact events, exact
+  ortholog support, and failures.
+- `annotation/` keeps the partitioned ClinVar/gnomAD/VEP dataset, the exact
+  event-to-variant lineage, and lookup failures.
+- `evidence_inventory.json` binds every durable evidence file by size and
+  SHA-256; `run_manifest.json` records completion and launch provenance.
 
-`evidence_inventory.json` records the size and SHA-256 of every durable file
-below `fetch/`, `alignment/`, and `annotation/`. Its own size and SHA-256 are
-bound into `run_manifest.json`; a run is not complete without both files.
+A completed run is immutable. Analytics writes to a separate
+`--analytics-root`; Nextflow `work/` is only execution/resume state. See
+[Storage model](docs/storage_model.md) for retention and cleanup rules.
 
-Fetch outputs:
+## Analytics
 
-- `fetch/manifest.json` - run constants and tool versions.
-- `fetch/input.ids.tsv` - normalized input IDs.
-- `fetch/genes.tsv.gz` - target gene metadata.
-- `fetch/target_features.tsv.gz` - compact gene/exon/CDS/UTR/intron intervals.
-- `fetch/orthologs.selected.tsv.gz` - selected ortholog sequence metadata.
-- `fetch/taxonomy.tsv.gz` - canonical status, ordered lineage, and direct domain-through-species metadata for selected ortholog tax IDs.
-- `fetch/taxonomy_failures.tsv.gz` - missing taxonomy responses.
-- `fetch/failures.tsv.gz` - gene-level failures.
-- `fetch/sequences/targets/*.fa.gz` - GRCh38 target gene sequences.
+Create the analytics environment once, then build a report from one or more
+compatible completed runs:
 
-Alignment outputs:
+```bash
+micromamba create --yes -f envs/analytics.yml
 
-- `alignment/manifest.json` - strategies and row counts.
-- `alignment/evidence/partitions/<partition_id>/` - normalized per-ortholog
-  summaries, segments, compact events, exact ortholog support, and the partition
-  manifest; gzip evidence files are retained without a global rewrite.
-- `alignment/failures.tsv.gz` - alignment-stage failures.
+micromamba run -n gaph-v2-analytics python -m analytics.strategy_report \
+  --analytics-root /absolute/path/to/analytics \
+  --run-dir /absolute/path/to/completed-run \
+  --report-name strategy_compare
+```
 
-Annotation outputs:
-
-- `annotation/variant_annotations/manifest.json` and
-  `annotation/variant_annotations/partitions/<partition_id>/<shard_id>.tsv.gz`
-  - compact unique variant-context rows with ClinVar, gnomAD, and VEP evidence;
-  headered bounded shards are published once without a duplicate global table.
-- `annotation/event_variant_map/partitions/<partition_id>/event_variant_map.tsv.gz`
-  - one provenance row per compact alignment event, linking its partition-local
-  `event_group_id` to the canonical variant key and normalization status.
-- `annotation/manifest.json` - annotation input, source, row-count, cache, and diagnostic counters.
-- `annotation/failures.tsv.gz` - non-fatal external annotation lookup failures, such as gnomAD region fetch errors.
-
-Annotation accepts only concrete A/C/G/T event alleles for external variant
-lookup. Non-concrete event rows are excluded before lookup
-regions are built and counted in `annotation/manifest.json`.
-
-The report derives strategy summaries, feature coverage, site depth, taxonomic
-evidence, and variant-strategy support under an explicitly selected external
-analytics root. These analytic tables are not pipeline outputs, and completed
-source run directories remain unchanged.
-
-Fetch, alignment, and annotation are internal workflow boundaries, not separate
-CLI modes. Recovery uses Nextflow `-resume` with the same inputs, result
-directory, and work directory. Removed stage-selection parameters are rejected
-instead of being ignored.
-
-The target assembly is fixed to GRCh38.p14 (`GCF_000001405.40`). Ortholog
-retrieval always uses the complete NCBI ortholog set (`--ortholog all`).
-
-## Storage Model
-
-Nextflow `work/` is the execution cache used by `-resume`. Published `results/`
-is the durable data layer for analytics and archival. Successful execution sessions
-clean their task work by default; failed or interrupted work remains available
-for recovery. See `docs/storage_model.md` for resumed-run cleanup details.
-
-Raw NCBI zip files, unpacked `gene.fna`, minimap2 PAF, and MUMmer delta/coords
-files are not published. Inspect a
-retained failed/interrupted task work directory when native debugging is needed.
-
-For cluster runs, keep `-work-dir` on scratch storage, not in the project
-directory or home quota.
-
-## Internal Workflow Steps
-
-| Step | Process | What Happens | Output Role |
-| --- | --- | --- | --- |
-| 1 | `VALIDATE_IDS` | Normalize Entrez IDs and plan deterministic fetch chunks. | Intermediate plan |
-| 2 | `FETCH_PARSE_CHUNK` | Fetch NCBI gene packages and normalize target/ortholog records. | Intermediate chunk evidence |
-| 3 | `BUILD_FETCH_DATASET`, `FETCH_TAXONOMY` | Assemble sequence/metadata handoffs and fetch canonical taxonomy once. | Intermediate fetch dataset |
-| 4 | `FINALIZE_FETCH_OUTPUT` | Validate and publish the compact durable fetch layer. | `fetch/` |
-| 5 | `BUILD_ALIGNMENT_TASKS` | Create stable per-gene tasks and genomic partitions. | Intermediate task metadata |
-| 6 | alignment strategy processes | Run selected minimap2, nucmer, and BWA evidence producers. | Per-gene normalized evidence |
-| 7 | `MERGE_ALIGNMENT_PARTITION` | Compact raw observations into event, exact-support, segment, and summary relations. | Intermediate bounded partitions |
-| 8 | `MERGE_ALIGNMENT` | Validate and copy partitions without global recompression or ID rebasing. | `alignment/` |
-| 9 | `PREPARE_ANNOTATION_CONTEXTS` | Materialize only each partition's target context. | Intermediate annotation context |
-| 10 | `ANNOTATE_EVENTS_PARTITION` | Normalize event keys and annotate unique variant contexts with ClinVar/gnomAD. | Intermediate source shards |
-| 11 | `ANNOTATE_VEP_PARTITION` | Add release-declared VEP evidence to bounded source shards. | Resumable enriched shards |
-| 12 | `FINALIZE_ANNOTATION` | Validate and publish the partitioned variant dataset plus event-to-variant lineage. | `annotation/` |
+Read [Report generation](docs/report_generation.md) for the supported launch
+procedure and [Analytics contract](docs/analytics_contract.md) for input,
+cache, and scientific-result semantics.
 
 ## Documentation
 
-- `docs/pipeline_launch.md` — ordinary ITMO launch or resume.
-- `docs/report_generation.md` — report launch from completed runs.
-- `docs/run_validation.md` — smoke tests, contract checks, and failure diagnosis.
-- `docs/stage1_fetch_contract.md` and `docs/stage2_alignment_contract.md` —
-  normalized data contracts and their rationale.
-- `docs/stage3_annotation_contract.md` — annotation ownership, VEP, and durable
-  variant-shard contract.
-- `docs/storage_model.md` — durable evidence, resume cache, and disk policy.
-- `docs/itmo_cluster.md` — first-time cluster setup and verified infrastructure.
-- `docs/project_map.md` — code ownership and repository navigation.
+| Need | Read |
+| --- | --- |
+| Launch or resume pipelines on ITMO | [Pipeline launch](docs/pipeline_launch.md) |
+| Generate a report | [Report generation](docs/report_generation.md) |
+| Understand analytics compatibility and scientific derivations | [Analytics contract](docs/analytics_contract.md) |
+| Run tests, smoke checks, or diagnose a failure | [Run and validation](docs/run_validation.md) |
+| Set up or diagnose ITMO infrastructure | [ITMO cluster operations](docs/itmo_cluster.md) |
+| Find owning code and focused tests | [Project map](docs/project_map.md) |
+| Inspect pipeline data contracts | [Fetch](docs/stage1_fetch_contract.md), [alignment](docs/stage2_alignment_contract.md), and [annotation](docs/stage3_annotation_contract.md) contracts |
+| Decide what is durable, cached, or removable | [Storage model](docs/storage_model.md) |
+| Archive, verify, restore, or remove a run | [Run archiving](run_archiving/README.md) |

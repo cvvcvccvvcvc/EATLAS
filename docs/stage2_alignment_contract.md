@@ -4,6 +4,10 @@ Stage 2 aligns each selected non-human ortholog gene sequence from Stage 1
 against the fixed human target locus and writes normalized alignment evidence
 for downstream variant-support analysis.
 
+The workflow boundary is `ALIGNMENT_STAGE` in `main.nf`. The strategy
+registry in that file owns runnable names, default membership, and fixed
+strategy parameters; the Python alignment modules own normalized evidence.
+
 ## Position In The Pipeline
 
 Production execution is a single end-to-end workflow:
@@ -44,9 +48,10 @@ orientation.
 
 ## Strategies
 
-Runnable strategies are registered in the workflow and can be selected with
-`--alignment_strategies`. The value `default` selects every strategy marked as
-default-enabled in that registry.
+Runnable strategies are registered in `ALIGNMENT_STRATEGY_REGISTRY` and can
+be selected with `--alignment_strategies`. The value `default` resolves from
+the registry's `default_enabled` metadata. Do not copy the current default set
+into launch documentation.
 
 | Strategy | Tool | Policy |
 | --- | --- | --- |
@@ -55,10 +60,6 @@ default-enabled in that registry.
 | `minimap2_map_ont_pseudoreads_30000_15000` | minimap2 | Error-free 30 kb long pseudo-reads at a 15 kb step, aligned with `map-ont` and reduced to a dominant-strand monotonic backbone. |
 | `nucmer` | MUMmer/nucmer | Independent comparator using multi-query nucmer output. |
 | `bwa_pseudoreads_150_75` | BWA/samtools/pysam | Pseudoread comparator using 150-base reads at a 75-base step. |
-
-The `asm20` and long-pseudoread minimap2 strategies, nucmer, and BWA
-pseudoreads are default-enabled. The `asm10` strategy is runnable only when
-named explicitly.
 
 No LASTZ, consensus calling, or production variant filtering is part of Stage 2.
 Conservation scores such as GERP are not part of alignment; they belong to the
@@ -77,10 +78,6 @@ Example selections:
 At least one strategy must be selected. Single-strategy runs are valid; compare
 or report layers must treat cross-strategy-only sections as not applicable or
 empty rather than failing.
-
-`default` selects `minimap2_asm20`,
-`minimap2_map_ont_pseudoreads_30000_15000`, `nucmer`, and
-`bwa_pseudoreads_150_75`.
 
 Each bounded partition merge reduces raw per-ortholog observations to one
 compact row per unique event and strategy. Every compact row receives a
@@ -319,19 +316,17 @@ and the canonical Stage 1 feature table.
 
 Task preparation also assigns a stable `partition_id` after sorting target genes
 by chromosome and genomic interval. `--alignment_partition_size` controls the
-maximum number of target genes in each partition (default: 10). The identifier
+maximum number of target genes in each partition. The identifier
 is carried in task metadata for bounded downstream merge and annotation; it does
 not change gene-level alignment behavior.
 
 The same preparation pass sums the validated selected-ortholog
 `sequence_length` values for each gene into internal `ortholog_sequence_bp`
-task metadata. Nextflow uses that input-size measure to choose the initial
-memory request for the two pseudoread strategies. The long-pseudoread minimap2
-strategy starts at 8 GB below 150 million bases, 24 GB below 600 million bases,
-and 40 GB otherwise. BWA starts at 8 GB below 600 million bases and 16 GB
-otherwise. Ordinary assembly minimap2 stays at 8 GB and nucmer at 12 GB.
-Retries remain a safety margin for unusual tasks; they are not the primary
-mechanism for reaching a predictable memory class.
+task metadata. Nextflow uses that input-size measure to choose initial memory
+for pseudoread strategies. Current thresholds and retry increments belong to
+`nextflow.config` and the task-preparation implementation. Their measured
+rationale is historical benchmark evidence, not part of the durable table
+contract.
 
 Alignment results are merged in two bounded levels. Each partition merges at
 most `--alignment_partition_size` genes and streams one raw event group at a
@@ -354,3 +349,12 @@ not duplicate sequence data and native aligner output in `results/`.
 
 Nextflow `work/` remains a resume cache. After validating a run, it can be
 cleaned according to `docs/storage_model.md`.
+
+## Checks
+
+Choose the tests matching the changed owner: alignment runtime and runner tests,
+`tests/test_alignment_table_schema.py`,
+`tests/test_prepare_alignment_tasks.py`, and
+`tests/test_merge_alignment_results.py`. Wiring or registry changes also need
+`tests/test_canonical_partition_wiring.py`. Use `run_validation.md` for a
+small end-to-end smoke after workflow changes.

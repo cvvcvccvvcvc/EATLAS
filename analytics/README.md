@@ -1,84 +1,62 @@
 # GAPH Analytics
 
 `analytics/` turns one or more completed evidence-first pipeline runs into
-reproducible derived tables and an HTML report. It does not fetch or repair
-missing pipeline evidence, and pipeline commands do not import analytics
-modules.
+reproducible derived tables and an HTML report. It never imports into pipeline
+commands, repairs source evidence, or writes below a completed run.
 
-For the supported cluster launch sequence, arguments, and monitoring commands,
-use `docs/report_generation.md`.
+Read `docs/report_generation.md` for the supported cluster launch and
+`docs/analytics_contract.md` for source compatibility, cache identity, and
+scientific-result semantics.
 
 ## Package Boundary
 
 ```text
 analytics/
-  strategy_report.py     report CLI and orchestration
-  vep/                   report consequence vocabularies and grouping rules
-  derivations/           deterministic tables built from pipeline evidence
-  io/                    input validation and fingerprinted artifact contracts
+  strategy_report.py     CLI and orchestration
+  io/                    source validation, identity, and artifact contracts
+  derivations/           deterministic evidence-derived relations
   analyses/              scientific calculations
-  reporting/             HTML sections and composition
-  slurm/                 cluster launchers and workers
+  reporting/             HTML presentation of computed results
+  vep/                   report consequence vocabulary and grouping
+  slurm/                 cluster launcher and worker
 ```
 
-Cross-boundary variant, ClinVar, gnomAD, and taxonomy semantics live in
-`genomics/`. `reporting/` renders already-computed results; it does not own
-scientific calculations or external data access.
+Cross-boundary variant, ClinVar, gnomAD, taxonomy, and VEP-provider semantics
+belong to `genomics/`. Presentation modules do not fetch source data or own
+scientific calculations.
 
-## Input Contract
+## Input And Output
 
-The report accepts one or more repeated `--run-dir` arguments. Runs must be
-compatible and non-overlapping. Each run must provide:
+The CLI accepts one or more repeated `--run-dir` arguments. Each run must
+provide the current Stage 1–3 evidence and a valid root evidence inventory.
+Runs must be compatible and have disjoint accepted Gene IDs.
 
-- canonical Stage 1 target, selected-ortholog, feature, and taxonomy evidence;
-- partitioned Stage 2 summaries, segments, compact events, and exact support;
-- the Stage 3 partitioned ClinVar/gnomAD/VEP variant dataset and
-  event-to-variant map.
-
-Missing evidence, an incomplete shard set, or an obsolete schema is a contract
-error. There is no fallback to old pipeline aggregates or a separate bulk-VEP
-artifact.
-
-## Derived Data
-
-The pipeline does not publish report-specific coverage, site-depth, support, or
-taxonomic counters. A completed source run is immutable: analytics never writes
-below it. Derived files live under the one explicitly supplied analytics root:
+All writable state lives below one explicit external `--analytics-root`:
 
 ```text
 <analytics-root>/
-  cache/<source-id>/      reusable per-source evidence derivations
+  cache/                  verified per-source and calculation caches
   analyses/<analysis-id>/
-    derived/              run-set scientific artifacts
-    reports/              HTML reports
-    performance/          timing, memory, I/O, and disk profiles
-  slurm/                  report job logs and revision markers
+    derived/
+    reports/
+    performance/
+  slurm/
 ```
 
-Every reusable artifact has a manifest that identifies its inputs and schema.
-A cache hit avoids recomputation; a changed input invalidates the artifact.
-Large candidate data is streamed or queried with bounded DuckDB operations
-instead of being copied into parallel permanent relations.
+Large candidate shards remain in source runs and are scanned in place. Missing,
+changed, incomplete, or obsolete evidence is a contract error; there is no
+legacy aggregate or bulk-VEP fallback.
 
-Taxonomic scope/rank choices and the corresponding counters are analytics
-derivations from `fetch/taxonomy.tsv.gz` and exact Stage 2 evidence. They are not
-pipeline source data.
+## Local Use
 
-## Local Environment
-
-Create the declared environment on first setup:
+Create or synchronize the declared environment:
 
 ```bash
 micromamba create --yes -f envs/analytics.yml
-```
-
-Synchronize an existing named environment after the YAML changes:
-
-```bash
 micromamba install --yes -n gaph-v2-analytics -f envs/analytics.yml
 ```
 
-After the end-to-end pipeline has completed:
+Build a report after the source pipeline run completes:
 
 ```bash
 micromamba run -n gaph-v2-analytics python -m analytics.strategy_report \
@@ -98,9 +76,8 @@ micromamba run -n gaph-v2-analytics python -m analytics.strategy_report \
   --target-space-null
 ```
 
-Use `python -m analytics.strategy_report --help` for the current CLI contract.
-
-The same environment runs the Python suite:
+Use `python -m analytics.strategy_report --help` for the current CLI. The same
+environment runs the suite:
 
 ```bash
 micromamba run -n gaph-v2-analytics python -m pytest -q

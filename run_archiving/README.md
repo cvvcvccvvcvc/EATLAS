@@ -4,6 +4,10 @@ This package archives complete pipeline run directories to an rclone remote.
 It is operational tooling: it does not modify or import pipeline or analytics
 code.
 
+`run_archiving/cli.py` owns command arguments, and `run_archiving/archive.py`
+owns archive validation and safety. Use `python -m run_archiving --help` and
+subcommand help for current optional flags.
+
 An archive preserves every regular file below the run directory. Nextflow
 `work/` remains outside the run and is never archived. Symlinks and embedded
 execution-cache directories are rejected instead of being silently skipped.
@@ -146,3 +150,6 @@ re-hashes it there, and removes it only when it still matches the archive.
 The archiver verifies workflow completion and transfer integrity, not scientific
 validity. The operator remains responsible for reviewing stage-level failures
 and deciding whether a completed run should be retained.
+
+Changes to archive membership, verification, restore, quarantine, or removal
+must pass `tests/test_run_archiving.py`.
