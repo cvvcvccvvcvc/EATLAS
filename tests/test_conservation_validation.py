@@ -525,6 +525,57 @@ def test_continuous_model_exports_strategy_eligibility_mask(
     ].iloc[0]
     assert selected["usable_rows"] == 60
 
+    monkeypatch.setattr(
+        validation_module,
+        "run_firth_models",
+        lambda **_kwargs: pytest.fail("identical Firth models must be loaded from cache"),
+    )
+    cached_results, cached_distributions, cached_versions = compute_continuous_firth(
+        cohort=cohort,
+        observed_by_strategy_type={
+            ("s1", "snv"): observed_keys,
+            ("s1", "indel"): set(),
+        },
+        strategies=["s1"],
+        analytics_dir=tmp_path,
+        eligible_gene_ids_by_strategy={"s1": {"1"}},
+        firth_workers=1,
+    )
+    pd.testing.assert_frame_equal(cached_results, results, check_dtype=False)
+    assert not cached_distributions.empty
+    assert cached_versions == {"R": "test", "logistf": "test"}
+
+    invalidated_calls = 0
+
+    def invalidated_run_firth_models(**kwargs):
+        nonlocal invalidated_calls
+        invalidated_calls += 1
+        return fake_run_firth_models(**kwargs)
+
+    monkeypatch.setattr(
+        validation_module,
+        "run_firth_models",
+        invalidated_run_firth_models,
+    )
+    invalidated_results, _distributions, _versions = compute_continuous_firth(
+        cohort=cohort,
+        observed_by_strategy_type={
+            ("s1", "snv"): observed_keys,
+            ("s1", "indel"): set(),
+        },
+        strategies=["s1"],
+        analytics_dir=tmp_path,
+        eligible_gene_ids_by_strategy={"s1": {"1", "2"}},
+        firth_workers=1,
+    )
+    assert invalidated_calls == 1
+    invalidated_selected = invalidated_results[
+        invalidated_results["variant_type"].eq("snv")
+        & invalidated_results["target_context"].eq("all")
+        & invalidated_results["consequence"].eq("missense")
+    ].iloc[0]
+    assert invalidated_selected["usable_rows"] == 120
+
 
 def test_firth_runner_bounds_workers_and_disables_nested_blas_threads(
     tmp_path: Path,
@@ -684,3 +735,43 @@ def synthetic_cohort(count: int) -> pd.DataFrame:
             SCORE_COLUMN: np.linspace(-3, 3, count),
         }
     )
+
+
+def test_firth_script_preserves_nonconvergence_diagnostics(tmp_path: Path) -> None:
+    import json
+
+    rng = np.random.default_rng(7)
+    data = pd.DataFrame({
+        "variant_subtype": ["snv"] * 250,
+        "target_context": ["cds"] * 250,
+        "consequence_groups": ["missense"] * 250,
+        "benign": rng.binomial(1, .5, 250),
+        "observed_0": rng.binomial(1, .5, 250),
+        "eligible_0": [1] * 250,
+        "score": rng.normal(size=250),
+    })
+    specs = pd.DataFrame([{
+        "analysis_id": "model_0", "eligibility_column": "eligible_0",
+        "observation_column": "observed_0", "variant_type": "snv",
+        "target_context": "all", "consequence": "all",
+    }])
+    data_path, specs_path = tmp_path / "data.tsv", tmp_path / "specs.tsv"
+    output_path, versions_path = tmp_path / "results.tsv", tmp_path / "versions.tsv"
+    data.to_csv(data_path, sep="\t", index=False)
+    specs.to_csv(specs_path, sep="\t", index=False)
+    # Exercise the production R script with real, deliberately nonconverged fits.
+    expression = (
+        "logistf <- function(...) logistf::logistf(..., "
+        "control=logistf::logistf.control(maxit=1), "
+        "plcontrol=logistf::logistpl.control(maxit=1)); "
+        f"source({json.dumps(str(Path(validation_module.__file__).with_name('firth_logistic.R')))})"
+    )
+    subprocess.run([
+        "Rscript", "--vanilla", "-e", expression,
+        str(data_path), str(specs_path), str(output_path), str(versions_path), "1",
+    ], check=True, capture_output=True, text=True)
+    result = pd.read_csv(output_path, sep="\t").iloc[0]
+    assert result["status"] == "not_estimable"
+    assert "iterations" in result["reason"]
+    assert "confidence limits" in result["reason"]
+    assert pd.isna(result["odds_ratio"]) and pd.isna(result["plr_p"])

@@ -13,6 +13,7 @@ from analytics.analyses import (
     clinvar_conditions,
     clinvar_validation,
     conservation,
+    conservation_validation,
     external_evidence,
     matched_control,
     observed_variant_store,
@@ -21,7 +22,7 @@ from analytics.analyses import (
 from analytics.io import alignment_aggregates, annotation_support, taxonomy_summary
 
 
-ANALYSIS_SEMANTICS_VERSION = 1
+ANALYSIS_SEMANTICS_VERSION = 2
 COMPUTATION_DISTRIBUTIONS = (
     "duckdb",
     "numpy",
@@ -72,6 +73,7 @@ def calculation_cache_versions() -> dict[str, object]:
             "vep": clinvar_validation.VEP_CACHE_VERSION,
         },
         "conservation": conservation.CACHE_VERSION,
+        "continuous_firth": conservation_validation.CONTINUOUS_CACHE_VERSION,
         "external_evidence": external_evidence.CACHE_VERSION,
         "matched_control": {
             "result": matched_control.CONTROL_VERSION,

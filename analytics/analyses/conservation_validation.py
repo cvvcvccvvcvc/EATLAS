@@ -2,25 +2,28 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import math
 import os
 import shutil
 import subprocess
 import tempfile
-from collections.abc import Iterable, Sequence
+from collections.abc import Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 
+from analytics.io.artifacts import path_metadata, write_json_atomic, write_tsv_atomic
+from analytics.io.performance import PerformanceProfile, profile_stage
 from analytics.vep.consequences import (
     VALIDATION_CONSEQUENCE_BITS as CONSEQUENCE_BITS,
     VALIDATION_CONSEQUENCE_OPTIONS as CONSEQUENCE_OPTIONS,
     validation_consequence_membership_mask as consequence_membership_mask,
     validation_consequence_memberships_text as consequence_memberships_text,
 )
-from analytics.io.performance import PerformanceProfile, profile_stage
 from .statistics import benjamini_hochberg, enrichment_result, mantel_haenszel_adjusted
 from .target_context import context_at, read_disjoint_contexts
 from genomics.variants import changed_target_position, parse_variant_key
@@ -29,6 +32,8 @@ from genomics.variants import changed_target_position, parse_variant_key
 SCORE_COLUMN = "phyloP100way"
 SPLINE_DF = 3
 MAX_DISTRIBUTION_BINS = 40
+CONTINUOUS_CACHE_VERSION = 1
+CONTINUOUS_CACHE_DIRNAME = "continuous_firth"
 
 PHYLOP_BANDS = [
     ("acceleration", "Nominal acceleration", "<= -1.30103"),
@@ -551,6 +556,18 @@ def compute_continuous_firth(
 ) -> tuple[pd.DataFrame, pd.DataFrame, dict[str, str]]:
     if firth_workers < 1:
         raise ValueError("firth_workers must be >= 1")
+    cache_inputs = _continuous_cache_inputs(
+        cohort,
+        observed_by_strategy_type,
+        strategies,
+        eligible_gene_ids_by_strategy,
+    )
+    with profile_stage(performance_profile, "Continuous Firth cache lookup") as timing:
+        cached = _load_continuous_cache(analytics_dir, cache_inputs)
+        timing["details"] = "cache hit" if cached is not None else "cache miss"
+    if cached is not None:
+        return cached
+
     model_rows: list[dict[str, object]] = []
     distribution_rows: list[dict[str, object]] = []
     fit_specs: list[dict[str, str]] = []
@@ -664,7 +681,155 @@ def compute_continuous_firth(
         "plr_q",
         ["variant_type", "target_context", "consequence"],
     )
-    return results, pd.DataFrame(distribution_rows), versions
+    distributions = pd.DataFrame(distribution_rows)
+    with profile_stage(performance_profile, "Continuous Firth cache write"):
+        _write_continuous_cache(
+            analytics_dir,
+            cache_inputs,
+            results,
+            distributions,
+            versions,
+        )
+    return results, distributions, versions
+
+
+def _continuous_cache_inputs(
+    cohort: pd.DataFrame,
+    observed_by_strategy_type: dict[tuple[str, str], set[str]],
+    strategies: list[str],
+    eligible_gene_ids_by_strategy: dict[str, set[str]] | None,
+) -> dict[str, object]:
+    return {
+        "schema_version": CONTINUOUS_CACHE_VERSION,
+        "cohort": _frame_fingerprint(cohort),
+        "observed_memberships_sha256": _mapping_fingerprint(
+            observed_by_strategy_type
+        ),
+        "eligible_genes_sha256": (
+            _mapping_fingerprint(eligible_gene_ids_by_strategy)
+            if eligible_gene_ids_by_strategy is not None
+            else None
+        ),
+        "strategies": list(strategies),
+        "spline_df": SPLINE_DF,
+    }
+
+
+def _frame_fingerprint(frame: pd.DataFrame) -> dict[str, object]:
+    digest = hashlib.sha256()
+    schema = [(str(column), str(frame[column].dtype)) for column in frame.columns]
+    digest.update(json.dumps(schema, separators=(",", ":")).encode())
+    digest.update(pd.util.hash_pandas_object(frame, index=True).values.tobytes())
+    return {"row_count": len(frame), "sha256": digest.hexdigest()}
+
+
+def _mapping_fingerprint(mapping: Mapping[object, Collection[object]]) -> str:
+    digest = hashlib.sha256()
+    for key in sorted(mapping, key=str):
+        values = sorted(str(value) for value in mapping[key])
+        digest.update(json.dumps([key, values], separators=(",", ":")).encode())
+    return digest.hexdigest()
+
+
+def _continuous_cache_paths(analytics_dir: Path) -> tuple[Path, Path, Path]:
+    cache_dir = analytics_dir / CONTINUOUS_CACHE_DIRNAME
+    return (
+        cache_dir / "results.tsv.gz",
+        cache_dir / "distributions.tsv.gz",
+        cache_dir / "manifest.json",
+    )
+
+
+def _load_continuous_cache(
+    analytics_dir: Path,
+    expected_inputs: dict[str, object],
+) -> tuple[pd.DataFrame, pd.DataFrame, dict[str, str]] | None:
+    results_path, distributions_path, manifest_path = _continuous_cache_paths(
+        analytics_dir
+    )
+    if not all(path.is_file() for path in (results_path, distributions_path, manifest_path)):
+        return None
+    try:
+        manifest = json.loads(manifest_path.read_text())
+        if (
+            manifest.get("status") != "complete"
+            or manifest.get("inputs") != expected_inputs
+            or manifest.get("outputs")
+            != {
+                results_path.name: path_metadata(results_path),
+                distributions_path.name: path_metadata(distributions_path),
+            }
+        ):
+            return None
+        results = _read_cached_frame(results_path, manifest["results"])
+        distributions = _read_cached_frame(
+            distributions_path, manifest["distributions"]
+        )
+        return results, distributions, {
+            str(key): str(value)
+            for key, value in dict(manifest.get("versions", {})).items()
+        }
+    except (KeyError, OSError, TypeError, ValueError, json.JSONDecodeError):
+        return None
+
+
+def _read_cached_frame(path: Path, descriptor: dict[str, object]) -> pd.DataFrame:
+    columns = [str(column) for column in descriptor["columns"]]
+    row_count = int(descriptor["row_count"])
+    frame = (
+        pd.read_csv(path, sep="\t", compression="gzip", keep_default_na=False)
+        if row_count
+        else pd.DataFrame(columns=columns)
+    )
+    if list(frame.columns) != columns or len(frame) != row_count:
+        raise ValueError(f"Continuous Firth cache contents changed: {path}")
+    for column in descriptor.get("numeric_columns", []):
+        frame[str(column)] = pd.to_numeric(frame[str(column)], errors="coerce")
+    return frame
+
+
+def _write_continuous_cache(
+    analytics_dir: Path,
+    inputs: dict[str, object],
+    results: pd.DataFrame,
+    distributions: pd.DataFrame,
+    versions: dict[str, str],
+) -> None:
+    results_path, distributions_path, manifest_path = _continuous_cache_paths(
+        analytics_dir
+    )
+    write_tsv_atomic(results_path, results)
+    write_tsv_atomic(distributions_path, distributions)
+    write_json_atomic(
+        manifest_path,
+        {
+            "status": "complete",
+            "inputs": inputs,
+            "results": {
+                "row_count": len(results),
+                "columns": list(results.columns),
+                "numeric_columns": _numeric_columns(results),
+            },
+            "distributions": {
+                "row_count": len(distributions),
+                "columns": list(distributions.columns),
+                "numeric_columns": _numeric_columns(distributions),
+            },
+            "versions": dict(versions),
+            "outputs": {
+                results_path.name: path_metadata(results_path),
+                distributions_path.name: path_metadata(distributions_path),
+            },
+        },
+    )
+
+
+def _numeric_columns(frame: pd.DataFrame) -> list[str]:
+    return [
+        str(column)
+        for column in frame.columns
+        if pd.api.types.is_numeric_dtype(frame[column])
+    ]
 
 
 def continuous_metrics(working: pd.DataFrame) -> dict[str, object]:
@@ -860,6 +1025,25 @@ def run_firth_models(
             message = proc.stderr.strip() or proc.stdout.strip() or "unknown R error"
             raise RuntimeError(f"Firth logistic regression failed: {message}")
         fitted = pd.read_csv(output_path, sep="\t", keep_default_na=False)
+        required = {
+            "analysis_id",
+            "odds_ratio",
+            "ci_low",
+            "ci_high",
+            "plr_p",
+            "status",
+            "reason",
+        }
+        if not required.issubset(fitted.columns):
+            raise ValueError("Firth output is missing required result columns")
+        if fitted["analysis_id"].duplicated().any() or set(
+            fitted["analysis_id"]
+        ) != set(specs["analysis_id"]):
+            raise ValueError("Firth output must contain exactly one result for every requested model")
+        if not fitted["status"].isin(
+            ["estimated", "estimated_warning", "not_estimable"]
+        ).all():
+            raise ValueError("Firth output contains an unknown model status")
         for column in ["odds_ratio", "ci_low", "ci_high", "plr_p"]:
             fitted[column] = pd.to_numeric(fitted[column], errors="coerce")
         versions_frame = pd.read_csv(versions_path, sep="\t", keep_default_na=False)

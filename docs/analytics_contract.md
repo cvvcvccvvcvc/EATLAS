@@ -100,6 +100,11 @@ Analytics derives and fingerprints:
   pathogenic/likely-pathogenic allele detail and support table;
 - run-set scientific tables used by report sections.
 
+Completed continuous Firth result and distribution tables are cached by their
+exact cohort, observed memberships, eligible genes, strategy order, model
+definition, and calculation runtime. Rebuilding presentation or retrying a
+later failed report stage therefore does not fit identical models again.
+
 Annotation-support preparation is partition-local. Each worker reads only the
 variant shards for its evidence partition, uses one DuckDB thread, and
 atomically checkpoints its small derived tables. An identical rerun reuses
@@ -130,6 +135,15 @@ it uses the pipeline-pinned VEP release, and its backend/release are part of the
 cache identity. Local VEP is probed before an analysis workspace is created.
 
 ## Report Semantics
+
+### Firth Model Diagnostics
+
+Each continuous model retains its R warnings in the result reason. Models with
+nonconvergence warnings or invalid effects, confidence limits, or p-values are
+`not_estimable`; their inferential values are missing and do not enter BH
+correction. Other warnings remain visible as `estimated_warning` alongside the
+usable estimate. Missing or duplicate model results are an error rather than
+silently leaving a pending result.
 
 ### Pathogenic ClinVar Hits
 

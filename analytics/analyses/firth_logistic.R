@@ -40,23 +40,54 @@ fit_one <- function(spec) {
     ALT_observed = cohort[[spec$observation_column]][keep],
     score = cohort$score[keep]
   )
+  model_warnings <- character()
+  clean_message <- function(value) gsub("[\t\r\n]+", " ", value)
   tryCatch({
-    fit <- logistf(
+    fit <- withCallingHandlers(logistf(
       benign ~ ALT_observed + splines::ns(score, df = 3),
       data = model_data,
       firth = TRUE,
       pl = TRUE,
       plconf = 2
-    )
+    ), warning = function(warning) {
+      model_warnings <<- c(model_warnings, clean_message(conditionMessage(warning)))
+      invokeRestart("muffleWarning")
+    })
     coefficient_index <- match("ALT_observed", names(fit$coefficients))
+    values <- c(
+      exp(fit$coefficients[[coefficient_index]]),
+      exp(fit$ci.lower[[coefficient_index]]),
+      exp(fit$ci.upper[[coefficient_index]]),
+      fit$prob[[coefficient_index]]
+    )
+    nonconverged <- any(grepl(
+      "not converg|non.?converg|maximum number of iterations",
+      model_warnings,
+      ignore.case = TRUE
+    ))
+    invalid <- any(!is.finite(values)) || any(values[1:3] <= 0) ||
+      values[[2]] > values[[3]] || values[[4]] < 0 || values[[4]] > 1
+    if (invalid) {
+      model_warnings <- c(
+        model_warnings,
+        "Firth returned invalid effect, confidence limits, or p-value."
+      )
+    }
+    usable <- !nonconverged && !invalid
     data.frame(
       analysis_id = spec$analysis_id,
-      odds_ratio = exp(fit$coefficients[[coefficient_index]]),
-      ci_low = exp(fit$ci.lower[[coefficient_index]]),
-      ci_high = exp(fit$ci.upper[[coefficient_index]]),
-      plr_p = fit$prob[[coefficient_index]],
-      status = "estimated",
-      reason = "",
+      odds_ratio = if (usable) values[[1]] else NA_real_,
+      ci_low = if (usable) values[[2]] else NA_real_,
+      ci_high = if (usable) values[[3]] else NA_real_,
+      plr_p = if (usable) values[[4]] else NA_real_,
+      status = if (!usable) {
+        "not_estimable"
+      } else if (length(model_warnings)) {
+        "estimated_warning"
+      } else {
+        "estimated"
+      },
+      reason = paste(unique(model_warnings), collapse = "; "),
       stringsAsFactors = FALSE
     )
   }, error = function(error) {
@@ -67,7 +98,13 @@ fit_one <- function(spec) {
       ci_high = NA_real_,
       plr_p = NA_real_,
       status = "not_estimable",
-      reason = paste0("Firth model failed: ", conditionMessage(error)),
+      reason = paste(
+        c(
+          unique(model_warnings),
+          paste0("Firth model failed: ", clean_message(conditionMessage(error)))
+        ),
+        collapse = "; "
+      ),
       stringsAsFactors = FALSE
     )
   })
