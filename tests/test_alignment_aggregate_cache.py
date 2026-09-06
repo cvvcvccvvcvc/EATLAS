@@ -11,6 +11,7 @@ import pandas as pd
 import pytest
 
 from analytics.io import run_inputs as run_inputs_module
+from analytics.io import alignment_aggregates as alignment_aggregates_module
 from analytics.derivations.alignment_summary import (
     concatenate_tsv_gz,
     merge_strategy_summaries,
@@ -223,14 +224,24 @@ def _read_text(path: Path) -> str:
 @pytest.mark.skipif(not BEDTOOLS_AVAILABLE, reason="bedtools is not installed")
 def test_alignment_aggregate_cache_exactly_matches_current_builders(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     run_dir = tmp_path / "run"
     partitions, target_features, alignment_manifest = _write_evidence_run(run_dir)
+    original_loader = alignment_aggregates_module.load_target_features
+    loaded_paths: list[Path] = []
+
+    def load_once(path: Path):
+        loaded_paths.append(path)
+        return original_loader(path)
+
+    monkeypatch.setattr(alignment_aggregates_module, "load_target_features", load_once)
 
     actual = resolve_alignment_aggregate_paths(
         run_dir,
         analytics_dir=tmp_path / "analytics",
     )
+    assert loaded_paths == [target_features]
 
     expected_dir = tmp_path / "expected"
     expected_strategy = expected_dir / "strategy_summary.tsv.gz"

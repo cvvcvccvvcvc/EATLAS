@@ -17,6 +17,7 @@ from analytics.derivations.alignment_summary import (
 )
 from analytics.derivations.feature_coverage import (
     FEATURE_COVERAGE_FIELDS,
+    load_target_features,
     summarize_feature_coverage,
 )
 
@@ -127,6 +128,7 @@ def build_or_load_alignment_aggregates(
         summary_row_count = 0
         partition_strategy_summaries: list[Path] = []
         partition_coverages: list[Path] = []
+        target_feature_index = load_target_features(target_features)
         for index, partition_dir in enumerate(partition_dirs, start=1):
             partition_strategy = temporary_dir / f"strategy_{index:06d}.tsv.gz"
             partition_summary_count, _ = write_strategy_summary(
@@ -138,7 +140,7 @@ def build_or_load_alignment_aggregates(
             partition_strategy_summaries.append(partition_strategy)
             partition_coverage = temporary_dir / f"coverage_{index:06d}.tsv.gz"
             summarize_feature_coverage(
-                target_features,
+                target_feature_index,
                 partition_dir / SUMMARY_FILENAME,
                 partition_dir / SEGMENTS_FILENAME,
                 partition_coverage,

@@ -20,8 +20,9 @@ import duckdb
 
 from analytics.derivations.alignment_summary import concatenate_tsv_gz
 from analytics.derivations.feature_coverage import (
-    iter_snv_event_sites,
     load_snv_site_depth,
+    prepare_snv_sites,
+    snv_event_site,
     write_snv_site_depth,
     write_snv_taxonomic_depth,
 )
@@ -612,6 +613,7 @@ def _build_partition_support(
     _load_source_annotations(connection, variant_source)
     _record_timing(timings, "load_source_annotations", phase_started)
     alt_support_path = work_dir / "snv_alt_taxonomic_support.tsv.gz"
+    snv_sites_path = work_dir / ".snv_sites.tsv"
     exact_support_spool = ExactSupportSpool(work_dir / ".exact_support_rows.tsv")
     phase_started = time.perf_counter()
     with exact_support_spool:
@@ -622,6 +624,7 @@ def _build_partition_support(
             map_path,
             profiles,
             alt_support_path,
+            snv_sites_path,
             exact_support_spool,
         )
     _record_timing(timings, "aggregate_event_support", phase_started)
@@ -643,22 +646,29 @@ def _build_partition_support(
     site_depth_path = work_dir / "snv_site_depth.tsv.gz"
     taxonomic_depth_path = work_dir / "snv_taxonomic_depth.tsv.gz"
     phase_started = time.perf_counter()
-    write_snv_site_depth(
-        [partition_dir / SEGMENTS_FILENAME],
-        iter_snv_event_sites([partition_dir / EVENTS_FILENAME]),
-        site_depth_path,
-        work_dir,
-    )
-    _record_timing(timings, "snv_site_depth", phase_started)
-    phase_started = time.perf_counter()
-    write_snv_taxonomic_depth(
-        [partition_dir / SEGMENTS_FILENAME],
-        iter_snv_event_sites([partition_dir / EVENTS_FILENAME]),
-        taxonomy,
-        taxonomic_depth_path,
-        work_dir,
-    )
-    _record_timing(timings, "snv_taxonomic_depth", phase_started)
+    with prepare_snv_sites(
+        _iter_spooled_snv_sites(snv_sites_path), work_dir
+    ) as prepared_sites:
+        _record_timing(timings, "snv_site_index", phase_started)
+        phase_started = time.perf_counter()
+        write_snv_site_depth(
+            [partition_dir / SEGMENTS_FILENAME],
+            (),
+            site_depth_path,
+            work_dir,
+            prepared_sites=prepared_sites,
+        )
+        _record_timing(timings, "snv_site_depth", phase_started)
+        phase_started = time.perf_counter()
+        write_snv_taxonomic_depth(
+            [partition_dir / SEGMENTS_FILENAME],
+            (),
+            taxonomy,
+            taxonomic_depth_path,
+            work_dir,
+            prepared_sites=prepared_sites,
+        )
+        _record_timing(timings, "snv_taxonomic_depth", phase_started)
     phase_started = time.perf_counter()
     support_rows, missing_key_count = build_variant_strategy_support(
         aggregates,
@@ -901,6 +911,7 @@ def _collapse_partition(
     event_map_path: Path,
     profiles: dict,
     alt_support_path: Path,
+    snv_sites_path: Path,
     exact_support_spool: ExactSupportSpool,
 ) -> list[dict | None]:
     """Join partition-local lineage streams while holding one exact-support group."""
@@ -912,6 +923,7 @@ def _collapse_partition(
         gzip.open(event_map_path, "rt", newline="") as map_handle,
         EventOrthologSupportStream(event_support_path) as support_stream,
         gzip.open(alt_support_path, "wt", newline="") as alt_handle,
+        snv_sites_path.open("w", newline="") as sites_handle,
     ):
         alt_writer = csv.DictWriter(
             alt_handle,
@@ -920,6 +932,13 @@ def _collapse_partition(
             lineterminator="\n",
         )
         alt_writer.writeheader()
+        sites_writer = csv.DictWriter(
+            sites_handle,
+            fieldnames=["gene_id", "strategy", "target_start0"],
+            delimiter="\t",
+            lineterminator="\n",
+        )
+        sites_writer.writeheader()
         event_reader = csv.DictReader(event_handle, delimiter="\t")
         if event_reader.fieldnames != COMPACT_EVENT_FIELDS:
             raise ValueError(
@@ -954,6 +973,9 @@ def _collapse_partition(
                     f"partition={partition_id}, expected={expected_id}, "
                     f"event={event_group_id}, map={map_group_id}"
                 )
+            site = snv_event_site(event_row)
+            if site is not None:
+                sites_writer.writerow(site)
             support_rows = support_stream.take(event_group_id)
             _validate_exact_event_support(event_row, support_rows, event_support_path)
             alt_row = _alt_taxonomic_support_row(event_row, support_rows, profiles)
@@ -993,6 +1015,11 @@ def _collapse_partition(
             )
         support_stream.finish()
     return aggregates_by_id
+
+
+def _iter_spooled_snv_sites(path: Path):
+    with path.open(newline="") as handle:
+        yield from csv.DictReader(handle, delimiter="\t")
 
 
 def _alt_taxonomic_support_row(

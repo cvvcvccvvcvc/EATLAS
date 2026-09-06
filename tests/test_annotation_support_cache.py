@@ -382,11 +382,24 @@ def _write_source_contract(run_dir: Path) -> dict[str, object]:
 
 
 @pytest.mark.skipif(not BEDTOOLS_AVAILABLE, reason="bedtools is not installed")
-def test_annotation_support_cache_reproduces_current_report_contract(tmp_path: Path) -> None:
+def test_annotation_support_cache_reproduces_current_report_contract(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     run_dir = tmp_path / "run"
     analytics_dir = tmp_path / "analytics"
     contract = _write_source_contract(run_dir)
 
+    original_gzip_open = gzip.open
+    event_reads = 0
+
+    def counting_gzip_open(path, mode="rb", *args, **kwargs):
+        nonlocal event_reads
+        if Path(path) == contract["partition"] / "alignment_events.tsv.gz" and "r" in mode:
+            event_reads += 1
+        return original_gzip_open(path, mode, *args, **kwargs)
+
+    monkeypatch.setattr(annotation_support_module.gzip, "open", counting_gzip_open)
     outputs = build_or_load_annotation_support(
         partition_dirs=[contract["partition"]],
         map_root=contract["map_root"],
@@ -398,6 +411,7 @@ def test_annotation_support_cache_reproduces_current_report_contract(tmp_path: P
         annotation_manifest=contract["annotation_manifest"],
         analytics_dir=analytics_dir,
     )
+    assert event_reads == 1
     cache_manifest = json.loads(
         (analytics_dir / "annotation_support" / "manifest.json").read_text()
     )

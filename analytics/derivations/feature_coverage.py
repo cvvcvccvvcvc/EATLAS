@@ -8,7 +8,9 @@ import os
 import shutil
 import subprocess
 import tempfile
-from collections.abc import Iterable, Iterator
+from collections.abc import Iterable, Iterator, Mapping, Sequence
+from contextlib import contextmanager
+from dataclasses import dataclass
 from pathlib import Path
 
 from analytics.derivations.taxonomy import (
@@ -54,6 +56,14 @@ KEY_SEPARATOR = "|"
 SORT_MEMORY = "128M"
 FEATURE_BED_FIELD_COUNT = 12
 DNA_BASES = frozenset("ACGT")
+TargetFeatureRow = tuple[str, str, str, str, str, str, str, str, str, str]
+TargetFeatureIndex = Mapping[str, Sequence[TargetFeatureRow]]
+
+
+@dataclass(frozen=True)
+class PreparedSnvSites:
+    path: Path
+    count: int
 
 
 def _iter_tsv_gz(path: Path) -> Iterator[dict[str, str]]:
@@ -75,6 +85,39 @@ def _iter_required_tsv_gz(
                     + ", ".join(sorted(missing))
                 )
             yield from reader
+
+
+def load_target_features(path: Path) -> dict[str, tuple[TargetFeatureRow, ...]]:
+    """Read and validate target features once, indexed by Gene ID."""
+    indexed: dict[str, list[TargetFeatureRow]] = {}
+    for input_order, row in enumerate(_iter_tsv_gz(path), start=1):
+        gene_id = _key_part(row.get("gene_id"), "gene_id")
+        if not gene_id.isdigit():
+            raise ValueError(
+                f"Feature coverage requires numeric Entrez gene IDs, got {gene_id!r}"
+            )
+        start0 = int(row.get("target_start0") or 0)
+        end0 = int(row.get("target_end0") or 0)
+        if end0 <= start0:
+            raise ValueError(
+                f"Target feature {row.get('feature_id', '')!r} has invalid interval "
+                f"{start0}-{end0}"
+            )
+        indexed.setdefault(gene_id, []).append(
+            (
+                gene_id,
+                str(start0),
+                str(end0),
+                str(input_order),
+                _tsv_value(row.get("feature_type"), "feature_type"),
+                _tsv_value(row.get("feature_id"), "feature_id"),
+                _tsv_value(row.get("genomic_accession"), "genomic_accession"),
+                _tsv_value(row.get("genomic_start1"), "genomic_start1"),
+                _tsv_value(row.get("genomic_end1"), "genomic_end1"),
+                str(int(row.get("length_bp") or 0)),
+            )
+        )
+    return {gene_id: tuple(rows) for gene_id, rows in indexed.items()}
 
 
 def _format_fraction(numerator: int, denominator: int) -> str:
@@ -241,7 +284,7 @@ def _merge_ortholog_intervals(
 
 
 def _write_sorted_features(
-    target_features: Path,
+    target_features: Path | TargetFeatureIndex,
     strategies_by_gene: dict[str, set[str]],
     features_raw: Path,
     features_sorted_rows: Path,
@@ -250,30 +293,15 @@ def _write_sorted_features(
     temp_dir: Path,
     env: dict[str, str],
 ) -> int:
+    feature_index = (
+        load_target_features(target_features)
+        if isinstance(target_features, Path)
+        else target_features
+    )
     with features_raw.open("w") as handle:
-        for input_order, row in enumerate(_iter_tsv_gz(target_features), start=1):
-            gene_id = _key_part(row.get("gene_id"), "gene_id")
-            if not gene_id.isdigit():
-                raise ValueError(f"Feature coverage requires numeric Entrez gene IDs, got {gene_id!r}")
-            start0 = int(row.get("target_start0") or 0)
-            end0 = int(row.get("target_end0") or 0)
-            if end0 <= start0:
-                raise ValueError(
-                    f"Target feature {row.get('feature_id', '')!r} has invalid interval {start0}-{end0}"
-                )
-            fields = [
-                gene_id,
-                str(start0),
-                str(end0),
-                str(input_order),
-                _tsv_value(row.get("feature_type"), "feature_type"),
-                _tsv_value(row.get("feature_id"), "feature_id"),
-                _tsv_value(row.get("genomic_accession"), "genomic_accession"),
-                _tsv_value(row.get("genomic_start1"), "genomic_start1"),
-                _tsv_value(row.get("genomic_end1"), "genomic_end1"),
-                str(int(row.get("length_bp") or 0)),
-            ]
-            handle.write("\t".join(fields) + "\n")
+        for gene_id in strategies_by_gene:
+            for fields in feature_index.get(gene_id, ()):
+                handle.write("\t".join(fields) + "\n")
 
     _sort_file(
         features_raw,
@@ -574,7 +602,7 @@ def _write_final_output(
 
 
 def summarize_feature_coverage_rows(
-    target_features: Path,
+    target_features: Path | TargetFeatureIndex,
     summary_rows: Iterable[dict[str, object]],
     segment_rows: Iterable[dict[str, object]],
     output: Path,
@@ -676,7 +704,7 @@ def summarize_feature_coverage_rows(
 
 
 def summarize_feature_coverage(
-    target_features: Path,
+    target_features: Path | TargetFeatureIndex,
     summaries_path: Path,
     segments_path: Path,
     output: Path,
@@ -692,41 +720,42 @@ def summarize_feature_coverage(
 def iter_snv_event_sites(event_paths: Iterable[Path]) -> Iterator[dict[str, object]]:
     required = {"gene_id", "strategy", "event_type", "target_start0", "ref", "alt"}
     for row in _iter_required_tsv_gz(event_paths, required):
-        ref = str(row.get("ref") or "").upper()
-        alt = str(row.get("alt") or "").upper()
-        if (
-            row.get("event_type") != "snv"
-            or len(ref) != 1
-            or len(alt) != 1
-            or ref not in DNA_BASES
-            or alt not in DNA_BASES
-        ):
-            continue
-        yield {
-            "gene_id": row["gene_id"],
-            "strategy": row["strategy"],
-            "target_start0": row["target_start0"],
-        }
+        site = snv_event_site(row)
+        if site is not None:
+            yield site
 
 
-def write_snv_site_depth(
-    segment_paths: Iterable[Path],
+def snv_event_site(row: dict[str, object]) -> dict[str, object] | None:
+    """Return the site identity for one concrete SNV event."""
+    ref = str(row.get("ref") or "").upper()
+    alt = str(row.get("alt") or "").upper()
+    if (
+        row.get("event_type") != "snv"
+        or len(ref) != 1
+        or len(alt) != 1
+        or ref not in DNA_BASES
+        or alt not in DNA_BASES
+    ):
+        return None
+    return {
+        "gene_id": row["gene_id"],
+        "strategy": row["strategy"],
+        "target_start0": row["target_start0"],
+    }
+
+
+@contextmanager
+def prepare_snv_sites(
     site_rows: Iterable[dict[str, object]],
-    output: Path,
     temp_parent: Path,
-) -> int:
-    """Write distinct-ortholog depth only for observed concrete SNV sites."""
-    if shutil.which("bedtools") is None:
-        raise RuntimeError("bedtools is required for site ortholog-depth calculation")
+) -> Iterator[PreparedSnvSites]:
+    """Materialize one sorted unique SNV-site relation for depth calculations."""
     env = os.environ.copy()
     env["LC_ALL"] = "C"
-    output.parent.mkdir(parents=True, exist_ok=True)
-
-    with tempfile.TemporaryDirectory(prefix=".snv_site_depth_", dir=temp_parent) as temp_name:
+    with tempfile.TemporaryDirectory(prefix=".snv_sites_", dir=temp_parent) as temp_name:
         temp_dir = Path(temp_name)
         sites_raw = temp_dir / "sites.raw.bed"
         sites_sorted = temp_dir / "sites.sorted.bed"
-
         with sites_raw.open("w") as handle:
             for row in site_rows:
                 gene_id = _key_part(row.get("gene_id"), "gene_id")
@@ -734,8 +763,9 @@ def write_snv_site_depth(
                 start0 = int(row.get("target_start0") or 0)
                 if start0 < 0:
                     raise ValueError(f"SNV site has a negative target_start0: {start0}")
-                handle.write(f"{_group_key(gene_id, strategy)}\t{start0}\t{start0 + 1}\n")
-
+                handle.write(
+                    f"{_group_key(gene_id, strategy)}\t{start0}\t{start0 + 1}\n"
+                )
         _sort_file(
             sites_raw,
             sites_sorted,
@@ -746,6 +776,37 @@ def write_snv_site_depth(
         )
         with sites_sorted.open() as handle:
             site_count = sum(1 for _line in handle)
+        yield PreparedSnvSites(sites_sorted, site_count)
+
+
+def write_snv_site_depth(
+    segment_paths: Iterable[Path],
+    site_rows: Iterable[dict[str, object]],
+    output: Path,
+    temp_parent: Path,
+    *,
+    prepared_sites: PreparedSnvSites | None = None,
+) -> int:
+    """Write distinct-ortholog depth only for observed concrete SNV sites."""
+    if shutil.which("bedtools") is None:
+        raise RuntimeError("bedtools is required for site ortholog-depth calculation")
+    if prepared_sites is None:
+        with prepare_snv_sites(site_rows, temp_parent) as prepared:
+            return write_snv_site_depth(
+                segment_paths,
+                (),
+                output,
+                temp_parent,
+                prepared_sites=prepared,
+            )
+    env = os.environ.copy()
+    env["LC_ALL"] = "C"
+    output.parent.mkdir(parents=True, exist_ok=True)
+
+    with tempfile.TemporaryDirectory(prefix=".snv_site_depth_", dir=temp_parent) as temp_name:
+        temp_dir = Path(temp_name)
+        sites_sorted = prepared_sites.path
+        site_count = prepared_sites.count
         if site_count == 0:
             with gzip.open(output, "wt", newline="") as handle:
                 csv.DictWriter(handle, fieldnames=SNV_SITE_DEPTH_FIELDS, delimiter="\t").writeheader()
@@ -834,10 +895,22 @@ def write_snv_taxonomic_depth(
     taxonomy: Path,
     output: Path,
     temp_parent: Path,
+    *,
+    prepared_sites: PreparedSnvSites | None = None,
 ) -> int:
     """Write distinct aligned taxonomic-unit counts at observed concrete SNV sites."""
     if shutil.which("bedtools") is None:
         raise RuntimeError("bedtools is required for taxonomic site-depth calculation")
+    if prepared_sites is None:
+        with prepare_snv_sites(site_rows, temp_parent) as prepared:
+            return write_snv_taxonomic_depth(
+                segment_paths,
+                (),
+                taxonomy,
+                output,
+                temp_parent,
+                prepared_sites=prepared,
+            )
     profiles = load_taxonomy_profiles(taxonomy)
     env = os.environ.copy()
     env["LC_ALL"] = "C"
@@ -845,24 +918,7 @@ def write_snv_taxonomic_depth(
 
     with tempfile.TemporaryDirectory(prefix=".snv_taxonomic_depth_", dir=temp_parent) as temp_name:
         temp_dir = Path(temp_name)
-        sites_raw = temp_dir / "sites.raw.bed"
-        sites_sorted = temp_dir / "sites.sorted.bed"
-        with sites_raw.open("w") as handle:
-            for row in site_rows:
-                gene_id = _key_part(row.get("gene_id"), "gene_id")
-                strategy = _key_part(row.get("strategy"), "strategy")
-                start0 = int(row.get("target_start0") or 0)
-                if start0 < 0:
-                    raise ValueError(f"SNV site has a negative target_start0: {start0}")
-                handle.write(f"{_group_key(gene_id, strategy)}\t{start0}\t{start0 + 1}\n")
-        _sort_file(
-            sites_raw,
-            sites_sorted,
-            temp_dir,
-            ["-k1,1", "-k2,2n", "-k3,3n"],
-            unique=True,
-            env=env,
-        )
+        sites_sorted = prepared_sites.path
 
         segments_raw = temp_dir / "segments.raw.bed"
         supported_groups: set[str] = set()
