@@ -115,7 +115,11 @@ micromamba run -p "$GAPH_ROOT/envs/analytics" \
 `--annotation-support-workers` and `--firth-workers` are operational
 parallelism controls; they do not change scientific meaning. Keep both within
 the CPUs requested from the launcher. Each annotation-support worker may use up
-to `GAPH_ANALYTICS_DUCKDB_MEMORY_LIMIT`.
+to `GAPH_ANALYTICS_DUCKDB_MEMORY_LIMIT` (default 2 GB per worker).
+The main-process DuckDB calculations use `GAPH_DUCKDB_MEMORY_LIMIT` when set;
+otherwise they reserve half the Slurm memory allocation, or half DuckDB's
+default limit outside Slurm. These are DuckDB budgets, not total process limits:
+leave room for Python/R objects, external tools, and concurrent support workers.
 
 ## Monitor And Verify
 

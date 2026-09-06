@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import os
 import tempfile
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -14,6 +13,7 @@ import duckdb
 import pandas as pd
 
 from analytics.io.artifacts import path_metadata, write_json_atomic
+from analytics.io.duckdb import available_cpu_count, configure_duckdb_memory
 from analytics.io.variant_source import (
     VariantTableSource,
     resolve_variant_table_source,
@@ -82,7 +82,9 @@ class ObservedVariantStore:
             dir=self.allele_gene_path.parent,
         ) as temporary:
             with duckdb.connect() as connection:
-                connection.execute(f"SET threads={available_cpu_count()}")
+                thread_count = available_cpu_count()
+                connection.execute(f"SET threads={thread_count}")
+                configure_duckdb_memory(connection, thread_count)
                 connection.execute("SET preserve_insertion_order=false")
                 connection.execute("SET enable_progress_bar=false")
                 connection.execute(f"SET temp_directory={sql_string(Path(temporary))}")
@@ -140,6 +142,9 @@ class ObservedVariantStore:
         if keys.empty or selected_mask == 0:
             return set()
         with duckdb.connect() as connection:
+            thread_count = available_cpu_count()
+            connection.execute(f"SET threads={thread_count}")
+            configure_duckdb_memory(connection, thread_count)
             connection.register("requested_variants", keys)
             rows = connection.execute(
                 "SELECT a.variant_key, a.strategy_mask "
@@ -238,7 +243,9 @@ def _build_store(
     strategies: tuple[str, ...],
 ) -> dict[str, object]:
     with duckdb.connect() as connection:
-        connection.execute(f"SET threads={available_cpu_count()}")
+        thread_count = available_cpu_count()
+        connection.execute(f"SET threads={thread_count}")
+        configure_duckdb_memory(connection, thread_count)
         connection.execute("SET preserve_insertion_order=false")
         connection.execute("SET enable_progress_bar=false")
         connection.execute(f"SET temp_directory={sql_string(temp_dir)}")
@@ -399,6 +406,9 @@ def _write_parquet_atomic(
 
 def _validate_parquet(path: Path, expected_columns: list[str], expected_rows: int) -> None:
     with duckdb.connect() as connection:
+        thread_count = available_cpu_count()
+        connection.execute(f"SET threads={thread_count}")
+        configure_duckdb_memory(connection, thread_count)
         relation = connection.read_parquet(str(path))
         if relation.columns != expected_columns:
             raise ValueError(
@@ -423,10 +433,3 @@ def _temporary_path(destination: Path) -> Path:
         path = Path(handle.name)
     path.unlink()
     return path
-
-
-def available_cpu_count() -> int:
-    allocated = os.environ.get("SLURM_CPUS_PER_TASK")
-    if allocated and allocated.isdigit() and int(allocated) > 0:
-        return int(allocated)
-    return os.cpu_count() or 1

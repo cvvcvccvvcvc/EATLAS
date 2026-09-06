@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Iterator
@@ -11,6 +10,8 @@ import duckdb
 import numpy as np
 import pandas as pd
 
+from analytics.io.allele_evidence import materialize_allele_evidence
+from analytics.io.duckdb import available_cpu_count, configure_duckdb_memory
 from analytics.io.variant_source import (
     VariantTableSource,
     resolve_variant_table_source,
@@ -42,7 +43,9 @@ class CandidateAlleleStore:
         self.strategies = strategies
         self.connection = duckdb.connect()
         try:
-            self.connection.execute(f"SET threads={available_cpu_count()}")
+            thread_count = available_cpu_count()
+            self.connection.execute(f"SET threads={thread_count}")
+            configure_duckdb_memory(self.connection, thread_count)
             self.connection.execute("SET preserve_insertion_order=false")
             self.connection.execute("SET enable_progress_bar=false")
             temp_dir.mkdir(parents=True, exist_ok=True)
@@ -246,15 +249,25 @@ class CandidateAlleleStore:
         )
         source_sql = variant_source_sql(self.source)
         self.connection.execute(
-            "CREATE TEMP TABLE candidate_alleles AS WITH parsed AS ("
-            "SELECT variant_key, lookup_status, strategies, "
-            "try_cast(nullif(gnomad_af, '') AS DOUBLE) AS gnomad_af_value, "
+            "CREATE TEMP TABLE candidate_source AS SELECT "
+            "variant_key, lookup_status, strategies, gnomad_af, "
             f"{normalized_chrom} AS key_chrom, "
             "split_part(variant_key, ':', 2) AS key_pos_text, "
             "try_cast(split_part(variant_key, ':', 2) AS BIGINT) AS key_pos, "
             "upper(split_part(split_part(variant_key, ':', 3), '>', 1)) AS key_ref, "
             "upper(split_part(split_part(variant_key, ':', 3), '>', 2)) AS key_alt "
             f"FROM {source_sql}"
+        )
+        materialize_allele_evidence(
+            self.connection,
+            relation="candidate_source",
+            key="variant_key",
+            fields=("gnomad_af",),
+        )
+        self.connection.execute(
+            "CREATE TEMP TABLE candidate_alleles AS WITH parsed AS ("
+            "SELECT p.* EXCLUDE (gnomad_af), e.gnomad_af_value FROM candidate_source p "
+            "JOIN allele_evidence e USING (variant_key)"
             "), normalized AS ("
             "SELECT *, "
             f"({key_valid}) AS key_valid, "
@@ -291,6 +304,8 @@ class CandidateAlleleStore:
             "raw_not_found_strategy_mask & ~found_strategy_mask "
             "  AS not_found_strategy_mask FROM collapsed"
         )
+        self.connection.execute("DROP TABLE candidate_source")
+        self.connection.execute("DROP TABLE allele_evidence")
 
 
 def build_candidate_allele_store(
@@ -323,13 +338,6 @@ def resolve_candidate_aggregation_source(
         path,
         required_columns=REQUIRED_COLUMNS,
     )
-
-
-def available_cpu_count() -> int:
-    allocated = os.environ.get("SLURM_CPUS_PER_TASK")
-    if allocated and allocated.isdigit() and int(allocated) > 0:
-        return int(allocated)
-    return os.cpu_count() or 1
 
 
 def _read_strategies(source: CandidateAggregationSource) -> tuple[str, ...]:

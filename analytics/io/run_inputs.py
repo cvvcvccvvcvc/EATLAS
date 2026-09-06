@@ -15,9 +15,10 @@ import duckdb
 import pandas as pd
 
 from analytics.analyses.variant_summary_aggregation import (
-    allele_evidence_comparison_sql,
     resolve_variant_aggregation_source,
 )
+from analytics.io.allele_evidence import allele_evidence_comparison_sql
+from analytics.io.duckdb import available_cpu_count, configure_duckdb_memory
 from analytics.io.alignment_aggregates import resolve_alignment_aggregate_paths
 from analytics.io.annotation_support import resolve_annotation_support_paths
 from analytics.io.artifacts import content_identity, write_json_atomic
@@ -787,6 +788,9 @@ def _validate_shared_allele_evidence(
         dir=temporary_root,
     ) as temporary:
         with duckdb.connect() as connection:
+            threads = available_cpu_count()
+            connection.execute(f"SET threads={threads}")
+            configure_duckdb_memory(connection, threads)
             connection.execute("SET preserve_insertion_order=false")
             connection.execute(f"SET temp_directory={sql_string(temporary)}")
             connection.execute(

@@ -19,6 +19,7 @@ from analytics.vep.consequences import (
     VALIDATION_CONSEQUENCE_OPTIONS as CONSEQUENCE_OPTIONS,
 )
 from analytics.io.artifacts import path_metadata, write_json_atomic
+from analytics.io.duckdb import available_cpu_count, configure_duckdb_memory
 from analytics.io.variant_source import (
     resolve_variant_table_source,
     sql_string,
@@ -38,10 +39,6 @@ from .conservation_validation import (
     filter_variant_type,
 )
 from .statistics import EnrichmentResult, enrichment_result, mantel_haenszel_adjusted
-from .variant_summary_aggregation import (
-    _configure_duckdb_memory,
-    available_cpu_count,
-)
 
 
 FILTER_SCORE_SCHEMA_VERSION = 2
@@ -212,7 +209,7 @@ def _build_filter_score_store(
         connection.execute(f"SET threads={thread_count}")
         connection.execute("SET preserve_insertion_order=false")
         connection.execute(f"SET temp_directory={sql_string(temp_dir)}")
-        _configure_duckdb_memory(connection, thread_count)
+        configure_duckdb_memory(connection, thread_count)
         _register_gnomad_failures(connection, annotation_failures_tsv)
         connection.execute(
             f"CREATE VIEW variant_source_rows AS SELECT * FROM {variant_source_sql(source)}"
@@ -303,6 +300,9 @@ def read_filter_score_histograms(score_path: Path) -> pd.DataFrame:
     # Expand metrics only after deduplicating the union, so no allele is counted twice.
     metrics = ", ".join(f"({sql_string(key)}, {column})" for key, _label, column in FILTER_OPTIONS)
     with duckdb.connect() as connection:
+        thread_count = available_cpu_count()
+        connection.execute(f"SET threads={thread_count}")
+        configure_duckdb_memory(connection, thread_count)
         return connection.execute(
             "WITH individual AS MATERIALIZED (SELECT * FROM read_parquet(?)), "
             "combined AS (SELECT variant_key, 'union' AS strategy, variant_type, gnomad_status, "
@@ -388,6 +388,9 @@ def read_clinvar_filter_scores(score_path: Path, cohort: pd.DataFrame) -> pd.Dat
         {"variant_key": sorted(set(cohort["variant_key"].astype(str)))}
     )
     with duckdb.connect() as connection:
+        thread_count = available_cpu_count()
+        connection.execute(f"SET threads={thread_count}")
+        configure_duckdb_memory(connection, thread_count)
         connection.register("clinvar_keys", keys)
         return connection.execute(
             "SELECT s.variant_key, s.strategy, s.variant_type, s.ortholog_support, "
@@ -706,6 +709,9 @@ def _paths(value: Path | Sequence[Path]) -> tuple[Path, ...]:
 
 def _validate_score_store(path: Path, expected_rows: int) -> None:
     with duckdb.connect() as connection:
+        thread_count = available_cpu_count()
+        connection.execute(f"SET threads={thread_count}")
+        configure_duckdb_memory(connection, thread_count)
         relation = connection.read_parquet(str(path))
         if relation.columns != FILTER_SCORE_COLUMNS:
             raise ValueError(

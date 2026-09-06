@@ -5,6 +5,8 @@ import gzip
 import json
 from pathlib import Path
 
+import pytest
+
 from analytics.analyses import candidate_conservation as candidate
 from analytics.analyses.candidate_conservation_aggregation import (
     build_candidate_allele_store,
@@ -340,7 +342,11 @@ def test_candidate_source_reads_validated_pipeline_partitions(tmp_path: Path) ->
         store.close()
 
 
-def test_candidate_store_keeps_gnomad_status_per_strategy(tmp_path: Path) -> None:
+@pytest.mark.parametrize("missing_status", ["ok", "raw_no_context"])
+def test_candidate_store_shares_allele_gnomad_evidence(
+    tmp_path: Path, monkeypatch, missing_status: str,
+) -> None:
+    monkeypatch.setenv("GAPH_DUCKDB_MEMORY_LIMIT", "256MiB")
     annotations = tmp_path / "variant_annotations.tsv.gz"
     columns = sorted(candidate.REQUIRED_COLUMNS)
     with gzip.open(annotations, "wt", newline="") as handle:
@@ -356,7 +362,7 @@ def test_candidate_store_keeps_gnomad_status_per_strategy(tmp_path: Path) -> Non
                 },
                 {
                     "variant_key": "chr1:8:A>G",
-                    "lookup_status": "ok",
+                    "lookup_status": missing_status,
                     "strategies": "not_found_strategy",
                     "gnomad_af": "",
                 },
@@ -370,14 +376,33 @@ def test_candidate_store_keeps_gnomad_status_per_strategy(tmp_path: Path) -> Non
         temp_dir=tmp_path / "duckdb_tmp",
     )
     try:
+        from analytics.io.duckdb import _parse_memory_setting
+
+        limit = store.connection.execute("SELECT current_setting('memory_limit')").fetchone()[0]
+        assert 255 * 1024**2 <= _parse_memory_setting(limit) <= 257 * 1024**2
         groups = {
             (row.strategy, row.gnomad_status): int(row.variant_count)
             for row in store.group_counts().itertuples(index=False)
         }
         assert groups == {
             ("found_strategy", "found"): 1,
-            ("not_found_strategy", "not_found"): 1,
+            ("not_found_strategy", "found"): 1,
         }
         assert store.summary()["gnomad_status_conflict_membership_count"] == 0
     finally:
         store.close()
+
+
+@pytest.mark.parametrize("other_af", ["0.2", "broken"])
+def test_candidate_store_rejects_inconsistent_allele_frequency(tmp_path: Path, other_af: str) -> None:
+    annotations = tmp_path / "variants.tsv"
+    annotations.write_text(
+        "variant_key\tlookup_status\tstrategies\tgnomad_af\n"
+        "1:100:A>G\tok\ts1\t0.1\n"
+        f"1:100:A>G\tok\ts2\t{other_af}\n"
+    )
+    with pytest.raises(ValueError, match="allele-level external evidence"):
+        build_candidate_allele_store(
+            variant_annotations_source=annotations, strategies=["s1", "s2"],
+            annotation_failures_path=None, temp_dir=tmp_path / "work",
+        )

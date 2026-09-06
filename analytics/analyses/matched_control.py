@@ -31,6 +31,7 @@ from analytics.io.artifacts import (
     write_tsv_atomic,
 )
 from analytics.io.performance import PerformanceProfile, profile_stage
+from analytics.io.duckdb import available_cpu_count
 from analytics.io.variant_source import resolve_variant_table_source, sql_string
 from .conservation import Track, annotate_track, parse_tracks, track_identity
 from .external_evidence import build_external_evidence
@@ -38,7 +39,6 @@ from .observed_variant_store import (
     FOCAL_RANK_METHOD,
     REQUIRED_COLUMNS as OBSERVED_VARIANT_COLUMNS,
     ObservedVariantStore,
-    available_cpu_count,
     build_or_load_observed_variant_store,
 )
 from .target_context import context_at, read_disjoint_contexts

@@ -29,7 +29,7 @@ from .conservation import (
 )
 
 
-CACHE_VERSION = 5
+CACHE_VERSION = 6
 QUANTILES = np.linspace(0.0, 1.0, 101)
 MAX_HISTOGRAM_BINS = 80
 REQUIRED_COLUMNS = {

@@ -12,14 +12,13 @@ from analytics.analyses.variant_summary import (
     build_variant_summary,
 )
 from analytics.analyses.variant_summary_aggregation import (
-    DUCKDB_MEMORY_LIMIT_ENV,
-    _configure_duckdb_memory,
-    _parse_memory_setting,
-    _slurm_memory_bytes,
     aggregate_strategy_masks,
     aggregate_variant_groups,
-    available_cpu_count,
     resolve_variant_aggregation_source,
+)
+from analytics.io.duckdb import (
+    DUCKDB_MEMORY_LIMIT_ENV, configure_duckdb_memory,
+    _parse_memory_setting, _slurm_memory_bytes, available_cpu_count,
 )
 from genomics.clinvar import record_category
 from genomics.variants import ALLELE_ANNOTATION_FIELDS
@@ -100,7 +99,7 @@ def test_duckdb_memory_uses_half_the_slurm_allocation(
     monkeypatch.setenv("SLURM_MEM_PER_NODE", "2048")
     connection = duckdb.connect()
     try:
-        diagnostics = _configure_duckdb_memory(connection, thread_count=4)
+        diagnostics = configure_duckdb_memory(connection, thread_count=4)
     finally:
         connection.close()
 

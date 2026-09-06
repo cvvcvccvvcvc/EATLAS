@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import os
-import re
 import time
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -14,6 +12,8 @@ import pandas as pd
 
 from analytics.analyses.target_context import read_disjoint_contexts
 from analytics.vep.consequences import UNANNOTATED_CONSEQUENCE
+from analytics.io.allele_evidence import materialize_allele_evidence
+from analytics.io.duckdb import available_cpu_count, configure_duckdb_memory
 from analytics.io.variant_source import resolve_variant_table_source
 from genomics.variants import (
     ALLELE_ANNOTATION_FIELDS,
@@ -30,21 +30,6 @@ REQUIRED_COLUMNS = {
     "vep_primary_consequence",
 }
 MAX_STRATEGIES = 63
-DUCKDB_MEMORY_LIMIT_ENV = "GAPH_DUCKDB_MEMORY_LIMIT"
-DUCKDB_MEMORY_FRACTION = 0.5
-
-_MEMORY_SETTING = re.compile(r"^([0-9]+(?:\.[0-9]+)?)\s*([KMGT]i?B)$", re.IGNORECASE)
-_MEMORY_UNITS = {
-    "KB": 1000,
-    "MB": 1000**2,
-    "GB": 1000**3,
-    "TB": 1000**4,
-    "KIB": 1024,
-    "MIB": 1024**2,
-    "GIB": 1024**3,
-    "TIB": 1024**4,
-}
-
 CLINVAR_PRESENCE_FIELDS = (
     "clinvar_id",
     "clinvar_allele_id",
@@ -54,18 +39,6 @@ CLINVAR_PRESENCE_FIELDS = (
     "clinvar_disease",
     "clinvar_variant_type",
 )
-
-
-def allele_evidence_comparison_sql(field: str, *, alias: str = "") -> str:
-    """Return the canonical SQL value used to compare allele evidence."""
-
-    if field not in ALLELE_ANNOTATION_FIELDS:
-        raise ValueError(f"Unknown allele annotation field: {field}")
-    column = f"{alias}.{field}" if alias else field
-    value = f"nullif({column}, '')"
-    if field == "gnomad_af":
-        return f"try_cast({value} AS DOUBLE)"
-    return value
 
 
 @dataclass(frozen=True)
@@ -143,76 +116,6 @@ class VariantGroupedAggregation:
     diagnostics: dict[str, object]
 
 
-def available_cpu_count() -> int:
-    """Return CPUs available to this process, respecting Slurm allocation."""
-
-    allocated = os.environ.get("SLURM_CPUS_PER_TASK")
-    if allocated and allocated.isdigit() and int(allocated) > 0:
-        return int(allocated)
-    return os.cpu_count() or 1
-
-
-def _configure_duckdb_memory(connection, thread_count: int) -> dict[str, object]:
-    override = os.environ.get(DUCKDB_MEMORY_LIMIT_ENV, "").strip()
-    if override:
-        requested = override
-        source = DUCKDB_MEMORY_LIMIT_ENV
-    else:
-        slurm_bytes, source = _slurm_memory_bytes(thread_count)
-        if slurm_bytes is not None:
-            requested = _memory_limit_setting(slurm_bytes * DUCKDB_MEMORY_FRACTION)
-        else:
-            current = str(
-                connection.execute("SELECT current_setting('memory_limit')").fetchone()[0]
-            )
-            requested = _memory_limit_setting(
-                _parse_memory_setting(current) * DUCKDB_MEMORY_FRACTION
-            )
-            source = "duckdb_default_fraction"
-
-    connection.execute(f"SET memory_limit={_sql_string(requested)}")
-    return {
-        "memory_limit": str(
-            connection.execute("SELECT current_setting('memory_limit')").fetchone()[0]
-        ),
-        "memory_limit_source": source,
-    }
-
-
-def _slurm_memory_bytes(thread_count: int) -> tuple[int | None, str]:
-    per_node_mb = _positive_int_environment("SLURM_MEM_PER_NODE")
-    if per_node_mb is not None:
-        return per_node_mb * 1024**2, "SLURM_MEM_PER_NODE"
-
-    per_cpu_mb = _positive_int_environment("SLURM_MEM_PER_CPU")
-    if per_cpu_mb is None:
-        return None, "duckdb_default_fraction"
-    allocated_cpus = (
-        _positive_int_environment("SLURM_CPUS_PER_TASK") or thread_count
-    )
-    return per_cpu_mb * allocated_cpus * 1024**2, "SLURM_MEM_PER_CPU"
-
-
-def _positive_int_environment(name: str) -> int | None:
-    value = os.environ.get(name, "").strip()
-    if not value.isdigit() or int(value) < 1:
-        return None
-    return int(value)
-
-
-def _parse_memory_setting(value: str) -> int:
-    match = _MEMORY_SETTING.fullmatch(value.strip())
-    if match is None:
-        raise ValueError(f"Could not parse DuckDB memory limit: {value!r}")
-    amount, unit = match.groups()
-    return int(float(amount) * _MEMORY_UNITS[unit.upper()])
-
-
-def _memory_limit_setting(value: float) -> str:
-    mebibytes = max(128, int(value) // (1024**2))
-    return f"{mebibytes}MiB"
-
-
 def resolve_variant_aggregation_source(
     path: Path | Sequence[Path],
 ) -> VariantAggregationSource:
@@ -247,6 +150,7 @@ def aggregate_strategy_masks(
         if temp_dir is not None:
             temp_dir.mkdir(parents=True, exist_ok=True)
             connection.execute(f"SET temp_directory={_sql_string(temp_dir)}")
+        configure_duckdb_memory(connection, thread_count)
         connection.execute(f"CREATE VIEW source_rows AS SELECT * FROM {_source_sql(source)}")
         input_row_count, missing_keys, missing_strategies = connection.execute(
             "SELECT count(*), count_if(variant_key = ''), count_if(strategies = '') "
@@ -340,7 +244,7 @@ def aggregate_variant_groups(
         if temp_dir is not None:
             temp_dir.mkdir(parents=True, exist_ok=True)
             connection.execute(f"SET temp_directory={_sql_string(temp_dir)}")
-        diagnostics.update(_configure_duckdb_memory(connection, thread_count))
+        diagnostics.update(configure_duckdb_memory(connection, thread_count))
         diagnostics["max_temp_directory_size"] = str(
             connection.execute(
                 "SELECT current_setting('max_temp_directory_size')"
@@ -552,59 +456,6 @@ def _paths(value: Path | Sequence[Path]) -> tuple[Path, ...]:
     return (value,) if isinstance(value, Path) else tuple(value)
 
 
-def _materialize_allele_evidence(connection) -> None:
-    resolved = ", ".join(
-        f"max(nullif({field}, '')) AS {field}"
-        for field in ALLELE_ANNOTATION_FIELDS
-    )
-    counts = ", ".join(
-        f"count(DISTINCT {allele_evidence_comparison_sql(field)}) FILTER "
-        f"(WHERE {allele_evidence_comparison_sql(field)} IS NOT NULL) "
-        f"AS {field}_count"
-        for field in ALLELE_ANNOTATION_FIELDS
-    )
-    invalid_af = (
-        "count(*) FILTER (WHERE nullif(gnomad_af, '') IS NOT NULL AND "
-        "try_cast(nullif(gnomad_af, '') AS DOUBLE) IS NULL) "
-        "AS gnomad_af_invalid_count"
-    )
-    connection.execute(
-        "CREATE TEMP TABLE allele_evidence AS SELECT variant_id, "
-        f"{resolved}, max(try_cast(nullif(gnomad_af, '') AS DOUBLE)) "
-        f"AS gnomad_af_value, {counts}, {invalid_af} "
-        "FROM positioned_rows GROUP BY variant_id"
-    )
-
-    count_columns = [f"{field}_count" for field in ALLELE_ANNOTATION_FIELDS]
-    conflict_filter = " OR ".join(
-        [*(f"{column} > 1" for column in count_columns), "gnomad_af_invalid_count > 0"]
-    )
-    rows = connection.execute(
-        "SELECT variant_id, "
-        + ", ".join([*count_columns, "gnomad_af_invalid_count"])
-        + f" FROM allele_evidence WHERE {conflict_filter} LIMIT 10"
-    ).fetchall()
-    conflicts = [
-        (field, str(row[0]))
-        for row in rows
-        for field, count in zip(ALLELE_ANNOTATION_FIELDS, row[1:-1])
-        if int(count) > 1
-    ]
-    conflicts.extend(
-        ("gnomad_af invalid", str(row[0]))
-        for row in rows
-        if int(row[-1]) > 0
-    )
-    if conflicts:
-        examples = ", ".join(
-            f"{variant} ({field})" for field, variant in conflicts[:10]
-        )
-        raise ValueError(
-            "Variant annotations contain conflicting allele-level external "
-            f"evidence: {examples}"
-        )
-
-
 def _create_normalized_views(
     connection,
     source: VariantAggregationSource,
@@ -653,7 +504,7 @@ def _create_normalized_views(
         f"{affected_start} AS affected_start0 FROM keyed_rows k {gene_join}"
     )
 
-    _materialize_allele_evidence(connection)
+    materialize_allele_evidence(connection, relation="positioned_rows", key="variant_id")
     excluded_evidence = ", ".join(ALLELE_ANNOTATION_FIELDS)
     resolved_evidence = ", ".join(
         f"coalesce(e.{field}, '') AS {field}"
