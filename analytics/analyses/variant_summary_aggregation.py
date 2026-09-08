@@ -280,6 +280,10 @@ def aggregate_variant_groups(
         timings["normalization_setup"] = time.perf_counter() - started
 
         started = time.perf_counter()
+        pathogenic_rows = _query_pathogenic_rows(connection, strategies)
+        timings["pathogenic_rows"] = time.perf_counter() - started
+
+        started = time.perf_counter()
         allele_gene_row_count, global_allele_row_count = _materialize_compacted_relations(
             connection
         )
@@ -291,6 +295,9 @@ def aggregate_variant_groups(
                 "temp_storage_bytes_after_materialization": _directory_size(temp_dir),
             }
         )
+        connection.execute("DROP VIEW normalized_rows")
+        connection.execute("DROP VIEW reconciled_rows")
+        connection.execute("DROP TABLE allele_evidence")
 
         started = time.perf_counter()
         allele_gene_mask_rows = connection.execute(
@@ -317,14 +324,12 @@ def aggregate_variant_groups(
             "FROM allele_gene_rows GROUP BY ALL ORDER BY ALL"
         ).fetchdf()
         timings["allele_gene_aggregates"] = time.perf_counter() - started
+        connection.execute("DROP TABLE allele_gene_rows")
 
         started = time.perf_counter()
         gnomad_af_summary = _query_gnomad_af_summary(connection, strategies)
         timings["gnomad_af_quantiles"] = time.perf_counter() - started
-
-        started = time.perf_counter()
-        pathogenic_rows = _query_pathogenic_rows(connection, strategies)
-        timings["pathogenic_rows"] = time.perf_counter() - started
+        connection.execute("DROP TABLE global_alleles")
 
         diagnostics["temp_storage_bytes_final"] = _directory_size(temp_dir)
 
@@ -647,12 +652,12 @@ def _query_pathogenic_rows(
     for name in columns:
         if name == "gene_id":
             aggregate_columns.append(
-                "string_agg(DISTINCT gene_id, ', ' ORDER BY gene_id) AS gene_id"
+                "string_agg(DISTINCT p.gene_id, ', ' ORDER BY p.gene_id) AS gene_id"
             )
         elif name == "lookup_status":
             aggregate_columns.append(
-                "string_agg(DISTINCT lookup_status, '|' ORDER BY lookup_status) "
-                "FILTER (WHERE lookup_status <> '') AS lookup_status"
+                "string_agg(DISTINCT p.lookup_status, '|' ORDER BY p.lookup_status) "
+                "FILTER (WHERE p.lookup_status <> '') AS lookup_status"
             )
         elif name in {
             "vep_status",
@@ -662,22 +667,35 @@ def _query_pathogenic_rows(
             "vep_mane_select",
         }:
             aggregate_columns.append(
-                f"string_agg(DISTINCT {name}, '|' ORDER BY {name}) "
-                f"FILTER (WHERE {name} <> '') AS {name}"
+                f"string_agg(DISTINCT p.{name}, '|' ORDER BY p.{name}) "
+                f"FILTER (WHERE p.{name} <> '') AS {name}"
             )
         elif name == "strategies":
             continue
-        elif name in {"variant_key", "clinvar_scv_count", "clinvar_review_stars"}:
-            aggregate_columns.append(f"max({name}) AS {name}")
+        elif name in ALLELE_ANNOTATION_FIELDS:
+            aggregate_columns.append(f"first(coalesce(e.{name}, '')) AS {name}")
+        elif name == "variant_key":
+            aggregate_columns.append("max(p.variant_key) AS variant_key")
         else:
-            aggregate_columns.append(f"first({name}) AS {name}")
+            aggregate_columns.append(f"first(p.{name}) AS {name}")
+    sig = "lower(coalesce(e.clinvar_sig, ''))"
+    pathogenic = (
+        f"contains({sig}, 'pathogenic') AND NOT contains({sig}, 'benign') "
+        f"AND NOT contains({sig}, 'conflicting') "
+        f"AND NOT regexp_matches({sig}, 'uncertain|vus')"
+    )
+    review_stars = (
+        "CASE WHEN e.clinvar_review_stars IN ('0','1','2','3','4') "
+        "THEN e.clinvar_review_stars ELSE 'Unmapped' END"
+    )
     rows = connection.execute(
-        "SELECT " + ",".join(aggregate_columns) + ", variant_id, "
-        "bit_or(strategy_mask) AS strategy_mask, first(clinvar_category) AS clinvar_category, "
-        "first(review_stars) AS review_stars "
-        "FROM normalized_rows WHERE clinvar_category = 'P/LP' GROUP BY variant_id "
-        "ORDER BY try_cast(first(review_stars) AS INTEGER) DESC NULLS LAST, "
-        "try_cast(max(clinvar_scv_count) AS BIGINT) DESC NULLS LAST, variant_id"
+        "SELECT " + ",".join(aggregate_columns) + ", p.variant_id, "
+        "bit_or(p.strategy_mask) AS strategy_mask, 'P/LP' AS clinvar_category, "
+        f"first({review_stars}) AS review_stars "
+        "FROM keyed_rows p JOIN allele_evidence e USING (variant_id) "
+        f"WHERE {pathogenic} GROUP BY p.variant_id "
+        f"ORDER BY try_cast(first({review_stars}) AS INTEGER) DESC NULLS LAST, "
+        "try_cast(first(e.clinvar_scv_count) AS BIGINT) DESC NULLS LAST, p.variant_id"
     ).fetchdf()
     if rows.empty:
         return pd.DataFrame(columns=[*columns, "variant_id", "clinvar_category", "review_stars"])
