@@ -17,7 +17,7 @@ import pandas as pd
 from analytics.analyses.variant_summary_aggregation import (
     resolve_variant_aggregation_source,
 )
-from analytics.io.allele_evidence import allele_evidence_comparison_sql
+from analytics.io.allele_evidence import allele_evidence_conflict_sql
 from analytics.io.duckdb import available_cpu_count, configure_duckdb_memory
 from analytics.io.alignment_aggregates import resolve_alignment_aggregate_paths
 from analytics.io.annotation_support import resolve_annotation_support_paths
@@ -767,19 +767,18 @@ def _validate_shared_allele_evidence(
         tuple(item.variant_annotations_source for item in sources),
         required_columns=required,
     )
-    checks = {
-        field: allele_evidence_comparison_sql(field)
+    checks = tuple(
+        field
         for field in ALLELE_ANNOTATION_FIELDS
         if field in source.columns
-    }
-    count_sql = ", ".join(
-        f"count(DISTINCT {expression}) FILTER "
-        f"(WHERE {expression} IS NOT NULL) AS {field}_count"
-        for field, expression in checks.items()
+    )
+    check_sql = ", ".join(
+        f"({allele_evidence_conflict_sql(field)}) AS {field}_conflict"
+        for field in checks
     )
     conflict_sql = " OR ".join(
         [
-            *(f"{field}_count > 1" for field in checks),
+            *(f"{field}_conflict" for field in checks),
             "gnomad_af_invalid_count > 0",
         ]
     )
@@ -797,18 +796,18 @@ def _validate_shared_allele_evidence(
                 f"CREATE VIEW source_rows AS SELECT * FROM {variant_source_sql(source)}"
             )
             rows = connection.execute(
-                "WITH evidence_counts AS (SELECT variant_key, "
-                f"{count_sql}, count(*) FILTER (WHERE nullif(gnomad_af, '') "
+                "WITH evidence_checks AS (SELECT variant_key, "
+                f"{check_sql}, count(*) FILTER (WHERE nullif(gnomad_af, '') "
                 "IS NOT NULL AND try_cast(nullif(gnomad_af, '') AS DOUBLE) IS NULL) "
                 "AS gnomad_af_invalid_count FROM source_rows WHERE variant_key <> '' "
-                "GROUP BY variant_key) SELECT * FROM evidence_counts WHERE "
+                "GROUP BY variant_key) SELECT * FROM evidence_checks WHERE "
                 f"{conflict_sql} LIMIT 10"
             ).fetchall()
     conflicts = [
         (field, str(row[0]))
         for row in rows
-        for field, count in zip(checks, row[1:])
-        if int(count) > 1
+        for field, conflict in zip(checks, row[1:-1])
+        if bool(conflict)
     ]
     if conflicts:
         examples = ", ".join(

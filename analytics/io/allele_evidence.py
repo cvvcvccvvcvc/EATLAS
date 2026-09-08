@@ -17,6 +17,13 @@ def allele_evidence_comparison_sql(field: str, *, alias: str = "") -> str:
     return value
 
 
+def allele_evidence_conflict_sql(field: str, *, alias: str = "") -> str:
+    """Return a constant-state aggregate that detects multiple canonical values."""
+
+    value = allele_evidence_comparison_sql(field, alias=alias)
+    return f"min({value}) IS DISTINCT FROM max({value})"
+
+
 def materialize_allele_evidence(
     connection,
     *,
@@ -29,10 +36,8 @@ def materialize_allele_evidence(
     resolved = ", ".join(
         f"max(nullif({field}, '')) AS {field}" for field in fields
     )
-    counts = ", ".join(
-        f"count(DISTINCT {allele_evidence_comparison_sql(field)}) FILTER "
-        f"(WHERE {allele_evidence_comparison_sql(field)} IS NOT NULL) "
-        f"AS {field}_count"
+    conflict_checks = ", ".join(
+        f"({allele_evidence_conflict_sql(field)}) AS {field}_conflict"
         for field in fields
     )
     invalid_af = (
@@ -43,24 +48,24 @@ def materialize_allele_evidence(
     connection.execute(
         f"CREATE TEMP TABLE allele_evidence AS SELECT {key}, "
         f"{resolved}, max(try_cast(nullif(gnomad_af, '') AS DOUBLE)) "
-        f"AS gnomad_af_value, {counts}, {invalid_af} "
+        f"AS gnomad_af_value, {conflict_checks}, {invalid_af} "
         f"FROM {relation} GROUP BY {key}"
     )
 
-    count_columns = [f"{field}_count" for field in fields]
+    conflict_columns = [f"{field}_conflict" for field in fields]
     conflict_filter = " OR ".join(
-        [*(f"{column} > 1" for column in count_columns), "gnomad_af_invalid_count > 0"]
+        [*conflict_columns, "gnomad_af_invalid_count > 0"]
     )
     rows = connection.execute(
         f"SELECT {key}, "
-        + ", ".join([*count_columns, "gnomad_af_invalid_count"])
+        + ", ".join([*conflict_columns, "gnomad_af_invalid_count"])
         + f" FROM allele_evidence WHERE {conflict_filter} LIMIT 10"
     ).fetchall()
     conflicts = [
         (field, str(row[0]))
         for row in rows
-        for field, count in zip(fields, row[1:-1])
-        if int(count) > 1
+        for field, conflict in zip(fields, row[1:-1])
+        if bool(conflict)
     ]
     conflicts.extend(
         ("gnomad_af invalid", str(row[0]))
