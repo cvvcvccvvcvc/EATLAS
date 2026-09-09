@@ -35,6 +35,7 @@ from genomics.variants import (
     normalize_chrom,
     normalize_vcf_key_for_context,
     parse_variant_key,
+    target_reference_chromosome,
     variant_key_text,
     variant_type,
 )
@@ -60,7 +61,7 @@ UNIVERSE_FIELDS = [
     "clinvar_disease_names",
     "clinvar_disease_ids",
 ]
-CACHE_VERSION = 7
+CACHE_VERSION = 8
 OBSERVED_MEMBERSHIP_CACHE_VERSION = 1
 VEP_CACHE_VERSION = 2
 VALIDATION_TYPES = ["snv", "indel"]
@@ -437,7 +438,9 @@ def _paths(value: Path | Sequence[Path]) -> tuple[Path, ...]:
 def merged_intervals(genes: list[dict[str, str]]) -> list[tuple[str, int, int]]:
     by_chrom: dict[str, list[tuple[int, int]]] = defaultdict(list)
     for row in genes:
-        chrom = normalize_chrom(row["chromosome"]) or ""
+        chrom = target_reference_chromosome(
+            row.get("genomic_accession"), row.get("chromosome")
+        ) or ""
         if not chrom:
             continue
         start = int(row["begin"])

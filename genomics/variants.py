@@ -90,6 +90,17 @@ def refseq_accession_to_chrom(value: str | None) -> str | None:
     return str(num)
 
 
+def target_reference_chromosome(
+    genomic_accession: str | None,
+    chromosome: str | None,
+) -> str | None:
+    """Resolve the chromosome that owns target coordinates and sequence."""
+
+    return refseq_accession_to_chrom(genomic_accession) or refseq_accession_to_chrom(
+        chromosome
+    )
+
+
 def variant_key_text(key: tuple[str, int, str, str] | None) -> str:
     if not key:
         return ""
@@ -245,8 +256,9 @@ def load_target_contexts(
                 contexts[gene_id] = {
                     "gene_id": gene_id,
                     "accession": row["genomic_accession"],
-                    "chrom": normalize_chrom(row["chromosome"])
-                    or refseq_accession_to_chrom(row["genomic_accession"]),
+                    "chrom": target_reference_chromosome(
+                        row["genomic_accession"], row["chromosome"]
+                    ),
                     "begin": int(row["begin"]),
                     "end": int(row["end"]),
                     "fasta_path": fasta_path,

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import gzip
 import stat
 import sys
 from contextlib import contextmanager
@@ -12,6 +13,7 @@ from analytics.analyses import clinvar_validation
 from analytics.analyses.observed_variant_store import (
     build_or_load_observed_variant_store,
 )
+from genomics.variants import load_target_contexts
 
 
 @pytest.mark.parametrize(
@@ -29,6 +31,34 @@ def test_clinvar_universe_labels_use_shared_significance_semantics(
     expected: str,
 ) -> None:
     assert clinvar_validation.clinvar_label(significance) == expected
+
+
+def test_clinvar_target_locus_uses_accession_for_pseudoautosomal_gene(
+    tmp_path: Path,
+) -> None:
+    gene = {
+        "gene_id": "6473",
+        "genomic_accession": "NC_000023.11",
+        "chromosome": "X,Y",
+        "begin": 624_344,
+        "end": 659_411,
+    }
+    genes_path = tmp_path / "genes.tsv.gz"
+    pd.DataFrame([gene]).to_csv(
+        genes_path,
+        sep="\t",
+        index=False,
+        compression="gzip",
+    )
+    targets_dir = tmp_path / "targets"
+    targets_dir.mkdir()
+    with gzip.open(targets_dir / "6473.fa.gz", "wt") as handle:
+        handle.write(">6473\n" + "A" * (gene["end"] - gene["begin"] + 1) + "\n")
+
+    assert clinvar_validation.merged_intervals([gene]) == [
+        ("X", gene["begin"], gene["end"])
+    ]
+    assert load_target_contexts(genes_path, targets_dir)["6473"]["chrom"] == "X"
 
 
 def test_clinvar_universe_writer_preserves_schema_and_shared_permissions(
