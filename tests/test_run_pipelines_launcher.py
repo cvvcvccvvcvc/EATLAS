@@ -24,12 +24,24 @@ def _fixture(tmp_path: Path) -> tuple[Path, dict[str, str]]:
     git = fake_bin / "git"
     git.write_text(
         "#!/usr/bin/env bash\n"
-        "if [[ \"$*\" == *'status --porcelain=v1 --untracked-files=normal'* ]]; then\n"
-        "  printf '%s' \"${GIT_STATUS_OUTPUT:-}\"\n"
-        "elif [[ \"$*\" == *'rev-parse origin/main'* ]]; then\n"
+        "repo=''\n"
+        "if [[ \"${1:-}\" == '-C' ]]; then repo=$2; shift 2; fi\n"
+        "if [[ \"$*\" == 'status --porcelain=v1 --untracked-files=normal' ]]; then\n"
+        "  if [[ -n \"${PIPELINE_ROOT:-}\" && \"$repo\" == \"$PIPELINE_ROOT\" ]]; then\n"
+        "    printf '%s' \"${PIPELINE_GIT_STATUS_OUTPUT:-}\"\n"
+        "  else\n"
+        "    printf '%s' \"${GIT_STATUS_OUTPUT:-}\"\n"
+        "  fi\n"
+        "elif [[ \"$*\" == 'rev-parse origin/main' ]]; then\n"
         "  printf '%s\\n' \"${ORIGIN_COMMIT}\"\n"
-        "elif [[ \"$*\" == *'rev-parse HEAD'* ]]; then\n"
-        "  printf '%s\\n' \"${HEAD_COMMIT}\"\n"
+        "elif [[ \"$*\" == 'rev-parse HEAD' ]]; then\n"
+        "  if [[ -n \"${PIPELINE_ROOT:-}\" && \"$repo\" == \"$PIPELINE_ROOT\" ]]; then\n"
+        "    printf '%s\\n' \"${PIPELINE_HEAD_COMMIT}\"\n"
+        "  else\n"
+        "    printf '%s\\n' \"${LAUNCHER_HEAD_COMMIT}\"\n"
+        "  fi\n"
+        "elif [[ \"$*\" == merge-base\\ --is-ancestor* ]]; then\n"
+        "  exit \"${ANCESTOR_STATUS:-0}\"\n"
         "fi\n"
     )
     git.chmod(0o755)
@@ -64,7 +76,7 @@ def _fixture(tmp_path: Path) -> tuple[Path, dict[str, str]]:
         "    'schema_version': 3, 'pipeline': 'gaph_v2',\n"
         "    'status': 'failed' if failed else 'complete',\n"
         "    'success': not failed, 'exit_status': 17 if failed else 0,\n"
-        "    'session_id': session, 'git_commit': os.environ['HEAD_COMMIT'],\n"
+        "    'session_id': session, 'git_commit': os.environ['PIPELINE_HEAD_COMMIT'],\n"
         "    'git_dirty': False,\n"
         "    'evidence_inventory': inventory_descriptor,\n"
         "    'parameters': {\n"
@@ -95,7 +107,8 @@ def _fixture(tmp_path: Path) -> tuple[Path, dict[str, str]]:
         {
             "HOME": str(home),
             "PATH": f"{fake_bin}{os.pathsep}{environment['PATH']}",
-            "HEAD_COMMIT": COMMIT,
+            "LAUNCHER_HEAD_COMMIT": COMMIT,
+            "PIPELINE_HEAD_COMMIT": COMMIT,
             "ORIGIN_COMMIT": COMMIT,
             "PIPELINE_CAPTURE": str(tmp_path / "pipeline.jsonl"),
         }
@@ -284,6 +297,31 @@ def test_rejects_duplicate_run_names_before_launch(tmp_path: Path) -> None:
 def test_revision_gate_runs_before_pipeline(tmp_path: Path) -> None:
     launcher, environment = _fixture(tmp_path)
     [ids_file] = _ids(tmp_path, "batch.txt")
+    environment["ANCESTOR_STATUS"] = "1"
+
+    completed = subprocess.run(
+        [
+            "bash",
+            str(launcher),
+            "--results-root",
+            str(tmp_path / "results" / "group"),
+            "--expected-commit",
+            COMMIT,
+            str(ids_file),
+        ],
+        env=environment,
+        text=True,
+        capture_output=True,
+    )
+
+    assert completed.returncode == 2
+    assert "is not reachable from fetched origin/main" in completed.stderr
+    assert not Path(environment["PIPELINE_CAPTURE"]).exists()
+
+
+def test_revision_gate_requires_current_clean_launcher(tmp_path: Path) -> None:
+    launcher, environment = _fixture(tmp_path)
+    [ids_file] = _ids(tmp_path, "batch.txt")
     environment["ORIGIN_COMMIT"] = "b" * 40
 
     completed = subprocess.run(
@@ -302,5 +340,43 @@ def test_revision_gate_runs_before_pipeline(tmp_path: Path) -> None:
     )
 
     assert completed.returncode == 2
-    assert "fetched origin/main" in completed.stderr
+    assert "launcher HEAD" in completed.stderr
     assert not Path(environment["PIPELINE_CAPTURE"]).exists()
+
+
+def test_runs_historical_commit_from_separate_clean_checkout(tmp_path: Path) -> None:
+    launcher, environment = _fixture(tmp_path)
+    [ids_file] = _ids(tmp_path, "batch.txt")
+    pipeline_root = tmp_path / "historical checkout"
+    pipeline_root.mkdir()
+    historical_commit = "b" * 40
+    environment.update(
+        {
+            "PIPELINE_ROOT": str(pipeline_root),
+            "PIPELINE_HEAD_COMMIT": historical_commit,
+        }
+    )
+
+    completed = subprocess.run(
+        [
+            "bash",
+            str(launcher),
+            "--results-root",
+            str(tmp_path / "results" / "group"),
+            "--pipeline-root",
+            str(pipeline_root),
+            "--expected-commit",
+            historical_commit,
+            str(ids_file),
+        ],
+        env=environment,
+        text=True,
+        capture_output=True,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    call = _calls(environment)[0]
+    nextflow_index = call.index("nextflow")
+    pipeline_run_index = call.index("run", nextflow_index)
+    assert call[pipeline_run_index + 1] == str(pipeline_root)
+    assert f"Pipeline commit: {historical_commit}" in completed.stdout

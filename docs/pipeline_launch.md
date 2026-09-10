@@ -11,7 +11,7 @@ Obtain or identify:
 
 - one or more input Gene ID files, in execution order;
 - one durable results root for their run directories;
-- the intended full Git commit from the authoritative local checkout;
+- the intended full Git commit reachable from authoritative `origin/main`;
 - any explicitly requested alignment strategies or concurrency overrides.
 
 The cluster environment must also declare the release-pinned local VEP
@@ -48,11 +48,28 @@ test -z "$(git status --porcelain)"
 git rev-parse HEAD
 ```
 
-The final cluster hash must equal the exact `INTENDED_COMMIT` captured in the
-authoritative local checkout. Do not infer currency from a clean cluster tree,
-from a commit-looking run name, or by comparing cluster `HEAD` with the
-cluster's `origin/main` before fetching: remote-tracking refs can be stale.
-The pipeline launcher repeats the fetch and equality checks before doing work.
+For an ordinary current-main run, the cluster checkout and freshly fetched
+`origin/main` must equal `INTENDED_COMMIT`. The launcher checkout must always
+be clean and current with `origin/main`.
+
+For a historical run, keep the launcher checkout current and create a separate
+clean detached worktree at the intended commit:
+
+```bash
+INTENDED_COMMIT=<full historical commit>
+PIPELINE_ROOT="$GAPH_ROOT/checkouts/${INTENDED_COMMIT:0:12}"
+
+git -C "$GAPH_CODE" fetch origin main
+git -C "$GAPH_CODE" merge-base --is-ancestor "$INTENDED_COMMIT" origin/main
+git -C "$GAPH_CODE" worktree add --detach "$PIPELINE_ROOT" "$INTENDED_COMMIT"
+test -z "$(git -C "$PIPELINE_ROOT" status --porcelain)"
+```
+
+Pass `--pipeline-root "$PIPELINE_ROOT"` to the current launcher. It requires
+the requested commit to remain reachable from freshly fetched `origin/main`
+and requires the pipeline checkout's clean `HEAD` to equal the full requested
+commit. Nextflow runs the historical checkout, so the run manifest records the
+historical pipeline commit; the launcher itself remains current and auditable.
 
 This revision gate applies again before report submission, even if the source
 pipeline run is already complete. After a pipeline creates `run_manifest.json`,
@@ -61,10 +78,9 @@ starts, verify that the `Git commit:` line in its Slurm stdout equals the same
 commit.
 
 Treat any mismatch between the documented command and the cluster launcher as
-a stale-checkout failure. Stop and synchronize the checkout. In particular, do
-not remove current arguments, substitute a historical cohort workflow, or
-otherwise reshape the requested run merely to make an older launcher accept
-the command.
+a stale-checkout failure. Stop and synchronize the launcher checkout. Do not
+bypass the launcher for a historical run; use its explicit `--pipeline-root`
+interface so provenance and resume checks remain active.
 
 Do not copy tracked source files with `rsync`, Git bundles, or ad hoc archives.
 A source run intended for analytics must start from a clean Git working tree,
@@ -99,7 +115,8 @@ bash scripts/slurm/run_pipelines.sh \
 The input basename becomes the run name, such as `batch_001`. The launcher
 creates `$RESULTS_ROOT/batch_001` and uses one internal work directory below
 `$GAPH_WORK_DIR` for the group. It runs only one pipeline at a time and stops at
-the first failure.
+the first failure. Add `--pipeline-root "$PIPELINE_ROOT"` only when running a
+separate historical checkout prepared as above.
 
 Add only options requested by the user or required by a concrete run:
 

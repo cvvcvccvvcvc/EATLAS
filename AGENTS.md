@@ -92,10 +92,12 @@ Task environments from `envs/*.yml` are mandatory. Local runs need no profile;
 ordinary ITMO pipeline and report work must use the documented launchers.
 
 Before any cluster submission, pass the revision gate in
-`docs/pipeline_launch.md`: fetch authoritative `origin/main`, require the
-intended local commit, fetched `origin/main`, and cluster `HEAD` to match, and
-require a clean cluster tree. If a documented launcher interface is absent,
-resynchronize the checkout; never adapt a launch to obsolete code.
+`docs/pipeline_launch.md`. The launcher checkout must be clean and equal freshly
+fetched `origin/main`. The pipeline checkout must be clean at the exact intended
+commit, which must be reachable from that `origin/main`; historical runs use the
+launcher's explicit pipeline-root interface. Report jobs use the current clean
+launcher checkout. If a documented interface is absent, resynchronize the
+checkout; never bypass launch provenance checks.
 
 ## Commits
 

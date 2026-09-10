@@ -8,6 +8,7 @@ Usage:
   scripts/slurm/run_pipelines.sh \
     --results-root /absolute/path/to/results/group \
     --expected-commit FULL_GIT_COMMIT \
+    [--pipeline-root /absolute/path/to/clean/checkout] \
     [--alignment-strategies strategy_a,strategy_b] \
     [--fetch-max-forks N] [--alignment-max-forks N] \
     [--annotation-max-forks N] \
@@ -98,6 +99,7 @@ PY
 
 results_root=""
 expected_commit=""
+pipeline_root=""
 alignment_strategies=""
 fetch_max_forks=""
 alignment_max_forks=""
@@ -114,6 +116,11 @@ while (( $# > 0 )); do
     --expected-commit)
       (( $# >= 2 )) || fail "--expected-commit requires a value"
       expected_commit=$2
+      shift 2
+      ;;
+    --pipeline-root)
+      (( $# >= 2 )) || fail "--pipeline-root requires a value"
+      pipeline_root=$2
       shift 2
       ;;
     --alignment-strategies)
@@ -154,6 +161,8 @@ done
 [[ "$results_root" = /* ]] || fail "--results-root must be an absolute path"
 [[ "$expected_commit" =~ ^[0-9a-f]{40}$ ]] || fail \
   "--expected-commit must be a full 40-character Git commit"
+[[ -z "$pipeline_root" || "$pipeline_root" = /* ]] || fail \
+  "--pipeline-root must be an absolute path"
 (( ${#ids_files[@]} > 0 )) || fail "at least one IDs file is required"
 [[ -z "$alignment_strategies" || "$alignment_strategies" != *[[:space:]]* ]] || fail \
   "--alignment-strategies must be a comma-separated value without spaces"
@@ -191,17 +200,38 @@ for ids_file in "${ids_files[@]}"; do
 done
 
 script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-project_root=$(cd "$script_dir/../.." && pwd)
-git_status=$(git -C "$project_root" status --porcelain=v1 --untracked-files=normal) || fail \
-  "cannot inspect repository status: $project_root"
-[[ -z "$git_status" ]] || fail "pipeline launch requires a clean working tree"
-git -C "$project_root" fetch origin main >/dev/null || fail "cannot fetch authoritative origin/main"
-actual_commit=$(git -C "$project_root" rev-parse HEAD) || fail "cannot resolve repository HEAD"
-origin_commit=$(git -C "$project_root" rev-parse origin/main) || fail "cannot resolve origin/main"
+launcher_root=$(cd "$script_dir/../.." && pwd)
+pipeline_root=${pipeline_root:-$launcher_root}
+[[ -d "$pipeline_root" ]] || fail "pipeline checkout does not exist: $pipeline_root"
+pipeline_root=$(cd "$pipeline_root" && pwd -P) || fail \
+  "cannot resolve pipeline checkout: $pipeline_root"
+
+launcher_status=$(git -C "$launcher_root" status --porcelain=v1 --untracked-files=normal) || fail \
+  "cannot inspect launcher repository status: $launcher_root"
+[[ -z "$launcher_status" ]] || fail "pipeline launcher requires a clean working tree"
+git -C "$launcher_root" fetch origin main >/dev/null || fail \
+  "cannot fetch authoritative origin/main"
+launcher_commit=$(git -C "$launcher_root" rev-parse HEAD) || fail \
+  "cannot resolve launcher repository HEAD"
+origin_commit=$(git -C "$launcher_root" rev-parse origin/main) || fail \
+  "cannot resolve origin/main"
+[[ "$launcher_commit" = "$origin_commit" ]] || fail \
+  "launcher HEAD $launcher_commit does not match fetched origin/main $origin_commit"
+
+pipeline_status=$(git -C "$pipeline_root" status --porcelain=v1 --untracked-files=normal) || fail \
+  "cannot inspect pipeline checkout status: $pipeline_root"
+[[ -z "$pipeline_status" ]] || fail "pipeline checkout requires a clean working tree"
+git -C "$pipeline_root" cat-file -e "${expected_commit}^{commit}" || fail \
+  "pipeline commit is unavailable: $expected_commit"
+git -C "$launcher_root" merge-base --is-ancestor "$expected_commit" "$origin_commit" || fail \
+  "pipeline commit $expected_commit is not reachable from fetched origin/main $origin_commit"
+actual_commit=$(git -C "$pipeline_root" rev-parse HEAD) || fail \
+  "cannot resolve pipeline checkout HEAD"
 [[ "$actual_commit" = "$expected_commit" ]] || fail \
-  "cluster HEAD $actual_commit does not match expected commit $expected_commit"
-[[ "$origin_commit" = "$expected_commit" ]] || fail \
-  "fetched origin/main $origin_commit does not match expected commit $expected_commit"
+  "pipeline checkout HEAD $actual_commit does not match expected commit $expected_commit"
+
+printf 'Launcher commit: %s\n' "$launcher_commit"
+printf 'Pipeline commit: %s\n' "$actual_commit"
 
 cluster_env="$HOME/.gaph_v2_cluster_env.sh"
 [[ -f "$cluster_env" ]] || fail "cluster environment file not found: $cluster_env"
@@ -224,10 +254,11 @@ for index in "${!resolved_ids_files[@]}"; do
   run_alignment_max_forks=$alignment_max_forks
   run_annotation_max_forks=$annotation_max_forks
 
-  git_status=$(git -C "$project_root" status --porcelain=v1 --untracked-files=normal) || fail \
-    "cannot inspect repository status: $project_root"
-  [[ -z "$git_status" ]] || fail "pipeline launch requires a clean working tree"
-  actual_commit=$(git -C "$project_root" rev-parse HEAD) || fail "cannot resolve repository HEAD"
+  pipeline_status=$(git -C "$pipeline_root" status --porcelain=v1 --untracked-files=normal) || fail \
+    "cannot inspect pipeline checkout status: $pipeline_root"
+  [[ -z "$pipeline_status" ]] || fail "pipeline checkout requires a clean working tree"
+  actual_commit=$(git -C "$pipeline_root" rev-parse HEAD) || fail \
+    "cannot resolve pipeline checkout HEAD"
   [[ "$actual_commit" = "$expected_commit" ]] || fail \
     "cluster HEAD changed during the pipeline series"
 
@@ -277,7 +308,7 @@ for index in "${!resolved_ids_files[@]}"; do
   pipeline_command=(
     micromamba run -p "$GAPH_ROOT/envs/controller"
     nextflow -log "$run_dir/reports/nextflow/nextflow.log"
-    run "$project_root"
+    run "$pipeline_root"
     -profile slurm
     --ids_file "$ids_file"
     --outdir "$run_dir"
@@ -292,7 +323,7 @@ for index in "${!resolved_ids_files[@]}"; do
   printf '%s run %s (%s/%s)\n' \
     "$([[ -n "$resume_session" ]] && printf 'Resuming' || printf 'Starting')" \
     "$run_name" "$((index + 1))" "${#resolved_ids_files[@]}"
-  cd "$project_root"
+  cd "$pipeline_root"
   "${pipeline_command[@]}"
 
   [[ -f "$manifest" ]] || fail "pipeline exited successfully without a run manifest: $run_name"
