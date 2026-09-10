@@ -29,6 +29,9 @@ from .config import (
 from .variant_profile import group_consequence_counts
 
 
+MAX_VISIBLE_SUPPORT_POINTS = 250
+
+
 def build_pathogenic_variant_sections(analysis: PathogenicVariantAnalysis) -> list[str]:
     variants = analysis.variants
     if variants.empty:
@@ -137,9 +140,10 @@ def pathogenic_support_figure(rows: pd.DataFrame):
     for strategy in sorted(rows["strategy"].unique(), key=strategy_label):
         values = rows[rows["strategy"].eq(strategy)]
         counts = values["alt_support_ortholog_count"].to_numpy(dtype=int)
+        show_points = len(values) <= MAX_VISIBLE_SUPPORT_POINTS
         common = dict(
             y=np.log10(counts),
-            name=strategy_label(strategy),
+            name=f"{strategy_label(strategy)}<br>n={len(values):,}",
             customdata=values[
                 [
                     "variant_key",
@@ -161,16 +165,24 @@ def pathogenic_support_figure(rows: pd.DataFrame):
             figure.add_trace(
                 go.Violin(
                     **common,
-                    points="all",
-                    jitter=0.25,
+                    points="all" if show_points else False,
+                    jitter=0.25 if show_points else 0,
                     pointpos=0,
                     box_visible=True,
+                    meanline_visible=True,
                     spanmode="hard",
-                    hoveron="points",
+                    hoveron="points+violins",
                 )
             )
         else:
-            figure.add_trace(go.Box(**common, boxpoints="all", jitter=0.25, pointpos=0))
+            figure.add_trace(
+                go.Box(
+                    **common,
+                    boxpoints="all" if show_points else False,
+                    jitter=0.25 if show_points else 0,
+                    pointpos=0,
+                )
+            )
     maximum = int(rows["alt_support_ortholog_count"].max())
     ticks = [
         multiplier * 10**power
@@ -209,11 +221,10 @@ def pathogenic_condition_view(counts: pd.DataFrame) -> str:
       <label>Strategy<select data-role="strategy"></select></label>
       <label>Variant type<select data-role="type"><option value="all">SNV + INDEL</option><option value="snv">SNV</option><option value="indel">INDEL</option></select></label>
       <label>ClinVar background<select data-role="background"><option value="target">Matching target regions</option><option value="global">Whole GRCh38 VCF</option></select></label>
+      <label>Sort conditions by<select data-role="sort"><option value="gaph">GAPH fraction</option><option value="clinvar">ClinVar fraction</option><option value="absolute-difference">Absolute GAPH − ClinVar difference</option></select></label>
       <label>Find condition<input data-role="search" type="search" placeholder="Condition name"></label>
     </div>
     <div id="pathogenic-conditions-plot" class="analysis-plot"></div>
-    <h4>ClinVar condition distribution</h4>
-    <div id="pathogenic-clinvar-distribution-plot" class="analysis-plot"></div>
     <script>(() => {
       const config = """
         + payload
@@ -229,11 +240,20 @@ def pathogenic_condition_view(counts: pd.DataFrame) -> str:
         const a = new Map(gaph.map(row => [row.condition_key, row]));
         const b = new Map(background.map(row => [row.condition_key, row]));
         const fraction = row => row && row.total_variant_count ? row.variant_count / row.total_variant_count : 0;
+        const sortScore = key => {
+          const gaphFraction = fraction(a.get(key));
+          const clinvarFraction = fraction(b.get(key));
+          if (select('sort').value === 'clinvar') return clinvarFraction;
+          if (select('sort').value === 'absolute-difference') return Math.abs(gaphFraction - clinvarFraction);
+          return gaphFraction;
+        };
         const query = select('search').value.trim().toLowerCase();
-        const matches = (mapping, key) => key && mapping.get(key).condition.toLowerCase().includes(query);
         const keys = [...new Set([...a.keys(), ...b.keys()])].filter(key => key &&
           (a.get(key) || b.get(key)).condition.toLowerCase().includes(query))
-          .sort((x, y) => Math.max(fraction(a.get(y)), fraction(b.get(y))) - Math.max(fraction(a.get(x)), fraction(b.get(x))))
+          .sort((x, y) => sortScore(y) - sortScore(x) ||
+            (a.get(x)?.condition || b.get(x)?.condition || '').localeCompare(
+              a.get(y)?.condition || b.get(y)?.condition || ''
+            ))
           .slice(0, 15).reverse();
         const trace = (mapping, group, name, color, shownKeys) => ({
           type: 'bar', orientation: 'h', name, marker: {color},
@@ -252,21 +272,6 @@ def pathogenic_condition_view(counts: pd.DataFrame) -> str:
           yaxis: {automargin: true},
           annotations: keys.length ? [] : [{text: 'No matching named conditions.', x: 0.5, y: 0.5, xref: 'paper', yref: 'paper', showarrow: false}],
         }, {responsive: true});
-        const clinvarKeys = [...b.keys()].filter(key => matches(b, key))
-          .sort((x, y) => fraction(b.get(y)) - fraction(b.get(x)))
-          .slice(0, 10).reverse();
-        Plotly.react(
-          'pathogenic-clinvar-distribution-plot',
-          [trace(b, background, 'ClinVar', '#9ca3af', clinvarKeys)],
-          {
-            template: 'plotly_white', height: 460, showlegend: false,
-            margin: {l: 300, r: 25, t: 25, b: 60},
-            xaxis: {title: {text: 'Fraction of P/LP alleles'}, tickformat: '.0%', rangemode: 'tozero'},
-            yaxis: {automargin: true},
-            annotations: clinvarKeys.length ? [] : [{text: 'No matching named conditions.', x: 0.5, y: 0.5, xref: 'paper', yref: 'paper', showarrow: false}],
-          },
-          {responsive: true},
-        );
       }
       controls.querySelectorAll('select').forEach(item => item.addEventListener('change', render));
       select('search').addEventListener('input', render);

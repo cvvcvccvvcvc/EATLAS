@@ -155,7 +155,11 @@ not repeat them.
 Exact-support distributions count one SNV per strategy. When an allele has
 several target-gene contexts, the row with maximum ALT-supporting ortholog count
 is selected and Gene ID breaks ties. Violin densities use log10 counts while
-axes and hover show original counts; sparse distributions use points and a box.
+axes and individual-point hover show original counts; sparse distributions use
+points and a box.
+To keep large cohorts legible, individual points are shown only for groups of at
+most 250 observations; the violin, box, mean line, and group size still reflect
+every observation.
 phyloP availability does not restrict this tab.
 
 Conditions compare unique pathogenic/likely-pathogenic alleles with either
@@ -164,6 +168,9 @@ Both arms use the selected variant type. Denominators include alleles without a
 named condition, and one allele may contribute several conditions, so displayed
 fractions need not sum to one. Disease identity prefers MedGen, then MONDO, then
 OMIM; names are used only when identifiers are absent.
+The paired condition chart can order its displayed conditions by the GAPH
+fraction, the selected ClinVar-background fraction, or the absolute difference
+between them.
 
 The whole-VCF background is streamed locally and cached per calculation
 identity. It counts distinct VCF alleles, merges repeated records, and excludes

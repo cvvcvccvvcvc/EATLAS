@@ -6,7 +6,11 @@ from types import SimpleNamespace
 import pandas as pd
 
 from analytics.analyses.pathogenic_variants import build_pathogenic_variant_analysis
-from analytics.reporting.pathogenic_variants import build_pathogenic_variant_sections
+from analytics.reporting.pathogenic_variants import (
+    build_pathogenic_variant_sections,
+    pathogenic_condition_view,
+    pathogenic_support_figure,
+)
 from genomics.clinvar import pathogenic_subtype
 
 
@@ -165,8 +169,10 @@ def test_pathogenic_analysis_builds_condition_backgrounds_and_unique_snv_support
     assert "Pathogenic ClinVar Hits" in rendered
     assert "Primary sort" in rendered
     assert "Disease one" in rendered
-    assert "ClinVar condition distribution" in rendered
-    assert "pathogenic-clinvar-distribution-plot" in rendered
+    assert 'data-role="sort"' in rendered
+    assert "Absolute GAPH − ClinVar difference" in rendered
+    assert "ClinVar condition distribution" not in rendered
+    assert "pathogenic-clinvar-distribution-plot" not in rendered
     assert "Supporting orthologs among P/LP hits" in rendered
     assert "SNV support rows plotted" not in rendered
     assert "phyloP100way" not in rendered
@@ -220,7 +226,6 @@ def test_clinvar_conditions_deduplicate_alleles_identifiers_and_preserve_denomin
 
 def test_pathogenic_violin_displays_counts_on_log_ticks(tmp_path: Path) -> None:
     import numpy as np
-    from analytics.reporting.pathogenic_variants import pathogenic_support_figure
     from analytics.reporting.document import render_html
     from analytics.reporting.components import fig_html
 
@@ -244,6 +249,56 @@ def test_pathogenic_violin_displays_counts_on_log_ticks(tmp_path: Path) -> None:
     assert list(figure.layout.yaxis.ticktext)[:3] == ["1", "2", "5"]
     assert np.isclose(figure.data[0].y[-1], np.log10(330))
     assert figure.data[0].customdata[-1][2] == 330
+    assert figure.data[0].points == "all"
+    assert "n=9" in figure.data[0].name
     (tmp_path / "violin_smoke.html").write_text(
         render_html([("support", "Exact ALT support", [fig_html(figure)])])
     )
+
+
+def test_pathogenic_support_hides_individual_points_for_large_groups() -> None:
+    rows = pd.DataFrame(
+        [
+            {
+                "variant_key": f"1:{100 + index}:A>G",
+                "gene_id": "1",
+                "strategy": "s1",
+                "alt_support_ortholog_count": index % 5 + 1,
+                "alt_support_family_count": 1,
+                "site_aligned_ortholog_count": 400,
+            }
+            for index in range(251)
+        ]
+    )
+
+    figure = pathogenic_support_figure(rows)
+
+    assert figure.data[0].points is False
+    assert "n=251" in figure.data[0].name
+
+
+def test_pathogenic_conditions_offer_all_requested_sort_orders() -> None:
+    counts = pd.DataFrame(
+        [
+            {
+                "strategy": "s1",
+                "cohort": cohort,
+                "variant_type": "all",
+                "condition_key": "MONDO:1",
+                "condition": "Disease one",
+                "variant_count": 2,
+                "total_variant_count": 10,
+                "named_variant_count": 2,
+            }
+            for cohort in ("gaph", "target", "global")
+        ]
+    )
+
+    rendered = pathogenic_condition_view(counts)
+
+    assert 'data-role="sort"' in rendered
+    assert 'value="gaph"' in rendered
+    assert 'value="clinvar"' in rendered
+    assert 'value="absolute-difference"' in rendered
+    assert "const sortScore" in rendered
+    assert "pathogenic-clinvar-distribution-plot" not in rendered
