@@ -203,11 +203,13 @@ ClinVar thresholds are derived after cohort selection and, for adjusted
 analyses, finite phyloP selection. Minimum-threshold membership changes at
 score + 1; maximum-threshold membership changes at the observed score.
 Unestimable results retain their reasons and break the odds-ratio line. Boundary
-triangles denote zero or infinite odds ratios. Odds ratio above one means
-relative enrichment of benign/likely-benign over pathogenic/likely-pathogenic
-among retained calls. BH q-values cover thresholds and strategies within each
-filter, variant type, context, consequence, and adjustment mode; confidence
-intervals remain pointwise.
+triangles, connected by a dashed interval when consecutive, denote zero or
+infinite odds ratios. Confidence intervals are available in the point hover so
+they do not obscure dense threshold curves. Odds ratio above one means relative
+enrichment of benign/likely-benign over pathogenic/likely-pathogenic among
+retained calls. BH q-values cover thresholds and strategies within each filter,
+variant type, context, consequence, and adjustment mode; confidence intervals
+remain pointwise.
 
 Retention includes failed gnomAD lookups; the overlap denominator excludes
 them. Missing lookup and unestimable odds ratio are not negative results.

@@ -1099,6 +1099,10 @@ def test_basic_filtering_view_has_linear_threshold_controls_and_safe_json(
     assert "type: 'linear'" in html
     assert "Infinity" not in html
     assert "NaN" not in html
+    assert "mode: 'lines'" in html
+    assert "error_y" not in html
+    assert "const boundarySegments" in html
+    assert "Dashed intervals and triangles" in html
 
 
 def test_dataframe_records_replaces_nonfinite_values() -> None:

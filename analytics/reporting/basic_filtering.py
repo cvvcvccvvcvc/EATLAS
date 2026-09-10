@@ -84,7 +84,13 @@ def basic_filtering_view(analysis: BasicFilteringAnalysis) -> str:
       const color = strategy => strategy === 'union' ? '#242424' : colors[config.strategies.findIndex(item => item.key === strategy) % colors.length];
       const finite = value => value !== null && value !== '' && Number.isFinite(Number(value));
       const count = value => Number(value || 0).toLocaleString('en-US');
-      const fmt = value => value === 'inf' ? '∞' : value === '-inf' ? '−∞' : finite(value) ? Number(value).toPrecision(3) : 'NA';
+      const fmt = value => {
+        if (value === 'inf') return '∞';
+        if (value === '-inf') return '−∞';
+        if (!finite(value)) return 'NA';
+        const numeric = Number(value);
+        return numeric !== 0 && Math.abs(numeric) < 0.001 ? numeric.toExponential(2) : numeric.toPrecision(3);
+      };
       const atMost = () => selects.filter.value === 'aligned_max';
       const symbol = () => atMost() ? '≤' : '≥';
       const supported = () => selects['variant-type'].value === 'snv' || ['ortholog', 'strategy'].includes(selects.filter.value);
@@ -137,23 +143,45 @@ def basic_filtering_view(analysis: BasicFilteringAnalysis) -> str:
           + '<br>p / FDR q: %{customdata[3]} / %{customdata[4]}<br>Retained B/LB / P/LP: %{customdata[5]} / %{customdata[6]}'
           + '<br>Not retained B/LB / P/LP: %{customdata[7]} / %{customdata[8]}<extra></extra>';
         const traces = [{
-          type: 'scatter', mode: 'lines+markers', line: {color: '#7a3e9d', width: 2, shape: 'hv'}, marker: {size: 6},
+          type: 'scatter', mode: 'lines', line: {color: '#7a3e9d', width: 2, shape: 'hv'},
           connectgaps: false, x: rows.map(row => row.threshold), y: rows.map(row => estimable(row) ? row.result_or : null),
-          error_y: {type: 'data', symmetric: false,
-            array: rows.map(row => estimable(row) ? row.ci_high - row.result_or : null),
-            arrayminus: rows.map(row => estimable(row) ? row.result_or - row.ci_low : null)},
           customdata: rows.map(hover), hovertemplate,
         }];
         const boundary = rows.filter(row => row.status === 'estimated' && (row.result_or === 'inf' || row.result_or === 0));
-        const bounds = rows.flatMap(row => [row.ci_low, row.ci_high]).filter(value => finite(value) && Number(value) > 0).map(Number);
-        if (boundary.length && bounds.length) traces.push({
-          type: 'scatter', mode: 'markers',
-          x: boundary.map(row => row.threshold),
-          y: boundary.map(row => row.result_or === 'inf' ? Math.max(...bounds) * 1.5 : Math.min(...bounds) / 1.5),
-          marker: {color: '#7a3e9d', size: 11, symbol: boundary.map(row => row.result_or === 'inf' ? 'triangle-up' : 'triangle-down')},
-          customdata: boundary.map(hover), hovertemplate,
-        });
-        const any = rows.some(estimable) || boundary.length;
+        const pointEstimates = rows.filter(estimable).map(row => Number(row.result_or));
+        const boundarySegments = [];
+        for (const row of boundary) {
+          const direction = row.result_or === 'inf' ? 'high' : 'low';
+          const previous = boundarySegments[boundarySegments.length - 1];
+          if (previous && previous.direction === direction && row.threshold === previous.end + 1) {
+            previous.end = row.threshold;
+            previous.count += 1;
+          } else {
+            boundarySegments.push({direction, start: row.threshold, end: row.threshold, count: 1});
+          }
+        }
+        if (boundarySegments.length) {
+          const high = pointEstimates.length ? Math.max(...pointEstimates) * 1.25 : 10;
+          const low = pointEstimates.length ? Math.min(...pointEstimates) / 1.25 : 0.1;
+          boundarySegments.forEach(segment => {
+            const y = segment.direction === 'high' ? high : low;
+            const marker = segment.direction === 'high' ? 'triangle-up' : 'triangle-down';
+            const range = segment.start === segment.end ? String(segment.start) : segment.start + '–' + segment.end;
+            const result = segment.direction === 'high' ? '∞' : '0';
+            traces.push({
+              type: 'scatter', mode: 'lines', x: [segment.start, segment.end], y: [y, y],
+              line: {color: '#7a3e9d', width: 2, dash: 'dot'}, hoverinfo: 'skip',
+            });
+            traces.push({
+              type: 'scatter', mode: 'markers', x: [segment.end], y: [y],
+              marker: {color: '#7a3e9d', size: 10, symbol: marker},
+              text: ['Threshold ' + symbol() + ' ' + range + '<br>OR: ' + result
+                + '<br>' + segment.count + ' threshold(s) at this boundary'],
+              hovertemplate: '%{text}<extra></extra>',
+            });
+          });
+        }
+        const any = rows.some(estimable) || boundarySegments.length;
         Plotly.react('basic-filtering-clinvar', traces, {
           title: {text: 'ClinVar B/LB versus P/LP association'}, template: 'plotly_white', height: 410,
           margin: {l: 78, r: 25, t: 55, b: 60}, showlegend: false, xaxis: xaxis(),
@@ -164,7 +192,7 @@ def basic_filtering_view(analysis: BasicFilteringAnalysis) -> str:
         const unavailable = rows.filter(row => row.status !== 'estimated');
         const reasons = [...new Set(unavailable.map(row => row.reason).filter(Boolean))];
         note('basic-filtering-status', !supported() ? 'This filter is available for SNVs only.'
-          : [unavailable.length ? unavailable.length + ' threshold(s) without an OR estimate. ' + reasons.join(' ') : '', boundary.length ? 'Triangles mark OR = 0 or ∞ at the plot boundary.' : ''].filter(Boolean).join(' '));
+          : [unavailable.length ? unavailable.length + ' threshold(s) without an OR estimate. ' + reasons.join(' ') : '', boundarySegments.length ? 'Dashed intervals and triangles mark OR = 0 or ∞ at the plot boundary. 95% confidence intervals are available on hover.' : ''].filter(Boolean).join(' '));
       }
       ['filter', 'variant-type'].forEach(role => selects[role].addEventListener('change', () => {
         renderCandidate(); renderClinVar();
