@@ -115,8 +115,13 @@ bash scripts/slurm/run_pipelines.sh \
 The input basename becomes the run name, such as `batch_001`. The launcher
 creates `$RESULTS_ROOT/batch_001` and uses one internal work directory below
 `$GAPH_WORK_DIR` for the group. It runs only one pipeline at a time and stops at
-the first failure. Add `--pipeline-root "$PIPELINE_ROOT"` only when running a
-separate historical checkout prepared as above.
+the first failure. Once a run has a verified complete manifest and evidence
+inventory, the launcher uses that manifest's exact Nextflow session to remove
+its disposable task directories. It first dry-runs the cleanup and refuses any
+path outside the group's work directory. Durable `results/`, shared caches, and
+incomplete-run work are not cleanup targets. Add `--pipeline-root
+"$PIPELINE_ROOT"` only when running a separate historical checkout prepared as
+above.
 
 Add only options requested by the user or required by a concrete run:
 
@@ -140,10 +145,11 @@ tmux attach -t gaph_run_name
 ## Resume
 
 Rerun the same launcher command. It checks and skips successfully completed
-runs, resumes the first incomplete run with its recorded Nextflow session, and
-then continues in the original order. It refuses changed input paths, explicit
-launcher settings, result paths, or Git provenance. Use a new results root when
-completed evidence must be regenerated.
+runs after clearing any remaining work for their completed sessions, resumes
+the first incomplete run with its recorded Nextflow session, and then continues
+in the original order. It refuses changed input paths, explicit launcher
+settings, result paths, or Git provenance. Use a new results root when completed
+evidence must be regenerated.
 
 ```bash
 tmux attach -t gaph_run_name

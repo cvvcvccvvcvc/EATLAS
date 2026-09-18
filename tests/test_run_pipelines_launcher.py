@@ -49,9 +49,29 @@ def _fixture(tmp_path: Path) -> tuple[Path, dict[str, str]]:
     micromamba = fake_bin / "micromamba"
     micromamba.write_text(
         "#!/usr/bin/env python3\n"
-        "import hashlib, json, os, sys\n"
+        "import hashlib, json, os, shutil, sys\n"
         "from pathlib import Path\n"
         "args = sys.argv[1:]\n"
+        "nextflow_index = args.index('nextflow')\n"
+        "nextflow_args = args[nextflow_index + 1:]\n"
+        "cleanup_state = Path(os.environ['CLEANUP_STATE'])\n"
+        "if nextflow_args[0] == 'clean':\n"
+        "    session = nextflow_args[-1]\n"
+        "    entries = [json.loads(line) for line in cleanup_state.read_text().splitlines()] if cleanup_state.exists() else []\n"
+        "    paths = [Path(entry['path']) for entry in entries if entry['session'] == session and Path(entry['path']).exists()]\n"
+        "    outside = os.environ.get('CLEANUP_OUTSIDE_PATH')\n"
+        "    if outside and '-n' in nextflow_args:\n"
+        "        paths.append(Path(outside))\n"
+        "    if '-n' in nextflow_args:\n"
+        "        for path in paths:\n"
+        "            print(f'Would remove {path}')\n"
+        "    else:\n"
+        "        for path in paths:\n"
+        "            if path.exists():\n"
+        "                shutil.rmtree(path)\n"
+        "        with Path(os.environ['CLEANUP_CAPTURE']).open('a') as handle:\n"
+        "            handle.write(session + '\\n')\n"
+        "    raise SystemExit(0)\n"
         "def value(flag, default=None):\n"
         "    return args[args.index(flag) + 1] if flag in args else default\n"
         "ids_file = value('--ids_file')\n"
@@ -62,6 +82,13 @@ def _fixture(tmp_path: Path) -> tuple[Path, dict[str, str]]:
         "session = value('-resume', old.get('session_id', f'session-{run_name}'))\n"
         "failed = run_name == os.environ.get('FAIL_RUN')\n"
         "outdir.mkdir(parents=True, exist_ok=True)\n"
+        "work_dir = Path(value('-work-dir'))\n"
+        "attempt = sum(1 for entry in (cleanup_state.read_text().splitlines() if cleanup_state.exists() else []) if json.loads(entry)['session'] == session)\n"
+        "task_dir = work_dir / 'aa' / f'{run_name}-{attempt}'\n"
+        "task_dir.mkdir(parents=True, exist_ok=True)\n"
+        "(task_dir / 'task-output').write_text(run_name + '\\n')\n"
+        "with cleanup_state.open('a') as handle:\n"
+        "    handle.write(json.dumps({'session': session, 'path': str(task_dir)}) + '\\n')\n"
         "inventory_descriptor = None\n"
         "if not failed:\n"
         "    inventory_bytes = (json.dumps({'schema_version': 1}) + '\\n').encode()\n"
@@ -111,6 +138,8 @@ def _fixture(tmp_path: Path) -> tuple[Path, dict[str, str]]:
             "PIPELINE_HEAD_COMMIT": COMMIT,
             "ORIGIN_COMMIT": COMMIT,
             "PIPELINE_CAPTURE": str(tmp_path / "pipeline.jsonl"),
+            "CLEANUP_CAPTURE": str(tmp_path / "cleanup.txt"),
+            "CLEANUP_STATE": str(tmp_path / "cleanup.jsonl"),
         }
     )
     return launcher, environment
@@ -197,6 +226,11 @@ def test_runs_inputs_sequentially_with_derived_result_and_work_paths(tmp_path: P
         "minimap2_asm20,nucmer"
     )
     assert calls[1][calls[1].index("--alignment_max_forks") + 1] == "7"
+    assert Path(environment["CLEANUP_CAPTURE"]).read_text().splitlines() == [
+        "session-batch_001",
+        "session-batch_002",
+    ]
+    assert not any((tmp_path / "work root" / "all_genes").rglob("task-output"))
 
 
 def test_stops_on_failure_then_skips_complete_and_resumes_exact_session(tmp_path: Path) -> None:
@@ -237,6 +271,40 @@ def test_stops_on_failure_then_skips_complete_and_resumes_exact_session(tmp_path
     assert resumed_call[resumed_call.index("-resume") + 1] == "session-batch_002"
     assert resumed_call[resumed_call.index("--alignment_strategies") + 1] == "default"
     assert "Skipping completed run batch_001" in resumed.stdout
+    assert Path(environment["CLEANUP_CAPTURE"]).read_text().splitlines() == [
+        "session-batch_001",
+        "session-batch_002",
+        "session-batch_003",
+    ]
+    assert not any((tmp_path / "work root" / "group").rglob("task-output"))
+
+
+def test_refuses_completed_session_cleanup_outside_group_work(tmp_path: Path) -> None:
+    launcher, environment = _fixture(tmp_path)
+    [ids_file] = _ids(tmp_path, "batch.txt")
+    outside = tmp_path / "outside-work"
+    outside.mkdir()
+    environment["CLEANUP_OUTSIDE_PATH"] = str(outside)
+
+    completed = subprocess.run(
+        [
+            "bash",
+            str(launcher),
+            "--results-root",
+            str(tmp_path / "results" / "group"),
+            "--expected-commit",
+            COMMIT,
+            str(ids_file),
+        ],
+        env=environment,
+        text=True,
+        capture_output=True,
+    )
+
+    assert completed.returncode == 2
+    assert "outside the group work directory" in completed.stderr
+    assert outside.is_dir()
+    assert not Path(environment["CLEANUP_CAPTURE"]).exists()
 
 
 def test_rejects_completed_run_with_modified_evidence_inventory(tmp_path: Path) -> None:

@@ -17,6 +17,8 @@ Usage:
 Runs one or more complete pipelines sequentially on Slurm. Each input filename
 becomes a run name below --results-root. Repeating the same command skips
 completed runs and resumes the first incomplete run.
+After a run is durably complete, removes only that Nextflow session's task
+directories below the group's work directory.
 EOF
 }
 
@@ -95,6 +97,67 @@ values = (
 )
 print("\x1f".join("" if value is None else str(value).lower() if isinstance(value, bool) else str(value) for value in values))
 PY
+}
+
+clean_completed_work() {
+  local run_name=$1
+  local session_id=$2
+  local dry_run_file clean_log line clean_path resolved_clean_path directory_word
+  local clean_count=0
+
+  [[ -n "$session_id" ]] || fail "completed run $run_name has no Nextflow session"
+  dry_run_file=$(mktemp "${TMPDIR:-/tmp}/gaph-nextflow-clean-dry-run.XXXXXX") || fail \
+    "cannot create Nextflow cleanup dry-run file"
+  if ! (
+    cd "$pipeline_root"
+    micromamba run -p "$GAPH_ROOT/envs/controller" \
+      nextflow clean -n "$session_id"
+  ) >"$dry_run_file" 2>&1; then
+    tail -n 20 "$dry_run_file" >&2
+    rm -f "$dry_run_file"
+    fail "cannot inspect completed work for run $run_name"
+  fi
+
+  while IFS= read -r line; do
+    [[ "$line" = "Would remove "* ]] || continue
+    clean_path=${line#Would remove }
+    [[ "$clean_path" = /* && -d "$clean_path" && ! -L "$clean_path" ]] || {
+      rm -f "$dry_run_file"
+      fail "Nextflow proposed an invalid cleanup path for run $run_name: $clean_path"
+    }
+    resolved_clean_path=$(cd "$clean_path" && pwd -P) || {
+      rm -f "$dry_run_file"
+      fail "cannot resolve cleanup path for run $run_name: $clean_path"
+    }
+    [[ "$resolved_clean_path" = "$work_root/"* ]] || {
+      rm -f "$dry_run_file"
+      fail "Nextflow proposed cleanup outside the group work directory: $resolved_clean_path"
+    }
+    (( clean_count += 1 ))
+  done < "$dry_run_file"
+  rm -f "$dry_run_file"
+
+  if (( clean_count == 0 )); then
+    printf 'Completed work already clean for run %s\n' "$run_name"
+    return
+  fi
+
+  clean_log=$(mktemp "${TMPDIR:-/tmp}/gaph-nextflow-clean.XXXXXX") || fail \
+    "cannot create Nextflow cleanup log"
+  if ! (
+    cd "$pipeline_root"
+    micromamba run -p "$GAPH_ROOT/envs/controller" \
+      nextflow clean -f "$session_id"
+  ) >"$clean_log" 2>&1; then
+    tail -n 20 "$clean_log" >&2
+    rm -f "$clean_log"
+    fail "cannot clean completed work for run $run_name"
+  fi
+  rm -f "$clean_log"
+  directory_word=directories
+  [[ "$clean_count" = 1 ]] && directory_word=directory
+  printf 'Cleaned %s completed work %s for run %s\n' \
+    "$clean_count" "$directory_word" "$run_name"
 }
 
 results_root=""
@@ -242,6 +305,8 @@ work_root="$work_base/$run_group"
 command -v micromamba >/dev/null || fail "micromamba was not found"
 command -v python3 >/dev/null || fail "python3 was not found"
 mkdir -p "$resolved_results_root" "$work_root"
+work_root=$(cd "$work_root" && pwd -P) || fail \
+  "cannot resolve group work directory: $work_root"
 
 for index in "${!resolved_ids_files[@]}"; do
   ids_file=${resolved_ids_files[$index]}
@@ -277,6 +342,7 @@ for index in "${!resolved_ids_files[@]}"; do
       "run $run_name does not match its current input or result path"
 
     if [[ "$status" = complete && "$success" = true && "$exit_status" = 0 ]]; then
+      clean_completed_work "$run_name" "$session_id"
       printf 'Skipping completed run %s\n' "$run_name"
       continue
     fi
@@ -328,12 +394,13 @@ for index in "${!resolved_ids_files[@]}"; do
 
   [[ -f "$manifest" ]] || fail "pipeline exited successfully without a run manifest: $run_name"
   manifest_info=$(inspect_manifest "$manifest") || fail "cannot read completed run manifest: $manifest"
-  IFS=$'\x1f' read -r _ _ status success exit_status _ manifest_commit git_dirty _ _ _ _ _ _ \
+  IFS=$'\x1f' read -r _ _ status success exit_status session_id manifest_commit git_dirty _ _ _ _ _ _ \
     <<< "$manifest_info"
   [[ "$status" = complete && "$success" = true && "$exit_status" = 0 ]] || fail \
     "pipeline exited successfully but run $run_name is not complete"
   [[ "$manifest_commit" = "$expected_commit" && "$git_dirty" = false ]] || fail \
     "completed run $run_name has unexpected Git provenance"
+  clean_completed_work "$run_name" "$session_id"
 done
 
 printf 'All %s pipeline run(s) completed successfully\n' "${#resolved_ids_files[@]}"
