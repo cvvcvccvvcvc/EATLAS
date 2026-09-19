@@ -279,6 +279,52 @@ def test_stops_on_failure_then_skips_complete_and_resumes_exact_session(tmp_path
     assert not any((tmp_path / "work root" / "group").rglob("task-output"))
 
 
+def test_resume_may_reduce_but_not_increase_alignment_concurrency(tmp_path: Path) -> None:
+    launcher, environment = _fixture(tmp_path)
+    [ids_file] = _ids(tmp_path, "batch.txt")
+    results = tmp_path / "results" / "group"
+    base_command = [
+        "bash",
+        str(launcher),
+        "--results-root",
+        str(results),
+        "--expected-commit",
+        COMMIT,
+    ]
+    environment["FAIL_RUN"] = "batch"
+
+    failed = subprocess.run(
+        [*base_command, "--alignment-max-forks", "4", str(ids_file)],
+        env=environment,
+        text=True,
+        capture_output=True,
+    )
+    assert failed.returncode == 17
+
+    environment.pop("FAIL_RUN")
+    refused = subprocess.run(
+        [*base_command, "--alignment-max-forks", "5", str(ids_file)],
+        env=environment,
+        text=True,
+        capture_output=True,
+    )
+    assert refused.returncode == 2
+    assert "may only reduce concurrency" in refused.stderr
+    assert len(_calls(environment)) == 1
+
+    resumed = subprocess.run(
+        [*base_command, "--alignment-max-forks", "2", str(ids_file)],
+        env=environment,
+        text=True,
+        capture_output=True,
+    )
+    assert resumed.returncode == 0, resumed.stderr
+    resumed_call = _calls(environment)[1]
+    assert resumed_call[resumed_call.index("-resume") + 1] == "session-batch"
+    assert resumed_call[resumed_call.index("--alignment_max_forks") + 1] == "2"
+    assert "Reducing alignment concurrency for run batch from 4 to 2" in resumed.stdout
+
+
 def test_refuses_completed_session_cleanup_outside_group_work(tmp_path: Path) -> None:
     launcher, environment = _fixture(tmp_path)
     [ids_file] = _ids(tmp_path, "batch.txt")

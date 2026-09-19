@@ -147,9 +147,12 @@ tmux attach -t gaph_run_name
 Rerun the same launcher command. It checks and skips successfully completed
 runs after clearing any remaining work for their completed sessions, resumes
 the first incomplete run with its recorded Nextflow session, and then continues
-in the original order. It refuses changed input paths, explicit launcher
-settings, result paths, or Git provenance. Use a new results root when completed
-evidence must be regenerated.
+in the original order. It refuses changed input paths, scientific settings,
+result paths, or Git provenance. The one permitted resume override is a lower
+`--alignment-max-forks` value: this throttles concurrent alignment and merge
+tasks without changing their inputs, algorithms, or cached outputs. Increasing
+the recorded value is refused. The completed manifest records the final limit.
+Use a new results root when completed evidence must be regenerated.
 
 ```bash
 tmux attach -t gaph_run_name

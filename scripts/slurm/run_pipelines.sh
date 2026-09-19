@@ -357,15 +357,24 @@ for index in "${!resolved_ids_files[@]}"; do
     if [[ -n "$fetch_max_forks" && "$fetch_max_forks" != "$manifest_fetch_forks" ]]; then
       fail "--fetch-max-forks differs from the incomplete run $run_name"
     fi
-    if [[ -n "$alignment_max_forks" && "$alignment_max_forks" != "$manifest_alignment_forks" ]]; then
-      fail "--alignment-max-forks differs from the incomplete run $run_name"
-    fi
     if [[ -n "$annotation_max_forks" && "$annotation_max_forks" != "$manifest_annotation_forks" ]]; then
       fail "--annotation-max-forks differs from the incomplete run $run_name"
     fi
     run_alignment_strategies=$manifest_strategies
     run_fetch_max_forks=$manifest_fetch_forks
-    run_alignment_max_forks=$manifest_alignment_forks
+    if [[ -n "$alignment_max_forks" ]]; then
+      [[ "$manifest_alignment_forks" =~ ^[1-9][0-9]*$ ]] || fail \
+        "run $run_name has invalid recorded alignment concurrency"
+      (( alignment_max_forks <= manifest_alignment_forks )) || fail \
+        "--alignment-max-forks may only reduce concurrency for incomplete run $run_name"
+      if (( alignment_max_forks < manifest_alignment_forks )); then
+        printf 'Reducing alignment concurrency for run %s from %s to %s\n' \
+          "$run_name" "$manifest_alignment_forks" "$alignment_max_forks"
+      fi
+      run_alignment_max_forks=$alignment_max_forks
+    else
+      run_alignment_max_forks=$manifest_alignment_forks
+    fi
     run_annotation_max_forks=$manifest_annotation_forks
     resume_session=$session_id
   fi
