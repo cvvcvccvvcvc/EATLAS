@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -49,6 +50,143 @@ TEST_CALCULATION_IDENTITY = {
     "runtime": {"python": {"version": "test"}},
 }
 TEST_CODE_PROVENANCE = {"git_commit": "a" * 40, "git_dirty": False}
+
+
+def test_archive_source_releases_only_its_restore_and_preserves_scientific_identity(tmp_path, monkeypatch):
+    from analytics.io import archive_sources as archive_module
+    from analytics.io.variant_source import resolve_variant_table_source, variant_source_sql
+    from analytics.analyses.variant_summary_aggregation import aggregate_strategy_masks
+    import duckdb
+
+    clinvar = tmp_path / "clinvar.vcf.gz"
+    clinvar.write_bytes(b"reference")
+    Path(str(clinvar) + ".tbi").write_bytes(b"index")
+    original = _make_source_run(tmp_path / "batch_001", gene_id="1", clinvar_vcf=clinvar)
+    original_source = resolve_source_runs([original], clinvar_vcf=clinvar)[0]
+    tree = "a" * 64
+    restored = []
+
+    class Drive:
+        def require_google_drive(self, root):
+            assert root == "gdrive:GAPH"
+
+    monkeypatch.setattr(archive_module, "read_archive_manifest", lambda *a, **kw: {
+        "tree_sha256": tree, "total_bytes": 10000,
+    })
+
+    def restore(*args, destination, **kwargs):
+        shutil.copytree(tmp_path / destination.name, destination)
+        restored.append(destination)
+
+    monkeypatch.setattr(archive_module, "restore_run", restore)
+
+    def derivative(directory):
+        def build(run, *, analytics_dir, **kwargs):
+            path = analytics_dir / directory
+            path.mkdir(parents=True)
+            for name in {
+                "alignment_aggregates": ["strategy_summary.tsv.gz", "feature_coverage.tsv.gz"],
+                "annotation_support": ["variant_strategy_support.tsv.gz", "ortholog_evidence_summary.tsv.gz"],
+                "taxonomy_summary": ["taxonomy_summary.tsv.gz"],
+            }[directory]:
+                if name == "variant_strategy_support.tsv.gz":
+                    rows = [{"variant_key": "1:101:A>G", "gene_id": "1", "strategy": "s1",
+                             "alt_support_ortholog_count": "1", "alt_support_family_count": "1",
+                             "site_aligned_ortholog_count": "1"}]
+                    pd.DataFrame(rows).to_csv(path / name, sep="\t", index=False, compression="gzip")
+                else:
+                    (path / name).write_bytes(b"derived")
+        return build
+
+    monkeypatch.setattr(archive_module, "resolve_alignment_aggregate_paths", derivative("alignment_aggregates"))
+    monkeypatch.setattr(archive_module, "resolve_annotation_support_paths", derivative("annotation_support"))
+    monkeypatch.setattr(archive_module, "resolve_taxonomy_summary_path", derivative("taxonomy_summary"))
+    manager = archive_module.ArchiveSources(
+        analytics_root=tmp_path / "analytics", remote_root="gdrive:GAPH",
+        calculation_identity=TEST_CALCULATION_IDENTITY, cache_policy="keep",
+        disk_budget_bytes=10000000, workers=1, client=Drive(),
+    )
+    prepared = manager.prepare(["batch_001"])[0]
+    assert original.exists() and not restored[0].exists()
+    assert prepared.source_id == original_source.source_id
+    assert prepared.requested_gene_ids == original_source.requested_gene_ids
+    raw = resolve_variant_table_source(original_source.variant_annotations_source, required_columns=set())
+    compact = resolve_variant_table_source(prepared.variant_annotations_source, required_columns=set())
+    with duckdb.connect() as connection:
+        assert connection.execute(f"SELECT * FROM {variant_source_sql(raw)}").fetchall() == connection.execute(
+            f"SELECT * FROM {variant_source_sql(compact)}"
+        ).fetchall()
+    raw_masks = aggregate_strategy_masks(resolve_variant_aggregation_source(original_source.variant_annotations_source), threads=1)
+    prepared_masks = aggregate_strategy_masks(resolve_variant_aggregation_source(prepared.variant_annotations_source), threads=1)
+    assert raw_masks == prepared_masks
+    from analytics.analyses import candidate_conservation as candidate
+    from analytics.analyses.conservation import PositionScores, parse_tracks
+    from analytics.io.variant_source import variant_source_blocks
+
+    second = _make_source_run(tmp_path / "batch_002", gene_id="2", clinvar_vcf=clinvar, variant_key="1:101:A>G")
+    third = _make_source_run(tmp_path / "batch_003", gene_id="3", clinvar_vcf=clinvar, variant_key="1:10000001:C>T")
+    prepared_many = manager.prepare(["batch_001", "batch_002", "batch_003"])
+    combined = resolve_variant_table_source([s.variant_annotations_source for s in prepared_many], required_columns=set())
+    blocks = variant_source_blocks(combined)
+    assert len(blocks) == 2
+    assert sorted(b.row_count for b in blocks) == [1, 2]
+    raw_sources = resolve_source_runs([original, second, third], clinvar_vcf=clinvar)
+    raw_combined = resolve_variant_table_source([s.variant_annotations_source for s in raw_sources], required_columns=set())
+    track = parse_tracks("phyloP100way")[0]
+    scores = PositionScores(track, {("chr1", 100): -1.5, ("chr1", 10000000): 2.0}, {"status": "complete"})
+    results = []
+    for pieces in [(raw_combined,), blocks]:
+        accumulator = candidate.CandidateDistributions()
+        for piece in pieces:
+            store = candidate.build_candidate_allele_store(
+                variant_annotations_source=piece, strategies=["s1"],
+                annotation_failures_path=None, temp_dir=tmp_path / "duckdb_tmp",
+            )
+            try:
+                candidate._materialize_candidate_scores(store, scores, chunk_size=1)
+                accumulator.add(store)
+            finally:
+                store.close()
+        results.append(accumulator.finish())
+    pd.testing.assert_frame_equal(results[0][0], results[1][0])
+    pd.testing.assert_frame_equal(results[0][1], results[1][1])
+    assert results[0][2:] == results[1][2:]
+    from analytics.analyses.variant_summary_aggregation import aggregate_variant_groups
+    summaries = [aggregate_variant_groups(
+        resolve_variant_aggregation_source([s.variant_annotations_source for s in sources]), threads=1,
+        temp_dir=tmp_path / "summary_tmp",
+    ) for sources in (raw_sources, prepared_many)]
+    assert summaries[0].masks == summaries[1].masks
+    assert summaries[0].gene_count == summaries[1].gene_count
+    for name in ("global_groups", "allele_gene_groups", "gnomad_af_summary", "pathogenic_rows"):
+        pd.testing.assert_frame_equal(getattr(summaries[0], name), getattr(summaries[1], name))
+    assert manager.prepare(["batch_001"])[0].source_id == prepared.source_id
+    assert len(restored) == 3
+    manager.finish()
+    assert prepared.run_dir.exists()  # keep mode
+    manager.cache_policy = "discard"
+    manager.finish()
+    assert original.exists() and not prepared.run_dir.exists()
+
+
+def test_archive_source_checks_budget_before_downloading(tmp_path, monkeypatch):
+    from analytics.io import archive_sources as archive_module
+
+    class Drive:
+        def require_google_drive(self, root):
+            pass
+
+    monkeypatch.setattr(archive_module, "read_archive_manifest", lambda *a, **kw: {
+        "tree_sha256": "a" * 64, "total_bytes": 10000,
+    })
+    monkeypatch.setattr(archive_module, "restore_run", lambda *a, **kw: pytest.fail("restore before capacity check"))
+    manager = archive_module.ArchiveSources(
+        analytics_root=tmp_path / "analytics", remote_root="gdrive:GAPH",
+        calculation_identity=TEST_CALCULATION_IDENTITY, cache_policy="discard",
+        disk_budget_bytes=100, workers=1, client=Drive(),
+    )
+    with pytest.raises(ValueError, match="budget exceeded"):
+        manager.prepare(["batch_001"])
 
 
 def _json(path: Path, payload: dict[str, object]) -> None:

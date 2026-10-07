@@ -8,6 +8,7 @@ import json
 import math
 import tempfile
 from collections.abc import Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -24,6 +25,7 @@ from analytics.io.variant_source import (
     resolve_variant_table_source,
     sql_string,
     variant_source_sql,
+    variant_source_blocks,
 )
 from genomics.variants import read_failed_regions
 from .conservation_validation import (
@@ -65,8 +67,8 @@ FILTER_OPTIONS = [
 
 @dataclass(frozen=True)
 class BasicFilteringAnalysis:
-    score_path: Path
-    score_manifest_path: Path
+    score_path: Path | None
+    score_manifest_path: Path | None
     candidate_curves: pd.DataFrame
     clinvar_curves: pd.DataFrame
     cache_hit: bool = False
@@ -81,19 +83,33 @@ def build_basic_filtering_analysis(
     cohort: ConservationCohort,
     strategies: list[str],
     eligible_gene_ids_by_strategy: dict[str, set[str]],
+    cache_policy: str = "keep",
+    filter_support_source: Path | Sequence[Path] | None = None,
 ) -> BasicFilteringAnalysis:
     """Build candidate-retention, gnomAD, and ClinVar threshold curves."""
 
-    score_path, manifest_path, cache_hit = build_or_load_filter_score_store(
-        variant_annotations_source=variant_annotations_source,
-        variant_strategy_support_tsv=variant_strategy_support_tsv,
-        annotation_failures_tsv=annotation_failures_tsv,
-        analytics_dir=analytics_dir,
-        strategies=strategies,
-    )
-    histograms = read_filter_score_histograms(score_path)
+    if cache_policy == "keep":
+        score_path, manifest_path, cache_hit = build_or_load_filter_score_store(
+            variant_annotations_source=variant_annotations_source,
+            variant_strategy_support_tsv=variant_strategy_support_tsv,
+            annotation_failures_tsv=annotation_failures_tsv,
+            analytics_dir=analytics_dir,
+            strategies=strategies,
+        )
+        histograms = read_filter_score_histograms(score_path)
+        clinvar_scores = read_clinvar_filter_scores(score_path, cohort.variants)
+    elif cache_policy == "discard":
+        histograms, clinvar_scores = _stream_filter_data(
+            variant_annotations_source=variant_annotations_source,
+            variant_strategy_support_tsv=variant_strategy_support_tsv,
+            filter_support_source=filter_support_source, annotation_failures_tsv=annotation_failures_tsv,
+            analytics_dir=analytics_dir, cohort=cohort.variants,
+        )
+        score_path = manifest_path = None
+        cache_hit = False
+    else:
+        raise ValueError(f"Unknown cache policy: {cache_policy}")
     candidate_curves = candidate_curves_from_histograms(histograms)
-    clinvar_scores = read_clinvar_filter_scores(score_path, cohort.variants)
     clinvar_curves = compute_clinvar_filter_curves(
         cohort=cohort,
         clinvar_scores=clinvar_scores,
@@ -109,6 +125,46 @@ def build_basic_filtering_analysis(
     )
 
 
+def _stream_filter_data(*, variant_annotations_source, variant_strategy_support_tsv,
+                        filter_support_source, annotation_failures_tsv, analytics_dir, cohort):
+    source, support_columns = _resolve_filter_sources(
+        variant_annotations_source, variant_strategy_support_tsv,
+    )
+    prepared_support = (
+        resolve_variant_table_source(filter_support_source, required_columns=set(support_columns))
+        if filter_support_source is not None else None
+    )
+    if prepared_support is not None and source.format != "parquet":
+        raise ValueError("Prepared support requires prepared variant inputs")
+    blocks = variant_source_blocks(source) if prepared_support is not None else (source,)
+    support_blocks = {
+        block.identity["block"]: block for block in variant_source_blocks(prepared_support)
+    } if prepared_support is not None else {}
+    if prepared_support is not None and set(support_blocks) - {block.identity["block"] for block in blocks}:
+        raise ValueError("Prepared support contains blocks absent from variant annotations")
+    analytics_dir.mkdir(parents=True, exist_ok=True)
+    histograms, scores = [], []
+    with tempfile.TemporaryDirectory(prefix=".filter_scores.", dir=analytics_dir) as temporary:
+        for index, block in enumerate(blocks, 1):
+            support = support_blocks.get(block.identity["block"]) if prepared_support is not None else None
+            if prepared_support is not None and support is None:
+                continue
+            print(f"Filter summary block {index}/{len(blocks)}", flush=True)
+            with _filter_score_connection(
+                source=block, support_path=variant_strategy_support_tsv,
+                support_columns=support_columns, annotation_failures_tsv=annotation_failures_tsv,
+                temp_dir=Path(temporary), prepared_support=support,
+            ) as connection:
+                histograms.append(_filter_score_histograms(connection, "filter_scores"))
+                scores.append(_clinvar_filter_scores(connection, "filter_scores", cohort))
+    if not histograms:
+        return pd.DataFrame(), pd.DataFrame(columns=FILTER_SCORE_COLUMNS)
+    histogram = pd.concat(histograms, ignore_index=True)
+    columns = [column for column in histogram.columns if column != "variant_count"]
+    return (histogram.groupby(columns, as_index=False, sort=True)["variant_count"].sum(),
+            pd.concat(scores, ignore_index=True))
+
+
 def build_or_load_filter_score_store(
     *,
     variant_annotations_source: Path | Sequence[Path],
@@ -119,28 +175,10 @@ def build_or_load_filter_score_store(
 ) -> tuple[Path, Path, bool]:
     """Materialize one bounded-width allele/strategy table for all filter views."""
 
-    source = resolve_variant_table_source(
-        variant_annotations_source,
-        required_columns={"variant_key", "event_type", "lookup_status", "gnomad_af"},
+    source, support_columns = _resolve_filter_sources(
+        variant_annotations_source, variant_strategy_support_tsv,
     )
     support_paths = _paths(variant_strategy_support_tsv)
-    support_columns = _read_header(support_paths[0])
-    if any(_read_header(path) != support_columns for path in support_paths[1:]):
-        raise ValueError("Variant strategy support columns differ across source runs")
-    required_support = {
-        "variant_key",
-        "gene_id",
-        "strategy",
-        "alt_support_ortholog_count",
-        "alt_support_family_count",
-        "site_aligned_ortholog_count",
-    }
-    missing = required_support - set(support_columns)
-    if missing:
-        raise ValueError(
-            f"Variant strategy support {variant_strategy_support_tsv} missing columns: "
-            + ", ".join(sorted(missing))
-        )
     outdir = analytics_dir / "basic_filtering"
     score_path = outdir / "filter_scores.parquet"
     manifest_path = outdir / "manifest.json"
@@ -186,6 +224,32 @@ def build_or_load_filter_score_store(
     return score_path, manifest_path, False
 
 
+def _resolve_filter_sources(variant_annotations_source, variant_strategy_support_tsv):
+    source = resolve_variant_table_source(
+        variant_annotations_source,
+        required_columns={"variant_key", "event_type", "lookup_status", "gnomad_af"},
+    )
+    support_paths = _paths(variant_strategy_support_tsv)
+    support_columns = _read_header(support_paths[0])
+    if any(_read_header(path) != support_columns for path in support_paths[1:]):
+        raise ValueError("Variant strategy support columns differ across source runs")
+    required_support = {
+        "variant_key",
+        "gene_id",
+        "strategy",
+        "alt_support_ortholog_count",
+        "alt_support_family_count",
+        "site_aligned_ortholog_count",
+    }
+    missing = required_support - set(support_columns)
+    if missing:
+        raise ValueError(
+            f"Variant strategy support {variant_strategy_support_tsv} missing columns: "
+            + ", ".join(sorted(missing))
+        )
+    return source, support_columns
+
+
 def _build_filter_score_store(
     *,
     source,
@@ -195,7 +259,6 @@ def _build_filter_score_store(
     score_path: Path,
     temp_dir: Path,
 ) -> int:
-    thread_count = available_cpu_count()
     with tempfile.NamedTemporaryFile(
         dir=score_path.parent,
         prefix=f".{score_path.name}.",
@@ -204,8 +267,29 @@ def _build_filter_score_store(
     ) as handle:
         temporary_path = Path(handle.name)
     temporary_path.unlink(missing_ok=True)
-    connection = duckdb.connect()
     try:
+        with _filter_score_connection(
+            source=source, support_path=support_path, support_columns=support_columns,
+            annotation_failures_tsv=annotation_failures_tsv, temp_dir=temp_dir,
+        ) as connection:
+            row_count = int(connection.execute("SELECT count(*) FROM filter_scores").fetchone()[0])
+            connection.execute(
+                f"COPY filter_scores TO {sql_string(temporary_path)} "
+                "(FORMAT PARQUET, COMPRESSION ZSTD, ROW_GROUP_SIZE 100000)"
+            )
+        _validate_score_store(temporary_path, row_count)
+        temporary_path.chmod(0o644)
+        temporary_path.replace(score_path)
+        return row_count
+    finally:
+        temporary_path.unlink(missing_ok=True)
+
+
+@contextmanager
+def _filter_score_connection(*, source, support_path, support_columns, annotation_failures_tsv,
+                             temp_dir, prepared_support=None):
+    thread_count = available_cpu_count()
+    with duckdb.connect() as connection:
         connection.execute(f"SET threads={thread_count}")
         connection.execute("SET preserve_insertion_order=false")
         connection.execute(f"SET temp_directory={sql_string(temp_dir)}")
@@ -214,7 +298,10 @@ def _build_filter_score_store(
         connection.execute(
             f"CREATE VIEW variant_source_rows AS SELECT * FROM {variant_source_sql(source)}"
         )
-        support_sql = _support_source_sql(support_path, support_columns)
+        support_sql = (
+            variant_source_sql(prepared_support) if prepared_support is not None
+            else _support_source_sql(support_path, support_columns)
+        )
         connection.execute(f"CREATE VIEW strategy_support_rows AS SELECT * FROM {support_sql}")
 
         failed = (
@@ -282,29 +369,22 @@ def _build_filter_score_store(
             "s.family_support, s.site_aligned_min, s.site_aligned_max "
             "FROM compact_support s JOIN global_annotations a USING (variant_key)"
         )
-        row_count = int(connection.execute("SELECT count(*) FROM filter_scores").fetchone()[0])
-        connection.execute(
-            f"COPY filter_scores TO {sql_string(temporary_path)} "
-            "(FORMAT PARQUET, COMPRESSION ZSTD, ROW_GROUP_SIZE 100000)"
-        )
-        _validate_score_store(temporary_path, row_count)
-        temporary_path.chmod(0o644)
-        temporary_path.replace(score_path)
-        return row_count
-    finally:
-        connection.close()
-        temporary_path.unlink(missing_ok=True)
+        yield connection
 
 
 def read_filter_score_histograms(score_path: Path) -> pd.DataFrame:
-    # Expand metrics only after deduplicating the union, so no allele is counted twice.
-    metrics = ", ".join(f"({sql_string(key)}, {column})" for key, _label, column in FILTER_OPTIONS)
     with duckdb.connect() as connection:
         thread_count = available_cpu_count()
         connection.execute(f"SET threads={thread_count}")
         configure_duckdb_memory(connection, thread_count)
-        return connection.execute(
-            "WITH individual AS MATERIALIZED (SELECT * FROM read_parquet(?)), "
+        return _filter_score_histograms(connection, f"read_parquet({sql_string(score_path)})")
+
+
+def _filter_score_histograms(connection, relation: str) -> pd.DataFrame:
+    # Expand metrics only after deduplicating the union, so no allele is counted twice.
+    metrics = ", ".join(f"({sql_string(key)}, {column})" for key, _label, column in FILTER_OPTIONS)
+    return connection.execute(
+            f"WITH individual AS MATERIALIZED (SELECT * FROM {relation}), "
             "combined AS (SELECT variant_key, 'union' AS strategy, variant_type, gnomad_status, "
             "max(ortholog_support) AS ortholog_support, max(strategy_support) AS strategy_support, "
             "max(family_support) AS family_support, min(site_aligned_min) AS site_aligned_min, "
@@ -314,7 +394,6 @@ def read_filter_score_histograms(score_path: Path) -> pd.DataFrame:
             "SELECT strategy, variant_type, filter_key, score, gnomad_status, count(*) AS variant_count "
             f"FROM scores, LATERAL (VALUES {metrics}) AS metric(filter_key, score) "
             "WHERE score IS NOT NULL GROUP BY ALL",
-            [str(score_path)],
         ).fetchdf()
 
 
@@ -384,20 +463,21 @@ def candidate_curves_from_histograms(histograms: pd.DataFrame) -> pd.DataFrame:
 
 
 def read_clinvar_filter_scores(score_path: Path, cohort: pd.DataFrame) -> pd.DataFrame:
-    keys = pd.DataFrame(
-        {"variant_key": sorted(set(cohort["variant_key"].astype(str)))}
-    )
     with duckdb.connect() as connection:
         thread_count = available_cpu_count()
         connection.execute(f"SET threads={thread_count}")
         configure_duckdb_memory(connection, thread_count)
-        connection.register("clinvar_keys", keys)
-        return connection.execute(
+        return _clinvar_filter_scores(connection, f"read_parquet({sql_string(score_path)})", cohort)
+
+
+def _clinvar_filter_scores(connection, relation: str, cohort: pd.DataFrame) -> pd.DataFrame:
+    keys = pd.DataFrame({"variant_key": sorted(set(cohort["variant_key"].astype(str)))})
+    connection.register("clinvar_keys", keys)
+    return connection.execute(
             "SELECT s.variant_key, s.strategy, s.variant_type, s.ortholog_support, "
             "s.strategy_support, s.family_support, s.site_aligned_min, s.site_aligned_max "
-            "FROM read_parquet(?) s "
+            f"FROM {relation} s "
             "JOIN clinvar_keys c USING (variant_key)",
-            [str(score_path)],
         ).fetchdf()
 
 

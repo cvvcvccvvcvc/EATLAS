@@ -19,8 +19,8 @@ from analytics.analyses.variant_summary_aggregation import (
 )
 from analytics.io.allele_evidence import allele_evidence_conflict_sql
 from analytics.io.duckdb import available_cpu_count, configure_duckdb_memory
-from analytics.io.alignment_aggregates import resolve_alignment_aggregate_paths
-from analytics.io.annotation_support import resolve_annotation_support_paths
+from analytics.io.alignment_aggregates import AlignmentAggregatePaths, resolve_alignment_aggregate_paths
+from analytics.io.annotation_support import AnnotationSupportPaths, resolve_annotation_support_paths
 from analytics.io.artifacts import content_identity, write_json_atomic
 from analytics.io.evidence_verification import verify_source_evidence
 from analytics.io.performance import PerformanceProfile, profile_stage
@@ -32,6 +32,7 @@ from analytics.io.variant_source import (
     resolve_variant_table_source,
     sql_string,
     variant_source_sql,
+    variant_source_blocks,
 )
 from genomics.gnomad import (
     GNOMAD_DATASET,
@@ -75,6 +76,8 @@ class SourceRun:
     variant_annotation_descriptor: dict[str, object]
     evidence_inventory: dict[str, object]
     evidence_inventory_descriptor: dict[str, object]
+    prepared_cache_dir: Path | None = None
+    archive_uri: str | None = None
 
 
 @dataclass(frozen=True)
@@ -115,10 +118,19 @@ class AnalysisWorkspace:
     analysis_dir: Path
     derived_dir: Path
     contract: dict[str, object]
+    cache_policy: str = "keep"
+
+    @property
+    def cache_root(self) -> Path:
+        return (
+            self.analytics_root / "cache"
+            if self.cache_policy == "keep"
+            else self.analysis_dir / "work" / "cache"
+        )
 
     @property
     def shared_calculation_cache(self) -> Path:
-        return self.analytics_root / "cache" / "calculations" / self.calculation_id
+        return self.cache_root / "calculations" / self.calculation_id
 
 
 def safe_report_name(name: str) -> str:
@@ -157,6 +169,16 @@ def resolve_source_runs(
     if not run_dirs:
         raise ValueError("At least one --run-dir is required")
     sources = tuple(_resolve_source_run(path) for path in run_dirs)
+    return validate_resolved_source_runs(sources, clinvar_vcf=clinvar_vcf)
+
+
+def validate_resolved_source_runs(
+    sources: Sequence[SourceRun], *, clinvar_vcf: Path
+) -> tuple[SourceRun, ...]:
+    """Apply identical cohort checks to local runs and verified prepared sources."""
+    sources = tuple(sources)
+    if not sources:
+        raise ValueError("Analysis requires at least one source run")
     if len({source.run_dir for source in sources}) != len(sources):
         raise ValueError("The same --run-dir was supplied more than once")
     if len({source.source_id for source in sources}) != len(sources):
@@ -187,6 +209,7 @@ def build_analysis_inputs(
         analytics_root=analytics_root,
         scientific_config=scientific_config,
         calculation_identity=calculation_identity,
+        cache_policy=workspace.cache_policy if workspace is not None else "keep",
     )
     if workspace is not None and workspace != expected_workspace:
         raise ValueError("Analysis workspace does not match the requested inputs")
@@ -197,6 +220,8 @@ def build_analysis_inputs(
     derived_dir = workspace.derived_dir
     contract = workspace.contract
     for source in source_runs:
+        if source.prepared_cache_dir is not None:
+            continue  # The archive restore and prepared-source receipt attest to this data.
         with profile_stage(
             performance_profile, f"Verify source evidence [{source.run_dir.name}]"
         ) as timing:
@@ -205,7 +230,7 @@ def build_analysis_inputs(
                 source_id=source.source_id,
                 inventory=source.evidence_inventory,
                 inventory_descriptor=source.evidence_inventory_descriptor,
-                cache_dir=analytics_root / "cache" / source.source_id,
+                cache_dir=workspace.cache_root / source.source_id,
             )
             timing["details"] = "unchanged verified source" if cached else "full SHA-256 verification"
     derived_dir.mkdir(parents=True, exist_ok=True)
@@ -216,12 +241,23 @@ def build_analysis_inputs(
     taxonomy_paths = []
     for source in source_runs:
         source_cache = (
-            analytics_root
-            / "cache"
+            workspace.cache_root
             / source.source_id
             / "calculations"
             / workspace.calculation_id
         )
+        if source.prepared_cache_dir is not None:
+            source_cache = source.prepared_cache_dir
+            alignment_paths.append(AlignmentAggregatePaths(
+                source_cache / "alignment_aggregates" / "strategy_summary.tsv.gz",
+                source_cache / "alignment_aggregates" / "feature_coverage.tsv.gz",
+            ))
+            annotation_paths.append(AnnotationSupportPaths(
+                source_cache / "annotation_support" / "variant_strategy_support.tsv.gz",
+                source_cache / "annotation_support" / "ortholog_evidence_summary.tsv.gz",
+            ))
+            taxonomy_paths.append(source_cache / "taxonomy_summary" / "taxonomy_summary.tsv.gz")
+            continue
         with profile_stage(
             performance_profile,
             f"Alignment aggregates [{source.run_dir.name}]",
@@ -339,6 +375,7 @@ def resolve_analysis_workspace(
     analytics_root: Path,
     scientific_config: dict[str, object],
     calculation_identity: dict[str, object],
+    cache_policy: str = "keep",
 ) -> AnalysisWorkspace:
     """Resolve the stable report location before expensive cache preparation."""
 
@@ -371,6 +408,7 @@ def resolve_analysis_workspace(
         analysis_dir=analysis_dir,
         derived_dir=derived_dir,
         contract=contract,
+        cache_policy=cache_policy,
     )
 
 
@@ -786,23 +824,27 @@ def _validate_shared_allele_evidence(
         prefix=".shared_allele_preflight.",
         dir=temporary_root,
     ) as temporary:
-        with duckdb.connect() as connection:
-            threads = available_cpu_count()
-            connection.execute(f"SET threads={threads}")
-            configure_duckdb_memory(connection, threads)
-            connection.execute("SET preserve_insertion_order=false")
-            connection.execute(f"SET temp_directory={sql_string(temporary)}")
-            connection.execute(
-                f"CREATE VIEW source_rows AS SELECT * FROM {variant_source_sql(source)}"
-            )
-            rows = connection.execute(
-                "WITH evidence_checks AS (SELECT variant_key, "
-                f"{check_sql}, count(*) FILTER (WHERE nullif(gnomad_af, '') "
-                "IS NOT NULL AND try_cast(nullif(gnomad_af, '') AS DOUBLE) IS NULL) "
-                "AS gnomad_af_invalid_count FROM source_rows WHERE variant_key <> '' "
-                "GROUP BY variant_key) SELECT * FROM evidence_checks WHERE "
-                f"{conflict_sql} LIMIT 10"
-            ).fetchall()
+        rows = []
+        for block in variant_source_blocks(source):
+            with duckdb.connect() as connection:
+                threads = available_cpu_count()
+                connection.execute(f"SET threads={threads}")
+                configure_duckdb_memory(connection, threads)
+                connection.execute("SET preserve_insertion_order=false")
+                connection.execute(f"SET temp_directory={sql_string(temporary)}")
+                connection.execute(
+                    f"CREATE VIEW source_rows AS SELECT * FROM {variant_source_sql(block)}"
+                )
+                rows = connection.execute(
+                    "WITH evidence_checks AS (SELECT variant_key, "
+                    f"{check_sql}, count(*) FILTER (WHERE nullif(gnomad_af, '') "
+                    "IS NOT NULL AND try_cast(nullif(gnomad_af, '') AS DOUBLE) IS NULL) "
+                    "AS gnomad_af_invalid_count FROM source_rows WHERE variant_key <> '' "
+                    "GROUP BY variant_key) SELECT * FROM evidence_checks WHERE "
+                    f"{conflict_sql} LIMIT 10"
+                ).fetchall()
+            if rows:
+                break
     conflicts = [
         (field, str(row[0]))
         for row in rows

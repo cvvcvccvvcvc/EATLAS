@@ -15,6 +15,8 @@ Usage:
 
 Arguments after -- are passed unchanged to analytics.strategy_report.
 The analytics root, source runs, and report name are managed by this launcher.
+Replace all --run-dir arguments with repeated --gdrive-run-id RUN_ID to read
+completed Google Drive archives. --gdrive-root and --cache-policy go after --.
 EOF
 }
 
@@ -37,6 +39,7 @@ canonical_destination() {
 
 analytics_root=""
 run_dirs=()
+gdrive_run_ids=()
 report_name=""
 expected_commit=""
 slurm_cpus=8
@@ -55,6 +58,12 @@ while (( $# > 0 )); do
     --run-dir)
       (( $# >= 2 )) || fail "--run-dir requires a value"
       run_dirs+=("$2")
+      shift 2
+      ;;
+    --gdrive-run-id)
+      (( $# >= 2 )) || fail "--gdrive-run-id requires a value"
+      [[ "$2" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || fail "invalid GDrive run ID: $2"
+      gdrive_run_ids+=("$2")
       shift 2
       ;;
     --report-name)
@@ -104,11 +113,13 @@ done
 
 [[ -n "$analytics_root" ]] || fail "--analytics-root is required"
 [[ "$analytics_root" = /* ]] || fail "--analytics-root must be an absolute path"
-(( ${#run_dirs[@]} > 0 )) || fail "at least one --run-dir is required"
+(( ${#run_dirs[@]} > 0 || ${#gdrive_run_ids[@]} > 0 )) || fail "at least one --run-dir or --gdrive-run-id is required"
+(( ${#run_dirs[@]} == 0 || ${#gdrive_run_ids[@]} == 0 )) || fail "local and GDrive sources cannot be mixed"
 requested_analytics_root=$analytics_root
 analytics_root=$(canonical_destination "$analytics_root") || fail \
   "--analytics-root cannot be resolved: $requested_analytics_root"
 resolved_run_dirs=()
+if (( ${#run_dirs[@]} > 0 )); then
 for run_dir in "${run_dirs[@]}"; do
   [[ "$run_dir" = /* ]] || fail "--run-dir must be an absolute path: $run_dir"
   [[ -d "$run_dir" ]] || fail "run directory does not exist: $run_dir"
@@ -123,7 +134,10 @@ for run_dir in "${run_dirs[@]}"; do
     "missing finalized variant annotations: $run_dir"
   resolved_run_dirs+=("$run_dir")
 done
-run_dirs=("${resolved_run_dirs[@]}")
+fi
+if (( ${#resolved_run_dirs[@]} > 0 )); then
+  run_dirs=("${resolved_run_dirs[@]}")
+fi
 [[ -n "$report_name" ]] || fail "--report-name is required"
 [[ "$expected_commit" =~ ^[0-9a-f]{40}$ ]] || fail \
   "--expected-commit must be a full 40-character Git commit"
@@ -135,13 +149,21 @@ run_dirs=("${resolved_run_dirs[@]}")
 [[ -n "$slurm_partition" ]] || fail "--slurm-partition must not be empty"
 command -v sbatch >/dev/null || fail "sbatch was not found; run this on the Slurm controller"
 
+if (( ${#report_args[@]} > 0 )); then
 for argument in "${report_args[@]}"; do
   case "$argument" in
-    --analytics-root|--analytics-root=*|--run-dir|--run-dir=*|--report-name|--report-name=*|--expected-commit|--expected-commit=*)
+    --analytics-root|--analytics-root=*|--run-dir|--run-dir=*|--gdrive-run-id|--gdrive-run-id=*|--report-name|--report-name=*|--expected-commit|--expected-commit=*)
       fail "$argument is managed by the launcher and must appear before --"
       ;;
   esac
 done
+fi
+
+if (( ${#gdrive_run_ids[@]} > 0 )); then
+for run_id in "${gdrive_run_ids[@]}"; do
+  report_args+=(--gdrive-run-id "$run_id")
+done
+fi
 
 script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 project_root=$(cd "$script_dir/../.." && pwd)
@@ -161,6 +183,9 @@ origin_commit=$(git -C "$project_root" rev-parse origin/main) || fail "cannot re
 log_dir="$analytics_root/slurm"
 mkdir -p "$log_dir"
 job_tag=${report_name:0:40}
+worker_arguments=("$analytics_root" "$report_name" "$git_commit" "$project_root" "${#run_dirs[@]}")
+if (( ${#run_dirs[@]} > 0 )); then worker_arguments+=("${run_dirs[@]}"); fi
+if (( ${#report_args[@]} > 0 )); then worker_arguments+=("${report_args[@]}"); fi
 job_id=$(sbatch --parsable \
   --job-name="gaph-report-$job_tag" \
   --partition="$slurm_partition" \
@@ -170,13 +195,7 @@ job_id=$(sbatch --parsable \
   --output="$log_dir/$report_name.%j.out" \
   --error="$log_dir/$report_name.%j.err" \
   "$batch_script" \
-  "$analytics_root" \
-  "$report_name" \
-  "$git_commit" \
-  "$project_root" \
-  "${#run_dirs[@]}" \
-  "${run_dirs[@]}" \
-  "${report_args[@]}")
+  "${worker_arguments[@]}")
 
 printf 'Submitted report job %s\n' "$job_id"
 printf 'Analytics workspace: %s\n' "$analytics_root"

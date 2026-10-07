@@ -13,7 +13,7 @@ expected_commit=$3
 project_root=$4
 run_count=$5
 shift 5
-[[ "$run_count" =~ ^[1-9][0-9]*$ ]] || {
+[[ "$run_count" =~ ^[0-9]+$ ]] || {
   printf 'Invalid source-run count: %s\n' "$run_count" >&2
   exit 2
 }
@@ -24,6 +24,10 @@ shift 5
 run_dirs=("${@:1:run_count}")
 shift "$run_count"
 report_args=("$@")
+if (( run_count == 0 )) && [[ " ${report_args[*]} " != *" --gdrive-run-id "* ]]; then
+    printf 'At least one local or GDrive source is required\n' >&2
+    exit 2
+fi
 
 source "$HOME/.gaph_v2_cluster_env.sh"
 : "${GAPH_ROOT:?GAPH_ROOT is not set by .gaph_v2_cluster_env.sh}"
@@ -58,9 +62,11 @@ command=(
   --analytics-root "$analytics_root"
   --report-name "$report_name"
 )
+if (( run_count > 0 )); then
 for run_dir in "${run_dirs[@]}"; do
   command+=(--run-dir "$run_dir")
 done
+fi
 command+=("${report_args[@]}")
 
 printf 'Git commit: %s\n' "$actual_commit"

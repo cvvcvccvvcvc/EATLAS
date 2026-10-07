@@ -195,6 +195,20 @@ class PerformanceProfile:
         )
         self._flush()
 
+    def bind_analysis(self, *, path: Path, analysis_dir: Path, analysis_id: str,
+                      report_path: Path, source_run_dirs: Sequence[Path]) -> None:
+        """Keep preparation timing when the final cohort identity becomes known."""
+        if self._stack:
+            raise RuntimeError("Cannot bind an analysis during an active preparation stage")
+        self.path = path
+        self.analysis_dir = analysis_dir
+        self.analysis_id = analysis_id
+        self.report_path = report_path
+        self.source_run_dirs = tuple(source_run_dirs)
+        self.tracked_directory = analysis_dir
+        self._tracked_bytes_before = _directory_size(analysis_dir)
+        self._flush()
+
     def add_metric(self, name: str, value: object) -> None:
         if not self._stack:
             raise RuntimeError("Performance metrics require an active stage")

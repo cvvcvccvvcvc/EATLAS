@@ -86,6 +86,43 @@ bash analytics/slurm/submit_strategy_report.sh \
 Compatibility and accepted-Gene-ID overlap are checked before scientific work.
 Analytics never silently deduplicates source runs.
 
+## Google Drive Archives And Cache Retention
+
+Local `--run-dir` inputs remain immutable and are never removal targets. To
+read completed archives from the configured Google Drive remote, replace all
+`--run-dir` arguments with repeated `--gdrive-run-id` values:
+
+```bash
+bash analytics/slurm/submit_strategy_report.sh \
+  --analytics-root "$GAPH_ROOT/analytics" \
+  --gdrive-run-id batch_001 --gdrive-run-id batch_002 \
+  --report-name archived_panel --expected-commit "$INTENDED_COMMIT" \
+  --slurm-cpus 64 --slurm-memory 512G --slurm-time 7-00:00:00 \
+  -- --gdrive-root gdrive:GAPH --cache-policy discard
+```
+
+The archive mode requires a direct Google Drive rclone backend and completed,
+checksum-bound archive markers. It restores and verifies one run at a time,
+prepares analytics-owned source inputs, then deletes only its own restored
+copy. Raw alignment and event lineage do not accumulate across restored runs.
+Prepared variant rows use compressed Parquet genomic blocks; repeated alleles
+from different runs remain in the same block for global evidence checks and
+candidate conservation calculations. Scientific source identity is preserved.
+In discard mode, support-filter calculations also operate on genomic blocks
+without writing the large all-allele filter-score table.
+
+`--cache-policy keep` is the default for both source modes. `discard` uses a
+separate owned workspace for newly calculated caches and large intermediate
+tables, releases it after a successful report, and preserves checkpoints after
+failure. It does not delete existing persistent caches or local source runs.
+HTML, scientific output tables, provenance, and performance profiles remain.
+
+`--gdrive-disk-budget-gb` limits the owned restore/preparation workspace. It is
+not the quota of the whole shared filesystem: select it from the remaining
+user allocation after references, environments, existing caches, and reports.
+`--duckdb-temp-limit-gb` bounds per-calculation spill; archive mode defaults to
+16 GiB. A budget error preserves completed source checkpoints for resume.
+
 ## Pass Report Options
 
 Arguments after `--` are passed unchanged to

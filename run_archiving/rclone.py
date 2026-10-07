@@ -105,6 +105,17 @@ class RcloneClient:
         self._run("version", capture=True)
         self._run("about", remote_name, "--json", capture=True)
 
+    def require_google_drive(self, remote_root: str) -> None:
+        """Require the configured Drive backend without exposing its credentials."""
+        import configparser
+
+        remote_name = validate_remote_root(remote_root).split(":", 1)[0]
+        result = self._run("config", "redacted", remote_name, capture=True)
+        config = configparser.ConfigParser(interpolation=None)
+        config.read_string(result.stdout)
+        if config.get(remote_name, "type", fallback=None) != "drive":
+            raise RcloneError("GDrive report inputs require a Google Drive rclone remote")
+
     def read_text_optional(self, remote_path: str) -> str | None:
         result = self._run("cat", remote_path, capture=True, check=False)
         if result.returncode == 0:

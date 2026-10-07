@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import tempfile
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -22,7 +23,7 @@ from analytics.io.variant_source import (
 )
 
 
-STORE_SCHEMA_VERSION = 1
+STORE_SCHEMA_VERSION = 2
 MAX_STRATEGIES = 63
 FOCAL_RANK_METHOD = "duckdb_md5_topk_v1"
 REQUIRED_COLUMNS = {
@@ -179,6 +180,7 @@ def build_or_load_observed_variant_store(
     variant_annotations_source: Path | Sequence[Path],
     analytics_dir: Path,
     strategies: list[str] | tuple[str, ...],
+    variant_keys: pd.Series | None = None,
 ) -> ObservedVariantStore:
     selected_strategies = tuple(
         sorted({str(value).strip() for value in strategies if str(value).strip()})
@@ -194,6 +196,9 @@ def build_or_load_observed_variant_store(
         variant_annotations_source,
         required_columns=REQUIRED_COLUMNS,
     )
+    requested_keys = (
+        sorted(set(variant_keys.astype(str))) if variant_keys is not None else None
+    )
     outdir = analytics_dir / "observed_variants"
     allele_gene_path = outdir / "allele_gene_memberships.parquet"
     allele_path = outdir / "allele_memberships.parquet"
@@ -202,6 +207,10 @@ def build_or_load_observed_variant_store(
         "schema_version": STORE_SCHEMA_VERSION,
         "source": source.identity,
         "strategies": list(selected_strategies),
+        "requested_keys": (
+            hashlib.sha256(json.dumps(requested_keys, separators=(",", ":")).encode()).hexdigest()
+            if requested_keys is not None else None
+        ),
     }
     cached = _load_cache(
         allele_gene_path=allele_gene_path,
@@ -221,6 +230,7 @@ def build_or_load_observed_variant_store(
             temp_dir=Path(temporary),
             expected_inputs=expected_inputs,
             strategies=selected_strategies,
+            requested_keys=requested_keys,
         )
     write_json_atomic(manifest_path, manifest)
     return ObservedVariantStore(
@@ -241,6 +251,7 @@ def _build_store(
     temp_dir: Path,
     expected_inputs: dict[str, object],
     strategies: tuple[str, ...],
+    requested_keys: list[str] | None,
 ) -> dict[str, object]:
     with duckdb.connect() as connection:
         thread_count = available_cpu_count()
@@ -249,6 +260,12 @@ def _build_store(
         connection.execute("SET preserve_insertion_order=false")
         connection.execute("SET enable_progress_bar=false")
         connection.execute(f"SET temp_directory={sql_string(temp_dir)}")
+        scope_sql = ""
+        if requested_keys is not None:
+            connection.register("requested_keys", pd.DataFrame({
+                "variant_key": pd.Series(requested_keys, dtype="str"),
+            }))
+            scope_sql = " WHERE variant_key IN (SELECT variant_key FROM requested_keys)"
         mask_sql = " + ".join(
             "CASE WHEN list_contains(list_transform(string_split(strategies, ','), "
             f"item -> trim(item)), {sql_string(strategy)}) THEN {1 << index} ELSE 0 END"
@@ -263,12 +280,12 @@ def _build_store(
             "cast(lookup_status AS VARCHAR) AS lookup_status, "
             "cast(strategies AS VARCHAR) AS strategies, "
             f"({mask_sql})::UBIGINT AS strategy_mask "
-            f"FROM {variant_source_sql(source)}"
+            f"FROM {variant_source_sql(source)}{scope_sql}"
         )
         source_row_count, missing_strategies = connection.execute(
-            "SELECT count(*), count_if(trim(strategies) = '') FROM allele_gene_source"
+            "SELECT count(*), coalesce(count_if(trim(strategies) = ''), 0) FROM allele_gene_source"
         ).fetchone()
-        if source.row_count is not None and int(source_row_count) != source.row_count:
+        if requested_keys is None and source.row_count is not None and int(source_row_count) != source.row_count:
             raise ValueError(
                 "Observed-variant source row count changed: "
                 f"observed {source_row_count}, expected {source.row_count}"
@@ -286,7 +303,7 @@ def _build_store(
                 ") WHERE trim(strategy) <> '' ORDER BY 1"
             ).fetchall()
         )
-        if observed_strategies != strategies:
+        if (requested_keys is None and observed_strategies != strategies) or set(observed_strategies) - set(strategies):
             raise ValueError(
                 "Observed-variant source strategies differ from the report contract: "
                 f"observed {', '.join(observed_strategies)}, "

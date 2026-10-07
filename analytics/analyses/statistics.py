@@ -6,8 +6,21 @@ import math
 import warnings
 from dataclasses import dataclass
 
+import numpy as np
+
 from scipy.stats import fisher_exact
 from statsmodels.stats.contingency_tables import StratifiedTable
+
+
+def weighted_quantiles(values: np.ndarray, weights: np.ndarray, quantiles: np.ndarray) -> np.ndarray:
+    """NumPy linear quantiles of sorted values repeated by integer frequencies."""
+    cumulative = np.cumsum(weights)
+    rank = (int(cumulative[-1]) - 1) * np.asarray(quantiles)
+    lower = values[np.searchsorted(cumulative, np.floor(rank), side="right")]
+    upper = values[np.searchsorted(cumulative, np.ceil(rank), side="right")]
+    fraction = rank - np.floor(rank)
+    difference = upper - lower
+    return np.where(fraction < .5, lower + difference * fraction, upper - difference * (1 - fraction))
 
 
 @dataclass(frozen=True)

@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 
 import pytest
+import numpy as np
 
 from analytics.analyses import candidate_conservation as candidate
 from analytics.analyses.candidate_conservation_aggregation import (
@@ -13,6 +14,32 @@ from analytics.analyses.candidate_conservation_aggregation import (
     resolve_candidate_aggregation_source,
 )
 from analytics.analyses.conservation import PositionScores, parse_tracks, track_identity
+
+
+@pytest.mark.parametrize("values", [
+    [1.0], [2.0] * 17, [-2., 0., 0., 1., 3., 8.],
+    np.random.default_rng(7).integers(-100, 100, 5000) / 7,
+])
+def test_weighted_phyloP_statistics_match_expanded_numpy_values(values):
+    expanded = np.asarray(values, dtype=float)
+    unique, weights = np.unique(expanded, return_counts=True)
+    np.testing.assert_array_equal(
+        candidate._weighted_quantiles(unique, weights, candidate.QUANTILES),
+        np.quantile(expanded, candidate.QUANTILES),
+    )
+    edges = candidate._weighted_histogram_edges(unique, weights)
+    if np.min(expanded) == np.max(expanded):
+        padding = max(abs(expanded[0]) * .05, .5)
+        expected = np.asarray([expanded[0] - padding, expanded[0] + padding])
+    else:
+        expected = np.histogram_bin_edges(expanded, bins="fd")
+        if len(expected) - 1 > candidate.MAX_HISTOGRAM_BINS:
+            expected = np.linspace(np.min(expanded), np.max(expanded), candidate.MAX_HISTOGRAM_BINS + 1)
+    np.testing.assert_array_equal(edges, expected)
+    np.testing.assert_array_equal(
+        np.histogram(unique, bins=edges, weights=weights)[0],
+        np.histogram(expanded, bins=edges)[0],
+    )
 
 
 def test_candidate_conservation_deduplicates_memberships_and_reuses_cache(

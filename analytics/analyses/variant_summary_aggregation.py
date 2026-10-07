@@ -3,18 +3,21 @@
 from __future__ import annotations
 
 import time
+from collections import Counter, defaultdict
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 import duckdb
+import numpy as np
 import pandas as pd
 
 from analytics.analyses.target_context import read_disjoint_contexts
 from analytics.vep.consequences import UNANNOTATED_CONSEQUENCE
 from analytics.io.allele_evidence import materialize_allele_evidence
 from analytics.io.duckdb import available_cpu_count, configure_duckdb_memory
-from analytics.io.variant_source import resolve_variant_table_source
+from analytics.io.variant_source import resolve_variant_table_source, variant_source_sql, variant_source_blocks
+from .statistics import weighted_quantiles
 from genomics.variants import (
     ALLELE_ANNOTATION_FIELDS,
     read_failed_regions,
@@ -49,6 +52,8 @@ class VariantAggregationSource:
     partitioned: bool
     header: bool
     identity: dict[str, object]
+    format: str = "tsv_gzip_v1"
+    partitions: tuple = ()
 
 
 @dataclass(frozen=True)
@@ -129,6 +134,8 @@ def resolve_variant_aggregation_source(
         partitioned=source.mode != "explicit_tsv",
         header=source.header,
         identity=source.identity,
+        format=source.format,
+        partitions=source.partitions,
     )
 
 
@@ -229,12 +236,19 @@ def aggregate_variant_groups(
     annotation_failures_path: Path | Sequence[Path] | None = None,
     threads: int | None = None,
     temp_dir: Path | None = None,
+    _strategies: tuple[str, ...] | None = None,
+    _af_frequencies: dict | None = None,
 ) -> VariantGroupedAggregation:
     """Build compact global-allele and allele-gene grouped relations."""
 
     thread_count = available_cpu_count() if threads is None else threads
     if thread_count < 1:
         raise ValueError("DuckDB thread count must be >= 1")
+    if source.format == "parquet" and source.partitions:
+        return _aggregate_prepared_groups(
+            source, genes_path=genes_path, target_features_path=target_features_path,
+            annotation_failures_path=annotation_failures_path, threads=thread_count, temp_dir=temp_dir,
+        )
     timings: dict[str, float] = {}
     diagnostics: dict[str, object] = {}
     connection = duckdb.connect()
@@ -257,7 +271,7 @@ def aggregate_variant_groups(
             "SELECT count(*), count_if(variant_key = ''), count_if(strategies = ''), "
             "count(DISTINCT gene_id) FROM source_rows"
         ).fetchone()
-        strategies = _read_strategies(connection)
+        strategies = _strategies or _read_strategies(connection)
         timings["source_scan"] = time.perf_counter() - started
         if source.row_count is not None and int(input_row_count) != source.row_count:
             raise ValueError(
@@ -327,7 +341,18 @@ def aggregate_variant_groups(
         connection.execute("DROP TABLE allele_gene_rows")
 
         started = time.perf_counter()
-        gnomad_af_summary = _query_gnomad_af_summary(connection, strategies)
+        if _af_frequencies is None:
+            gnomad_af_summary = _query_gnomad_af_summary(connection, strategies)
+        else:
+            frequencies = connection.execute(
+                "SELECT strategy_mask, gnomad_af, log10(nullif(gnomad_af, 0)) AS log_af, count(*) "
+                "FROM global_alleles WHERE gnomad_af IS NOT NULL GROUP BY ALL"
+            ).fetchall()
+            for mask, af, log_af, count in frequencies:
+                for index, strategy in enumerate(strategies):
+                    if mask & (1 << index):
+                        _af_frequencies[strategy][(float(af), log_af)] += int(count)
+            gnomad_af_summary = pd.DataFrame()
         timings["gnomad_af_quantiles"] = time.perf_counter() - started
         connection.execute("DROP TABLE global_alleles")
 
@@ -356,6 +381,78 @@ def aggregate_variant_groups(
         )
     finally:
         connection.close()
+
+
+def _aggregate_prepared_groups(source: VariantAggregationSource, **kwargs) -> VariantGroupedAggregation:
+    """Collapse one allele-disjoint block at a time, then merge exact aggregates."""
+    with duckdb.connect() as connection:
+        connection.execute(f"SET threads={kwargs['threads']}")
+        configure_duckdb_memory(connection, kwargs["threads"])
+        connection.execute(f"CREATE VIEW source_rows AS SELECT * FROM {_source_sql(source)}")
+        strategies = _read_strategies(connection)
+        gene_count = int(connection.execute("SELECT count(DISTINCT gene_id) FROM source_rows").fetchone()[0])
+    frequencies = defaultdict(Counter)
+    results = []
+    for index, block in enumerate(variant_source_blocks(source), 1):
+        print(f"Variant summary block {index}", flush=True)
+        results.append(aggregate_variant_groups(
+            replace(source, paths=block.paths, row_count=block.row_count, partitions=()),
+            **kwargs, _strategies=strategies, _af_frequencies=frequencies,
+        ))
+    def merged_counts(name):
+        frame = pd.concat([getattr(result, name) for result in results], ignore_index=True)
+        columns = [column for column in frame.columns if column != "variant_count"]
+        return frame.groupby(columns, dropna=False, as_index=False, sort=True)["variant_count"].sum()
+
+    rows = []
+    for strategy in strategies:
+        values = frequencies[strategy]
+        positive = {af: count for (af, _log), count in values.items() if af > 0}
+        if not positive:
+            continue
+        af_counts = Counter()
+        for (af, _log), count in values.items():
+            af_counts[af] += count
+        sorted_af = sorted(af_counts)
+        median_af = weighted_quantiles(
+            np.asarray(sorted_af), np.asarray([af_counts[af] for af in sorted_af]),
+            np.asarray([.5]),
+        )[0]
+        logs = Counter()
+        for (af, log_af), count in values.items():
+            if af > 0:
+                logs[float(log_af)] += count
+        sorted_logs = sorted(logs)
+        quantiles = weighted_quantiles(
+            np.asarray(sorted_logs), np.asarray([logs[v] for v in sorted_logs]),
+            np.asarray([.05, .25, .5, .75, .95]),
+        )
+        rows.append({"strategy": strategy, "Count": sum(positive.values()), "Median gnomAD AF": median_af,
+                     **dict(zip(["Q05", "Q25", "Median", "Q75", "Q95"], quantiles))})
+    allele_gene_masks, allele_masks, timings = Counter(), Counter(), Counter()
+    for result in results:
+        allele_gene_masks.update(result.masks.allele_gene_mask_counts)
+        allele_masks.update(result.masks.allele_mask_counts)
+        timings.update(result.timings)
+    pathogenic = pd.concat([result.pathogenic_rows for result in results], ignore_index=True)
+    if not pathogenic.empty:
+        pathogenic = pathogenic.assign(
+            _stars=pd.to_numeric(pathogenic["review_stars"], errors="coerce"),
+            _scv=pd.to_numeric(pathogenic["clinvar_scv_count"], errors="coerce"),
+        ).sort_values(["_stars", "_scv", "variant_id"], ascending=[False, False, True]).drop(columns=["_stars", "_scv"]).reset_index(drop=True)
+    return VariantGroupedAggregation(
+        masks=StrategyMaskAggregation(
+            input_row_count=sum(r.masks.input_row_count for r in results),
+            missing_variant_key_count=sum(r.masks.missing_variant_key_count for r in results),
+            missing_strategy_count=sum(r.masks.missing_strategy_count for r in results),
+            strategies=strategies, allele_gene_mask_counts=dict(allele_gene_masks), allele_mask_counts=dict(allele_masks),
+        ),
+        consequence_source="Ensembl VEP", gene_count=gene_count,
+        global_groups=merged_counts("global_groups"), allele_gene_groups=merged_counts("allele_gene_groups"),
+        gnomad_af_summary=pd.DataFrame(rows), pathogenic_rows=pathogenic, timings=dict(timings),
+        diagnostics={"engine": "duckdb", "prepared_block_count": len(results),
+                     "peak_block_temp_bytes": max(r.diagnostics.get("temp_storage_bytes_after_materialization", 0) or 0 for r in results)},
+    )
 
 
 def _read_strategies(connection) -> tuple[str, ...]:
@@ -774,6 +871,8 @@ def _sql_identifier(value: str) -> str:
 
 
 def _source_sql(source: VariantAggregationSource) -> str:
+    if source.format == "parquet":
+        return variant_source_sql(source)
     columns = "{" + ",".join(
         f"{_sql_string(column)}: 'VARCHAR'" for column in source.columns
     ) + "}"

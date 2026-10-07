@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import tempfile
+from collections import Counter, defaultdict
 from collections.abc import Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -13,6 +14,8 @@ import pandas as pd
 
 from analytics.io.artifacts import path_metadata, write_json_atomic, write_tsv_atomic
 from analytics.io.performance import PerformanceProfile, profile_stage
+from analytics.io.variant_source import variant_source_blocks
+from .statistics import weighted_quantiles as _weighted_quantiles
 from .candidate_conservation_aggregation import (
     CandidateAlleleStore,
     build_candidate_allele_store,
@@ -29,7 +32,7 @@ from .conservation import (
 )
 
 
-CACHE_VERSION = 6
+CACHE_VERSION = 7
 QUANTILES = np.linspace(0.0, 1.0, 101)
 MAX_HISTOGRAM_BINS = 80
 REQUIRED_COLUMNS = {
@@ -107,75 +110,73 @@ def build_candidate_conservation(
     with tempfile.TemporaryDirectory(
         prefix=".candidate_phylop_duckdb.", dir=analytics_dir
     ) as temporary:
-        with profile_stage(performance_profile, "Candidate allele collapse") as timing:
-            store = build_candidate_allele_store(
-                variant_annotations_source=variant_annotations_source,
-                strategies=strategies,
-                annotation_failures_path=annotation_failures_tsv,
-                temp_dir=Path(temporary),
+        accumulator = CandidateDistributions()
+        scan_summary = Counter()
+        score_summary = Counter()
+        position_summary = {"status": "complete", "processed_positions": 0, "block_count": 0}
+        blocks = variant_source_blocks(variant_source)
+        for block_index, block in enumerate(blocks, 1):
+            label = f" [{block_index}/{len(blocks)}]" if len(blocks) > 1 else ""
+            with profile_stage(performance_profile, "Candidate allele collapse" + label):
+                store = build_candidate_allele_store(
+                    variant_annotations_source=block, strategies=strategies,
+                    annotation_failures_path=annotation_failures_tsv,
+                    temp_dir=Path(temporary),
+                )
+            try:
+                with profile_stage(performance_profile, "Candidate position index" + label) as timing:
+                    positions_by_chrom, scan, unsupported = _candidate_positions(store, track.chrom_style, chunk_size)
+                    store.register_unsupported(unsupported)
+                    if len(blocks) == 1:
+                        _add_positions(positions_by_chrom, additional_rows or [], track.chrom_style)
+                    scan_summary.update(scan)
+                    timing["metrics"] = scan
+                with profile_stage(performance_profile, "Candidate phyloP position read" + label) as timing:
+                    position_scores = read_position_scores(
+                        positions_by_chrom=positions_by_chrom, track=track,
+                        max_block_bp=max_block_bp, max_gap_bp=max_gap_bp,
+                        remote_retries=remote_retries, retry_sleep_seconds=retry_sleep_seconds,
+                        precision=precision,
+                    )
+                    timing["metrics"] = dict(position_scores.summary)
+                    position_summary["processed_positions"] += sum(map(len, positions_by_chrom.values()))
+                    position_summary["block_count"] += int(position_scores.summary.get("block_count", 0))
+                    if position_scores.summary.get("status") != "complete":
+                        position_summary["status"] = "partial"
+                with profile_stage(performance_profile, "Candidate allele score materialization" + label) as timing:
+                    scoring = _materialize_candidate_scores(store, position_scores, chunk_size)
+                    score_summary.update(scoring)
+                    timing["metrics"] = scoring
+                with profile_stage(performance_profile, "Candidate distribution summaries" + label):
+                    accumulator.add(store)
+            finally:
+                store.close()
+            if len(blocks) > 1:
+                del positions_by_chrom, position_scores
+        if len(blocks) > 1:
+            clinvar_positions = {}
+            _add_positions(clinvar_positions, additional_rows or [], track.chrom_style)
+            position_scores = read_position_scores(
+                positions_by_chrom=clinvar_positions, track=track,
+                max_block_bp=max_block_bp, max_gap_bp=max_gap_bp,
+                remote_retries=remote_retries, retry_sleep_seconds=retry_sleep_seconds,
+                precision=precision,
             )
-            timing["metrics"] = {
-                "source_mode": store.source.mode,
-                "source_file_count": len(store.source.paths),
-                "strategy_count": len(store.strategies),
-            }
-        try:
-            with profile_stage(performance_profile, "Candidate position index") as timing:
-                positions_by_chrom, scan_summary, unsupported = _candidate_positions(
-                    store,
-                    track.chrom_style,
-                    chunk_size,
-                )
-                store.register_unsupported(unsupported)
-                _add_positions(positions_by_chrom, additional_rows or [], track.chrom_style)
-                timing["metrics"] = {
-                    **scan_summary,
-                    "position_count_with_clinvar": sum(
-                        len(values) for values in positions_by_chrom.values()
-                    ),
-                }
-            with profile_stage(performance_profile, "Candidate phyloP position read") as timing:
-                position_scores = read_position_scores(
-                    positions_by_chrom=positions_by_chrom,
-                    track=track,
-                    max_block_bp=max_block_bp,
-                    max_gap_bp=max_gap_bp,
-                    remote_retries=remote_retries,
-                    retry_sleep_seconds=retry_sleep_seconds,
-                    precision=precision,
-                )
-                timing["metrics"] = dict(position_scores.summary)
-            with profile_stage(
-                performance_profile,
-                "Candidate allele score materialization",
-            ) as timing:
-                score_summary = _materialize_candidate_scores(
-                    store,
-                    position_scores,
-                    chunk_size,
-                )
-                timing["metrics"] = dict(score_summary)
-            with profile_stage(performance_profile, "Candidate distribution summaries") as timing:
-                distributions, histograms, groups, membership_summary = _aggregate_distributions(
-                    store,
-                )
-                timing["metrics"] = dict(membership_summary)
-        finally:
-            store.close()
+        distributions, histograms, groups, membership_summary = accumulator.finish()
     write_tsv_atomic(distributions_path, distributions)
     write_tsv_atomic(histograms_path, histograms)
     manifest = {
         "inputs": expected_inputs,
-        "complete": position_scores.summary.get("status") == "complete",
-        "candidate_scan": scan_summary,
-        "position_read": position_scores.summary,
+        "complete": position_summary["status"] == "complete" and position_scores.summary.get("status") == "complete",
+        "candidate_scan": dict(scan_summary),
+        "position_read": {**position_scores.summary, **position_summary},
         "memberships": membership_summary,
-        "score_materialization": score_summary,
+        "score_materialization": dict(score_summary),
         "aggregation": {
             "engine": "duckdb",
-            "source_mode": store.source.mode,
-            "source_file_count": len(store.source.paths),
-            "source_identity": store.source.identity,
+            "source_mode": variant_source.mode,
+            "source_file_count": len(variant_source.paths),
+            "source_identity": variant_source.identity,
         },
         "groups": groups,
         "quantile_count": len(QUANTILES),
@@ -291,80 +292,85 @@ def _add_positions(
 def _aggregate_distributions(
     store: CandidateAlleleStore,
 ) -> tuple[pd.DataFrame, pd.DataFrame, list[dict[str, object]], dict[str, int]]:
-    groups_frame = store.group_counts()
-    groups_frame["scored_count"] = 0
-    distribution_rows = []
-    histogram_rows = []
-    box_summaries = {}
-    for strategy in groups_frame["strategy"].astype(str).unique():
-        strategy_groups = groups_frame[groups_frame["strategy"].astype(str).eq(strategy)]
-        values_by_status = {}
-        for group in strategy_groups.itertuples(index=False):
-            status = str(group.gnomad_status)
-            values = store.group_scores(
-                strategy=strategy,
-                gnomad_status=status,
-            )
-            groups_frame.loc[
-                groups_frame["strategy"].eq(strategy)
-                & groups_frame["gnomad_status"].eq(status),
-                "scored_count",
-            ] = int(values.size)
-            if values.size == 0:
-                continue
-            values_by_status[status] = values
-            quantile_values = np.quantile(values, QUANTILES)
-            distribution_rows.extend(
-                {
-                    "strategy": strategy,
-                    "gnomad_status": status,
-                    "quantile": float(quantile),
-                    "phyloP100way": float(score),
-                    "variant_count": int(group.variant_count),
-                    "scored_count": int(values.size),
+    accumulator = CandidateDistributions()
+    accumulator.add(store)
+    return accumulator.finish()
+
+
+class CandidateDistributions:
+    """Exact score frequencies merge across disjoint allele blocks without row expansion."""
+
+    def __init__(self):
+        self.groups = Counter()
+        self.scores = defaultdict(Counter)
+        self.summary = Counter()
+
+    def add(self, store: CandidateAlleleStore) -> None:
+        self.summary.update(store.summary())
+        for row in store.group_counts().itertuples(index=False):
+            key = (str(row.strategy), str(row.gnomad_status))
+            self.groups[key] += int(row.variant_count)
+            frame = store.group_score_counts(strategy=key[0], gnomad_status=key[1])
+            self.scores[key].update({float(r.score): int(r.weight) for r in frame.itertuples(index=False)})
+
+    def finish(self):
+        distribution_rows, histogram_rows, groups = [], [], []
+        for strategy in sorted({key[0] for key in self.groups}):
+            combined = Counter()
+            for key, frequencies in self.scores.items():
+                if key[0] == strategy:
+                    combined.update(frequencies)
+            if combined:
+                all_values = np.asarray(sorted(combined), dtype=float)
+                all_weights = np.asarray([combined[v] for v in all_values], dtype=np.int64)
+                edges = _weighted_histogram_edges(all_values, all_weights)
+            for key in sorted(k for k in self.groups if k[0] == strategy):
+                frequencies = self.scores[key]
+                count = sum(frequencies.values())
+                group = {
+                    "strategy": strategy, "gnomad_status": key[1], "variant_count": self.groups[key],
+                    "scored_count": count, "score_coverage": count / self.groups[key] if self.groups[key] else 0.0,
                 }
-                for quantile, score in zip(QUANTILES, quantile_values)
-            )
-            box_summaries[(strategy, status)] = _box_summary(values)
+                if count:
+                    values = np.asarray(sorted(frequencies), dtype=float)
+                    weights = np.asarray([frequencies[v] for v in values], dtype=np.int64)
+                    quantiles = _weighted_quantiles(values, weights, QUANTILES)
+                    distribution_rows.extend({
+                        "strategy": strategy, "gnomad_status": key[1], "quantile": float(q),
+                        "phyloP100way": float(v), "variant_count": self.groups[key], "scored_count": count,
+                    } for q, v in zip(QUANTILES, quantiles))
+                    q1, median, q3 = _weighted_quantiles(values, weights, np.asarray([.25, .5, .75]))
+                    group.update({
+                        "q1": float(q1), "median": float(median), "q3": float(q3),
+                        "lower_whisker": float(values[np.searchsorted(values, q1 - 1.5 * (q3 - q1))]),
+                        "upper_whisker": float(values[np.searchsorted(values, q3 + 1.5 * (q3 - q1), side="right") - 1]),
+                    })
+                    counts = np.histogram(values, bins=edges, weights=weights)[0]
+                    histogram_rows.extend({
+                        "strategy": strategy, "gnomad_status": key[1], "bin_left": float(left),
+                        "bin_right": float(right), "count": int(n), "fraction": float(n / count),
+                    } for left, right, n in zip(edges[:-1], edges[1:], counts))
+                groups.append(group)
+        keys = ("unique_usable_allele_count", "strategy_variant_membership_count",
+                "lookup_failed_allele_context_count", "gnomad_status_conflict_membership_count")
+        distributions = pd.DataFrame(distribution_rows, columns=[
+            "strategy", "gnomad_status", "quantile", "phyloP100way", "variant_count", "scored_count",
+        ])
+        histograms = pd.DataFrame(histogram_rows, columns=[
+            "strategy", "gnomad_status", "bin_left", "bin_right", "count", "fraction",
+        ])
+        return distributions, histograms, groups, {k: self.summary[k] for k in keys}
 
-        if not values_by_status:
-            continue
-        edges = _histogram_edges(np.concatenate(list(values_by_status.values())))
-        for status, values in values_by_status.items():
-            counts, _ = np.histogram(values, bins=edges)
-            histogram_rows.extend(
-                {
-                    "strategy": strategy,
-                    "gnomad_status": status,
-                    "bin_left": float(left),
-                    "bin_right": float(right),
-                    "count": int(count),
-                    "fraction": float(count / values.size),
-                }
-                for left, right, count in zip(edges[:-1], edges[1:], counts)
-            )
 
-    groups_frame["scored_count"] = pd.to_numeric(
-        groups_frame["scored_count"], errors="coerce"
-    ).fillna(0).astype(int)
-    summary = store.summary()
-
-    groups = groups_frame.to_dict(orient="records")
-    for group in groups:
-        variant_count = int(group["variant_count"])
-        scored_count = int(group["scored_count"])
-        group["variant_count"] = variant_count
-        group["scored_count"] = scored_count
-        group["score_coverage"] = scored_count / variant_count if variant_count else 0.0
-        group.update(box_summaries.get((str(group["strategy"]), str(group["gnomad_status"])), {}))
-    return pd.DataFrame(distribution_rows), pd.DataFrame(histogram_rows), groups, {
-        "unique_usable_allele_count": summary["unique_usable_allele_count"],
-        "strategy_variant_membership_count": summary["strategy_variant_membership_count"],
-        "lookup_failed_allele_context_count": summary["lookup_failed_allele_context_count"],
-        "gnomad_status_conflict_membership_count": summary[
-            "gnomad_status_conflict_membership_count"
-        ],
-    }
+def _weighted_histogram_edges(values: np.ndarray, weights: np.ndarray) -> np.ndarray:
+    minimum, maximum = float(values[0]), float(values[-1])
+    if minimum == maximum:
+        padding = max(abs(minimum) * .05, .5)
+        return np.asarray([minimum - padding, maximum + padding])
+    q1, q3 = _weighted_quantiles(values, weights, np.asarray([.25, .75]))
+    width = 2 * (q3 - q1) * int(weights.sum()) ** (-1 / 3)
+    bins = min(MAX_HISTOGRAM_BINS, int(np.ceil((maximum - minimum) / width))) if width else 1
+    return np.linspace(minimum, maximum, bins + 1)
 
 
 def _materialize_candidate_scores(
@@ -374,10 +380,18 @@ def _materialize_candidate_scores(
 ) -> dict[str, int]:
     attempted_count = 0
     scored_count = 0
+    chrom_names = {}
     for rows in store.iter_scoring_rows(chunk_size):
         scores = []
         for allele_id, chrom, pos, ref, alt in rows:
             attempted_count += 1
+            if len(ref) == len(alt) == 1:
+                if chrom not in chrom_names:
+                    chrom_names[chrom] = format_chrom(chrom, position_scores.track.chrom_style)
+                value = position_scores.values.get((chrom_names[chrom], int(pos) - 1))
+                if value is not None:
+                    scores.append((int(allele_id), float(value)))
+                continue
             required = _required_positions(
                 chrom,
                 pos,
@@ -394,34 +408,6 @@ def _materialize_candidate_scores(
         "attempted_allele_count": attempted_count,
         "scored_allele_count": scored_count,
         "missing_score_allele_count": attempted_count - scored_count,
-    }
-
-
-def _histogram_edges(values: np.ndarray) -> np.ndarray:
-    if values.size == 0:
-        raise ValueError("Cannot calculate histogram bins without values.")
-    minimum = float(np.min(values))
-    maximum = float(np.max(values))
-    if minimum == maximum:
-        padding = max(abs(minimum) * 0.05, 0.5)
-        return np.asarray([minimum - padding, maximum + padding])
-    edges = np.histogram_bin_edges(values, bins="fd")
-    if len(edges) - 1 > MAX_HISTOGRAM_BINS:
-        edges = np.linspace(minimum, maximum, MAX_HISTOGRAM_BINS + 1)
-    return edges
-
-
-def _box_summary(values: np.ndarray) -> dict[str, float]:
-    q1, median, q3 = np.quantile(values, [0.25, 0.5, 0.75])
-    iqr = q3 - q1
-    lower_candidates = values[values >= q1 - 1.5 * iqr]
-    upper_candidates = values[values <= q3 + 1.5 * iqr]
-    return {
-        "q1": float(q1),
-        "median": float(median),
-        "q3": float(q3),
-        "lower_whisker": float(np.min(lower_candidates)),
-        "upper_whisker": float(np.max(upper_candidates)),
     }
 
 

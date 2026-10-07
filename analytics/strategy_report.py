@@ -5,9 +5,12 @@ from __future__ import annotations
 
 import argparse
 import os
+import shutil
 from pathlib import Path
 
-from analytics.analyses.clinvar_validation import build_validation
+import pandas as pd
+
+from analytics.analyses.clinvar_validation import build_validation, build_or_load_clinvar_universe
 from analytics.analyses.basic_filtering import build_basic_filtering_analysis
 from analytics.analyses.conservation_analysis import (
     alignment_gene_ids_by_strategy,
@@ -33,13 +36,16 @@ from analytics.io.run_inputs import (
     resolve_analysis_workspace,
     resolve_report_html,
     resolve_source_runs,
+    validate_resolved_source_runs,
     variant_annotation_descriptor,
     variant_annotation_release,
+    safe_report_name,
 )
 from analytics.io.artifacts import (
     cached_content_identity,
     path_metadata,
     write_text_atomic,
+    write_tsv_atomic,
 )
 from analytics.io.calculation_identity import (
     build_calculation_identity,
@@ -73,13 +79,25 @@ def parse_args() -> argparse.Namespace:
         required=True,
         help="External workspace for analytics caches, derived data, and reports.",
     )
-    parser.add_argument(
+    sources = parser.add_mutually_exclusive_group(required=True)
+    sources.add_argument(
         "--run-dir",
         type=Path,
         action="append",
-        required=True,
         help="Completed GAPH source run. Repeat for a multi-run analysis.",
     )
+    sources.add_argument(
+        "--gdrive-run-id", action="append",
+        help="Completed Google Drive archive run ID. Repeat for a multi-run report.",
+    )
+    parser.add_argument("--gdrive-root", default=os.environ.get("GAPH_ARCHIVE_REMOTE"),
+                        help="Google Drive rclone archive root; defaults to GAPH_ARCHIVE_REMOTE.")
+    parser.add_argument("--cache-policy", choices=("keep", "discard"), default="keep",
+                        help="Keep reusable caches, or release newly owned intermediates after success.")
+    parser.add_argument("--gdrive-disk-budget-gb", type=int, default=80,
+                        help="Maximum owned restore/preparation workspace in GiB. Default: 80.")
+    parser.add_argument("--duckdb-temp-limit-gb", type=int, default=None,
+                        help="DuckDB spill limit per calculation in GiB; GDrive default is 16.")
     parser.add_argument(
         "--clinvar-vcf",
         type=Path,
@@ -277,7 +295,7 @@ def _require_local_vep_runtime(
 
 def main() -> None:
     args = parse_args()
-    args.analytics_root = resolve_analytics_root(args.analytics_root, args.run_dir)
+    args.analytics_root = resolve_analytics_root(args.analytics_root, args.run_dir or [])
     with analytics_root_lock(args.analytics_root):
         _run_report(args)
 
@@ -302,7 +320,46 @@ def _run_report(args: argparse.Namespace) -> None:
         raise ValueError("--firth-workers must be >= 1")
     if args.vep_result_cache_tile_size_bp < 1:
         raise ValueError("--vep-result-cache-tile-size-bp must be >= 1")
-    source_runs = resolve_source_runs(args.run_dir, clinvar_vcf=args.clinvar_vcf)
+    firth_runtime = validate_firth_runtime()
+    calculation_identity = build_calculation_identity(firth_runtime=firth_runtime)
+    if args.duckdb_temp_limit_gb is not None:
+        if args.duckdb_temp_limit_gb < 1:
+            raise ValueError("--duckdb-temp-limit-gb must be positive")
+        os.environ["GAPH_DUCKDB_TEMP_LIMIT"] = f"{args.duckdb_temp_limit_gb}GiB"
+    archive_sources = None
+    source_profile = None
+    if args.gdrive_run_id:
+        from analytics.io.archive_sources import ArchiveSources
+
+        if not args.gdrive_root or args.gdrive_disk_budget_gb < 1:
+            raise ValueError("GDrive inputs require an archive root and a positive disk budget")
+        os.environ.setdefault("GAPH_DUCKDB_TEMP_LIMIT", f"{args.duckdb_temp_limit_gb or 16}GiB")
+        os.environ.setdefault("RCLONE_TPSLIMIT", "2")
+        os.environ.setdefault("RCLONE_RETRIES", "6")
+        os.environ.setdefault("RCLONE_LOW_LEVEL_RETRIES", "12")
+        _require_local_vep_runtime(
+            backend=args.vep_backend, release=str(args.vep_release or ""),
+            executable=args.vep_executable, cache_dir=args.vep_cache_dir,
+        )
+        name = safe_report_name(args.report_name)
+        source_profile = PerformanceProfile(
+            args.analytics_root / "slurm" / f"{name}.preparation.json",
+            analysis_dir=args.analytics_root, analysis_id="preparing",
+            report_path=args.analytics_root / f"{name}.html",
+        )
+        archive_sources = ArchiveSources(
+            analytics_root=args.analytics_root, remote_root=args.gdrive_root,
+            calculation_identity=calculation_identity, cache_policy=args.cache_policy,
+            disk_budget_bytes=args.gdrive_disk_budget_gb * 1024**3,
+            workers=args.annotation_support_workers,
+            performance_profile=source_profile,
+        )
+        with source_profile.stage("Google Drive source preparation"):
+            source_runs = validate_resolved_source_runs(
+                archive_sources.prepare(args.gdrive_run_id), clinvar_vcf=args.clinvar_vcf,
+            )
+    else:
+        source_runs = resolve_source_runs(args.run_dir, clinvar_vcf=args.clinvar_vcf)
     artifact_release = variant_annotation_release(
         source_runs[0].variant_annotation_descriptor
     )
@@ -318,10 +375,6 @@ def _run_report(args: argparse.Namespace) -> None:
         release=str(args.vep_release),
         executable=args.vep_executable,
         cache_dir=args.vep_cache_dir,
-    )
-    firth_runtime = validate_firth_runtime()
-    calculation_identity = build_calculation_identity(
-        firth_runtime=firth_runtime,
     )
     code_provenance = repository_provenance(Path(__file__).resolve().parents[1])
     phylop_identity = (
@@ -355,8 +408,9 @@ def _run_report(args: argparse.Namespace) -> None:
         analytics_root=args.analytics_root,
         scientific_config=scientific_config,
         calculation_identity=calculation_identity,
+        cache_policy=args.cache_policy,
     )
-    _build_report(
+    performance = _build_report(
         args,
         source_runs,
         scientific_config,
@@ -364,7 +418,18 @@ def _run_report(args: argparse.Namespace) -> None:
         phylop_identity=phylop_identity,
         calculation_identity=calculation_identity,
         code_provenance=code_provenance,
+        preparation_profile=source_profile,
     )
+    if archive_sources is not None:
+        archive_sources.finish()
+    if args.cache_policy == "discard":
+        path = workspace.analysis_dir / "work"
+        if path.is_symlink():
+            raise ValueError(f"Refusing symlinked calculation cleanup: {path}")
+        if path.is_dir():
+            shutil.rmtree(path)
+    performance.finish(artifacts=[resolve_report_html(workspace, args.report_name)])
+    print(f"Done in {performance.total_wall_seconds:.3f} s including preparation and cleanup")
 
 
 def _build_report(
@@ -376,10 +441,11 @@ def _build_report(
     phylop_identity: dict[str, object] | None,
     calculation_identity: dict[str, object],
     code_provenance: dict[str, object],
-) -> None:
+    preparation_profile: PerformanceProfile | None = None,
+) -> PerformanceProfile:
     out_html = resolve_report_html(workspace, args.report_name)
     performance_path = workspace.analysis_dir / "performance" / f"{out_html.stem}.json"
-    performance = PerformanceProfile(
+    performance = preparation_profile or PerformanceProfile(
         performance_path,
         analysis_dir=workspace.analysis_dir,
         analysis_id=workspace.analysis_id,
@@ -387,6 +453,12 @@ def _build_report(
         tracked_directory=workspace.analysis_dir,
         source_run_dirs=tuple(source.run_dir for source in source_runs),
     )
+    if preparation_profile is not None:
+        performance.bind_analysis(
+            path=performance_path, analysis_dir=workspace.analysis_dir,
+            analysis_id=workspace.analysis_id, report_path=out_html,
+            source_run_dirs=tuple(source.run_dir for source in source_runs),
+        )
     with performance.stage("Prepare analysis inputs") as timing:
         inputs = build_analysis_inputs(
             source_runs,
@@ -404,6 +476,10 @@ def _build_report(
         }
     candidate_annotation_descriptor = variant_annotation_descriptor(inputs)
     analytics_dir = inputs.derived_dir
+    heavy_dir = (
+        analytics_dir if args.cache_policy == "keep"
+        else workspace.analysis_dir / "work" / "derived"
+    )
 
     print(
         f"Analysis {inputs.analysis_id}: {len(inputs.source_runs)} source run(s), "
@@ -477,10 +553,25 @@ def _build_report(
 
     print("Building observed variant store...")
     with performance.stage("Observed variant store") as timing:
+        variant_keys = None
+        if not args.target_space_null:
+            universe_path = analytics_dir / "clinvar_universe.snv_indel.tsv.gz"
+            build_or_load_clinvar_universe(
+                genes_tsv=inputs.genes_tsvs,
+                target_sequences_dir=inputs.target_sequence_dirs,
+                clinvar_vcf=args.clinvar_vcf,
+                universe_path=universe_path,
+                manifest_path=analytics_dir / "clinvar_universe.snv_indel.manifest.json",
+                regions_path=analytics_dir / "clinvar_target_regions.bed",
+            )
+            variant_keys = pd.read_csv(
+                universe_path, sep="\t", usecols=["variant_key"], keep_default_na=False,
+            )["variant_key"]
         observed_store = build_or_load_observed_variant_store(
             variant_annotations_source=inputs.variant_annotation_sources,
-            analytics_dir=analytics_dir,
+            analytics_dir=heavy_dir,
             strategies=strategies,
+            variant_keys=variant_keys,
         )
         timing["details"] = "cache hit" if observed_store.cache_hit else "cache miss"
         timing["metrics"] = {
@@ -552,16 +643,24 @@ def _build_report(
             variant_annotations_source=inputs.variant_annotation_sources,
             variant_strategy_support_tsv=inputs.variant_strategy_support_tsvs,
             annotation_failures_tsv=inputs.annotation_failure_tsvs,
-            analytics_dir=analytics_dir,
+            analytics_dir=heavy_dir,
             cohort=conservation_analysis.validation.cohort,
             strategies=strategies,
             eligible_gene_ids_by_strategy=eligible_gene_ids_by_strategy,
+            cache_policy=args.cache_policy,
+            filter_support_source=(
+                [source.prepared_cache_dir.parent / "filter_support" / "manifest.json"
+                 for source in source_runs]
+                if all(source.prepared_cache_dir is not None for source in source_runs) else None
+            ),
         )
         timing["details"] = "cache hit" if basic_filtering.cache_hit else "cache miss"
         timing["metrics"] = {
             "candidate_curve_rows": int(len(basic_filtering.candidate_curves)),
             "clinvar_curve_rows": int(len(basic_filtering.clinvar_curves)),
         }
+    write_tsv_atomic(analytics_dir / "basic_filtering" / "candidate_curves.tsv.gz", basic_filtering.candidate_curves)
+    write_tsv_atomic(analytics_dir / "basic_filtering" / "clinvar_curves.tsv.gz", basic_filtering.clinvar_curves)
 
     negative_controls = None
     if args.target_space_null:
@@ -687,9 +786,8 @@ def _build_report(
         html = render_html(sections)
     with performance.stage("HTML write"):
         write_text_atomic(out_html, html)
-    performance.finish(artifacts=[out_html])
     print(f"Performance profile: {performance_path}")
-    print(f"Done in {performance.total_wall_seconds:.3f} s")
+    return performance
 
 
 if __name__ == "__main__":

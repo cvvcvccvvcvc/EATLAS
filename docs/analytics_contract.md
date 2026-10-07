@@ -44,6 +44,29 @@ Analytics materializes only reusable derivations and genuine run-set results.
 It does not concatenate source evidence, create target-FASTA symlink trees, or
 modify source metadata.
 
+An optional Google Drive archive provider restores and verifies one complete
+source at a time. Its prepared-source receipt binds the original root manifest
+and evidence identity to hashed analytics outputs. Prepared sources retain the
+same `source-id`; archive location, transport, and cache retention do not alter
+scientific identity. This is a derived analytics input, not a synthetic pipeline
+run or an alternative pipeline evidence schema.
+
+Only the archive provider's own restored directories can be removed during
+preparation. Local `--run-dir` trees remain read-only. `keep` retains reusable
+prepared data and calculations. `discard` places new reusable data in a
+separate work namespace, retains it on failure for resume, and removes it after
+success. Existing persistent caches are not removed by this policy.
+
+Candidate conservation operates on prepared genomic blocks with all contexts
+of an allele together. Score frequencies are merged globally before exact
+linear quantiles, Freedman-Diaconis histogram edges, and box summaries are
+calculated. Medians and quantiles are not averaged across source runs or blocks.
+Variant summaries merge allele-disjoint blocks with exact allele memberships
+and AF frequencies. In discard mode, filtering consumes block-local relations
+and retains only histograms and ClinVar scores, not the full filter-score store.
+Ordinary ClinVar validation stores only universe allele memberships; enabling
+the target-space null still requires the full observed-variant store.
+
 ## Workspace And Identity
 
 Every command requires an external `--analytics-root`:

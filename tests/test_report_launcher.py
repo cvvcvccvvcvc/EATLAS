@@ -15,6 +15,32 @@ BATCH = PROJECT_ROOT / "analytics" / "slurm" / "strategy_report.sbatch"
 COMMIT = "a" * 40
 
 
+def test_report_launcher_forwards_archive_ids_without_local_run_paths(tmp_path):
+    launcher, environment = _fixture(tmp_path)
+    completed = subprocess.run([
+        "bash", str(launcher), "--analytics-root", str(tmp_path / "analytics"),
+        "--gdrive-run-id", "batch_001", "--gdrive-run-id", "batch_002",
+        "--report-name", "archive", "--expected-commit", COMMIT,
+        "--", "--cache-policy", "discard",
+    ], env=environment, text=True, capture_output=True)
+    assert completed.returncode == 0, completed.stderr
+    argv = _read_argv(Path(environment["SBATCH_CAPTURE"]))
+    assert argv[-7:] == ["0", "--cache-policy", "discard", "--gdrive-run-id", "batch_001", "--gdrive-run-id", "batch_002"]
+
+
+def test_report_launcher_rejects_mixed_local_and_archive_inputs(tmp_path):
+    launcher, environment = _fixture(tmp_path)
+    run = _run(tmp_path / "run")
+    completed = subprocess.run([
+        "bash", str(launcher), "--analytics-root", str(tmp_path / "analytics"),
+        "--run-dir", str(run), "--gdrive-run-id", "batch_001", "--report-name", "mixed",
+        "--expected-commit", COMMIT,
+    ], env=environment, text=True, capture_output=True)
+    assert completed.returncode != 0
+    assert "cannot be mixed" in completed.stderr
+    assert not Path(environment["SBATCH_CAPTURE"]).exists()
+
+
 def _read_argv(path: Path) -> list[str]:
     payload = path.read_bytes()
     assert payload.endswith(b"\0")

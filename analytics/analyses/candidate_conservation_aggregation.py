@@ -7,7 +7,6 @@ from pathlib import Path
 from typing import Iterator
 
 import duckdb
-import numpy as np
 import pandas as pd
 
 from analytics.io.allele_evidence import materialize_allele_evidence
@@ -63,7 +62,7 @@ class CandidateAlleleStore:
                     f"observed {observed_rows}, expected {source.row_count}"
                 )
             self.connection.execute(
-                "CREATE TEMP TABLE unsupported_alleles (allele_id BIGINT PRIMARY KEY)"
+                "CREATE TABLE unsupported_alleles (allele_id BIGINT PRIMARY KEY)"
             )
             self.connection.execute(
                 "CREATE TEMP TABLE candidate_scores "
@@ -102,22 +101,21 @@ class CandidateAlleleStore:
             self.connection.unregister("unsupported_alleles_input")
 
     def iter_scoring_rows(self, chunk_size: int) -> Iterator[list[tuple[object, ...]]]:
-        last_allele_id = 0
-        while True:
-            rows = self.connection.execute(
+        # A separate cursor reads private database tables while the main cursor
+        # appends scores. This avoids a new sorted scan for every 100k alleles.
+        cursor = self.connection.cursor()
+        try:
+            cursor.execute(
                 "SELECT a.allele_id, a.key_chrom, a.key_pos, a.key_ref, a.key_alt "
                 "FROM candidate_alleles a "
                 "WHERE a.found_strategy_mask | a.not_found_strategy_mask != 0 "
-                "AND a.allele_id > ? "
                 "AND NOT EXISTS (SELECT 1 FROM unsupported_alleles u "
-                "                WHERE u.allele_id = a.allele_id) "
-                "ORDER BY a.allele_id LIMIT ?",
-                [last_allele_id, chunk_size],
-            ).fetchall()
-            if not rows:
-                return
-            yield rows
-            last_allele_id = int(rows[-1][0])
+                "                WHERE u.allele_id = a.allele_id)"
+            )
+            while rows := cursor.fetchmany(chunk_size):
+                yield rows
+        finally:
+            cursor.close()
 
     def append_scores(self, scores: list[tuple[int, float]]) -> None:
         if not scores:
@@ -133,20 +131,16 @@ class CandidateAlleleStore:
         finally:
             self.connection.unregister("candidate_scores_input")
 
-    def group_scores(self, *, strategy: str, gnomad_status: str) -> np.ndarray:
-        try:
-            bit = 1 << self.strategies.index(strategy)
-        except ValueError as exc:
-            raise ValueError(f"Unknown candidate strategy {strategy!r}") from exc
-        values = self.connection.execute(
-            "SELECT s.score FROM candidate_alleles a "
+    def group_score_counts(self, *, strategy: str, gnomad_status: str) -> pd.DataFrame:
+        bit = 1 << self.strategies.index(strategy)
+        return self.connection.execute(
+            "SELECT s.score, count(*) AS weight FROM candidate_alleles a "
             "JOIN candidate_scores s USING (allele_id) "
             "WHERE CASE WHEN ? = 'found' THEN a.found_strategy_mask "
-            "           WHEN ? = 'not_found' THEN a.not_found_strategy_mask "
-            "           ELSE 0 END & ? != 0",
+            "WHEN ? = 'not_found' THEN a.not_found_strategy_mask ELSE 0 END & ? != 0 "
+            "GROUP BY s.score ORDER BY s.score",
             [gnomad_status, gnomad_status, bit],
-        ).fetchnumpy()["score"]
-        return np.asarray(values, dtype=float)
+        ).fetchdf()
 
     def group_counts(self) -> pd.DataFrame:
         rows = []
@@ -265,7 +259,7 @@ class CandidateAlleleStore:
             fields=("gnomad_af",),
         )
         self.connection.execute(
-            "CREATE TEMP TABLE candidate_alleles AS WITH parsed AS ("
+            "CREATE TABLE candidate_alleles AS WITH parsed AS ("
             "SELECT p.* EXCLUDE (gnomad_af), e.gnomad_af_value FROM candidate_source p "
             "JOIN allele_evidence e USING (variant_key)"
             "), normalized AS ("

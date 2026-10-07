@@ -52,6 +52,9 @@ def configure_duckdb_memory(connection, thread_count: int) -> dict[str, object]:
             source = "duckdb_default_fraction"
 
     connection.execute(f"SET memory_limit={sql_string(requested)}")
+    temporary_limit = os.environ.get("GAPH_DUCKDB_TEMP_LIMIT", "").strip()
+    if temporary_limit:
+        connection.execute(f"SET max_temp_directory_size={sql_string(temporary_limit)}")
     return {
         "memory_limit": str(
             connection.execute("SELECT current_setting('memory_limit')").fetchone()[0]

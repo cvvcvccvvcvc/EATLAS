@@ -7,6 +7,12 @@ from pathlib import Path
 import pandas as pd
 
 from analytics.analyses.basic_filtering import (
+    _filter_score_connection,
+    _filter_score_histograms,
+    _clinvar_filter_scores,
+    _resolve_filter_sources,
+    read_clinvar_filter_scores,
+    _stream_filter_data,
     build_or_load_filter_score_store,
     candidate_curves_from_histograms,
     compute_clinvar_filter_curves,
@@ -48,7 +54,7 @@ def test_filter_score_store_and_candidate_curves_are_allele_level(tmp_path: Path
                 "vep_primary_consequence": "missense_variant",
             },
             {
-                "variant_key": "1:20:C>T",
+                "variant_key": "1:10000020:C>T",
                 "gene_id": "1",
                 "event_type": "snv",
                 "lookup_status": "ok",
@@ -97,7 +103,7 @@ def test_filter_score_store_and_candidate_curves_are_allele_level(tmp_path: Path
                 "site_aligned_ortholog_count": 20,
             },
             {
-                "variant_key": "1:20:C>T",
+                "variant_key": "1:10000020:C>T",
                 "gene_id": "1",
                 "strategy": "s1",
                 "alt_support_ortholog_count": 1,
@@ -144,6 +150,41 @@ def test_filter_score_store_and_candidate_curves_are_allele_level(tmp_path: Path
     ].set_index("threshold")
     assert minimum.loc[11, "retained_variant_count"] == 1
     assert maximum.loc[10, "retained_variant_count"] == 2
+
+    source, columns = _resolve_filter_sources(annotations, support)
+    cohort_keys = pd.DataFrame({"variant_key": ["1:10:A>G", "1:10000020:C>T"]})
+    with _filter_score_connection(
+        source=source, support_path=support, support_columns=columns,
+        annotation_failures_tsv=failures, temp_dir=tmp_path,
+    ) as connection:
+        streamed_curves = candidate_curves_from_histograms(
+            _filter_score_histograms(connection, "filter_scores")
+        )
+        streamed_clinvar = _clinvar_filter_scores(connection, "filter_scores", cohort_keys)
+    pd.testing.assert_frame_equal(streamed_curves, curves)
+    pd.testing.assert_frame_equal(
+        streamed_clinvar.sort_values(["variant_key", "strategy"]).reset_index(drop=True),
+        read_clinvar_filter_scores(score_path, cohort_keys).sort_values(
+            ["variant_key", "strategy"]
+        ).reset_index(drop=True),
+    )
+    from analytics.io.archive_sources import prepare_parquet_dataset
+    from analytics.io.variant_source import resolve_variant_table_source
+    annotation_pack, support_pack = tmp_path / "annotation_pack", tmp_path / "support_pack"
+    for input_path, output in ((annotations, annotation_pack), (support, support_pack)):
+        prepare_parquet_dataset(
+            resolve_variant_table_source(input_path, required_columns={"variant_key"}), output, input_path.name,
+        )
+    histograms, prepared_clinvar = _stream_filter_data(
+        variant_annotations_source=annotation_pack / "manifest.json",
+        variant_strategy_support_tsv=support, filter_support_source=support_pack / "manifest.json",
+        annotation_failures_tsv=failures, analytics_dir=tmp_path / "streamed", cohort=cohort_keys,
+    )
+    pd.testing.assert_frame_equal(candidate_curves_from_histograms(histograms), curves)
+    pd.testing.assert_frame_equal(
+        prepared_clinvar.sort_values(["variant_key", "strategy"]).reset_index(drop=True),
+        streamed_clinvar.sort_values(["variant_key", "strategy"]).reset_index(drop=True),
+    )
 
 
 def test_clinvar_filter_curve_uses_support_threshold_as_observation(tmp_path: Path) -> None:

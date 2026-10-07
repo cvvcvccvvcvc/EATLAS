@@ -13,6 +13,7 @@ from analytics.io.artifacts import path_metadata
 
 
 VARIANT_DATASET_SCHEMA = "gaph_variant_annotation_dataset_v1"
+PREPARED_VARIANT_SCHEMA = "gaph_prepared_variant_dataset_v1"
 
 
 @dataclass(frozen=True)
@@ -24,6 +25,7 @@ class VariantTableSource:
     mode: str
     identity: dict[str, object]
     partitions: tuple["VariantTablePartition", ...] = ()
+    format: str = "tsv_gzip_v1"
 
 
 @dataclass(frozen=True)
@@ -35,12 +37,17 @@ class VariantTablePartition:
 
 
 def resolve_variant_table_source(
-    source_paths: Path | Sequence[Path],
+    source_paths: Path | Sequence[Path] | VariantTableSource,
     *,
     required_columns: set[str],
 ) -> VariantTableSource:
     """Resolve one or more current datasets without materializing a combined copy."""
 
+    if isinstance(source_paths, VariantTableSource):
+        missing = required_columns - set(source_paths.columns)
+        if missing:
+            raise ValueError(f"Variant source lacks required columns: {sorted(missing)}")
+        return source_paths
     if not isinstance(source_paths, Path):
         members = tuple(source_paths)
         if not members:
@@ -57,6 +64,8 @@ def resolve_variant_table_source(
         columns = sources[0].columns
         if any(source.columns != columns for source in sources[1:]):
             raise ValueError("Variant annotation datasets have different columns")
+        if any(source.format != sources[0].format for source in sources[1:]):
+            raise ValueError("Variant annotation datasets have different storage formats")
         row_count = (
             sum(int(source.row_count) for source in sources)
             if all(source.row_count is not None for source in sources)
@@ -69,6 +78,8 @@ def resolve_variant_table_source(
             header=True,
             mode="multi_run_partitioned" if len(sources) > 1 else sources[0].mode,
             identity={"members": [source.identity for source in sources]},
+            format=sources[0].format,
+            partitions=tuple(partition for source in sources for partition in source.partitions),
         )
     return _resolve_one_variant_source(
         source_paths,
@@ -86,6 +97,8 @@ def _resolve_one_variant_source(
     path = path.expanduser().resolve()
     if path.name == "manifest.json" and path.is_file():
         manifest = _read_json(path)
+        if manifest.get("schema") == PREPARED_VARIANT_SCHEMA:
+            return _resolve_prepared_dataset(path, manifest, required_columns)
         if manifest.get("schema") == VARIANT_DATASET_SCHEMA:
             return _resolve_partitioned_dataset(
                 path,
@@ -255,6 +268,9 @@ def variant_sources_by_partition(
 
 
 def variant_source_sql(source: VariantTableSource) -> str:
+    if source.format == "parquet":
+        paths = "[" + ",".join(sql_string(path) for path in source.paths) + "]"
+        return f"read_parquet({paths}, hive_partitioning=false)"
     columns = "{" + ",".join(
         f"{sql_string(column)}: 'VARCHAR'" for column in source.columns
     ) + "}"
@@ -263,6 +279,56 @@ def variant_source_sql(source: VariantTableSource) -> str:
         f"read_csv({paths}, delim='\\t', header={'true' if source.header else 'false'}, "
         f"columns={columns}, auto_detect=false, compression='auto', parallel=true, "
         "nullstr='__GAPH_NULL_SENTINEL__')"
+    )
+
+
+def variant_source_blocks(source: VariantTableSource) -> tuple[VariantTableSource, ...]:
+    """Prepared genomic blocks keep all occurrences of an allele together."""
+    if source.format != "parquet":
+        return (source,)
+    groups: dict[str, list[VariantTablePartition]] = {}
+    for partition in source.partitions:
+        groups.setdefault(partition.partition_id, []).append(partition)
+    return tuple(
+        VariantTableSource(
+            paths=tuple(path for part in parts for path in part.paths),
+            columns=source.columns, row_count=sum(part.row_count for part in parts),
+            header=True, mode="prepared_block", format="parquet",
+            identity={"parent": source.identity, "block": block},
+        )
+        for block, parts in sorted(groups.items())
+    )
+
+
+def _resolve_prepared_dataset(
+    path: Path, manifest: dict[str, object], required_columns: set[str]
+) -> VariantTableSource:
+    if manifest.get("status") != "complete" or manifest.get("format") != "parquet":
+        raise ValueError(f"Incomplete prepared variant dataset: {path}")
+    columns = tuple(manifest["fields"])
+    _require_columns(columns, required_columns, path)
+    paths = []
+    partitions = []
+    total_rows = 0
+    for item in manifest["partitions"]:
+        member = (path.parent / item["path"]).resolve()
+        member.relative_to(path.parent.resolve())
+        if not member.is_file() or member.stat().st_size != item["size_bytes"]:
+            raise ValueError(f"Prepared variant shard changed: {member}")
+        if member in paths:
+            raise ValueError(f"Duplicate prepared variant shard: {member}")
+        paths.append(member)
+        total_rows += int(item["row_count"])
+        partitions.append(VariantTablePartition(
+            str(item["partition_id"]), (member,), int(item["row_count"]),
+            {"source": manifest["source_id"], "shard": item},
+        ))
+    if not paths or total_rows != int(manifest["row_count"]):
+        raise ValueError(f"Prepared variant row count mismatch: {path}")
+    return VariantTableSource(
+        tuple(paths), columns, total_rows, True, "prepared",
+        {"source_id": manifest["source_id"], "preparation_version": 1},
+        tuple(partitions), "parquet",
     )
 
 

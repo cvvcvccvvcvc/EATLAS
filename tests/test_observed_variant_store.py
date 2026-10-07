@@ -187,6 +187,23 @@ def test_observed_store_reuses_cache_and_queries_strategy_memberships(
     )
     assert cached.cache_hit is True
 
+    scoped = build_or_load_observed_variant_store(
+        variant_annotations_source=annotations,
+        analytics_dir=tmp_path / "scoped",
+        strategies=["s1", "s2", "s3"],
+        variant_keys=pd.Series(["1:100:A>G"]),
+    )
+    assert scoped.manifest["allele_gene_count"] == 2
+    assert scoped.manifest["allele_count"] == 1
+    assert scoped.observed_strategy_keys(
+        pd.Series(["1:100:A>G"]), ["s1", "s2", "s3"],
+    ) == store.observed_strategy_keys(pd.Series(["1:100:A>G"]), ["s1", "s2", "s3"])
+    empty = build_or_load_observed_variant_store(
+        variant_annotations_source=annotations, analytics_dir=tmp_path / "empty",
+        strategies=["s1", "s2", "s3"], variant_keys=pd.Series([], dtype="str"),
+    )
+    assert empty.manifest["allele_count"] == 0
+
 
 def test_observed_store_focal_sampling_matches_stable_md5_topk(tmp_path: Path) -> None:
     annotations = tmp_path / "variant_annotations.tsv.gz"

@@ -570,6 +570,17 @@ def verify_remote(
     return manifest
 
 
+def read_archive_manifest(
+    client: RcloneClient, *, remote_root: str, run_id: str
+) -> dict[str, Any]:
+    """Read a checksum-bound completion descriptor without scanning remote data."""
+    _validate_run_id(run_id)
+    manifest, _ = _load_remote_manifest(client, remote_root, run_id)
+    if manifest["legacy_run"]:
+        raise ArchiveError("Legacy archives without evidence inventory cannot be used")
+    return manifest
+
+
 def archive_run(
     client: RcloneClient,
     *,
