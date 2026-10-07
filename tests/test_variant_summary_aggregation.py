@@ -63,6 +63,33 @@ def _write_evidence_rows(path: Path, rows: list[dict[str, str]]) -> None:
     )
 
 
+def test_prepared_blocks_preserve_global_memberships_and_af_quantiles(tmp_path: Path) -> None:
+    from analytics.io.archive_sources import prepare_parquet_dataset
+    from analytics.io.variant_source import resolve_variant_table_source
+
+    annotations = tmp_path / "variants.tsv.gz"
+    _write_evidence_rows(annotations, [
+        _evidence_row("1", strategies="s1", gnomad_af="0.001"),
+        _evidence_row("2", strategies="s2", gnomad_af="0.001"),
+        _evidence_row("1", variant_key="1:101:C>T", ref="C", alt="T", gnomad_af="0"),
+        _evidence_row("3", variant_key="1:10000001:C>T", ref="C", alt="T", strategies="s2", gnomad_af="0.3"),
+        _evidence_row("3", variant_key="1:10000002:A>G", strategies="s1,s2", gnomad_af="0.00001"),
+    ])
+    prepared = tmp_path / "prepared"
+    prepare_parquet_dataset(
+        resolve_variant_table_source(annotations, required_columns={"variant_key"}), prepared, "test",
+    )
+    results = [aggregate_variant_groups(
+        resolve_variant_aggregation_source(path), threads=1, temp_dir=tmp_path / "temp",
+    ) for path in (annotations, prepared / "manifest.json")]
+    assert results[0].masks == results[1].masks
+    assert results[0].gene_count == results[1].gene_count
+    for name in ("global_groups", "allele_gene_groups", "gnomad_af_summary", "pathogenic_rows"):
+        pd.testing.assert_frame_equal(
+            getattr(results[0], name), getattr(results[1], name), rtol=1e-15, atol=1e-15,
+        )
+
+
 def test_available_cpu_count_prefers_slurm_allocation(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("SLURM_CPUS_PER_TASK", "12")
     assert available_cpu_count() == 12
