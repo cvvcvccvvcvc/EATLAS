@@ -5,7 +5,7 @@ import base64
 import numpy as np
 import pytest
 
-from experiments.gdrive_report.compare import compare_values, plot_traces
+from experiments.gdrive_report.compare import compare_values, plot_traces, scientific_trace
 
 
 def test_report_comparison_parses_generated_plotly_calls(tmp_path):
@@ -23,3 +23,13 @@ def test_report_comparison_checks_binary_counts_exactly_and_float_rounding():
     compare_values(1., 1. + 1e-15, "quantile")
     with pytest.raises(AssertionError):
         compare_values(1., 1.01, "quantile")
+
+
+def test_report_comparison_ignores_only_violin_presentation():
+    old = {"type": "violin", "name": "BWA", "y": [1.0, 2.0], "jitter": 0.25, "points": "all"}
+    new = {"type": "violin", "name": "BWA<br>n=2", "y": [1.0, 2.0],
+           "jitter": 0, "points": False, "meanline": {"visible": True}}
+    compare_values(scientific_trace(old), scientific_trace(new), "violin")
+    new["y"] = [1.0, 3.0]
+    with pytest.raises(AssertionError):
+        compare_values(scientific_trace(old), scientific_trace(new), "violin")

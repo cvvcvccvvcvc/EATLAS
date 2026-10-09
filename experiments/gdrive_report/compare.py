@@ -77,6 +77,17 @@ def plot_traces(html_path: Path):
         yield traces
 
 
+def scientific_trace(trace: dict) -> dict:
+    if trace.get("type") != "violin":
+        return trace
+    # These fields change the violin's presentation, not its plotted values.
+    result = {key: value for key, value in trace.items()
+              if key not in {"hoveron", "jitter", "meanline", "points"}}
+    if isinstance(result.get("name"), str):
+        result["name"] = re.sub(r"<br>n=[\d,]+$", "", result["name"])
+    return result
+
+
 def compare_reports(baseline: Path, candidate: Path, baseline_html: Path, candidate_html: Path) -> dict:
     manifests = [json.loads((directory / "manifest.json").read_text()) for directory in (baseline, candidate)]
     assert {source["source_id"] for source in manifests[0]["sources"]} == {
@@ -109,7 +120,11 @@ def compare_reports(baseline: Path, candidate: Path, baseline_html: Path, candid
     plot_count = 0
     for index, (old_plot, new_plot) in enumerate(zip_longest(plot_traces(baseline_html), plot_traces(candidate_html))):
         assert old_plot is not None and new_plot is not None, "Different number of scientific figures"
-        compare_values(old_plot, new_plot, f"report.scientific_traces[{index}]")
+        compare_values(
+            [scientific_trace(trace) for trace in old_plot],
+            [scientific_trace(trace) for trace in new_plot],
+            f"report.scientific_traces[{index}]",
+        )
         plot_count += 1
     assert plot_count > 0, "No report figures parsed; comparison is incomplete"
     return {"status": "identical_scientific_results", "summary_tables": len(old["frames"]),
