@@ -2,16 +2,24 @@ from __future__ import annotations
 
 import json
 import os
+import random
 import shutil
 import stat
 import subprocess
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
 
 class RcloneError(RuntimeError):
     """Raised when an rclone operation fails."""
+
+
+QUOTA_RETRY_DELAYS = (60, 120, 240, 480, 900)
+QUOTA_ERROR_MARKERS = (
+    "ratelimitexceeded", "rate_limit_exceeded", "too many requests", "error 429",
+)
 
 
 def validate_remote_root(remote_root: str) -> str:
@@ -84,18 +92,35 @@ class RcloneClient:
         capture: bool = False,
         check: bool = True,
     ) -> subprocess.CompletedProcess[str]:
-        result = subprocess.run(
-            self._command(*arguments),
-            check=False,
-            text=True,
-            stdout=subprocess.PIPE if capture else None,
-            stderr=subprocess.PIPE if capture else None,
-        )
+        for attempt in range(len(QUOTA_RETRY_DELAYS) + 1):
+            result = subprocess.run(
+                self._command(*arguments),
+                check=False,
+                text=True,
+                stdout=subprocess.PIPE if capture else None,
+                stderr=subprocess.PIPE,
+            )
+            detail = (result.stderr or "").strip()
+            if not capture and detail:
+                print(detail[-16384:], file=sys.stderr, flush=True)
+            if result.returncode == 0 or not any(
+                marker in detail.lower() for marker in QUOTA_ERROR_MARKERS
+            ):
+                break
+            if attempt == len(QUOTA_RETRY_DELAYS):
+                break
+            delay = QUOTA_RETRY_DELAYS[attempt] + random.uniform(0, 5)
+            print(
+                f"rclone {arguments[0]}: API rate limit; retry {attempt + 1}/"
+                f"{len(QUOTA_RETRY_DELAYS)} in {delay:.1f}s",
+                file=sys.stderr, flush=True,
+            )
+            time.sleep(delay)
         if check and result.returncode != 0:
             detail = (result.stderr or result.stdout or "").strip()
             raise RcloneError(
                 f"rclone command failed with exit code {result.returncode}: "
-                f"{detail or 'no diagnostic output'}"
+                f"{detail[-4096:] or 'no diagnostic output'}"
             )
         return result
 

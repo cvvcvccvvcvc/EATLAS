@@ -676,7 +676,9 @@ def restore_run(
     destination: Path,
 ) -> dict[str, Any]:
     _validate_run_id(run_id)
-    manifest = verify_remote(client, remote_root=remote_root, run_id=run_id)
+    # The complete downloaded tree is checked below against this bound manifest.
+    # A separate remote checksum/size traversal before downloading is redundant.
+    manifest, _ = _load_remote_manifest(client, remote_root, run_id)
     if manifest["legacy_run"]:
         raise ArchiveError("Legacy archives without evidence inventory cannot be restored")
     resolved_destination = destination.expanduser().resolve()

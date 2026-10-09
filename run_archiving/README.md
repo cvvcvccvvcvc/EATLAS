@@ -66,6 +66,13 @@ chmod 700 "$HOME/.config" "$HOME/.config/rclone"
 chmod 600 "$HOME/.config/rclone/rclone.conf"
 ```
 
+Use your own Google Cloud OAuth client rather than rclone's shared client,
+whose project quota is shared with other users. For reports, use a separate
+remote with `drive.readonly` scope. `root_folder_id` selects rclone's starting
+folder but is not an OAuth permission boundary; restricting the credential to
+one folder requires a dedicated Google account with access only to that folder.
+The config belongs to the cluster user and must not be readable by other users.
+
 Create the archive root and verify account quota:
 
 ```bash
@@ -128,9 +135,17 @@ Incomplete uploads without `COMPLETE.json` are intentionally omitted.
 ```
 
 `verify` checks every remote file against its MD5 and checks total file count
-and bytes. `restore` downloads into `<destination>.partial`, can resume that
-partial copy, verifies it with SHA-256, and only then renames it to the final
-destination.
+and bytes. `restore` validates the completion marker and bound manifest, then
+downloads into `<destination>.partial`. It can resume that partial copy, checks
+every downloaded file and exact tree membership with SHA-256, and only then
+renames it to the final destination. It does not perform redundant full remote
+checksum and size scans before downloading. Upload and removal still require
+fresh full remote verification.
+
+Operations retry explicit API rate-limit errors with bounded exponential
+backoff and jitter: up to five retries with delays from one to fifteen minutes.
+Permission, missing-file, and checksum errors are not retried as quota failures.
+Diagnostics are retained even for commands whose output is not captured.
 
 ## Remove the cluster copy
 

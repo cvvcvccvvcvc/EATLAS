@@ -3,11 +3,14 @@ from __future__ import annotations
 import hashlib
 import json
 import shutil
+import subprocess
 from pathlib import Path
 
 import pytest
 
 from run_archiving import archive as archive_module
+from run_archiving import rclone as rclone_module
+from run_archiving.rclone import RcloneClient, RcloneError
 from run_archiving.archive import (
     ArchiveError,
     archive_run,
@@ -401,3 +404,93 @@ def test_verify_rejects_path_traversal_run_id(tmp_path: Path) -> None:
 
     with pytest.raises(ArchiveError, match="Invalid run ID"):
         verify_remote(client, remote_root="drive:GAPH", run_id="../run_001")
+
+
+def test_restore_verifies_download_without_redundant_remote_scans(tmp_path, monkeypatch):
+    run_dir = _make_run(tmp_path / "results")
+    client = LocalRemote(tmp_path / "remote")
+    archive_run(client, run_dir=run_dir, remote_root="drive:GAPH")
+
+    def redundant_scan(*args, **kwargs):
+        pytest.fail("Restore must verify the downloaded tree instead of scanning it remotely twice")
+
+    monkeypatch.setattr(client, "verify_checksum", redundant_scan)
+    monkeypatch.setattr(client, "size", redundant_scan)
+    destination = tmp_path / "restored"
+    restore_run(client, remote_root="drive:GAPH", run_id="run_001", destination=destination)
+    assert build_snapshot(destination).tree_sha256 == build_snapshot(run_dir).tree_sha256
+
+
+@pytest.mark.parametrize("damage", ["changed", "missing", "extra"])
+def test_restore_rejects_damaged_download_before_publishing(tmp_path, damage):
+    run_dir = _make_run(tmp_path / "results")
+    client = LocalRemote(tmp_path / "remote")
+    archive_run(client, run_dir=run_dir, remote_root="drive:GAPH")
+    remote = tmp_path / "remote/GAPH/runs/run_001/data"
+    if damage == "changed":
+        (remote / "annotation/variant_annotations.tsv.gz").write_bytes(b"corrupted")
+    elif damage == "missing":
+        (remote / "annotation/variant_annotations.tsv.gz").unlink()
+    else:
+        (remote / "unexpected.txt").write_text("unexpected")
+    destination = tmp_path / "restored"
+    with pytest.raises(ArchiveError):
+        restore_run(client, remote_root="drive:GAPH", run_id="run_001", destination=destination)
+    assert not destination.exists()
+    assert destination.with_name("restored.partial").is_dir()
+
+
+@pytest.mark.parametrize("capture", [False, True])
+def test_rclone_retries_rate_limit_for_entire_operation(monkeypatch, capture):
+    monkeypatch.setattr(rclone_module.shutil, "which", lambda value: "/test/rclone")
+    calls = []
+    sleeps = []
+
+    def run(command, **kwargs):
+        calls.append(command)
+        assert kwargs["stderr"] == subprocess.PIPE
+        if len(calls) == 1:
+            return subprocess.CompletedProcess(command, 1, "", "googleapi: Error 403: rateLimitExceeded")
+        return subprocess.CompletedProcess(command, 0, "complete", "")
+
+    monkeypatch.setattr(rclone_module.subprocess, "run", run)
+    monkeypatch.setattr(rclone_module.time, "sleep", sleeps.append)
+    monkeypatch.setattr(rclone_module.random, "uniform", lambda a, b: 0)
+    result = RcloneClient()._run("checksum", "md5", "sums", "drive:GAPH", capture=capture)
+    assert result.returncode == 0
+    assert len(calls) == 2
+    assert sleeps == [60]
+
+
+@pytest.mark.parametrize("error", ["checksum differs", "403: insufficient permissions", "storageQuotaExceeded"])
+def test_rclone_permanent_errors_fail_with_diagnostics_without_retry(monkeypatch, error):
+    monkeypatch.setattr(rclone_module.shutil, "which", lambda value: "/test/rclone")
+    calls = []
+
+    def run(command, **kwargs):
+        calls.append(command)
+        return subprocess.CompletedProcess(command, 1, "", error)
+
+    monkeypatch.setattr(rclone_module.subprocess, "run", run)
+    monkeypatch.setattr(rclone_module.time, "sleep", lambda delay: pytest.fail("Permanent error retried"))
+    with pytest.raises(RcloneError, match=error):
+        RcloneClient()._run("checksum", "md5", "sums", "drive:GAPH")
+    assert len(calls) == 1
+
+
+def test_rclone_quota_retries_are_bounded_even_for_optional_reads(monkeypatch):
+    monkeypatch.setattr(rclone_module.shutil, "which", lambda value: "/test/rclone")
+    calls = []
+    sleeps = []
+
+    def run(command, **kwargs):
+        calls.append(command)
+        return subprocess.CompletedProcess(command, 1, "", "RATE_LIMIT_EXCEEDED")
+
+    monkeypatch.setattr(rclone_module.subprocess, "run", run)
+    monkeypatch.setattr(rclone_module.time, "sleep", sleeps.append)
+    monkeypatch.setattr(rclone_module.random, "uniform", lambda a, b: 0)
+    with pytest.raises(RcloneError, match="RATE_LIMIT_EXCEEDED"):
+        RcloneClient().read_text_optional("drive:GAPH/COMPLETE.json")
+    assert len(calls) == 6
+    assert sleeps == list(rclone_module.QUOTA_RETRY_DELAYS)
