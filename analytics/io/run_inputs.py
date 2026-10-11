@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import csv
+import gzip
 import hashlib
 import json
 import re
@@ -568,10 +570,15 @@ def _resolve_source_run(run_dir: Path) -> SourceRun:
     target_gene_ids = frozenset(_read_gene_ids(genes))
     if not target_gene_ids.issubset(requested_gene_ids):
         raise ValueError(f"Target genes fall outside accepted input IDs: {run_dir}")
+    eligible_gene_ids = _read_selected_ortholog_gene_ids(selected)
+    if not eligible_gene_ids.issubset(target_gene_ids):
+        raise ValueError(f"Selected orthologs reference unknown target Gene IDs: {run_dir}")
     manifest_gene_ids = {str(value) for value in alignment.get("gene_ids", [])}
-    if manifest_gene_ids != target_gene_ids:
+    if manifest_gene_ids != eligible_gene_ids:
         raise ValueError(
-            f"Alignment manifest gene_ids do not match fetch/genes.tsv.gz: {run_dir}"
+            "Alignment manifest gene_ids do not match selected-ortholog genes: "
+            f"{run_dir}; missing={sorted(eligible_gene_ids - manifest_gene_ids, key=_gene_sort_key)[:20]}, "
+            f"unexpected={sorted(manifest_gene_ids - eligible_gene_ids, key=_gene_sort_key)[:20]}"
         )
     identity = {
         "contract_version": SOURCE_ID_VERSION,
@@ -895,15 +902,16 @@ def _combined_alignment_manifest(sources: Sequence[SourceRun]) -> dict[str, obje
     if len(sources) == 1:
         return dict(sources[0].alignment_manifest)
     baseline = sources[0].alignment_manifest
+    gene_ids = sorted(
+        {str(gene) for source in sources for gene in source.alignment_manifest["gene_ids"]},
+        key=_gene_sort_key,
+    )
     return {
         "stage": "alignment",
         "schema": baseline.get("schema"),
         "run_count": len(sources),
-        "gene_ids": sorted(
-            {gene for source in sources for gene in source.target_gene_ids},
-            key=_gene_sort_key,
-        ),
-        "gene_count": sum(len(source.target_gene_ids) for source in sources),
+        "gene_ids": gene_ids,
+        "gene_count": len(gene_ids),
         "strategies": baseline.get("strategies"),
         "strategy_parameters": baseline.get("strategy_parameters"),
         "alignment_event_mode": baseline.get("alignment_event_mode"),
@@ -1035,6 +1043,21 @@ def _read_gene_ids(path: Path) -> list[str]:
     if len(values) != len(set(values)):
         raise ValueError(f"Run contains duplicate target Gene IDs: {path}")
     return values
+
+
+def _read_selected_ortholog_gene_ids(path: Path) -> set[str]:
+    """Read eligible target identities without retaining the large ortholog table."""
+    gene_ids: set[str] = set()
+    with gzip.open(path, "rt", newline="") as handle:
+        reader = csv.DictReader(handle, delimiter="\t")
+        if "query_gene_id" not in (reader.fieldnames or []):
+            raise ValueError(f"Selected orthologs lack query_gene_id: {path}")
+        for row in reader:
+            gene_id = row["query_gene_id"]
+            if not gene_id:
+                raise ValueError(f"Selected orthologs contain an empty query_gene_id: {path}")
+            gene_ids.add(gene_id)
+    return gene_ids
 
 
 def _require_header(path: Path, required: set[str]) -> None:

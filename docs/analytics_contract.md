@@ -24,6 +24,12 @@ contracts, VEP backend/release, and variant columns. Accepted Gene IDs must be
 disjoint. Missing evidence, incompatible runs, overlap, obsolete schemas, or an
 incomplete shard set fail explicitly.
 
+Alignment manifest Gene IDs must exactly match the query genes represented in
+`fetch/orthologs.selected.tsv.gz`, all of which must belong to the fetched target
+genes. A fetched target without selected orthologs remains in the target cohort
+but has no alignment result. Combined alignment counts use the aligned gene
+union, not the fetched target count.
+
 There is no fallback to old pipeline aggregates, a synthetic cohort, or a
 separate bulk-VEP artifact.
 

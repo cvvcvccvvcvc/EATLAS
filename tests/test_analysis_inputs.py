@@ -212,6 +212,7 @@ def _make_source_run(
     clinvar_vcf: Path,
     variant_key: str | None = None,
     gnomad_af: str = "",
+    unaligned_gene_id: str | None = None,
 ) -> Path:
     fetch = path / "fetch"
     alignment = path / "alignment"
@@ -220,10 +221,14 @@ def _make_source_run(
     targets.mkdir(parents=True)
     alignment.mkdir(parents=True)
     annotation.mkdir(parents=True)
+    target_gene_ids = [gene_id] + ([unaligned_gene_id] if unaligned_gene_id else [])
     (fetch / "input.ids.tsv").write_text(
         "input_position\tline_number\traw_value\tgene_id\taccepted\t"
         "accepted_index\tduplicate_of_index\n"
-        f"1\t1\t{gene_id}\t{gene_id}\ttrue\t1\t\n"
+        + "".join(
+            f"{i}\t{i}\t{target}\t{target}\ttrue\t{i}\t\n"
+            for i, target in enumerate(target_gene_ids, start=1)
+        )
     )
     _table(
         fetch / "genes.tsv.gz",
@@ -237,13 +242,14 @@ def _make_source_run(
         ],
         [
             {
-                "gene_id": gene_id,
+                "gene_id": target,
                 "genomic_accession": "NC_000001.11",
                 "chromosome": "1",
                 "begin": 1,
                 "end": 10,
                 "sequence_length": 10,
             }
+            for target in target_gene_ids
         ],
     )
     _table(
@@ -251,11 +257,12 @@ def _make_source_run(
         ["gene_id", "feature_type", "target_start0", "target_end0"],
         [
             {
-                "gene_id": gene_id,
+                "gene_id": target,
                 "feature_type": "gene",
                 "target_start0": 0,
                 "target_end0": 10,
             }
+            for target in target_gene_ids
         ],
     )
     _table(
@@ -282,7 +289,8 @@ def _make_source_run(
         }
     )
     _table(fetch / "taxonomy.tsv.gz", TAXONOMY_FIELDS, [taxonomy])
-    (targets / f"{gene_id}.fa.gz").write_bytes(b"target")
+    for target in target_gene_ids:
+        (targets / f"{target}.fa.gz").write_bytes(b"target")
     _table(
         annotation / "failures.tsv.gz",
         ["source", "scope", "chrom", "start", "end"],
@@ -364,7 +372,7 @@ def _make_source_run(
         {
             "stage": "fetch",
             "status": "complete",
-            "unique_gene_count": 1,
+            "unique_gene_count": len(target_gene_ids),
             "target_assembly_accession": "GCF_000001405.40",
             "target_assembly_name": "GRCh38.p14",
             "target_tax_id": "9606",
@@ -613,6 +621,71 @@ def test_analysis_input_preparation_is_profiled_before_cache_builds(
     )
     assert annotation_stage["parent_id"] == payload["stages"][0]["id"]
     assert annotation_stage["metrics"]["partition_completed"] == 2
+
+
+def test_analysis_preserves_targets_without_orthologs_and_counts_only_aligned_genes(
+    tmp_path: Path,
+) -> None:
+    clinvar = tmp_path / "clinvar.vcf.gz"
+    clinvar.write_bytes(b"clinvar")
+    Path(f"{clinvar}.tbi").write_bytes(b"index")
+    run_a = _make_source_run(
+        tmp_path / "run-a", gene_id="1", unaligned_gene_id="3", clinvar_vcf=clinvar,
+    )
+    run_b = _make_source_run(tmp_path / "run-b", gene_id="2", clinvar_vcf=clinvar)
+    before = {run: _snapshot(run) for run in (run_a, run_b)}
+
+    sources = resolve_source_runs([run_a, run_b], clinvar_vcf=clinvar)
+    source_a = next(source for source in sources if source.run_dir == run_a)
+    assert source_a.target_gene_ids == {"1", "3"}
+    assert source_a.requested_gene_ids == {"1", "3"}
+    assert source_a.alignment_manifest["gene_ids"] == ["1"]
+    combined = run_inputs_module._combined_alignment_manifest(sources)
+    assert combined["gene_ids"] == ["1", "2"]
+    assert combined["gene_count"] == 2
+    assert run_inputs_module._combined_fetch_manifest(sources)["target_gene_count"] == 3
+    assert {run: _snapshot(run) for run in (run_a, run_b)} == before
+
+
+@pytest.mark.parametrize("alignment_gene_ids", [[], ["1", "2"]])
+def test_analysis_rejects_missing_or_unexpected_eligible_alignment_genes(
+    tmp_path: Path, alignment_gene_ids: list[str],
+) -> None:
+    clinvar = tmp_path / "clinvar.vcf.gz"
+    clinvar.write_bytes(b"clinvar")
+    Path(f"{clinvar}.tbi").write_bytes(b"index")
+    run = _make_source_run(
+        tmp_path / "run", gene_id="1", unaligned_gene_id="2",
+        clinvar_vcf=clinvar,
+    )
+    manifest = run / "alignment" / "manifest.json"
+    payload = json.loads(manifest.read_text())
+    payload["gene_ids"] = alignment_gene_ids
+    _json(manifest, payload)
+    with pytest.raises(ValueError, match="do not match selected-ortholog genes"):
+        run_inputs_module._resolve_source_run(run)
+
+
+@pytest.mark.parametrize(
+    "query_gene_id, message",
+    [("2", "unknown target Gene IDs"), ("", "empty query_gene_id")],
+)
+def test_analysis_rejects_invalid_selected_ortholog_targets(
+    tmp_path: Path, query_gene_id: str, message: str,
+) -> None:
+    clinvar = tmp_path / "clinvar.vcf.gz"
+    clinvar.write_bytes(b"clinvar")
+    Path(f"{clinvar}.tbi").write_bytes(b"index")
+    run = _make_source_run(
+        tmp_path / "run", gene_id="1", clinvar_vcf=clinvar,
+    )
+    _table(
+        run / "fetch" / "orthologs.selected.tsv.gz",
+        ["query_gene_id", "ortholog_gene_id", "tax_id"],
+        [{"query_gene_id": query_gene_id, "ortholog_gene_id": "o1", "tax_id": "9598"}],
+    )
+    with pytest.raises(ValueError, match=message):
+        run_inputs_module._resolve_source_run(run)
 
 
 def test_analysis_rejects_overlapping_source_genes(tmp_path: Path) -> None:
