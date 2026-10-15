@@ -7,6 +7,7 @@ import time
 import urllib.request
 from collections.abc import Iterable
 from datetime import datetime, timedelta, timezone
+from http.client import HTTPException, IncompleteRead, RemoteDisconnected
 from urllib.error import HTTPError, URLError
 
 logger = logging.getLogger(__name__)
@@ -155,8 +156,20 @@ def execute_graphql(query: str, variables: dict) -> dict:
         },
         data=json.dumps({"query": query, "variables": variables}).encode()
     )
-    with urllib.request.urlopen(req, timeout=60) as response:
-        return json.loads(response.read())
+    try:
+        with urllib.request.urlopen(req, timeout=60) as response:
+            return json.loads(response.read())
+    except HTTPError as exc:
+        # urllib otherwise hides the provider's GraphQL error behind its status.
+        try:
+            detail = exc.read(4096).decode("utf-8", errors="replace")
+        except (OSError, HTTPException):
+            detail = ""
+        finally:
+            exc.close()
+        if detail:
+            exc.msg = f"{exc.msg}; response: {' '.join(detail.split())}"
+        raise
 
 def retry_sleep_seconds(attempt: int) -> float:
     delay = min(GNOMAD_RETRY_MAX_SECONDS, GNOMAD_RETRY_BASE_SECONDS * (2 ** (attempt - 1)))
@@ -166,7 +179,7 @@ def retry_sleep_seconds(attempt: int) -> float:
 def is_retryable_network_error(exc: Exception) -> bool:
     if isinstance(exc, HTTPError):
         return exc.code in GNOMAD_TRANSIENT_HTTP_STATUSES
-    return isinstance(exc, (URLError, TimeoutError))
+    return isinstance(exc, (URLError, TimeoutError, IncompleteRead, RemoteDisconnected))
 
 
 def fetch_region_variants_recursive(
@@ -183,10 +196,9 @@ def fetch_region_variants_recursive(
         retry_error: Exception | None = None
         try:
             data = execute_graphql(GNOMAD_REGION_QUERY, variables)
-        except (HTTPError, URLError, TimeoutError) as exc:
-            if not is_retryable_network_error(exc):
-                raise
+        except (HTTPError, URLError, TimeoutError, IncompleteRead, RemoteDisconnected) as exc:
             retry_error = exc
+            joined = str(exc).lower()
         else:
             if "errors" not in data:
                 region = data.get("data", {}).get("region")
@@ -194,18 +206,18 @@ def fetch_region_variants_recursive(
 
             messages = [str(error.get("message", error)) for error in data["errors"]]
             joined = " | ".join(message.lower() for message in messages)
-            if (
-                ("select a smaller region" in joined or "too many variants" in joined)
-                and (stop - start + 1) > GNOMAD_REGION_MIN_WINDOW_BP
-            ):
-                mid = (start + stop) // 2
-                logger.info(f"Splitting gnomAD region {chrom}:{start}-{stop} due to API constraint.")
-                left = fetch_region_variants_recursive(chrom, start, mid, max_attempts)
-                right = fetch_region_variants_recursive(chrom, mid + 1, stop, max_attempts)
-                return left + right
-            if "rate limit" not in joined:
-                raise RuntimeError(f"GraphQL errors: {joined}")
             retry_error = RuntimeError(f"GraphQL errors: {joined}")
+
+        if "select a smaller region" in joined or "too many variants" in joined:
+            if (stop - start + 1) <= GNOMAD_REGION_MIN_WINDOW_BP:
+                raise retry_error
+            mid = (start + stop) // 2
+            logger.info(f"Splitting gnomAD region {chrom}:{start}-{stop} due to API constraint.")
+            left = fetch_region_variants_recursive(chrom, start, mid, max_attempts)
+            right = fetch_region_variants_recursive(chrom, mid + 1, stop, max_attempts)
+            return left + right
+        if not is_retryable_network_error(retry_error) and "rate limit" not in joined:
+            raise retry_error
 
         if attempt == max_attempts:
             assert retry_error is not None

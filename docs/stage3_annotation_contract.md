@@ -63,6 +63,14 @@ boundary for VEP. Missing, extra, reordered-schema, differently configured, or
 row-count-mismatched shards make finalization fail; a partial dataset is never
 published.
 
+gnomAD region-size errors trigger recursive subdivision whether returned in a
+successful HTTP response or an HTTP error. Truncated responses and disconnected
+connections use the bounded transport retry policy. HTTP failures retain a
+bounded provider response excerpt in their diagnostic message. An exhausted
+lookup still produces explicit failure evidence, not evidence that a variant
+is absent from gnomAD; structural dataset completeness does not imply successful
+external lookup coverage.
+
 ## Durable Outputs
 
 ```text

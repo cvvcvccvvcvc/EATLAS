@@ -4,6 +4,7 @@ import gzip
 import json
 import multiprocessing
 from pathlib import Path
+from http.client import IncompleteRead, RemoteDisconnected
 from urllib.error import HTTPError
 
 import pytest
@@ -195,15 +196,20 @@ def test_timeout_splits_group_until_tiles_succeed(tmp_path: Path) -> None:
     assert cache.snapshot()["tile_write_count"] == 2
 
 
-def test_transient_http_error_splits_group_instead_of_retrying_large_region(
-    tmp_path: Path,
+@pytest.mark.parametrize("error", [
+    HTTPError("", 500, "Internal Server Error", None, None),
+    IncompleteRead(b"partial", 100),
+    RemoteDisconnected("Remote end closed connection without response"),
+])
+def test_transient_error_splits_group_instead_of_retrying_large_region(
+    tmp_path: Path, error: Exception,
 ) -> None:
     calls = []
 
     def fetch(chrom, start, end, *, max_attempts):
         calls.append((chrom, start, end, max_attempts))
         if end - start + 1 > 25_000:
-            raise HTTPError("", 500, "Internal Server Error", None, None)
+            raise error
         return [variant(start)]
 
     cache = GnomadRegionCache(tmp_path, fetcher=fetch)
