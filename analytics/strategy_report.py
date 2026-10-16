@@ -793,6 +793,7 @@ def _build_report(
                     software_provenance={
                         "runtime": calculation_identity["runtime"],
                         "code": code_provenance,
+                        "gnomad_supplement": scientific_config["gnomad_supplement"],
                     },
                 ),
             ),

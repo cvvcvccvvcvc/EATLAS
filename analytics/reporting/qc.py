@@ -492,7 +492,7 @@ def build_methods_sections(
                 ("ClinVar alleles VEP ok", format_int(clinvar_vep_ok)),
                 ("Event keys normalized", format_int(ok_events)),
                 ("Missing left anchor", format_int(missing_left_anchor)),
-                ("gnomAD regions failed", format_int(annotation_manifest.get("gnomad_region_failure_count", 0))),
+                ("Original gnomAD regions failed", format_int(annotation_manifest.get("gnomad_region_failure_count", 0))),
                 ("Candidate contexts excluded from gnomAD", format_int(variant_summary.gnomad_lookup_failed)),
                 (
                     "ClinVar cached variants",
@@ -534,6 +534,15 @@ def build_methods_sections(
             ]
         )
     if software_provenance is not None:
+        supplement = software_provenance.get("gnomad_supplement")
+        if supplement:
+            sections.append(
+                '<p class="lead">gnomAD results use supplement <code>'
+                + html.escape(str(supplement))
+                + '</code>. Original pipeline failure counts are retained above; '
+                'candidate lookup counts reflect the selected supplement. '
+                'Any unresolved coverage remains excluded.</p>'
+            )
         runtime = dict(software_provenance.get("runtime") or {})
         python_runtime = dict(runtime.get("python") or {})
         r_runtime = dict(runtime.get("R") or {})

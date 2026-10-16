@@ -113,7 +113,7 @@ def build_overview(
         ("Strategies", format_int(len(variant_summary.strategies))),
         ("Input genes", format_int(input_gene_count)),
         ("Candidates found by all strategies", format_count_share(all_strategy_count, unique_variant_count)),
-        ("Annotation warnings", format_int(annotation_warnings)),
+        ("Original annotation warnings", format_int(annotation_warnings)),
     ]
     sections = [metric_cards(cards)]
     sections.append("<h2>Strategies</h2>")
