@@ -68,12 +68,12 @@ def upload_snapshot(client, path: Path, remote_root: str) -> None:
         client.copy_file(root / item["path"], remote_join(remote_root, item["path"]))
     checksums.write_text("".join(f"{v['md5']}  {v['path']}\n" for v in fresh))
     if fresh:
-        client.verify_checksum("MD5", checksums, remote_root)
+        client.verify_checksum("MD5", checksums, remote_root, one_way=True)
         uploaded.update(v["sha256"] for v in fresh)
         atomic_json(receipt, sorted(uploaded))
     client.copy_file(path, remote_join(remote_root, "snapshots", path.name))
     checksums.write_text(f"{digest(path, 'md5')}  snapshots/{path.name}\n")
-    client.verify_checksum("MD5", checksums, remote_root)
+    client.verify_checksum("MD5", checksums, remote_root, one_way=True)
     checksums.unlink()
 
 

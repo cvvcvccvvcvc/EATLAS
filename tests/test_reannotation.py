@@ -162,7 +162,7 @@ def test_failed_upload_does_not_publish_snapshot_and_resume_reuses_objects(tmp_p
     remote, binding, _ = archived
     _, snap = make_snapshot(tmp_path / 'store', binding, {binding['tiles'][0]: ([record()], WINDOW)})
     original = remote.verify_checksum
-    def fail(*args):
+    def fail(*args, **kwargs):
         raise RuntimeError('Drive temporarily unavailable')
     monkeypatch.setattr(remote, 'verify_checksum', fail)
     with pytest.raises(RuntimeError, match='Drive'):

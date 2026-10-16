@@ -109,9 +109,12 @@ class LocalRemote:
         shutil.copy2(self._path(source), destination)
 
     def verify_checksum(
-        self, algorithm: str, checksum_file: Path, destination: str
+        self, algorithm: str, checksum_file: Path, destination: str, *, one_way: bool = False
     ) -> None:
         root = self._path(destination)
+        expected_paths = {line.split("  ", 1)[1] for line in checksum_file.read_text().splitlines()}
+        if not one_way:
+            assert expected_paths == {p.relative_to(root).as_posix() for p in root.rglob('*') if p.is_file()}
         for line in checksum_file.read_text().splitlines():
             expected, relative = line.split("  ", 1)
             assert _digest(root / relative, algorithm) == expected

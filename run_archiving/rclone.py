@@ -233,6 +233,8 @@ class RcloneClient:
         algorithm: str,
         checksum_file: Path,
         destination: str,
+        *,
+        one_way: bool = False,
     ) -> None:
         self._run(
             "checksum",
@@ -241,6 +243,7 @@ class RcloneClient:
             destination,
             "--checkers",
             str(self.checkers),
+            *(["--one-way"] if one_way else []),
         )
 
     def size(self, remote_path: str) -> tuple[int, int]:
