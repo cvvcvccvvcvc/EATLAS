@@ -6,7 +6,7 @@ import csv
 import gzip
 import json
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from analytics.io.artifacts import path_metadata
@@ -26,6 +26,8 @@ class VariantTableSource:
     identity: dict[str, object]
     partitions: tuple["VariantTablePartition", ...] = ()
     format: str = "tsv_gzip_v1"
+    repair: dict | None = None
+    members: tuple["VariantTableSource", ...] = ()
 
 
 @dataclass(frozen=True)
@@ -80,6 +82,7 @@ def resolve_variant_table_source(
             identity={"members": [source.identity for source in sources]},
             format=sources[0].format,
             partitions=tuple(partition for source in sources for partition in source.partitions),
+            members=sources if any(source.repair or source.members for source in sources) else (),
         )
     return _resolve_one_variant_source(
         source_paths,
@@ -97,6 +100,21 @@ def _resolve_one_variant_source(
     path = path.expanduser().resolve()
     if path.name == "manifest.json" and path.is_file():
         manifest = _read_json(path)
+        if manifest.get("schema") == "gaph_gnomad_repaired_view_v1":
+            from reannotation.store import digest
+
+            base = _resolve_one_variant_source(Path(manifest["base"]), required_columns=required_columns - {"gnomad_lookup_status"})
+            if base.repair:
+                raise ValueError("Reannotation views must bind original evidence, not another view")
+            repair = {"snapshot": manifest["snapshot"]}
+            for name in ["lookup", "coverage"]:
+                member = (path.parent / manifest[name]["path"]).resolve()
+                member.relative_to(path.parent.resolve())
+                if digest(member) != manifest[name]["sha256"]:
+                    raise ValueError(f"Reannotation view changed: {member}")
+                repair[name] = str(member)
+            return replace(base, columns=(*base.columns, "gnomad_lookup_status"), repair=repair,
+                           identity={"base": base.identity, "supplement": manifest["snapshot"]})
         if manifest.get("schema") == PREPARED_VARIANT_SCHEMA:
             return _resolve_prepared_dataset(path, manifest, required_columns)
         if manifest.get("schema") == VARIANT_DATASET_SCHEMA:
@@ -261,13 +279,22 @@ def variant_sources_by_partition(
             row_count=partition.row_count,
             header=source.header,
             mode="partition",
-            identity=partition.identity,
+            identity={"base": partition.identity, "supplement": source.repair["snapshot"]} if source.repair else partition.identity,
+            format=source.format,
+            repair=source.repair,
         )
         for partition in source.partitions
     }
 
 
 def variant_source_sql(source: VariantTableSource) -> str:
+    if source.members:
+        return "(" + " UNION ALL ".join(f"SELECT * FROM {variant_source_sql(member)}" for member in source.members) + ")"
+    if source.repair:
+        from analytics.io.reannotation import repaired_sql
+
+        base = replace(source, repair=None, columns=tuple(c for c in source.columns if c != "gnomad_lookup_status"))
+        return repaired_sql(variant_source_sql(base), source.repair, base.columns)
     if source.format == "parquet":
         paths = "[" + ",".join(sql_string(path) for path in source.paths) + "]"
         return f"read_parquet({paths}, hive_partitioning=false)"
@@ -284,6 +311,17 @@ def variant_source_sql(source: VariantTableSource) -> str:
 
 def variant_source_blocks(source: VariantTableSource) -> tuple[VariantTableSource, ...]:
     """Prepared genomic blocks keep all occurrences of an allele together."""
+    if source.members:
+        if any(member.format != "parquet" for member in source.members):
+            return (source,)
+        blocks = {}
+        for member in source.members:
+            for block in variant_source_blocks(member):
+                blocks.setdefault(block.identity["block"], []).append(block)
+        return tuple(replace(source, members=tuple(members), partitions=(),
+                             paths=tuple(path for member in members for path in member.paths),
+                             row_count=sum(member.row_count for member in members),
+                             identity={"parent": source.identity, "block": name}) for name, members in sorted(blocks.items()))
     if source.format != "parquet":
         return (source,)
     groups: dict[str, list[VariantTablePartition]] = {}
@@ -295,6 +333,7 @@ def variant_source_blocks(source: VariantTableSource) -> tuple[VariantTableSourc
             columns=source.columns, row_count=sum(part.row_count for part in parts),
             header=True, mode="prepared_block", format="parquet",
             identity={"parent": source.identity, "block": block},
+            repair=source.repair,
         )
         for block, parts in sorted(groups.items())
     )

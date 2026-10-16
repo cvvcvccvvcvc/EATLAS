@@ -10,6 +10,11 @@ import pytest
 from genomics import gnomad
 
 
+@pytest.fixture(autouse=True)
+def no_network_pacing(monkeypatch):
+    monkeypatch.setattr(gnomad, "wait_for_request_slot", lambda: None)
+
+
 SUCCESS_RESPONSE = {
     "data": {
         "region": {
@@ -24,6 +29,19 @@ SUCCESS_RESPONSE = {
         }
     }
 }
+
+
+@pytest.mark.parametrize("response", [{}, {"data": {"region": None}}, {"data": {"region": {"variants": None}}}])
+def test_incomplete_success_response_is_not_absence(monkeypatch, response):
+    monkeypatch.setattr(gnomad, "execute_graphql", lambda *args: response)
+    with pytest.raises(RuntimeError, match="Incomplete gnomAD response"):
+        gnomad.fetch_region_variants_recursive("1", 1, 25000)
+
+
+def test_invalid_json_response_is_pending_transport_evidence(monkeypatch):
+    monkeypatch.setattr(gnomad.urllib.request, "urlopen", lambda *args, **kwargs: io.BytesIO(b"<html>unavailable</html>"))
+    with pytest.raises(RuntimeError, match="Invalid JSON"):
+        gnomad.execute_graphql("query", {})
 
 
 def disable_retry_wait(monkeypatch: pytest.MonkeyPatch) -> list[float]:

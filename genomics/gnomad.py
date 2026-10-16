@@ -10,6 +10,8 @@ from datetime import datetime, timedelta, timezone
 from http.client import HTTPException, IncompleteRead, RemoteDisconnected
 from urllib.error import HTTPError, URLError
 
+from .gnomad_transport import defer_requests, wait_for_request_slot
+
 logger = logging.getLogger(__name__)
 
 GNOMAD_API_URL = "https://gnomad.broadinstitute.org/api"
@@ -156,10 +158,19 @@ def execute_graphql(query: str, variables: dict) -> dict:
         },
         data=json.dumps({"query": query, "variables": variables}).encode()
     )
+    wait_for_request_slot()
     try:
         with urllib.request.urlopen(req, timeout=60) as response:
-            return json.loads(response.read())
+            try:
+                payload = json.loads(response.read())
+            except (ValueError, UnicodeError) as exc:
+                raise RuntimeError("Invalid JSON in gnomAD response") from exc
+            if not isinstance(payload, dict):
+                raise RuntimeError("Invalid gnomAD response: expected an object")
+            return payload
     except HTTPError as exc:
+        if exc.code == 429:
+            defer_requests(exc.headers.get("Retry-After") if exc.headers else None)
         # urllib otherwise hides the provider's GraphQL error behind its status.
         try:
             detail = exc.read(4096).decode("utf-8", errors="replace")
@@ -201,8 +212,10 @@ def fetch_region_variants_recursive(
             joined = str(exc).lower()
         else:
             if "errors" not in data:
-                region = data.get("data", {}).get("region")
-                return region.get("variants", []) if region else []
+                region = (data.get("data") or {}).get("region")
+                if not isinstance(region, dict) or not isinstance(region.get("variants"), list):
+                    raise RuntimeError("Incomplete gnomAD response: region.variants is missing")
+                return region["variants"]
 
             messages = [str(error.get("message", error)) for error in data["errors"]]
             joined = " | ".join(message.lower() for message in messages)

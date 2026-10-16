@@ -1,5 +1,11 @@
 # Analytics Contract
 
+Archived gnomAD lookup gaps can be supplemented by an explicit
+`--gnomad-reannotation` snapshot. Version selection, source binding, cache
+isolation, and coverage semantics are owned by
+[the reannotation contract](../reannotation/README.md). Analytics remains a
+read-only consumer and never acquires provider data to fill those gaps.
+
 Read this document when changing analytics input compatibility, cache identity,
 scientific derivations, or report interpretation. Use
 `report_generation.md` only for the operator launch procedure.

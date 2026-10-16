@@ -66,10 +66,19 @@ published.
 gnomAD region-size errors trigger recursive subdivision whether returned in a
 successful HTTP response or an HTTP error. Truncated responses and disconnected
 connections use the bounded transport retry policy. HTTP failures retain a
-bounded provider response excerpt in their diagnostic message. An exhausted
-lookup still produces explicit failure evidence, not evidence that a variant
-is absent from gnomAD; structural dataset completeness does not imply successful
-external lookup coverage.
+bounded provider response excerpt in their diagnostic message. The pipeline
+retains successful shared-cache tiles and retries unresolved tiles in delayed
+waves; it does not finalize network failures as missing variants. Nextflow owns
+task time limits and resubmission. All cooperating clients use filesystem-locked
+request pacing (eight requests/minute), with shared cooldown after HTTP 429.
+Use one shared cache/rate-state location for clients behind the same egress IP;
+this cannot coordinate unrelated external users of that IP. Permanent API or
+schema problems can keep work pending and require operator correction; no client
+can guarantee successful coverage while the provider is unavailable.
+
+Historical completed runs can contain explicit failed regions. Repair them with
+the [reannotation package](../reannotation/README.md), preserving the original
+evidence. Structural dataset completeness alone is not proof of lookup coverage.
 
 ## Durable Outputs
 

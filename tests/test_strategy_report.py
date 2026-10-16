@@ -220,6 +220,7 @@ def test_local_vep_preflight_runs_before_workspace_resolution(
         vep_result_cache_tile_size_bp=1,
         run_dir=[tmp_path / "run"],
         gdrive_run_id=None,
+        gnomad_reannotation=None,
         cache_policy="keep",
         duckdb_temp_limit_gb=None,
         vep_release=None,

@@ -19,6 +19,8 @@ Nextflow owns process wiring and runtime policy. Python commands own
 deterministic transformations. `genomics/` owns cross-boundary biological
 semantics. `analytics/` reads completed evidence but never participates in the
 pipeline. `run_archiving/` is isolated operational tooling.
+`reannotation/` produces versioned gnomAD supplements for archived lookup gaps;
+see its [contract and operating procedure](../reannotation/README.md).
 
 ## Task To Owner
 

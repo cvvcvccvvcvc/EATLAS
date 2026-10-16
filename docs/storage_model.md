@@ -6,6 +6,9 @@ GAPH v2 separates durable biological outputs from temporary execution cache.
 completion and integrity semantics. Stage finalizers own their durable
 directories; analytics artifact ownership is documented in
 `analytics_contract.md`.
+Immutable gnomAD supplements form a separate durable layer, bound to original
+run inventories; their fragment storage, snapshots, and retention are owned by
+[the reannotation contract](../reannotation/README.md).
 
 ## Evidence-First Invariant
 

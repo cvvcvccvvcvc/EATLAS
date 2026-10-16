@@ -257,7 +257,7 @@ def fetch_gnomad_for_cluster(
     end: int,
 ) -> list[dict]:
     # pad by 100 bases
-    return region_cache.fetch_region(chrom, max(1, start - 100), end + 100)
+    return region_cache.fetch_region_complete(chrom, max(1, start - 100), end + 100)
 
 
 def format_info_value(value) -> str:
@@ -499,7 +499,7 @@ def main():
 
     # 3. Fetch gnomAD in parallel and cache
     gnomad_region_cache = GnomadRegionCache(
-        args.gnomad_cache_dir,
+        args.gnomad_cache_dir or args.outdir.parent / ".gnomad-cache",
         fetcher=fetch_region_variants_recursive,
     )
     gnomad_cache = {}
@@ -532,19 +532,9 @@ def main():
                         gnomad_key_status_counts,
                     )
             except Exception as exc:
-                logger.error(f"gnomAD fetch failed for {task}: {exc}")
-                chrom, start, end = task
-                failures.append(
-                    failure_row(
-                        "gnomad",
-                        "region",
-                        chrom,
-                        start,
-                        end,
-                        type(exc).__name__,
-                        str(exc),
-                    )
-                )
+                # Transport outages remain pending inside the cache client.
+                # Programming/storage errors must not publish misleading coverage.
+                raise RuntimeError(f"Cannot materialize gnomAD evidence for {task}: {exc}") from exc
 
     logger.info(f"Cached {len(gnomad_cache)} gnomAD variants.")
     if gnomad_key_status_counts:

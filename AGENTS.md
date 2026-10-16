@@ -13,6 +13,8 @@ GAPH v2 is one end-to-end Nextflow pipeline with three internal boundaries:
 
 Completed-run analytics is a separate, read-only consumer of durable pipeline
 evidence. Run archiving is separate operational tooling.
+`reannotation/` is an auxiliary producer of immutable gnomAD supplements for
+archived failed regions; analytics consumes an explicitly selected snapshot.
 
 ## Architecture Invariants
 
@@ -58,6 +60,7 @@ evidence. Run archiving is separate operational tooling.
 | Pipeline or report launch | the two shell launchers under `scripts/slurm/` and `analytics/slurm/` | `docs/pipeline_launch.md` or `docs/report_generation.md` | matching launcher test |
 | Cluster bootstrap or infrastructure diagnosis | `envs/`, `nextflow.config`, `bin/gaph-vep116` | `docs/itmo_cluster.md` | `docs/run_validation.md` |
 | Run archive, restore, or removal | `run_archiving/` | `run_archiving/README.md` | `tests/test_run_archiving.py` |
+| gnomAD supplements, recovery, or versions | `reannotation/`, `analytics/io/reannotation.py` | `reannotation/README.md` | `tests/test_reannotation.py` and affected analytics tests |
 
 `README.md` is the human entry point. `docs/project_map.md` explains ownership
 when a task crosses boundaries. Current CLI values belong to

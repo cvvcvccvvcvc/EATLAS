@@ -45,8 +45,12 @@ class ArchiveSources:
         cache_policy: str, disk_budget_bytes: int, workers: int,
         client: RcloneClient | None = None,
         performance_profile: PerformanceProfile | None = None,
+        gnomad_reannotation: Path | None = None,
     ) -> None:
         self.remote_root = validate_remote_root(remote_root)
+        self.gnomad_reannotation = gnomad_reannotation
+        if gnomad_reannotation is not None:
+            calculation_identity = {**calculation_identity, "gnomad_supplement": gnomad_reannotation.stem}
         archive_env = os.environ.get("GAPH_ARCHIVE_ENV")
         if not archive_env and os.environ.get("GAPH_ROOT"):
             archive_env = str(Path(os.environ["GAPH_ROOT"]) / "envs/run-archiving")
@@ -104,7 +108,7 @@ class ArchiveSources:
             partial = pack.with_name(run_id + ".partial")
             partial.mkdir(parents=True, exist_ok=True)
             with profile_stage(self.performance_profile, f"Prepare report source [{run_id}]"):
-                prepare_source_pack(source, partial, workers=self.workers)
+                prepare_source_pack(source, partial, workers=self.workers, gnomad_reannotation=self.gnomad_reannotation)
             payload = source_payload(source)
             payload.update({
                 "schema": PACK_SCHEMA, "preparation_version": PREPARATION_VERSION,
@@ -152,11 +156,16 @@ class ArchiveSources:
             shutil.rmtree(path)
 
 
-def prepare_source_pack(source: SourceRun, destination: Path, *, workers: int) -> None:
+def prepare_source_pack(source: SourceRun, destination: Path, *, workers: int, gnomad_reannotation: Path | None = None) -> None:
     """Retain report inputs and derivations, without raw alignment or event lineage."""
     derived = destination / "derived"
+    if gnomad_reannotation is not None:
+        from analytics.io.reannotation import prepare_repaired_source
+
+        source = prepare_repaired_source(source, gnomad_reannotation, destination / "repair")
     resolve_alignment_aggregate_paths(source.run_dir, analytics_dir=derived)
-    resolve_annotation_support_paths(source.run_dir, analytics_dir=derived, workers=workers)
+    resolve_annotation_support_paths(source.run_dir, analytics_dir=derived, workers=workers,
+                                     variant_annotations_override=source.variant_annotations_source)
     resolve_taxonomy_summary_path(source.run_dir, analytics_dir=derived)
     shutil.copytree(source.run_dir / "fetch", destination / "fetch", dirs_exist_ok=True)
     for relative in (
@@ -172,6 +181,8 @@ def prepare_source_pack(source: SourceRun, destination: Path, *, workers: int) -
         required_columns={"variant_key"},
     )
     prepare_parquet_dataset(support, destination / "filter_support", source.source_id + ":support")
+    if gnomad_reannotation is not None:
+        shutil.rmtree(destination / "repair")
 
 
 def prepare_variant_parquet(source: SourceRun, destination: Path) -> None:

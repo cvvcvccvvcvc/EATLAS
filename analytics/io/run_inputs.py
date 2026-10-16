@@ -276,6 +276,7 @@ def build_analysis_inputs(
             annotation_path = resolve_annotation_support_paths(
                 source.run_dir,
                 analytics_dir=source_cache,
+                variant_annotations_override=source.variant_annotations_source,
                 workers=annotation_support_workers,
                 progress_callback=(
                     performance_profile.checkpoint

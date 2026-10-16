@@ -138,6 +138,7 @@ def resolve_annotation_support_paths(
     analytics_dir: Path,
     workers: int = 1,
     progress_callback: Callable[[dict[str, object]], None] | None = None,
+    variant_annotations_override: Path | None = None,
 ) -> AnnotationSupportPaths:
     """Require the normalized lineage contract and expose analytics-owned products."""
 
@@ -168,7 +169,7 @@ def resolve_annotation_support_paths(
     alignment_manifest_path = alignment_dir / "manifest.json"
     map_root = annotation_dir / "event_variant_map" / "partitions"
     evidence_root = alignment_dir / "evidence" / "partitions"
-    variant_annotations_source = annotation_dir / "variant_annotations" / "manifest.json"
+    variant_annotations_source = variant_annotations_override or annotation_dir / "variant_annotations" / "manifest.json"
     failures = annotation_dir / "failures.tsv.gz"
     taxonomy = run_dir / "fetch" / "taxonomy.tsv.gz"
     target_features = run_dir / "fetch" / "target_features.tsv.gz"
@@ -719,6 +720,13 @@ def _build_partition_support(
         if annotation["gnomad_af"] and lookup_key is not None:
             gnomad_cache[lookup_key] = {"exome": {"af": annotation["gnomad_af"]}}
     statuses = build_gnomad_statuses(aggregates, gnomad_cache, failure_rows)
+    for aggregate in aggregates:
+        annotation = annotation_rows[(str(aggregate.get("gene_id") or ""), str(aggregate.get("variant_key") or ""))]
+        explicit = annotation.get("gnomad_lookup_status", "")
+        if aggregate.get("event_type") == "snv" and explicit in {"found", "not_found"}:
+            key = (str(aggregate.get("gene_id") or ""), int(aggregate.get("target_start0") or 0),
+                   str(aggregate.get("ref") or "").upper(), str(aggregate.get("alt") or "").upper())
+            statuses[key] = explicit
     _record_timing(timings, "join_source_annotations", phase_started)
     ortholog_path = work_dir / ORTHOLOG_EVIDENCE_FILENAME
     phase_started = time.perf_counter()
@@ -1091,6 +1099,7 @@ def _validate_exact_event_support(
 
 
 def _load_source_annotations(connection, source: VariantTableSource) -> None:
+    explicit = "gnomad_lookup_status" if "gnomad_lookup_status" in source.columns else "''"
     connection.execute("DROP TABLE IF EXISTS source_annotations")
     connection.execute(
         f"""
@@ -1099,7 +1108,8 @@ def _load_source_annotations(connection, source: VariantTableSource) -> None:
             CAST(variant_key AS VARCHAR) AS variant_key,
             CAST(gene_id AS VARCHAR) AS gene_id,
             CAST(lookup_status AS VARCHAR) AS lookup_status,
-            CAST(gnomad_af AS VARCHAR) AS gnomad_af
+            CAST(gnomad_af AS VARCHAR) AS gnomad_af,
+            CAST({explicit} AS VARCHAR) AS gnomad_lookup_status
         FROM {variant_source_sql(source)}
         """
     )
@@ -1120,9 +1130,9 @@ def _source_annotations_for_genes(
             [(gene_id,) for gene_id in sorted(gene_ids)],
         )
     rows: dict[tuple[str, str], dict[str, str]] = {}
-    for variant_key, gene_id, lookup_status, gnomad_af in connection.execute(
+    for variant_key, gene_id, lookup_status, gnomad_af, explicit in connection.execute(
         """
-        SELECT a.variant_key, a.gene_id, a.lookup_status, a.gnomad_af
+        SELECT a.variant_key, a.gene_id, a.lookup_status, a.gnomad_af, a.gnomad_lookup_status
         FROM source_annotations AS a
         JOIN requested_genes AS g USING (gene_id)
         """
@@ -1131,6 +1141,7 @@ def _source_annotations_for_genes(
         observed = {
             "lookup_status": str(lookup_status or ""),
             "gnomad_af": str(gnomad_af or ""),
+            "gnomad_lookup_status": str(explicit or ""),
         }
         previous = rows.setdefault(key, observed)
         if previous != observed:

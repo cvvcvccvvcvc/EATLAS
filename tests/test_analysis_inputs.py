@@ -452,6 +452,7 @@ def _stub_derived_builders(monkeypatch: pytest.MonkeyPatch) -> None:
         analytics_dir: Path,
         workers: int = 1,
         progress_callback=None,
+        variant_annotations_override=None,
     ):
         assert workers >= 1
         support = analytics_dir / "annotation_support" / "variant_strategy_support.tsv.gz"

@@ -92,6 +92,8 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--gdrive-root", default=os.environ.get("GAPH_ARCHIVE_REMOTE"),
                         help="Google Drive rclone archive root; defaults to GAPH_ARCHIVE_REMOTE.")
+    parser.add_argument("--gnomad-reannotation", type=Path,
+                        help="Explicit immutable gnomAD supplement snapshot; download remote snapshots with python -m reannotation.")
     parser.add_argument("--cache-policy", choices=("keep", "discard"), default="keep",
                         help="Keep reusable caches, or release newly owned intermediates after success.")
     parser.add_argument("--gdrive-disk-budget-gb", type=int, default=80,
@@ -322,6 +324,14 @@ def _run_report(args: argparse.Namespace) -> None:
         raise ValueError("--vep-result-cache-tile-size-bp must be >= 1")
     firth_runtime = validate_firth_runtime()
     calculation_identity = build_calculation_identity(firth_runtime=firth_runtime)
+    supplement_id = None
+    if args.gnomad_reannotation is not None:
+        from reannotation.store import load_snapshot
+
+        args.gnomad_reannotation = args.gnomad_reannotation.expanduser().resolve()
+        load_snapshot(args.gnomad_reannotation)
+        supplement_id = args.gnomad_reannotation.stem
+        calculation_identity = {**calculation_identity, "gnomad_supplement": supplement_id}
     if args.duckdb_temp_limit_gb is not None:
         if args.duckdb_temp_limit_gb < 1:
             raise ValueError("--duckdb-temp-limit-gb must be positive")
@@ -353,6 +363,7 @@ def _run_report(args: argparse.Namespace) -> None:
             disk_budget_bytes=args.gdrive_disk_budget_gb * 1024**3,
             workers=args.annotation_support_workers,
             performance_profile=source_profile,
+            gnomad_reannotation=args.gnomad_reannotation,
         )
         with source_profile.stage("Google Drive source preparation"):
             source_runs = validate_resolved_source_runs(
@@ -360,6 +371,11 @@ def _run_report(args: argparse.Namespace) -> None:
             )
     else:
         source_runs = resolve_source_runs(args.run_dir, clinvar_vcf=args.clinvar_vcf)
+        if args.gnomad_reannotation is not None:
+            from analytics.io.reannotation import prepare_repaired_source
+
+            source_runs = tuple(prepare_repaired_source(source, args.gnomad_reannotation,
+                                args.analytics_root / "cache/gnomad_supplements") for source in source_runs)
     artifact_release = variant_annotation_release(
         source_runs[0].variant_annotation_descriptor
     )
@@ -386,6 +402,7 @@ def _run_report(args: argparse.Namespace) -> None:
         else None
     )
     scientific_config = {
+        "gnomad_supplement": supplement_id,
         "clinvar": {
             "vcf": path_metadata(args.clinvar_vcf),
             "tbi": path_metadata(Path(f"{args.clinvar_vcf}.tbi")),

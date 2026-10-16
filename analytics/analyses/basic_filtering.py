@@ -288,6 +288,7 @@ def _build_filter_score_store(
 @contextmanager
 def _filter_score_connection(*, source, support_path, support_columns, annotation_failures_tsv,
                              temp_dir, prepared_support=None):
+    repaired_status = "gnomad_lookup_status" if "gnomad_lookup_status" in source.columns else "''"
     thread_count = available_cpu_count()
     with duckdb.connect() as connection:
         connection.execute(f"SET threads={thread_count}")
@@ -311,11 +312,13 @@ def _filter_score_connection(*, source, support_path, support_columns, annotatio
         connection.execute(
             "CREATE TEMP TABLE global_annotations AS WITH parsed AS ("
             "SELECT variant_key, lower(event_type) AS event_type, lookup_status, gnomad_af, "
+            f"{repaired_status} AS gnomad_lookup_status, "
             "regexp_replace(split_part(variant_key, ':', 1), '^chr', '') AS key_chrom, "
             "try_cast(split_part(variant_key, ':', 2) AS BIGINT) AS key_pos "
             "FROM variant_source_rows WHERE variant_key <> ''"
             "), classified AS (SELECT *, "
-            "CASE WHEN try_cast(nullif(gnomad_af, '') AS DOUBLE) IS NOT NULL THEN 'found' "
+            "CASE WHEN gnomad_lookup_status IN ('found','not_found') THEN gnomad_lookup_status "
+            "WHEN try_cast(nullif(gnomad_af, '') AS DOUBLE) IS NOT NULL THEN 'found' "
             "WHEN coalesce(lookup_status, '') NOT IN ('', 'ok') OR key_pos IS NULL "
             "THEN 'lookup_failed' "
             f"WHEN {failed} THEN 'lookup_failed' ELSE 'not_found' END AS row_gnomad_status "

@@ -54,6 +54,8 @@ class VariantAggregationSource:
     identity: dict[str, object]
     format: str = "tsv_gzip_v1"
     partitions: tuple = ()
+    repair: dict | None = None
+    members: tuple = ()
 
 
 @dataclass(frozen=True)
@@ -136,6 +138,8 @@ def resolve_variant_aggregation_source(
         identity=source.identity,
         format=source.format,
         partitions=source.partitions,
+        repair=source.repair,
+        members=source.members,
     )
 
 
@@ -396,7 +400,7 @@ def _aggregate_prepared_groups(source: VariantAggregationSource, **kwargs) -> Va
     for index, block in enumerate(variant_source_blocks(source), 1):
         print(f"Variant summary block {index}", flush=True)
         results.append(aggregate_variant_groups(
-            replace(source, paths=block.paths, row_count=block.row_count, partitions=()),
+            replace(source, paths=block.paths, row_count=block.row_count, partitions=(), repair=block.repair, members=block.members),
             **kwargs, _strategies=strategies, _af_frequencies=frequencies,
         ))
     def merged_counts(name):
@@ -577,7 +581,7 @@ def _create_normalized_views(
         f"s.gene_id || ':' || s.event_type || ':' || {ref} || '>' || {alt} END"
     )
     selected_fields = dict.fromkeys(
-        [*_pathogenic_source_columns(), *ALLELE_ANNOTATION_FIELDS]
+        [*_pathogenic_source_columns(), *ALLELE_ANNOTATION_FIELDS, "gnomad_lookup_status"]
     )
     selected = ", ".join(
         f"{column(name)} AS {name}" for name in selected_fields
@@ -649,7 +653,8 @@ def _create_normalized_views(
         f"WHEN contains({sig}, 'pathogenic') AND NOT contains({sig}, 'benign') THEN 'P/LP' "
         f"WHEN contains({sig}, 'benign') AND NOT contains({sig}, 'pathogenic') THEN 'B/LB' "
         "ELSE 'Other' END AS clinvar_category, "
-        "CASE WHEN try_cast(nullif(r.context_gnomad_af, '') AS DOUBLE) IS NOT NULL THEN 'found' "
+        "CASE WHEN r.gnomad_lookup_status IN ('found','not_found') THEN r.gnomad_lookup_status "
+        "WHEN try_cast(nullif(r.context_gnomad_af, '') AS DOUBLE) IS NOT NULL THEN 'found' "
         "WHEN coalesce(r.lookup_status, '') NOT IN ('', 'ok') OR r.key_pos IS NULL THEN 'lookup_failed' "
         f"WHEN {failed} THEN 'lookup_failed' ELSE 'not_found' END AS gnomad_status, "
         "CASE WHEN r.event_type = 'snv' AND length(r.ref) = 1 AND length(r.alt) = 1 "
@@ -871,17 +876,7 @@ def _sql_identifier(value: str) -> str:
 
 
 def _source_sql(source: VariantAggregationSource) -> str:
-    if source.format == "parquet":
-        return variant_source_sql(source)
-    columns = "{" + ",".join(
-        f"{_sql_string(column)}: 'VARCHAR'" for column in source.columns
-    ) + "}"
-    paths = "[" + ",".join(_sql_string(path) for path in source.paths) + "]"
-    return (
-        f"read_csv({paths}, delim='\\t', header={'true' if source.header else 'false'}, "
-        f"columns={columns}, auto_detect=false, compression='auto', parallel=true, "
-        "nullstr='__GAPH_NULL_SENTINEL__')"
-    )
+    return variant_source_sql(source)
 
 
 def _directory_size(path: Path | None) -> int:

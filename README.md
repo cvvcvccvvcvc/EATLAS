@@ -9,6 +9,8 @@ One Nextflow DSL2 run:
 
 The pipeline publishes durable row-level evidence. A separate analytics command
 derives scientific tables and an HTML report without modifying completed runs.
+The auxiliary [gnomAD reannotation package](reannotation/README.md) repairs
+failed regions through immutable supplements, including runs archived on Drive.
 
 ## Quick Start
 

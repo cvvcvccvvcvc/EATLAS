@@ -10,9 +10,11 @@ import logging
 import os
 import tempfile
 import threading
+import time
 from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
 from pathlib import Path
+from http.client import IncompleteRead, RemoteDisconnected
 from typing import Callable, Iterator
 from urllib.error import HTTPError, URLError
 
@@ -189,6 +191,31 @@ class GnomadRegionCache:
                 for group in _consecutive_groups(still_missing):
                     records_by_tile.update(self._fetch_and_store(group))
         return records_by_tile
+
+    def fetch_region_complete(self, chrom: object, start: int, end: int) -> list[dict]:
+        """Retain successful tiles and retry remaining tiles across request waves.
+
+        Nextflow owns task lifetime/resubmission. A resubmitted task reconstructs
+        its pending set from the immutable successful cache tiles.
+        """
+        if not self.enabled:
+            raise ValueError("Complete gnomAD annotation requires a shared cache directory")
+        tiles = tiles_for_region(chrom, start, end, self.tile_size_bp)
+        pending = tiles
+        wave = 0
+        while pending:
+            remaining = []
+            for tile in pending:
+                try:
+                    self.fetch_tiles([tile])
+                except (HTTPError, URLError, TimeoutError, IncompleteRead, RemoteDisconnected, RuntimeError) as exc:
+                    logger.warning("gnomAD pending %s:%s-%s: %s", tile.chrom, tile.start, tile.end, exc)
+                    remaining.append(tile)
+            pending = remaining
+            if pending:
+                wave += 1
+                time.sleep(min(900, 60 * 2 ** min(wave - 1, 4)))
+        return self.fetch_region(chrom, start, end)
 
     def read_cached_tile(self, tile: Tile) -> list[dict] | None:
         """Read and validate one tile without using the network."""
